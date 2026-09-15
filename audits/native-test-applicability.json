@@ -734,94 +734,70 @@
       "reason": "Public Darwin/POSIX observable behavior; preserve target API availability, ordinary-user setup and backend-neutral assertions. Native execution is required before claiming reference evidence."
     },
     "homebrew:xnu/eunion-core.patch:1": {
-      "name": "eunion_core_host_suite",
-      "identity_sha256": "2db79821ad80e9807cfe2c60759ff6fbf983cc609e377df36d6a58e1bdfc08a2",
-      "policy": "split_semantic_reference_and_internal_gate",
-      "reason": "experiments/e-union/run.sh compiles production closure; runner.c mixes host-layer selection with bind, path operations and visible errors. Overlay-private placement may be exempted narrowly, but whole-binding exemption would cover public filesystem behavior too."
-    },
-    "homebrew:xnu/eunion-core.patch:2": {
       "name": "eunion_path_direnum_guest",
       "identity_sha256": "3177cde4e5b8ba4af34886ef43908cbb9246cc25b72422c189533fd0fd6af9f5",
       "policy": "darling_internal_gate",
       "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
     },
-    "homebrew:xnu/eunion-core.patch:3": {
+    "homebrew:xnu/eunion-core.patch:2": {
       "name": "eunion_activation_guest_smoke",
       "identity_sha256": "ddcefae69122d2afd7bc5065321e2b863f1d7af252fe2b4fcb56f8dadd648b85",
       "policy": "darling_internal_gate",
       "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
     },
-    "homebrew:xnu/eunion-core.patch:4": {
+    "homebrew:xnu/eunion-core.patch:3": {
       "name": "rootless_no_mount_guest_prebuilt",
       "identity_sha256": "da4ee665e4909c4d719ecb164e09065feb61bb70d89b72f4d4087937d652dcdf",
       "policy": "darling_internal_gate",
       "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
     },
     "homebrew:xnu/eunion-hardening.patch:1": {
-      "name": "eunion_resolver",
-      "identity_sha256": "9622d16e0e267e9c70e314e199f7a99774ac9e4bdfd3e238de6bb80d8aca2438",
-      "policy": "internal_proof_exemption",
-      "reason": "eunion-private-layer-resolution: exported emulation/tests/eunion_resolver_test.c calls production resolver and compares layer enum plus host path for upper/lower/whiteout/opaque/missing and nested roots. These physical-layer choices have no native Darwin counterpart. Keep scope narrower than filesystem syscall conformance."
-    },
-    "homebrew:xnu/eunion-hardening.patch:2": {
-      "name": "eunion_hardening_host_suite",
-      "identity_sha256": "add0344f0b8dfbd7e6f409413afe2374c47bc8f1a4cfc31291b0f832eb72f66f",
-      "policy": "split_semantic_reference_and_internal_gate",
-      "reason": "CTest/source-script variants cover production filesystem mutations, metadata/error policy, directory views and nested-root behavior. Public path, fd, errno and xattr semantics retain reference applicability; whiteout/opaque storage and immutable LOWER are Darling-specific. The nested runner's shared script does not merge binding identities."
-    },
-    "homebrew:xnu/eunion-hardening.patch:3": {
       "name": "eunion_mutation_guest",
       "identity_sha256": "83971ed96749bbe5c6c102ea7d1b148495922e022996a3a407d9f6ae3c1a0ad2",
       "policy": "darling_internal_gate",
       "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
     },
-    "homebrew:xnu/eunion-hardening.patch:4": {
+    "homebrew:xnu/eunion-hardening.patch:2": {
       "name": "eunion_metadata_guest",
       "identity_sha256": "5240046fa909f29857317d0e316129edcec61dafa923a39664a01abd8e5b7f6c",
       "policy": "darling_internal_gate",
       "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
     },
-    "homebrew:xnu/eunion-hardening.patch:5": {
+    "homebrew:xnu/eunion-hardening.patch:3": {
       "name": "eunion_relative_at_guest",
       "identity_sha256": "405a7d609ff66f0e8d53fa10523d3e18ac13b970eb77ddcc8ec3b8cbd0906382",
       "policy": "darling_internal_gate",
       "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
     },
-    "homebrew:xnu/eunion-hardening.patch:6": {
+    "homebrew:xnu/eunion-hardening.patch:4": {
       "name": "eunion_nested_bind_guest",
       "identity_sha256": "f19a2e46351a6d42d73a4d28af4e5a309ee9ba4d9d9593ccff20a39b74068f36",
       "policy": "darling_internal_gate",
       "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
     },
-    "homebrew:xnu/eunion-hardening.patch:7": {
+    "homebrew:xnu/eunion-hardening.patch:5": {
       "name": "eunion_xattr_policy_guest",
       "identity_sha256": "79f99b6c5ef5c727ea089c70d001dadea004ef4c3dad8fe9f9ecdf9e75534380",
       "policy": "darling_internal_gate",
       "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
     },
-    "homebrew:xnu/eunion-hardening.patch:8": {
+    "homebrew:xnu/eunion-hardening.patch:6": {
       "name": "eunion_special_create_guest",
       "identity_sha256": "9edb920299762b0afbff64205c7f54337a7425472c4ea325f6fae7ff5e61140a",
       "policy": "darling_internal_gate",
       "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
     },
-    "homebrew:xnu/eunion-hardening.patch:9": {
+    "homebrew:xnu/eunion-hardening.patch:7": {
       "name": "eunion_path_errors_guest",
       "identity_sha256": "5322a11ce44fa4aa5588675e4e9440c01843dd2c9ad9bafeba5d35e7594454e1",
       "policy": "darling_internal_gate",
       "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
     },
-    "homebrew:xnu/eunion-hardening.patch:10": {
+    "homebrew:xnu/eunion-hardening.patch:8": {
       "name": "eunion_mkdir_opaque_guest",
       "identity_sha256": "62f2affda20f02102bd51c61d4dbbb73d002884a14de9a39dff1cc1f14c28c27",
       "policy": "darling_internal_gate",
       "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
-    },
-    "homebrew:xnu/eunion-hardening.patch:11": {
-      "name": "eunion_nested_lower_root_host_suite",
-      "identity_sha256": "e655c2fd889968e68fddcb592a4fe8c45adaa5669082750b574f660ccf085d51",
-      "policy": "split_semantic_reference_and_internal_gate",
-      "reason": "CTest/source-script variants cover production filesystem mutations, metadata/error policy, directory views and nested-root behavior. Public path, fd, errno and xattr semantics retain reference applicability; whiteout/opaque storage and immutable LOWER are Darling-specific. The nested runner's shared script does not merge binding identities."
     },
     "homebrew:darling/build-drift-gate.patch:1": {
       "name": "build_drift_gate_contract",
@@ -1141,12 +1117,6 @@
       "policy": "internal_proof_exemption",
       "reason": "installer-private-archive-path-containment: exported ArchivePathTest.cpp calls normalizePath and ensureParentDirectories on host temporary directories; rejects absolute/traversing names and intermediate symlink escape. Narrow security invariant only, not equivalence with Apple's complete installer/archive acceptance semantics."
     },
-    "homebrew:xnu/eunion-upper-parent-dominance.patch:1": {
-      "name": "eunion_upper_parent_dominance",
-      "identity_sha256": "49729ad55e504d5cd868d3677ea95092b70e83d878765877c27849b47605ff6e",
-      "policy": "split_semantic_reference_and_internal_gate",
-      "reason": "Invokes the broad experiments/e-union/run.sh suite, not solely SP2. The focal mechanism is upper directory masking a lower symlink during production mkdirat; layer selection is internal but observed mkdir/path errors and the rest of the shared oracle have public semantics."
-    },
     "homebrew:darling/rootless-homebrew-userland.patch:1": {
       "name": "rootless_homebrew_source_install",
       "identity_sha256": "e8ab377a68395ef94e90c9d203f44eb2d6b41ed46c50a6467cd68e8a7ffa73f9",
@@ -1386,6 +1356,30 @@
       "identity_sha256": "6a578091da005bf73f612d01b5926b1077b1856802e35b97e26bb0935f794788",
       "policy": "split_semantic_reference_and_internal_gate",
       "reason": "Full E-UNION production closure mixes public ftruncate descriptor/EBADF and filesystem semantics with copy-up and immutable LOWER invariants. Review Darwin/POSIX public behavior separately; shared script is not only the focal descriptor test."
+    },
+    "wget-residual:xnu/eunion-content-fd-validation.patch:2": {
+      "name": "eunion_resolver",
+      "identity_sha256": "95d9f3741885bb51f42ce3e9ef2cc891c7f1edcdd23806c0aaa509e19e66c132",
+      "policy": "internal_proof_exemption",
+      "reason": "eunion-private-layer-resolution: exported emulation/tests/eunion_resolver_test.c calls production resolver and compares layer enum plus host path for upper/lower/whiteout/opaque/missing and nested roots. These physical-layer choices have no native Darwin counterpart. Keep scope narrower than filesystem syscall conformance."
+    },
+    "wget-residual:xnu/eunion-content-fd-validation.patch:3": {
+      "name": "eunion_hardening_host_suite",
+      "identity_sha256": "add0344f0b8dfbd7e6f409413afe2374c47bc8f1a4cfc31291b0f832eb72f66f",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "CTest/source-script variants cover production filesystem mutations, metadata/error policy, directory views and nested-root behavior. Public path, fd, errno and xattr semantics retain reference applicability; whiteout/opaque storage and immutable LOWER are Darling-specific. The nested runner's shared script does not merge binding identities."
+    },
+    "wget-residual:xnu/eunion-content-fd-validation.patch:4": {
+      "name": "eunion_nested_lower_root_host_suite",
+      "identity_sha256": "e655c2fd889968e68fddcb592a4fe8c45adaa5669082750b574f660ccf085d51",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "CTest/source-script variants cover production filesystem mutations, metadata/error policy, directory views and nested-root behavior. Public path, fd, errno and xattr semantics retain reference applicability; whiteout/opaque storage and immutable LOWER are Darling-specific. The nested runner's shared script does not merge binding identities."
+    },
+    "wget-residual:xnu/eunion-content-fd-validation.patch:5": {
+      "name": "eunion_upper_parent_dominance",
+      "identity_sha256": "49729ad55e504d5cd868d3677ea95092b70e83d878765877c27849b47605ff6e",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "Invokes the broad experiments/e-union/run.sh suite, not solely SP2. The focal mechanism is upper directory masking a lower symlink during production mkdirat; layer selection is internal but observed mkdir/path errors and the rest of the shared oracle have public semantics."
     },
     "wget-residual:darlingserver/microthread-dispatch-handoff.patch:1": {
       "name": "microthread_dispatch_handoff_model",

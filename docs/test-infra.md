@@ -562,7 +562,26 @@ source-bound host suite is opt-in through
 `-DDARLING_ENABLE_EUNION_HOST_SUITE=ON`; West supplies that flag only for the
 separate materialized source build. The default testkit build keeps it off, so
 guest CTest selection cannot compile an E-UNION harness against the unpatched
-checkout before runtime-profile deployment. Guest
+checkout before runtime-profile deployment.
+
+Where a host test is declared is part of what it means. `west test --profile <P>`
+reads tests only from `patches/<P>/patches.yml`; `base-profile` composes the tree
+but does not inherit test declarations, and a patch entry resolves to a file
+inside that profile's own directory. The E-UNION host suites are the worked
+example: they compile `experiments/e-union/runner.c`, whose
+`large_directory_checks()` runs unconditionally and asserts behaviour that needs
+`xnu/eunion-large-directory.patch` and `xnu/eunion-content-fd-validation.patch`,
+and both series belong to `wget-residual`. Declared under `homebrew` they were
+structurally RED - the same harness reported `305 tests, 14 failed` on the
+homebrew tree and `305 tests, 0 failed` on the wget-residual tree. They hang off
+a wget-residual entry now, and the host tier sweeps `wget-residual` as well as
+`homebrew` (about 100 seconds end to end, mostly materialization) so they run in
+CI where their chain satisfies them. Relocating a declaration is not free: an
+entry outside the profile's locked series is invisible to the lock-first
+materializer while still breaking `west patch apply`, `check` and `export`, so a
+series changes only when the series, not the test, is the thing that is wrong.
+
+Guest
 E-UNION cases use `guest-c-fixture` metadata because their lower and
 upper trees must be staged inside an isolated Darling prefix by the typed
 `darling-eunion-prefix` provider. The `eunion-overlay` fixture profile keeps
