@@ -13,19 +13,25 @@ normalised digest of the test declaration, the runner identity including args,
 timeout and expected markers, the runtime identity (profile definition, patchset
 digests and source revisions, the same inputs ``runtime_identity`` feeds the
 runtime reuse cache), the stock stack request when the test consumes that
-resource, the workload parameters that decide how much work the test does, the
-guest toolchain identity and the host architecture.
+resource, the workload parameters that decide how much work the test does and
+the class those parameters put the run in, the guest toolchain identity and the
+host architecture.
 
 Rules this module enforces, because a cache that only claims them is worthless:
 
+* only a guest invocation is cacheable: a host test costs seconds, and a stale
+  verdict standing in for a cheap check would hide the flake the check exists to
+  expose, so host invocations are counted as ``verdict_host`` and executed;
 * only a zero verdict is published - a failure is an observation about one run,
   not a property of the identity, so it is never written;
 * a recorded non-zero verdict (a foreign or tampered entry) is never reused;
 * an entry without a completion marker, or with a marker that does not describe
   its own identity, is a miss;
-* reuse is announced with the identity digest and the original run time;
+* reuse is announced with the identity digest, the original run time and the
+  workload class the verdict was observed under, so a shortened pass cannot read
+  like the acceptance result;
 * the store is bounded by least-recent use and reports hits, misses, unkeyed
-  runs and evictions;
+  runs, host runs that are never cached and evictions;
 * ``WEST_TEST_VERDICT_CACHE=off`` is the kill switch: a test whose flake history
   makes a cached pass worthless has to be executable for real, and a run with
   the switch on says so.
@@ -47,6 +53,8 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from stock_replay_program import ENVIRONMENT_VARIABLE as WGET_ITERATIONS_VARIABLE
+from stock_replay_program import resolve_wget_iterations
 from test_store import (
     CacheStats,
     canonical_digest,
@@ -82,6 +90,16 @@ STACK_RESOURCE = "homebrew-lz4"
 WORKLOAD_VARIABLES = (
     "WEST_STOCK_WGET_ITERATIONS",
     "WEST_STOCK_REPLAY_PHASE",
+    "WEST_GUEST_C_FIXTURE_PREPARE_ONLY",
+    "WEST_GUEST_C_FIXTURE_RUN_ONLY",
+)
+# Which experiment a cached verdict is a verdict about. ``WEST_STOCK_REPLAY_PHASE``
+# selects a phase and stays part of the identity, but a lowered repetition count
+# or a split prepare-only/run-only half did less work than the acceptance run, so
+# a cached pass has to say which one it is.
+ACCEPTANCE_WORKLOAD = "acceptance"
+REDUCED_WORKLOAD = "reduced"
+SPLIT_WORKLOAD_VARIABLES = (
     "WEST_GUEST_C_FIXTURE_PREPARE_ONLY",
     "WEST_GUEST_C_FIXTURE_RUN_ONLY",
 )
@@ -245,6 +263,31 @@ def workload_parameters(
     return values
 
 
+def workload_class(values: Mapping[str, str | None]) -> str:
+    """Return which workload a recorded verdict was observed under.
+
+    The stock replay's repetition count is the acceptance workload - the
+    framework already says so - so a lowered count or a split prepare-only/
+    run-only half is a different, cheaper experiment. Naming it in the identity
+    and in the reused-verdict announcement keeps a shortened pass from reading
+    like the acceptance result.
+    """
+
+    try:
+        _count, acceptance = resolve_wget_iterations(
+            {WGET_ITERATIONS_VARIABLE: values.get(WGET_ITERATIONS_VARIABLE) or ""}
+        )
+    except ValueError:
+        acceptance = False
+    if not acceptance:
+        return REDUCED_WORKLOAD
+    for name in SPLIT_WORKLOAD_VARIABLES:
+        value = values.get(name)
+        if value is not None and value.strip() not in ("", "0"):
+            return REDUCED_WORKLOAD
+    return ACCEPTANCE_WORKLOAD
+
+
 def verdict_identity(
     *,
     test: Mapping[str, Any],
@@ -268,6 +311,7 @@ def verdict_identity(
     asset = asset_records(invocation)
     if asset is None:
         return None
+    workload = workload_parameters(environ or {}, invocation)
     return {
         "schema": SCHEMA,
         "asset": asset,
@@ -275,7 +319,7 @@ def verdict_identity(
         "runner": runner_identity(invocation),
         "runtime": None if runtime is None else _jsonable(runtime),
         "stack": None if stack is None else _jsonable(stack),
-        "workload": workload_parameters(environ or {}, invocation),
+        "workload": {"class": workload_class(workload), "values": workload},
         "toolchain": None if toolchain is None else _jsonable(toolchain),
         "arch": str(arch or platform.machine()),
     }
@@ -445,7 +489,25 @@ def report(store: Path) -> str:
     return (
         f"{stats.value('verdict_hits')}hit/{stats.value('verdict_misses')}miss "
         f"unkeyed={stats.value('verdict_unkeyed')} "
+        f"skipped-host={stats.value('verdict_host')} "
         f"evicted={stats.value('entries_evicted')} store={store}"
+    )
+
+
+def reuse_summary(marker: Mapping[str, Any]) -> str:
+    """Return the run-output description of one reused verdict.
+
+    The workload class is part of it because a pass recorded against a shortened
+    workload must never read like the acceptance result, and the original run
+    time is part of it because a cached verdict is not a fresh one.
+    """
+
+    identity = marker.get("identity") or {}
+    workload = (identity.get("workload") or {}).get("class") or "unknown"
+    return (
+        f"cached {marker.get('recorded-at')} "
+        f"({marker.get('duration-seconds')}s, workload {workload}): "
+        f"{marker.get('ok-marker') or 'passed'}"
     )
 
 

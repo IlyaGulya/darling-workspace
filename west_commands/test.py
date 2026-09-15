@@ -1465,6 +1465,18 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             & {"darling-prefix", "darling-eunion-prefix"}
         )
 
+    def _metadata_verdict_cacheable(self, test, invocation) -> bool:
+        """Return whether this invocation may be served from the verdict cache.
+
+        Only guest invocations are cached. The expensive work a verdict stands
+        for is the deployment and the guest run; a host test costs seconds, and
+        a stale verdict standing in for a cheap check would hide exactly the
+        flake that check exists to expose. A host invocation is therefore
+        executed and counted as ``verdict_host``, not as a miss.
+        """
+
+        return self._metadata_invocation_needs_guest(test, invocation)
+
     def _metadata_runtime_identity(self, test, patch):
         """Return the runtime identity one metadata test runs against.
 
@@ -1625,25 +1637,35 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 continue
             seen_invocations.add(identity)
             verdict_key = None
+            verdict_identity = None
             if verdict_store is not None:
-                verdict_identity = self._metadata_verdict_identity(
-                    patch, test, invocation
-                )
-                if verdict_identity is None:
-                    test_verdict_cache.record_event(verdict_store, "verdict_unkeyed")
+                if not self._metadata_verdict_cacheable(test, invocation):
+                    # A host test costs seconds, so a stale verdict standing in
+                    # for it would hide the flake the check exists to expose: it
+                    # is executed and counted on its own, not as a miss.
+                    test_verdict_cache.record_event(verdict_store, "verdict_host")
                 else:
-                    verdict_key = test_verdict_cache.identity_key(verdict_identity)
-                    cached = test_verdict_cache.read_verdict(verdict_store, verdict_key)
-                    if cached is not None:
-                        self.inf(
-                            f"  verdict cached {verdict_key} from "
-                            f"{cached['recorded-at']} ({cached['duration-seconds']}s): "
-                            f"{cached.get('ok-marker') or 'passed'}; the guest program "
-                            "is not re-executed for this run"
+                    verdict_identity = self._metadata_verdict_identity(
+                        patch, test, invocation
+                    )
+                    if verdict_identity is None:
+                        test_verdict_cache.record_event(verdict_store, "verdict_unkeyed")
+                    else:
+                        verdict_key = test_verdict_cache.identity_key(verdict_identity)
+                        cached = test_verdict_cache.read_verdict(
+                            verdict_store, verdict_key
                         )
-                        test_verdict_cache.record_event(verdict_store, "verdict_hits")
-                        continue
-                    test_verdict_cache.record_event(verdict_store, "verdict_misses")
+                        if cached is not None:
+                            self.inf(
+                                f"  verdict {test_verdict_cache.reuse_summary(cached)} "
+                                f"[{verdict_key}]; the guest program is not "
+                                "re-executed for this run"
+                            )
+                            test_verdict_cache.record_event(
+                                verdict_store, "verdict_hits"
+                            )
+                            continue
+                        test_verdict_cache.record_event(verdict_store, "verdict_misses")
             started = time.time()
             monotonic_started = time.monotonic()
             with self._required_profile_context(patch, invocation):
