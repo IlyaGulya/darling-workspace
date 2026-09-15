@@ -37,6 +37,7 @@ import traceback
 import types
 from dataclasses import dataclass
 from pathlib import Path
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -60,6 +61,7 @@ sys.path.insert(0, str(ROOT / "west_commands"))
 
 import test_stock_stack_cache  # noqa: E402
 import test_verdict_cache as verdicts  # noqa: E402
+from test_store import canonical_digest  # noqa: E402
 from test import DarlingTest  # noqa: E402
 
 ARM_ENV = "WEST_TEST_VERDICT_CONTRACT_ARM"
@@ -858,6 +860,48 @@ def check_guest_runtime_identity(work: Path) -> None:
     invocation = harness._test_invocation(GUEST_PATCH, test)
     identity = harness._metadata_verdict_identity(GUEST_PATCH, test, invocation)
     assert identity is not None, "a guest test with a declared provider must be keyable"
+    # A real prefix retains the profile that provisioned it, which is never the
+    # profile the test deploys; the identity has to survive that or every test
+    # that consumes the stock stack is uncacheable. This is the shape that broke
+    # reuse: the marker names the bootstrap provider, the test names the ring
+    # profile, and asking under the deployed name yields no identity at all.
+    retained = work / "retained-prefix"
+    (retained / "bin").mkdir(parents=True)
+    (retained / "bin" / "darling").write_text("#!/bin/sh\nexit 0\n")
+    fingerprint = {"launcher-sha256": "e" * 64, "patchsets": []}
+    (retained / ".west-runtime-profile.json").write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "profile": "homebrew-lz4-source",
+                "source-profile": "wget-residual",
+                "fingerprint": fingerprint,
+            }
+        )
+    )
+    retained_harness = Harness(work, prefix=retained)
+    retained_test = dict(GUEST_TEST)
+    retained_invocation = retained_harness._test_invocation(GUEST_PATCH, retained_test)
+    retained_identity = retained_harness._metadata_verdict_identity(
+        GUEST_PATCH, retained_test, retained_invocation
+    )
+    assert retained_identity is not None, (
+        "a prefix that retains its bootstrap provider must still key the stack"
+    )
+    assert retained_identity["stack"] is not None, retained_identity
+    assert retained_identity["stack"]["runtime"] == canonical_digest(fingerprint), (
+        "the stack identity must be the retained fingerprint"
+    )
+    assert (
+        test_stock_stack_cache.stack_request(
+            prefix=retained,
+            manifest_repo=work / "manifest",
+            topdir=work,
+            profile_name="homebrew-ring-on",
+            environ={},
+        )
+        is None
+    ), "naming the deployed profile must not resolve: that is the trap this covers"
     runtime = identity["runtime"]
     assert runtime["profile"] == "homebrew-ring-on", runtime
     fingerprints = runtime["identity"]
