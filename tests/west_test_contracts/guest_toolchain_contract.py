@@ -105,6 +105,11 @@ def selected_package_contract(root: Path) -> None:
             if outcome == "success":
                 clang.write_text("Apple clang version 13.0.0 (clang-1300.0.29.30)")
                 (clt / "SDKs/MacOSX12.1.sdk").mkdir(exist_ok=True)
+                # The canonical sysroot the prerequisites look for, created the way
+                # the real flow creates it.
+                canonical = clt / "SDKs/MacOSX.sdk"
+                if not canonical.is_symlink() and not canonical.exists():
+                    canonical.symlink_to("MacOSX12.1.sdk")
             return ProcessResult(0)
         assert tuple(argv) == (
             "/Library/Developer/CommandLineTools/usr/bin/clang", "--version",
@@ -142,6 +147,23 @@ def selected_package_contract(root: Path) -> None:
         assert path.read_bytes() == payload
 
     with patch.object(guest_toolchain_module, "_verify_selected_package", authenticate_fixture):
+        # The old layout occupies the SDK entry the installer creates, so the
+        # conflict must be named here instead of arriving as a symlink error
+        # buried inside installer output.
+        try:
+            provision()
+        except GuestToolchainError as error:
+            assert error.kind == "conflict", error
+            assert "SDKs/MacOSX.sdk" in str(error), error
+            assert "Command_Line_Tools_for_Xcode_13.2" in str(error), error
+        else:
+            raise AssertionError("an older CLT SDK layout was installed over silently")
+        assert not [call for call in guest_calls if call[0] == "/usr/bin/installer"], (
+            "the installer must not be started against a layout it cannot replace"
+        )
+        # Removing the occupied entry is the documented remedy for a disposable
+        # prefix, and the upgrade then proceeds as before.
+        (clt / "SDKs/MacOSX.sdk").rmdir()
         provision()
         assert len(installs) == 1, "old CLT paths bypassed requested upgrade"
         identity = json.loads(receipt.read_text())

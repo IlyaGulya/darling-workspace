@@ -859,3 +859,54 @@ def describe_runtime_deploy_plan(proof: dict[str, Any]) -> str:
     if isinstance(source_modules, list) and source_modules:
         source_text = " sources:" + ",".join(str(item) for item in source_modules)
     return "guest-runtime-deploy" + suffix + source_text + ": " + "; ".join(artifacts)
+
+
+# A source-profile preflight resolves immutable base refs from the mirror before
+# it can decide applicability. When that fetch cannot reach the repository the
+# verifier exits non-zero with git's own transport message, and reporting it as a
+# profile defect sends the reader to rebase a profile that is fine. These markers
+# are git's; the first is the message observed when the mirror was momentarily
+# unreachable during a runtime preflight.
+TRANSIENT_PREFLIGHT_MARKERS = (
+    "Could not read from remote repository",
+    "Could not resolve host",
+    "Connection timed out",
+    "Connection refused",
+    "Operation timed out",
+    "The remote end hung up unexpectedly",
+    "unable to access",
+    "early EOF",
+)
+
+
+def transient_preflight_failure(output: str) -> bool:
+    """Return whether a failed preflight is a transport failure, not a defect."""
+
+    return any(marker in output for marker in TRANSIENT_PREFLIGHT_MARKERS)
+
+
+def preflight_retry_allowed(attempt: int, output: str, *, max_attempts: int = 2) -> bool:
+    """Return whether a failed applicability preflight should be retried.
+
+    Only a transport failure is retried, and only once: the verifier is
+    read-only, so a retry cannot duplicate a measurement, and a persistent
+    failure still has to be reported rather than hidden behind attempts.
+    """
+
+    return attempt + 1 < max_attempts and transient_preflight_failure(output)
+
+
+def applicability_preflight_advice(profile: str, output: str) -> str:
+    """Return the closing advice for a failed applicability preflight."""
+
+    if transient_preflight_failure(output):
+        return (
+            "The verifier could not fetch this profile's immutable base refs: that is "
+            "a transport failure between the workspace and the mirror, not a defect in "
+            "the profile. Check access to the mirror and retry; nothing was deployed or "
+            "measured, so there is no test result to interpret."
+        )
+    return (
+        f"Repair or rebase that profile with `west patch verify --profile {profile}` "
+        "before retrying; this is not a runtime test failure."
+    )
