@@ -137,12 +137,14 @@ from guest_macho_validation import (
     validate_selected_group,
 )
 from test_runtime import (
+    applicability_preflight_advice,
     compose_ctest_runtime_profiles,
     describe_runtime_deploy_plan,
     load_ctest_runtime_profiles,
     merge_runtime_cmake_define_overrides,
     parse_runtime_cmake_define_overrides,
     partition_ctest_runtime_profiles,
+    preflight_retry_allowed,
     runtime_build_targets,
     runtime_deploy_targets,
     ROOTLESS_BOOTSTRAP_RESOURCE,
@@ -519,20 +521,36 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 f"  runtime profile preflight: {profile} "
                 f"for {deployment_name}"
             )
-            result = run_bounded(
-                [
-                    "west",
-                    "patch",
-                    "verify",
-                    "--profile",
-                    profile,
-                    "--applicability-only",
-                ],
-                cwd=Path(self.topdir),
-                env=None,
-                timeout_seconds=timeout_seconds,
-                capture_output=True,
-            )
+            attempt = 0
+            while True:
+                result = run_bounded(
+                    [
+                        "west",
+                        "patch",
+                        "verify",
+                        "--profile",
+                        profile,
+                        "--applicability-only",
+                    ],
+                    cwd=Path(self.topdir),
+                    env=None,
+                    timeout_seconds=timeout_seconds,
+                    capture_output=True,
+                )
+                output = "\n".join(
+                    stream.rstrip("\n")
+                    for stream in (result.stdout, result.stderr)
+                    if stream
+                )
+                if not result.returncode or not preflight_retry_allowed(
+                    attempt, output
+                ):
+                    break
+                attempt += 1
+                self.err(
+                    f"  runtime profile preflight: {profile} could not reach the "
+                    "mirror; retrying once"
+                )
             if result.returncode:
                 self._dump_command_tail(
                     f"Runtime profile {profile} preflight", result
@@ -548,9 +566,8 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 self.die(
                     f"Runtime deployment {deployment_name} cannot materialize "
                     f"source profile stack {source_profile!r}: {profile!r} failed "
-                    "patch applicability preflight. Repair or rebase that profile "
-                    "with `west patch verify --profile "
-                    f"{profile}` before retrying; this is not a runtime test failure."
+                    "patch applicability preflight. "
+                    + applicability_preflight_advice(profile, output)
                 )
         verified.add(source_profile)
         self._verified_runtime_profile_stacks = verified

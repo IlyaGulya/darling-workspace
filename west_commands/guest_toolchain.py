@@ -64,6 +64,10 @@ SELECTED_COMMAND_LINE_TOOLS_SHA256 = (
 )
 SELECTED_COMMAND_LINE_TOOLS_CLANG = "clang-1300.0.29.30"
 COMMAND_LINE_TOOLS_RECEIPT = ".west-command-line-tools.json"
+# The entry the selected installer creates and refuses to replace. A
+# prefix bootstrapped with an older CommandLineTools layout holds a
+# directory or a symlink at this path, and the installer stops on it.
+COMMAND_LINE_TOOLS_SDK_ENTRY = "Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
 DEFAULT_GUEST_CC = "/Library/Developer/CommandLineTools/usr/bin/clang"
 DEFAULT_GUEST_CFLAGS = (
     "-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
@@ -373,6 +377,26 @@ def _selected_prerequisite_problems(
     return problems
 
 
+def conflicting_command_line_tools_sdk(prefix: Path) -> str | None:
+    """Return the existing SDK directory the selected installer cannot replace.
+
+    The installer creates ``SDKs/MacOSX.sdk`` and stops if that name is taken by
+    a real directory, which is what a prefix bootstrapped with an older
+    CommandLineTools catalogue holds. Detecting it here reports a named conflict,
+    where the installer's own message is a symlink error buried in its output.
+
+    A symlink at that path is not reported: every validated prefix has one, and
+    prefix repair is what creates it.
+    """
+
+    entry = prefix / COMMAND_LINE_TOOLS_SDK_ENTRY
+    if entry.is_symlink():
+        return None
+    if entry.exists():
+        return f"{COMMAND_LINE_TOOLS_SDK_ENTRY} already exists as a directory"
+    return None
+
+
 def _ensure_selected_command_line_tools(
     package: Path,
     *,
@@ -402,6 +426,18 @@ def _ensure_selected_command_line_tools(
         prefix, launcher, **probe_args
     ):
         return ["guest CommandLineTools already provisioned"]
+
+    conflict = conflicting_command_line_tools_sdk(prefix)
+    if conflict is not None:
+        raise GuestToolchainError(
+            f"this prefix already holds an older CommandLineTools SDK layout: "
+            f"{conflict}. The {SELECTED_COMMAND_LINE_TOOLS_ID} installer cannot "
+            "replace it and stops inside its own output, so provisioning reports the "
+            "conflict here instead. Bootstrap a fresh prefix with DARLING_CLT_PACKAGE "
+            "set (the darling-boot skill documents the sequence), or remove that entry "
+            "first if this prefix is disposable.",
+            kind="conflict",
+        )
 
     # A failed reinstall must not leave a previous success claim behind.
     receipt.unlink(missing_ok=True)
