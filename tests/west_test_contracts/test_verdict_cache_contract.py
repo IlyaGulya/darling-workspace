@@ -641,6 +641,7 @@ def check_bound_and_accounting(work: Path) -> None:
     report = verdicts.report(store)
     assert "1hit/2miss" in report, report
     assert "unkeyed=1" in report, report
+    assert "skipped-host=0" in report, report
     assert str(store) in report, report
 
     try:
@@ -987,13 +988,72 @@ class GuestHarness(Harness):
         return []
 
 
-def check_loop_guest_miss(work: Path) -> None:
-    """A changed runtime profile or workload executes at the loop level too."""
+def check_workload_class(work: Path) -> None:
+    """A cached pass names the workload it was observed under."""
+
+    assert verdicts.workload_class({}) == verdicts.ACCEPTANCE_WORKLOAD
+    assert verdicts.workload_class(
+        {"WEST_STOCK_WGET_ITERATIONS": "12"}
+    ) == verdicts.ACCEPTANCE_WORKLOAD, (
+        "the acceptance repetition count is the acceptance workload"
+    )
+    for values in (
+        {"WEST_STOCK_WGET_ITERATIONS": "2"},
+        {"WEST_STOCK_WGET_ITERATIONS": "lots"},
+        {"WEST_GUEST_C_FIXTURE_PREPARE_ONLY": "1"},
+        {"WEST_GUEST_C_FIXTURE_RUN_ONLY": "1"},
+    ):
+        assert verdicts.workload_class(values) == verdicts.REDUCED_WORKLOAD, values
+    # The phase selects which experiment runs, so it is not a shortening knob.
+    assert verdicts.workload_class(
+        {"WEST_STOCK_REPLAY_PHASE": "wget-repeat"}
+    ) == verdicts.ACCEPTANCE_WORKLOAD
+
+    scenario = build_scenario(work)
+    acceptance = scenario.identity(environ=dict(ENVIRON))
+    shortened = scenario.identity(
+        environ=dict(ENVIRON, WEST_STOCK_WGET_ITERATIONS="2")
+    )
+    assert acceptance["workload"]["class"] == verdicts.ACCEPTANCE_WORKLOAD
+    assert shortened["workload"]["class"] == verdicts.REDUCED_WORKLOAD
+    reduced_key = verdicts.identity_key(shortened)
+    assert reduced_key != verdicts.identity_key(acceptance), (
+        "a shortened run must not key like the acceptance run"
+    )
+    assert reduced_key != scenario.key(
+        environ=dict(ENVIRON, WEST_STOCK_WGET_ITERATIONS="3")
+    ), "two different shortened workloads must not share a verdict"
+
+    # The class travels with the entry and is reported when the entry is reused.
+    store = work / "store"
+    verdicts.write_entry(
+        store,
+        reduced_key,
+        identity=shortened,
+        verdict=0,
+        duration_seconds=3.0,
+        recorded_at="2026-09-15T07:20:00Z",
+    )
+    marker = verdicts.read_verdict(store, reduced_key)
+    assert marker is not None
+    assert marker["identity"]["workload"]["class"] == verdicts.REDUCED_WORKLOAD, marker
+    summary = verdicts.reuse_summary(marker)
+    assert verdicts.REDUCED_WORKLOAD in summary, summary
+    assert "2026-09-15T07:20:00Z" in summary, summary
+    assert "3.0s" in summary, summary
+
+
+def check_loop_guest(work: Path) -> None:
+    """The metadata loop reuses a guest verdict and executes on every change."""
 
     prepare_guest_workspace(work, GuestHarness)
     test = dict(GUEST_TEST)
     tests = [(GUEST_PATCH, test)]
     store = work / "manifest" / ".west-test" / "test-verdict-cache"
+    script = work / "darling-workspace" / "tests" / Path(ASSET).name
+    bundle = work / "darling-debug" / f"20260915T070000Z-west-test-{DECLARED_NAME}"
+    bundle.mkdir(parents=True)
+    (bundle / "stdout.log").write_text("RING_FD_INHERITANCE_OK\n")
 
     first = GuestHarness(work, prefix=work / "prefix")
     assert first.run(tests) == 0, first.output
@@ -1003,138 +1063,185 @@ def check_loop_guest_miss(work: Path) -> None:
     key = entries[0].name
     marker = verdicts.read_verdict(store, key)
     assert marker is not None and marker["verdict"] == 0
-    assert marker["identity"].get("stack") is not None, (
+    identity = marker["identity"]
+    assert (identity.get("asset") or [{}])[0].get("sha256") == hashlib.sha256(
+        script.read_bytes()
+    ).hexdigest(), identity
+    assert identity.get("stack") is not None, (
         "a test that consumes homebrew-lz4 must key on the stock stack identity"
     )
-    assert (marker["identity"].get("runtime") or {}).get("profile") == (
-        "homebrew-ring-on"
-    ), marker
+    assert (identity.get("runtime") or {}).get("profile") == "homebrew-ring-on", identity
+    assert (identity.get("workload") or {}).get("class") == (
+        verdicts.ACCEPTANCE_WORKLOAD
+    ), identity
+    assert marker["ok-marker"] == "RING_FD_INHERITANCE_OK", marker
+    assert marker["bundle"] == str(bundle), marker
+    assert marker["guest-stdout-sha256"] == hashlib.sha256(
+        b"RING_FD_INHERITANCE_OK\n"
+    ).hexdigest(), marker
 
     second = GuestHarness(work, prefix=work / "prefix")
     assert second.run(tests) == 0, second.output
-    assert second.executions == 0, "the same runtime must reuse the verdict"
-    assert key in "\n".join(second.output), second.output
+    assert second.executions == 0, "an unchanged guest test must not execute again"
+    announced = "\n".join(second.output)
+    assert key in announced, "a reused verdict must name its identity digest"
+    assert marker["recorded-at"] in announced, (
+        "a reused verdict must name the original run time"
+    )
+    assert verdicts.ACCEPTANCE_WORKLOAD in announced, (
+        "a reused verdict must name the workload class it was observed under"
+    )
 
+    # A changed test asset is a different experiment, and the old verdict stays
+    # addressable for the identity it describes.
+    original = script.read_text()
+    script.write_text(original + "\n/* variant */\n")
+    changed = GuestHarness(work, prefix=work / "prefix")
+    assert changed.run(tests) == 0, changed.output
+    assert changed.executions == 1, "a changed test asset must execute again"
+    again = GuestHarness(work, prefix=work / "prefix")
+    assert again.run(tests) == 0, again.output
+    assert again.executions == 0, "the changed asset must be recorded and reused"
+    assert len(list((store / "verdict").iterdir())) == 2, entries
+    script.write_text(original)
+    assert verdicts.read_verdict(store, key) is not None, (
+        "the first verdict must survive a second identity"
+    )
+
+    # A changed runtime profile is a different runtime.
     definition_file = work / "manifest" / "testkit" / "runtime-profiles.yml"
     definition_file.write_text(
         PROFILE_DEFINITION.replace(
             "DARLING_RING_TRANSPORT: true", "DARLING_RING_TRANSPORT: false"
         )
     )
-    changed = GuestHarness(work, prefix=work / "prefix")
-    assert changed.run(tests) == 0, changed.output
-    assert changed.executions == 1, "a changed runtime profile must execute again"
+    reprofiled = GuestHarness(work, prefix=work / "prefix")
+    assert reprofiled.run(tests) == 0, reprofiled.output
+    assert reprofiled.executions == 1, "a changed runtime profile must execute again"
     definition_file.write_text(PROFILE_DEFINITION)
     restored = GuestHarness(work, prefix=work / "prefix")
     assert restored.run(tests) == 0, restored.output
     assert restored.executions == 0, "restoring the profile must restore reuse"
 
+    # The workload is part of the identity in both directions: a shortened run
+    # must not inherit the acceptance verdict, and the acceptance run must not
+    # inherit a shortened one.
     with with_environ({"WEST_STOCK_WGET_ITERATIONS": "2"}):
         shortened = GuestHarness(work, prefix=work / "prefix")
         assert shortened.run(tests) == 0, shortened.output
         assert shortened.executions == 1, (
             "a shortened workload must execute instead of reusing the acceptance verdict"
         )
-
-
-def check_loop_reuse(work: Path) -> None:
-    """The metadata loop honours a hit, a miss, the kill switch and a failure."""
-
-    notes = work / "notes" / "tests"
-    notes.mkdir(parents=True)
-    script = notes / Path(HOST_SCRIPT).name
-    script.write_text("#!/bin/sh\necho host verdict smoke\n")
-    bundle = work / "darling-debug" / "20260915T070000Z-west-test-host_verdict_smoke"
-    bundle.mkdir(parents=True)
-    (bundle / "stdout.log").write_text("HOST_VERDICT_OK\n")
-    tests = [(HOST_PATCH, host_test())]
-    store = work / "manifest" / ".west-test" / "test-verdict-cache"
-
-    first = Harness(work)
-    assert first.run(tests) == 0
-    assert first.executions == 1, "the first run must execute the test"
-    entries = list((store / "verdict").iterdir())
-    assert len(entries) == 1, entries
-    key = entries[0].name
-    marker = verdicts.read_verdict(store, key)
-    assert marker is not None and marker["verdict"] == 0
-    assert (marker["identity"].get("asset") or [{}])[0].get("sha256") == hashlib.sha256(
-        script.read_bytes()
-    ).hexdigest(), marker["identity"]
-    assert marker["bundle"] == str(bundle), marker
-    assert marker["guest-stdout-sha256"] == hashlib.sha256(b"HOST_VERDICT_OK\n").hexdigest()
-
-    second = Harness(work)
-    assert second.run(tests) == 0
-    assert second.executions == 0, "an unchanged test must not execute again"
-    announced = "\n".join(second.output)
-    assert key in announced, "a reused verdict must name its identity digest"
-    assert marker["recorded-at"] in announced, (
-        "a reused verdict must name the original run time"
+    shortened_entry = [
+        entry
+        for entry in (store / "verdict").iterdir()
+        if (
+            (verdicts.read_verdict(store, entry.name) or {}).get("identity", {})
+            .get("workload", {})
+            .get("class")
+            == verdicts.REDUCED_WORKLOAD
+        )
+    ]
+    assert shortened_entry, "a shortened run must record the workload class it ran"
+    summary = verdicts.reuse_summary(verdicts.read_verdict(store, shortened_entry[0].name))
+    assert verdicts.REDUCED_WORKLOAD in summary, summary
+    acceptance = GuestHarness(work, prefix=work / "prefix")
+    assert acceptance.run(tests) == 0, acceptance.output
+    assert acceptance.executions == 0, (
+        "the acceptance workload must reuse its own verdict, not the shortened one"
     )
-
-    script.write_text("#!/bin/sh\necho host verdict smoke changed\n")
-    third = Harness(work)
-    assert third.run(tests) == 0
-    assert third.executions == 1, "a changed test asset must execute again"
-    fourth = Harness(work)
-    assert fourth.run(tests) == 0
-    assert fourth.executions == 0, "the changed asset must be recorded and reused"
-    assert len(list((store / "verdict").iterdir())) == 2
+    assert verdicts.ACCEPTANCE_WORKLOAD in "\n".join(acceptance.output)
 
     with kill_switch():
-        forced = Harness(work)
-        assert forced.run(tests) == 0
+        forced = GuestHarness(work, prefix=work / "prefix")
+        assert forced.run(tests) == 0, forced.output
         assert forced.executions == 1, "the kill switch must force a fresh run"
         assert forced.output_mentions("WEST_TEST_VERDICT_CACHE"), forced.output
-    resumed = Harness(work)
-    assert resumed.run(tests) == 0
+    resumed = GuestHarness(work, prefix=work / "prefix")
+    assert resumed.run(tests) == 0, resumed.output
     assert resumed.executions == 0, "reuse must resume when the switch is off"
+    assert "verdict reuse" in "\n".join(resumed.output), resumed.output
 
     # A failing run publishes nothing, so the next attempt executes again.
-    failing = [(HOST_PATCH, host_test(name="host_verdict_failure"))]
-    probe = Harness(work)
+    failing = {**GUEST_TEST, "name": "comparison_guest_failure"}
+    probe = GuestHarness(work, prefix=work / "prefix")
     failure_identity = probe._metadata_verdict_identity(
-        HOST_PATCH, failing[0][1], probe._test_invocation(HOST_PATCH, failing[0][1])
+        GUEST_PATCH, failing, probe._test_invocation(GUEST_PATCH, failing)
     )
     assert failure_identity is not None
     failure_key = verdicts.identity_key(failure_identity)
     assert verdicts.read_verdict(store, failure_key) is None
-    broken = Harness(work, result_rc=1)
-    assert broken.run(failing) == 1 and broken.executions == 1
-    retried = Harness(work, result_rc=1)
-    assert retried.run(failing) == 1
-    assert retried.executions == 1, "a failing test must be executed again"
+    broken = GuestHarness(work, prefix=work / "prefix", result_rc=1)
+    assert broken.run([(GUEST_PATCH, failing)]) == 1 and broken.executions == 1
+    retried = GuestHarness(work, prefix=work / "prefix", result_rc=1)
+    assert retried.run([(GUEST_PATCH, failing)]) == 1
+    assert retried.executions == 1, "a failing guest test must be executed again"
     assert verdicts.read_verdict(store, failure_key) is None, (
         "a failing run must not publish a verdict"
     )
 
     # A test whose verdict is an experiment about flake, or evidence that this
     # run has to produce, is executed every time instead of reused.
-    for label, extra in (
-        ("a RED arm", {"red": True}),
-        ("a guest Mach-O validation group", {"validation-group": "homebrew"}),
+    for label, name, extra in (
+        ("a RED arm", "comparison_guest_red", {"red": True}),
+        (
+            "a guest Mach-O validation group",
+            "comparison_guest_group",
+            {"validation-group": "homebrew"},
+        ),
     ):
-        declarations = [(HOST_PATCH, host_test(**extra))]
-        executed = Harness(work)
-        assert executed.run(declarations) == 0 and executed.executions == 1, label
-        repeated = Harness(work)
-        assert repeated.run(declarations) == 0, label
+        declarations = [(GUEST_PATCH, {**GUEST_TEST, **extra, "name": name})]
+        executed = GuestHarness(work, prefix=work / "prefix")
+        assert executed.run(declarations) == 0, (label, executed.output)
+        assert executed.executions == 1, label
+        repeated = GuestHarness(work, prefix=work / "prefix")
+        assert repeated.run(declarations) == 0, (label, repeated.output)
         assert repeated.executions == 1, f"{label} must not be reused"
-    unkeyed = verdicts.read_stats(store).value("verdict_unkeyed")
-    assert unkeyed >= 2, (
-        f"an unkeyable test must be counted, not silently cached: {unkeyed}"
+    assert verdicts.read_stats(store).value("verdict_unkeyed") >= 2, (
+        "an unkeyable test must be counted, not silently cached"
     )
 
     # A clean-shutdown test observes live prefix state, which no identity input
     # describes, so it is unkeyable as well.
-    clean = host_test(**{"verify-clean-shutdown": True})
-    assert probe._metadata_verdict_identity(
-        HOST_PATCH, clean, probe._test_invocation(HOST_PATCH, clean)
-    ) is None
+    clean = {**GUEST_TEST, "verify-clean-shutdown": True}
+    assert (
+        probe._metadata_verdict_identity(
+            GUEST_PATCH, clean, probe._test_invocation(GUEST_PATCH, clean)
+        )
+        is None
+    ), "a clean-shutdown test must be unkeyable"
 
-    report = "\n".join(resumed.output)
-    assert "verdict reuse" in report, report
+
+def check_host_never_reused(work: Path) -> None:
+    """A host invocation always executes, however often it is selected."""
+
+    notes = work / "notes" / "tests"
+    notes.mkdir(parents=True)
+    (notes / Path(HOST_SCRIPT).name).write_text("#!/bin/sh\necho host verdict smoke\n")
+    tests = [(HOST_PATCH, host_test())]
+    store = work / "manifest" / ".west-test" / "test-verdict-cache"
+
+    first = Harness(work)
+    assert first.run(tests) == 0, first.output
+    assert first.executions == 1, "a host test must execute"
+    second = Harness(work)
+    assert second.run(tests) == 0, second.output
+    assert second.executions == 1, (
+        "a host test must execute again: a cached pass on seconds of work would "
+        "hide the flake the check exists to expose"
+    )
+    assert not (store / "verdict").exists(), (
+        "a host invocation must not publish a verdict"
+    )
+    stats = verdicts.read_stats(store)
+    assert stats.value("verdict_host") == 2, stats.counters
+    assert stats.value("verdict_misses") == 0, (
+        f"a deliberately uncached host run is not a miss: {stats.counters}"
+    )
+    assert stats.value("verdict_hits") == 0, stats.counters
+    report = "\n".join(second.output)
+    assert "skipped-host=2" in report, report
+    assert "0hit/0miss" in report, report
 
 
 def run_checks(work: Path) -> None:
@@ -1145,9 +1252,10 @@ def run_checks(work: Path) -> None:
     check_nonzero_never_reused(work / "nonzero")
     check_bound_and_accounting(work / "bound")
     check_kill_switch(work / "switch")
+    check_workload_class(work / "workload")
     check_guest_runtime_identity(work / "guest")
-    check_loop_guest_miss(work / "guest-loop")
-    check_loop_reuse(work / "loop")
+    check_loop_guest(work / "guest-loop")
+    check_host_never_reused(work / "host-loop")
 
 
 # --------------------------------------------------------------------------
@@ -1205,6 +1313,14 @@ def _never_disabled(environ):
 
 def _always_root(manifest_repo, environ):
     return Path(manifest_repo) / ".west-test" / "test-verdict-cache"
+
+
+def _always_acceptance_workload(values):
+    return verdicts.ACCEPTANCE_WORKLOAD
+
+
+def _cache_every_invocation(self, test, invocation):
+    return True
 
 
 _metadata_runtime_identity = DarlingTest._metadata_runtime_identity
@@ -1281,6 +1397,14 @@ ARMS = {
     "guest-keyed-without-runtime": (
         {"test._metadata_verdict_identity": _key_guest_without_runtime},
         check_guest_runtime_identity,
+    ),
+    "host-verdict-cached": (
+        {"test._metadata_verdict_cacheable": _cache_every_invocation},
+        check_host_never_reused,
+    ),
+    "workload-class-mislabeled": (
+        {"verdicts.workload_class": _always_acceptance_workload},
+        check_workload_class,
     ),
 }
 
