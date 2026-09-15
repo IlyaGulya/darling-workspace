@@ -1,0 +1,58 @@
+version: 1
+description: >-
+  Fast parameterised runtime load smoke. It generates translation units, builds
+  them with concurrent guest CLT compiler and linker processes, storms fork/exec
+  and churns descriptors under the selected transport, so the load the stock
+  replays provoke is rehearsed in minutes instead of hours. The fixture is a
+  regression signal, not a replacement for the end-to-end stock acceptance,
+  which keeps its own claim and its own cadence.
+patches:
+  - path: darling/runtime-load-smoke.patch
+    module: darling
+    bead: dar-agent-infra-hardening-twz1.18
+    publication-status: blocked
+    publication-blocker: >-
+      Test-only carrier: this profile declares no source change. It binds a
+      generated guest fixture to the runtime under test, so it is not a
+      publication source and has no exported series.
+    tests:
+      - name: runtime_load_on
+        kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: forensic
+        runner: python
+        repo: darling-workspace
+        script: tests/_runtime_load_probe.py
+        requires: [darling-prefix]
+        runtime-profile: homebrew-ring-on
+        timeout-seconds: 900
+        env-vars:
+          RUNTIME_LOAD_SOURCES: "8"
+          RUNTIME_LOAD_CONCURRENCY: "4"
+          RUNTIME_LOAD_ROUNDS: "2"
+        note: >-
+          Fast setting: 8 units, 4 concurrent compilers and linkers, 2 rounds,
+          and a fork/exec storm over every linked unit. Heavier settings are the
+          same three parameters with larger values (for example 12 units, 6
+          concurrent, 4 rounds); the stock replays remain the end-to-end claim.
+      - name: runtime_load_off
+        kind: guest
+        coverage-tier: runtime
+        runs: guest
+        diag: forensic
+        runner: python
+        repo: darling-workspace
+        script: tests/_runtime_load_probe.py
+        requires: [darling-prefix]
+        runtime-profile: homebrew-ring-off
+        timeout-seconds: 900
+        env-vars:
+          RUNTIME_LOAD_SOURCES: "8"
+          RUNTIME_LOAD_CONCURRENCY: "4"
+          RUNTIME_LOAD_ROUNDS: "2"
+        note: >-
+          Fast setting: 8 units, 4 concurrent compilers and linkers, 2 rounds,
+          and a fork/exec storm over every linked unit. Heavier settings are the
+          same three parameters with larger values (for example 12 units, 6
+          concurrent, 4 rounds); the stock replays remain the end-to-end claim.
