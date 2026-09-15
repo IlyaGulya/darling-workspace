@@ -144,7 +144,7 @@ patches:
         requires: [darling-prefix]
         runtime-profile: homebrew-ring-off
         timeout-seconds: 300
-      - name: comparison_off_cpack_link_probe
+      - name: comparison_off_parallel_link_probe
         kind: guest
         coverage-tier: runtime
         runs: guest
@@ -154,8 +154,13 @@ patches:
         requires:
           - darling-prefix
         runtime-profile: homebrew-ring-off
-        script: tests/_cpack_link_probe.py
+        script: tests/_parallel_link_probe.py
         timeout-seconds: 900
+        note: >-
+          Replaces the captured CPack link replay, which could only run on a
+          prefix that still held a session-specific cmake build tree and read
+          its argv from a host debug directory. The claim is unchanged:
+          concurrent linkers must all succeed under the runtime under test.
       - kind: guest
         coverage-tier: runtime
         runs: guest

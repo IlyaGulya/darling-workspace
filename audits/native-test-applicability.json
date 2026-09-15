@@ -104,10 +104,10 @@
       "reason": "Region growth and its immutable generation counter are Darling allocator invariants."
     },
     "acceptance-priorities:darling/homebrew-prefix-tooling.patch:11": {
-      "name": "comparison_off_cpack_link_probe",
-      "identity_sha256": "4a53ee8ab606df109d60bb9bed5964cbaee8c6309961240d90802c40a4177657",
+      "name": "comparison_off_parallel_link_probe",
+      "identity_sha256": "7aac8c2e32f17e438792368a1437f5e075842d20cec375e4d433e3920c661e3e",
       "policy": "darling_internal_gate",
-      "reason": "The probe exercises the Darling guest toolchain layout and link path, not native link semantics."
+      "reason": "The probe runs four linkers concurrently against the guest toolchain SDK with separate outputs and requires all four to succeed with a Mach-O executable. That is a Darling runtime property (concurrent process and file machinery under the runtime under test), not native Darwin reference behavior; the earlier captured-command form was replaced because it depended on a session-specific build tree."
     },
     "acceptance-priorities:darling/homebrew-prefix-tooling.patch:12": {
       "name": "comparison_off_resume_ownership",
