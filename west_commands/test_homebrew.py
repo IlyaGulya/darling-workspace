@@ -231,6 +231,22 @@ def _register_build_logs(environment: dict[str, str], work: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def conflicting_homebrew(prefix: Path) -> Path | None:
+    """Return the existing installation that forbids staging a fresh stack.
+
+    The same paths decide whether staging is possible and whether an existing
+    stack may be adopted instead, so both must ask this one question.
+    """
+
+    # Do not merge into a previous install or shadow an installation in the base.
+    for relative in ("usr/local/Homebrew", "usr/local/bin/brew", "usr/local/Cellar/lz4"):
+        for base in (prefix, prefix / "libexec/darling"):
+            existing = base / relative
+            if existing.exists() or existing.is_symlink():
+                return existing
+    return None
+
+
 @contextmanager
 def homebrew_lz4_context(env: dict[str, str] | None) -> Iterator[dict[str, str]]:
     environment = dict(os.environ if env is None else env)
@@ -239,12 +255,9 @@ def homebrew_lz4_context(env: dict[str, str] | None) -> Iterator[dict[str, str]]
     prefix = Path(environment["DPREFIX"]).resolve(strict=True)
     if prefix == Path("/") or not prefix.is_dir():
         raise ValueError("homebrew-lz4 requires a disposable guest prefix, not the host root")
-    # Do not merge into a previous install or shadow an installation in the base.
-    for relative in ("usr/local/Homebrew", "usr/local/bin/brew", "usr/local/Cellar/lz4"):
-        for base in (prefix, prefix / "libexec/darling"):
-            existing = base / relative
-            if existing.exists() or existing.is_symlink():
-                raise ValueError(f"homebrew-lz4 requires a fresh installation: {existing}")
+    existing = conflicting_homebrew(prefix)
+    if existing is not None:
+        raise ValueError(f"homebrew-lz4 requires a fresh installation: {existing}")
     preflight = Path(__file__).resolve().parents[1] / "tests/run-homebrew-build-tools-preflight.sh"
     result = run_bounded(
         ["bash", str(preflight)],

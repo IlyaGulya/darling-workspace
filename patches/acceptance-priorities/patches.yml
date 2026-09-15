@@ -235,6 +235,11 @@ patches:
         name: comparison_off_lz4_source
         script: tests/run-homebrew-lz4-source.sh
         timeout-seconds: 1800
+        env-vars:
+          # This test is the from-source build: a snapshot must never stand in
+          # for it. The store stays enabled so a successful run is captured for
+          # the replay phases that consume the stack.
+          WEST_STOCK_STACK_RESTORE: "off"
       - kind: guest
         coverage-tier: runtime
         runs: guest
@@ -244,6 +249,8 @@ patches:
         requires:
           &requires
           - darling-prefix
+          # See the ring-on anchor: the replay phases consume a staged stack.
+          - homebrew-lz4
         runtime-profile: homebrew-ring-off
         name: comparison_off_stock_reinstall
         script: tests/_stock_stack_replay.py
@@ -348,6 +355,11 @@ patches:
         name: comparison_on_lz4_source
         script: tests/run-homebrew-lz4-source.sh
         timeout-seconds: 1800
+        env-vars:
+          # This test is the from-source build: a snapshot must never stand in
+          # for it. The store stays enabled so a successful run is captured for
+          # the replay phases that consume the stack.
+          WEST_STOCK_STACK_RESTORE: "off"
       - kind: guest
         coverage-tier: runtime
         runs: guest
@@ -357,6 +369,11 @@ patches:
         requires:
           &requires1
           - darling-prefix
+          # The replay phases consume the staged stock stack instead of building
+          # it: the resource restores it from the stock stack cache, adopts an
+          # installation that is already present, or stages it when neither is
+          # available.
+          - homebrew-lz4
         runtime-profile: homebrew-ring-on
         name: comparison_on_stock_reinstall
         script: tests/_stock_stack_replay.py
