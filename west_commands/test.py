@@ -1485,17 +1485,34 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             & {"darling-prefix", "darling-eunion-prefix"}
         )
 
-    def _metadata_verdict_cacheable(self, test, invocation) -> bool:
-        """Return whether this invocation may be served from the verdict cache.
+    def _metadata_verdict_skip_reason(self, test, invocation) -> str | None:
+        """Return why this invocation must execute, or ``None`` when it may reuse.
 
-        Only guest invocations are cached. The expensive work a verdict stands
-        for is the deployment and the guest run; a host test costs seconds, and
-        a stale verdict standing in for a cheap check would hide exactly the
-        flake that check exists to expose. A host invocation is therefore
-        executed and counted as ``verdict_host``, not as a miss.
+        Two reasons a guest invocation is executed rather than served from an
+        earlier verdict:
+
+        * Host work costs seconds. A stale verdict standing in for a cheap check
+          would hide exactly the flake that check exists to expose, so it is
+          executed and counted as ``verdict_host``.
+        * A test that consumes the stock stack IS the from-source measurement:
+          its subject is the build, and the receipt checks that prove the build
+          cannot distinguish a freshly built keg from one that was restored or
+          skipped. Reusing its verdict would make the acceptance claim vacuous,
+          so it always runs and is counted as ``verdict_source``.
         """
 
-        return self._metadata_invocation_needs_guest(test, invocation)
+        if test_verdict_cache.STACK_RESOURCE in set(
+            invocation.get("requires_resources", ())
+        ):
+            return "verdict_source"
+        if not self._metadata_invocation_needs_guest(test, invocation):
+            return "verdict_host"
+        return None
+
+    def _metadata_verdict_cacheable(self, test, invocation) -> bool:
+        """Return whether this invocation may be served from the verdict cache."""
+
+        return self._metadata_verdict_skip_reason(test, invocation) is None
 
     def _metadata_runtime_identity(self, test, patch):
         """Return the runtime identity one metadata test runs against.
@@ -1680,10 +1697,13 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             verdict_identity = None
             if verdict_store is not None:
                 if not self._metadata_verdict_cacheable(test, invocation):
-                    # A host test costs seconds, so a stale verdict standing in
-                    # for it would hide the flake the check exists to expose: it
-                    # is executed and counted on its own, not as a miss.
-                    test_verdict_cache.record_event(verdict_store, "verdict_host")
+                    # Executed rather than reused, and counted by reason: see
+                    # _metadata_verdict_skip_reason for why each one must run.
+                    test_verdict_cache.record_event(
+                        verdict_store,
+                        self._metadata_verdict_skip_reason(test, invocation)
+                        or "verdict_host",
+                    )
                 else:
                     verdict_identity = self._metadata_verdict_identity(
                         patch, test, invocation
