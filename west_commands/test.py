@@ -67,6 +67,9 @@ from test_ctest import (
 )
 from test_selection import (
     metadata_invocation_identity,
+    metadata_run_summary,
+    metadata_selection_plan,
+    metadata_test_outcome,
     select_metadata_tests,
     select_metadata_tests_for_command,
 )
@@ -1619,6 +1622,15 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                     "selected test is executed"
                 )
         rc = 0
+        counts = {
+            "selected": len(tests), "executed": 0, "passed": 0, "failed": 0,
+            "duplicate": 0, "verdict": 0,
+        }
+        if not list_only:
+            for line in metadata_selection_plan(
+                [test.get("name", "-") for _, test in tests], self._debug_bundle_root()
+            ):
+                self.inf(line)
         seen_invocations: set[tuple] = set()
         for patch, test in tests:
             name = test.get("name", "-")
@@ -1650,6 +1662,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 )
             identity = metadata_invocation_identity(invocation, test)
             if identity in seen_invocations:
+                counts["duplicate"] += 1
                 self.inf(f"  skipped duplicate invocation already run")
                 continue
             seen_invocations.add(identity)
@@ -1681,6 +1694,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                             test_verdict_cache.record_event(
                                 verdict_store, "verdict_hits"
                             )
+                            counts["verdict"] += 1
                             continue
                         test_verdict_cache.record_event(verdict_store, "verdict_misses")
             started = time.time()
@@ -1716,8 +1730,11 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                     if result_rc == 0 and test.get("verify-clean-shutdown"):
                         if not self._verify_prefix_idle():
                             result_rc = 1
+            bundle = self._latest_debug_bundle(invocation, since=started)
+            counts["executed"] += 1
+            counts["passed" if result_rc == 0 else "failed"] += 1
+            self.inf(metadata_test_outcome(invocation["name"], result_rc, bundle))
             if verdict_key is not None and result_rc == 0:
-                bundle = self._latest_debug_bundle(invocation, since=started)
                 test_verdict_cache.record_verdict(
                     verdict_store,
                     verdict_key,
@@ -1740,6 +1757,8 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                     f"{pruned['evicted_bytes']} bytes"
                 )
             self.inf(f"  verdict reuse {test_verdict_cache.report(verdict_store)}")
+        if not list_only:
+            self.inf(metadata_run_summary(counts))
         return rc
 
     def _metadata_needs_prefix(self, tests) -> bool:

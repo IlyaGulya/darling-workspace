@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
 from test_ctest import is_ctest_binding
@@ -165,3 +165,48 @@ def select_metadata_tests_for_command(
         reason = test.get("note") or patch.get("publication-blocker") or "explicitly blocked in metadata"
         command.inf(f"{patch['path']}: {identity} BLOCKED: {reason}")
     return selection.selected, selection.missing
+
+
+def metadata_selection_plan(
+    names: Sequence[str], evidence_root: object
+) -> list[str]:
+    """Return the lines stating what a metadata selection will run, in order.
+
+    A test that is selected but produces no evidence is indistinguishable from
+    one that never ran unless the run says what it selected and where the
+    evidence goes.
+    """
+
+    listed = ", ".join(names) if names else "none"
+    return [
+        f"metadata selection: {len(names)} test(s), in execution order: {listed}",
+        f"  evidence root for these tests: {evidence_root}",
+    ]
+
+
+def metadata_test_outcome(
+    name: str, returncode: int, bundle: object | None
+) -> str:
+    """Return the closing line for one executed metadata test.
+
+    Not every diagnostic mode writes a bundle: a guarded fixture prints its
+    verdict in the job log, so a missing bundle must not read as "did not run".
+    """
+
+    state = "passed" if returncode == 0 else f"failed rc={returncode}"
+    if bundle is None:
+        return f"  {name}: {state}; no bundle (diagnostics stay in the job log)"
+    return f"  {name}: {state}; bundle {bundle}"
+
+
+def metadata_run_summary(counts: Mapping[str, int]) -> str:
+    """Return the closing summary of what a metadata selection did."""
+
+    duplicate = counts.get("duplicate", 0)
+    verdict = counts.get("verdict", 0)
+    return (
+        f"metadata selection summary: executed {counts.get('executed', 0)} "
+        f"({counts.get('passed', 0)} passed, {counts.get('failed', 0)} failed), "
+        f"skipped {duplicate + verdict} (duplicate invocation {duplicate}, "
+        f"reused verdict {verdict}) of {counts.get('selected', 0)} selected"
+    )
