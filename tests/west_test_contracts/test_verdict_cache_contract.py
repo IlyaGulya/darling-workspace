@@ -87,6 +87,15 @@ GUEST_TEST = {
     "timeout-seconds": 120,
 }
 
+# The same declaration without the stock stack. A test that consumes the stack is
+# the from-source measurement and must never be served from a verdict, so the
+# reuse demonstration uses this one.
+REUSABLE_GUEST_TEST = {
+    **GUEST_TEST,
+    "name": "comparison_ready_guest",
+    "requires": ["darling-prefix"],
+}
+
 RUNTIME = {
     "profile": "homebrew-ring-on",
     "identity": {
@@ -860,6 +869,17 @@ def check_guest_runtime_identity(work: Path) -> None:
     invocation = harness._test_invocation(GUEST_PATCH, test)
     identity = harness._metadata_verdict_identity(GUEST_PATCH, test, invocation)
     assert identity is not None, "a guest test with a declared provider must be keyable"
+    # A test that consumes the stock stack IS the from-source measurement: the
+    # receipt checks that prove the build cannot tell a freshly built keg from a
+    # skipped one, so its verdict may never stand in for the run.
+    assert not harness._metadata_verdict_cacheable(test, invocation), (
+        "a from-source replay must always execute; a reused verdict would make "
+        "the acceptance claim vacuous"
+    )
+    reusable_invocation = harness._test_invocation(GUEST_PATCH, REUSABLE_GUEST_TEST)
+    assert harness._metadata_verdict_cacheable(
+        dict(REUSABLE_GUEST_TEST), reusable_invocation
+    ), "a guest test that is not the from-source measurement stays reusable"
     # A real prefix retains the profile that provisioned it, which is never the
     # profile the test deploys; the identity has to survive that or every test
     # that consumes the stock stack is uncacheable. This is the shape that broke
@@ -1091,11 +1111,11 @@ def check_loop_guest(work: Path) -> None:
     """The metadata loop reuses a guest verdict and executes on every change."""
 
     prepare_guest_workspace(work, GuestHarness)
-    test = dict(GUEST_TEST)
+    test = dict(REUSABLE_GUEST_TEST)
     tests = [(GUEST_PATCH, test)]
     store = work / "manifest" / ".west-test" / "test-verdict-cache"
     script = work / "darling-workspace" / "tests" / Path(ASSET).name
-    bundle = work / "darling-debug" / f"20260915T070000Z-west-test-{DECLARED_NAME}"
+    bundle = work / "darling-debug" / f"20260915T070000Z-west-test-{test['name']}"
     bundle.mkdir(parents=True)
     (bundle / "stdout.log").write_text("RING_FD_INHERITANCE_OK\n")
 
@@ -1111,8 +1131,11 @@ def check_loop_guest(work: Path) -> None:
     assert (identity.get("asset") or [{}])[0].get("sha256") == hashlib.sha256(
         script.read_bytes()
     ).hexdigest(), identity
-    assert identity.get("stack") is not None, (
-        "a test that consumes homebrew-lz4 must key on the stock stack identity"
+    # This loop runs the variant without the stock stack, so its identity must
+    # carry no stack component: the component follows the resource. The
+    # stack-consuming shape keys on it, asserted in check_guest_runtime_identity.
+    assert identity.get("stack") is None, (
+        "a test that does not consume the stock stack must not key on one"
     )
     assert (identity.get("runtime") or {}).get("profile") == "homebrew-ring-on", identity
     assert (identity.get("workload") or {}).get("class") == (
@@ -1234,7 +1257,7 @@ def check_loop_guest(work: Path) -> None:
             {"validation-group": "homebrew"},
         ),
     ):
-        declarations = [(GUEST_PATCH, {**GUEST_TEST, **extra, "name": name})]
+        declarations = [(GUEST_PATCH, {**REUSABLE_GUEST_TEST, **extra, "name": name})]
         executed = GuestHarness(work, prefix=work / "prefix")
         assert executed.run(declarations) == 0, (label, executed.output)
         assert executed.executions == 1, label
@@ -1243,6 +1266,22 @@ def check_loop_guest(work: Path) -> None:
         assert repeated.executions == 1, f"{label} must not be reused"
     assert verdicts.read_stats(store).value("verdict_unkeyed") >= 2, (
         "an unkeyable test must be counted, not silently cached"
+    )
+
+    # A test that consumes the stock stack IS the from-source measurement, so it
+    # executes every time and is counted separately from host work and from an
+    # unkeyable declaration.
+    source = [(GUEST_PATCH, {**GUEST_TEST, "name": "comparison_guest_source"})]
+    first_source = GuestHarness(work, prefix=work / "prefix")
+    assert first_source.run(source) == 0, first_source.output
+    assert first_source.executions == 1, "a from-source replay must execute"
+    second_source = GuestHarness(work, prefix=work / "prefix")
+    assert second_source.run(source) == 0, second_source.output
+    assert second_source.executions == 1, (
+        "a from-source replay must never be served from an earlier verdict"
+    )
+    assert verdicts.read_stats(store).value("verdict_source") >= 1, (
+        "a from-source replay must be counted, not silently skipped"
     )
 
     # A clean-shutdown test observes live prefix state, which no identity input
@@ -1369,6 +1408,14 @@ def _cache_every_invocation(self, test, invocation):
 
 _metadata_runtime_identity = DarlingTest._metadata_runtime_identity
 _metadata_verdict_identity = DarlingTest._metadata_verdict_identity
+_metadata_verdict_skip_reason = DarlingTest._metadata_verdict_skip_reason
+
+
+def _skip_source_replays(self, test, invocation):
+    """Serve a from-source replay from a verdict: the defect this arm covers."""
+
+    reason = _metadata_verdict_skip_reason(self, test, invocation)
+    return "verdict_host" if reason == "verdict_source" else reason
 
 
 def _runtime_without_proof(self, test, patch):
@@ -1441,6 +1488,10 @@ ARMS = {
     "guest-keyed-without-runtime": (
         {"test._metadata_verdict_identity": _key_guest_without_runtime},
         check_guest_runtime_identity,
+    ),
+    "source-replay-cached": (
+        {"test._metadata_verdict_skip_reason": _skip_source_replays},
+        check_loop_guest,
     ),
     "host-verdict-cached": (
         {"test._metadata_verdict_cacheable": _cache_every_invocation},

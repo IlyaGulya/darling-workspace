@@ -306,6 +306,12 @@ refs, PR drafts, and agent handoff.
   the store stays enabled so its completed stack is still captured for the
   replay phases. Cache decisions read the invocation's environment overlaid on
   the host environment, never one instead of the other.
+  A test that consumes the stock stack IS the from-source measurement: it always
+  executes, and no verdict is ever reused for it, because the receipt checks that
+  prove the build cannot tell a freshly built keg from one that was restored or
+  skipped. Reusing such a verdict would make the acceptance claim vacuous, so the
+  framework counts those runs as `skipped-source` and never serves them; only
+  guest work that is not the from-source measurement may be reused.
 - The stock replay's wget-repeat phase reinstalls wget from source twelve times
   on purpose: the repetition is what exposes intermittent transport and
   lifecycle failures, so that count is the acceptance workload. For iteration

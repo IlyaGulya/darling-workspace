@@ -490,6 +490,7 @@ def report(store: Path) -> str:
         f"{stats.value('verdict_hits')}hit/{stats.value('verdict_misses')}miss "
         f"unkeyed={stats.value('verdict_unkeyed')} "
         f"skipped-host={stats.value('verdict_host')} "
+        f"skipped-source={stats.value('verdict_source')} "
         f"evicted={stats.value('entries_evicted')} store={store}"
     )
 
