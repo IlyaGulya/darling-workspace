@@ -53,6 +53,7 @@ try:
         read_marker as _shared_read_marker,
         read_stats,
         record_event,
+        store_disabled,
         store_root as _shared_store_root,
         sync_directory,
         touch_entry,
@@ -70,6 +71,7 @@ except ImportError:
         read_marker as _shared_read_marker,
         read_stats,
         record_event,
+        store_disabled,
         store_root as _shared_store_root,
         sync_directory,
         touch_entry,
@@ -109,6 +111,12 @@ RESTORE_PREFIX = ".west-stock-restore-"
 WORK_DIRECTORY_GLOB = "west-homebrew-lz4-*"
 STORE_SWITCH = "WEST_STOCK_STACK_CACHE"
 STORE_BOUND = "WEST_STOCK_STACK_CACHE_MAX_BYTES"
+# ``WEST_STOCK_STACK_CACHE=off`` disables the store for a whole run. This switch
+# is narrower: it refuses only the restore, so an invocation whose subject is the
+# from-source build still stages and still captures. A test declaration sets it,
+# because the acceptance claim for that test is the build, not the restored
+# result of an earlier one.
+RESTORE_SWITCH = "WEST_STOCK_STACK_RESTORE"
 # Build scratch, guest logs and brew's download cache are not stack state: the
 # replay re-stages pinned tarballs into the cache, and the directories only have
 # to exist. Archiving them would archive hours of build trees.
@@ -154,6 +162,15 @@ def store_max_bytes(environ: Mapping[str, str]) -> int:
     """Return the configured store bound in bytes."""
 
     return parse_bound(environ, STORE_BOUND, DEFAULT_MAX_BYTES)
+
+
+def store_restore_disabled(environ: Mapping[str, str]) -> bool:
+    """Return whether this invocation must stage instead of restoring.
+
+    The store stays enabled, so the staged stack is still captured.
+    """
+
+    return store_disabled(environ, RESTORE_SWITCH)
 
 
 def pinned_inputs() -> dict[str, Any]:
@@ -945,14 +962,25 @@ def stock_stack_context(
     Resource setup restores a matching snapshot and skips staging entirely. A
     miss, a rejection or a disabled cache stages the resource exactly as before
     and captures the resulting stack at teardown, when the state is complete.
+
+    A miss on a prefix that already holds an installation is not staged: staging
+    refuses that prefix by design, and the stack that is already there is what a
+    replay phase consumes. It is adopted instead, and captured so the next run
+    can restore it. A test whose subject is the from-source build itself declares
+    ``WEST_STOCK_STACK_RESTORE=off`` and always stages, because a snapshot must
+    never stand in for the build that test is measuring.
     """
 
     try:
-        from .test_homebrew import homebrew_lz4_context
+        from .test_homebrew import conflicting_homebrew, homebrew_lz4_context
     except ImportError:
-        from test_homebrew import homebrew_lz4_context
+        from test_homebrew import conflicting_homebrew, homebrew_lz4_context
 
     environment = dict(os.environ if env is None else env)
+    # A declared environment participates in cache decisions so a test can opt
+    # out or point at another store without discarding the operator's global
+    # switch: it overlays the host environment instead of replacing it.
+    cache_environment = {**os.environ, **dict(env or {})}
     log = getattr(command, "inf", print)
     prefix_text = environment.get("DPREFIX")
     if not prefix_text:
@@ -962,7 +990,7 @@ def stock_stack_context(
         getattr(getattr(command, "manifest", None), "repo_abspath", Path.cwd())
     )
     topdir = Path(getattr(command, "topdir", manifest_repo))
-    store = store_root(manifest_repo, os.environ)
+    store = store_root(manifest_repo, cache_environment)
     request = None
     if store is not None and prefix.is_dir():
         request = stack_request(
@@ -970,23 +998,52 @@ def stock_stack_context(
             manifest_repo=manifest_repo,
             topdir=topdir,
             profile_name=invocation.get("runtime_profile"),
-            environ=os.environ,
+            environ=cache_environment,
         )
+
+    @contextlib.contextmanager
+    def staged_stack() -> Iterator[dict[str, str] | None]:
+        with homebrew_lz4_context(environment) as staged:
+            yield staged
+        try:
+            outcome = capture(store, prefix, request=request, environ=cache_environment)
+        except Exception as error:  # noqa: BLE001 - the observed run already succeeded
+            log(f"stock stack cache: not captured reason=error {error!r}")
+            return
+        if outcome["captured"]:
+            log(
+                f"stock stack cache: captured key={str(outcome['key'])[:12]} "
+                f"bytes={outcome['bytes']} {cache_report(store, cache_environment)}"
+            )
+        else:
+            log(
+                f"stock stack cache: not captured reason={outcome['reason']} "
+                f"{outcome.get('error', '')} {cache_report(store, cache_environment)}"
+            )
+
     if store is None:
-        log(store_report(store, os.environ))
+        log(store_report(store, cache_environment))
     elif request is None:
         log(
             "stock stack cache: no deployed-runtime identity for "
             f"profile={invocation.get('runtime_profile')!r}; staging from source"
         )
     else:
-        log(cache_report(store, os.environ))
+        log(cache_report(store, cache_environment))
     if request is None:
-        with homebrew_lz4_context(environment) as staged:
+        with staged_stack() as staged:
+            yield staged
+        return
+    if store_restore_disabled(cache_environment):
+        log(
+            "stock stack cache: restore disabled by declaration; staging from source "
+            "so this run measures the build it declares"
+        )
+        with staged_stack() as staged:
             yield staged
         return
     try:
-        restored = restore(store, prefix, request=request, environ=os.environ)
+        restored = restore(store, prefix, request=request, environ=cache_environment)
     except Exception as error:  # noqa: BLE001 - a cache never fails the run it serves
         log(f"stock stack cache: restore error {error!r}; staging from source")
         restored = {"restored": False, "reason": "error"}
@@ -994,7 +1051,7 @@ def stock_stack_context(
         work = restored["work"]
         log(
             f"stock stack cache: hit key={str(restored['key'])[:12]} "
-            f"work={work} bytes={restored['bytes']} {cache_report(store, os.environ)}"
+            f"work={work} bytes={restored['bytes']} {cache_report(store, cache_environment)}"
         )
         restored_env = dict(environment)
         restored_env["DARLING_HOMEBREW_LZ4_WORK"] = _guest_path(prefix, work)
@@ -1004,22 +1061,37 @@ def stock_stack_context(
         return
     log(
         f"stock stack cache: miss reason={restored['reason']} "
-        f"{cache_report(store, os.environ)}"
+        f"{cache_report(store, cache_environment)}"
     )
-    with homebrew_lz4_context(environment) as staged:
-        yield staged
-    try:
-        outcome = capture(store, prefix, request=request, environ=os.environ)
-    except Exception as error:  # noqa: BLE001 - the observed run already succeeded
-        log(f"stock stack cache: not captured reason=error {error!r}")
+    conflict = conflicting_homebrew(prefix) if prefix.is_dir() else None
+    if conflict is not None:
+        # Staging would refuse this prefix, and the stack it already holds is the
+        # one the replay phase is about to consume. Adopt it and capture it.
+        work = completed_work_directory(prefix)
+        adopted = dict(environment)
+        if work is not None:
+            adopted["DARLING_HOMEBREW_LZ4_WORK"] = _guest_path(prefix, work)
+            adopted["DARLING_HOMEBREW_LZ4_INPUTS"] = str(work / "inputs.json")
+        log(
+            f"stock stack cache: adopting the installation already present "
+            f"({conflict}); not staging"
+        )
+        try:
+            outcome = capture(store, prefix, request=request, environ=cache_environment)
+        except Exception as error:  # noqa: BLE001 - the observed run already succeeded
+            log(f"stock stack cache: not captured reason=error {error!r}")
+        else:
+            if outcome["captured"]:
+                log(
+                    f"stock stack cache: captured key={str(outcome['key'])[:12]} "
+                    f"bytes={outcome['bytes']} {cache_report(store, cache_environment)}"
+                )
+            else:
+                log(
+                    f"stock stack cache: not captured reason={outcome['reason']} "
+                    f"{outcome.get('error', '')} {cache_report(store, cache_environment)}"
+                )
+        yield adopted
         return
-    if outcome["captured"]:
-        log(
-            f"stock stack cache: captured key={str(outcome['key'])[:12]} "
-            f"bytes={outcome['bytes']} {cache_report(store, os.environ)}"
-        )
-    else:
-        log(
-            f"stock stack cache: not captured reason={outcome['reason']} "
-            f"{outcome.get('error', '')} {cache_report(store, os.environ)}"
-        )
+    with staged_stack() as staged:
+        yield staged

@@ -672,6 +672,12 @@ def exercise_provider(module, workspace: Path, environ: dict) -> None:
     def staging_double(environment):
         staging_calls.append(dict(environment))
         prefix = Path(environment["DPREFIX"])
+        # The real context refuses a prefix that is not fresh. Reproducing that
+        # refusal keeps a contract arm from passing by staging over an
+        # installation the production path would have rejected.
+        existing = prefix / "usr/local/Homebrew"
+        if existing.exists() or existing.is_symlink():
+            raise ValueError(f"homebrew-lz4 requires a fresh installation: {existing}")
         work = materialize_stack(prefix, work_token="staged0001")
         yield {
             **environment,
@@ -740,6 +746,7 @@ def exercise_provider(module, workspace: Path, environ: dict) -> None:
             # from source instead of restoring another provider's stack.
             mismatched = build_prefix(workspace / "mismatched", stack=False)
             mismatch_command = Command(manifest)
+            staging_before = len(staging_calls)
             with test_resources.resource_context(
                 mismatch_command,
                 {**invocation, "runtime_profile": "some-other-provider"},
@@ -752,11 +759,82 @@ def exercise_provider(module, workspace: Path, environ: dict) -> None:
                 assert "DARLING_HOMEBREW_LZ4_RESTORED" not in staged, (
                     "a mismatched runtime profile must not restore"
                 )
-            assert len(staging_calls) == 2
+            assert len(staging_calls) == staging_before + 1
             assert any("no deployed-runtime identity" in line for line in mismatch_command.lines), (
                 mismatch_command.lines
             )
 
+            # A prefix that already holds an installation is adopted, not staged
+            # over: staging refuses that prefix by design, and the stack already
+            # there is the one a replay phase consumes. It is captured so the
+            # next run can restore it.
+            adopted = build_prefix(workspace / "adopted", stack=True)
+            # A different deployed-runtime identity so the restore misses: this arm
+            # is about what happens when a snapshot cannot serve the invocation.
+            write_json(
+                adopted / ".west-runtime-profile.json",
+                {
+                    "schema": 2,
+                    "profile": PROFILE,
+                    "source-profile": "fixture",
+                    "fingerprint": {**FINGERPRINT, "runtime-manifest-sha256": "f" * 64},
+                },
+            )
+            adopted_command = Command(manifest)
+            staging_before = len(staging_calls)
+            captures_before = module.read_stats(store).value("captures")
+            with test_resources.resource_context(
+                adopted_command,
+                invocation,
+                {
+                    "DPREFIX": str(adopted),
+                    "DARLING_LAUNCHER": str(adopted / "bin/darling"),
+                },
+            ) as adopted_env:
+                assert adopted_env is not None
+                assert "DARLING_HOMEBREW_LZ4_RESTORED" not in adopted_env, (
+                    "an adopted stack was not restored, so nothing was skipped"
+                )
+                assert adopted_env["DARLING_HOMEBREW_LZ4_WORK"].endswith(
+                    f"west-homebrew-lz4-{WORK_TOKEN}"
+                ), adopted_env
+            assert len(staging_calls) == staging_before, (
+                "an installation already present must be adopted, never staged over"
+            )
+            assert any("adopting" in line for line in adopted_command.lines), (
+                adopted_command.lines
+            )
+            assert module.read_stats(store).value("captures") == captures_before + 1, (
+                "adopting a complete stack must capture it for the next run"
+            )
+
+            # A test whose subject is the from-source build refuses the restore:
+            # a snapshot must never stand in for the build it measures, while the
+            # store stays enabled so the staged stack is still captured.
+            declared = build_prefix(workspace / "declared", stack=False)
+            declared_command = Command(manifest)
+            staging_before = len(staging_calls)
+            with test_resources.resource_context(
+                declared_command,
+                invocation,
+                {
+                    "DPREFIX": str(declared),
+                    "DARLING_LAUNCHER": str(declared / "bin/darling"),
+                    "WEST_STOCK_STACK_RESTORE": "off",
+                },
+            ) as declared_env:
+                assert declared_env is not None
+                assert "DARLING_HOMEBREW_LZ4_RESTORED" not in declared_env, (
+                    "a declaration that refuses the restore must stage instead"
+                )
+            assert len(staging_calls) == staging_before + 1, (
+                "the restore refusal must be honored before the snapshot is read"
+            )
+            assert any(
+                "restore disabled by declaration" in line for line in declared_command.lines
+            ), declared_command.lines
+
+            staging_before = len(staging_calls)
             os.environ["WEST_STOCK_STACK_CACHE"] = "off"
             skipped = build_prefix(workspace / "skipped", stack=False)
             off_command = Command(manifest)
@@ -773,7 +851,9 @@ def exercise_provider(module, workspace: Path, environ: dict) -> None:
                 assert "DARLING_HOMEBREW_LZ4_RESTORED" not in staged, (
                     "the kill switch must build from source"
                 )
-            assert len(staging_calls) == 3, "the kill switch must stage the resource"
+            assert len(staging_calls) == staging_before + 1, (
+                "the kill switch must stage the resource"
+            )
             assert any("disabled" in line for line in off_command.lines), off_command.lines
             assert module.read_stats(store).value("captures") == captures, (
                 "a disabled cache must not capture"
@@ -806,6 +886,52 @@ def run(arm: str) -> int:
                     f"designed: {error}"
                 )
                 return 0
+            print("RED arm unexpectedly passed")
+            return 1
+        elif arm == "adopt-ignored":
+            # Staging over an installation that is already present: the adopt path
+            # exists because staging refuses that prefix by design.
+            import test_homebrew  # noqa: PLC0415
+
+            original = test_homebrew.conflicting_homebrew
+            test_homebrew.conflicting_homebrew = lambda prefix: None
+            try:
+                exercise(
+                    cache,
+                    workspace,
+                    environ={"WEST_STOCK_STACK_CACHE_DIR": str(workspace / "store")},
+                    suppress_marker=False,
+                )
+            except (AssertionError, ValueError) as error:
+                print(
+                    "RED arm (installation already present staged over) failed as "
+                    f"designed: {error}"
+                )
+                return 0
+            finally:
+                test_homebrew.conflicting_homebrew = original
+            print("RED arm unexpectedly passed")
+            return 1
+        elif arm == "restore-declaration-ignored":
+            # Reading only the host environment: a test that declares it must
+            # build from source would be served a snapshot instead.
+            original = cache.store_restore_disabled
+            cache.store_restore_disabled = lambda environ: False
+            try:
+                exercise(
+                    cache,
+                    workspace,
+                    environ={"WEST_STOCK_STACK_CACHE_DIR": str(workspace / "store")},
+                    suppress_marker=False,
+                )
+            except AssertionError as error:
+                print(
+                    "RED arm (declaration to build from source ignored) failed as "
+                    f"designed: {error}"
+                )
+                return 0
+            finally:
+                cache.store_restore_disabled = original
             print("RED arm unexpectedly passed")
             return 1
         elif arm == "disabled":
