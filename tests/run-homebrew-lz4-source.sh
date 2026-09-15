@@ -68,12 +68,20 @@ GUEST
 # Guest tool identities and policy come only from the staged inputs and deployed
 # runtime, not an inherited host Homebrew, Ruby, compiler or package-manager env.
 transport='exec /usr/bin/env -i /bin/bash -c "$3" west-homebrew-lz4 "$1" "$2"'
-darling_guest_shell "$DARLING_LAUNCHER" "$DPREFIX" 1200 \
-    "$transport" west-homebrew-lz4 "$DARLING_HOMEBREW_LZ4_WORK" install "$guest_program"
+if [ "${DARLING_HOMEBREW_LZ4_RESTORED:-0}" = 1 ]; then
+    # The stock-stack cache restored a completed stack: the Cellar already holds
+    # the source-built lz4, the receipt and the install round trip marker, so the
+    # from-source install phase is unnecessary and its fresh-Cellar precondition
+    # no longer holds. The reuse phase below is the check that still applies.
+    printf '%s\n' 'HOMEBREW_LZ4_STOCK_STACK_RESTORED source-install-skipped'
+else
+    darling_guest_shell "$DARLING_LAUNCHER" "$DPREFIX" 1200 \
+        "$transport" west-homebrew-lz4 "$DARLING_HOMEBREW_LZ4_WORK" install "$guest_program"
 
-# Use the West-provided launcher lifecycle, never kill processes or repair state.
-# A failed install cannot reach shutdown/reuse success or the final marker.
-timeout --kill-after=5 60 "$DARLING_LAUNCHER" shutdown
+    # Use the West-provided launcher lifecycle, never kill processes or repair
+    # state. A failed install cannot reach shutdown/reuse success or the marker.
+    timeout --kill-after=5 60 "$DARLING_LAUNCHER" shutdown
+fi
 darling_guest_shell "$DARLING_LAUNCHER" "$DPREFIX" 300 \
     "$transport" west-homebrew-lz4 "$DARLING_HOMEBREW_LZ4_WORK" reuse "$guest_program"
 timeout --kill-after=5 60 "$DARLING_LAUNCHER" shutdown

@@ -280,6 +280,22 @@ refs, PR drafts, and agent handoff.
   across runs, because ccache normalises absolute paths against the current
   working directory, so a per-run temporary root makes every object a miss
   regardless of `CCACHE_BASEDIR` or `-fdebug-prefix-map`.
+- The stock Homebrew stack a replay needs is cached by identity. The store is
+  `<manifest>/.west-test/stock-stack-cache`, a `.west-test/` state root;
+  `WEST_STOCK_STACK_CACHE_DIR` relocates it, `WEST_STOCK_STACK_CACHE=off`
+  disables it for an acceptance-grade run that has to build from source and
+  says so in the run output, and `WEST_STOCK_STACK_CACHE_MAX_BYTES` bounds it
+  (default 12 GiB, enforced before a snapshot is added). A snapshot is reused
+  only when the pinned brew and homebrew-core revisions and input digests, the
+  resolved formula versions, the guest CommandLineTools identity the framework
+  verifies, the deployed runtime identity, the snapshot layout schema and the
+  host architecture all match. Never widen that match to make a run faster, and
+  never restore a snapshot whose completion marker is absent: a capture is
+  built under a temporary path and published with its marker, so a killed
+  capture is never consumed. A missing marker, a corrupt archive, a file whose
+  recorded sha256 differs, or a lost formula source receipt is a miss, and a
+  miss stages the pinned resource and rebuilds from source rather than serving
+  a partially verified stack.
 - Do not close patch coverage with source matching. Tests that grep, parse, or
   assert that specific code text exists are audit checks only; they must not be
   counted as the patch's behavioral test and must not be recorded as `kind:
