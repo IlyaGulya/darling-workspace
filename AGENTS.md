@@ -106,6 +106,16 @@ refs, PR drafts, and agent handoff.
   `CommandLineTools`, or `DarlingCLT` clang links. Do not repair those by
   undocumented manual `mkdir`/`ln` sequences unless the command itself is what
   you are debugging.
+- `--prefix PATH` only resolves a prefix; it does not create, boot or provision
+  one. Bootstrap a fresh prefix as its own invocation before running any
+  prefix-backed selection: `west test --prefix <prefix>
+  --bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal` for the
+  baseline launcher, or `homebrew-guest-toolchain-provisioning` to also install
+  the reviewed guest CommandLineTools. Both reject `--profile`/`--patch` and the
+  CTest selection options. A bootstrapped prefix has `<prefix>/bin/darling` and
+  retains `<prefix>/.west-runtime-profile.json`; `west test` names that bootstrap
+  command when a selection finds the selected prefix unusable. See
+  `docs/test-infra.md`.
 - Guest CTest cases compile inside Darling. Their runtime profile must declare
   `guest-toolchain: darling-command-line-tools`; `west test` provisions the
   official CommandLineTools packages through Darling's guest `installer` when

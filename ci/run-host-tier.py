@@ -100,6 +100,13 @@ CONTRACTS = (
     "tests/run-legacy-runtime-inventory-contract.sh",
     "tests/run-namespace-writer-inventory-contract.sh",
     "tests/run-perf-archive-forensic-contract.sh",
+    # Proves every declared test is selectable by an invocation the census can
+    # name. Host-only and read-only: it reads fixture metadata in a temp dir and
+    # never starts a prefix.
+    "tests/run-test-selection-census-contract.sh",
+    # Proves the checked-in registries derive from the tree, and that a drift in
+    # any of them fails naming the disagreeing field.
+    "tests/run-registry-derivation-contract.sh",
 )
 
 # Contracts the tier runs as explicit commands rather than CONTRACTS entries,
@@ -130,6 +137,19 @@ EXPLICIT_CONTRACTS = (
     ("runtime-proof-state", "tests/west_test_contracts/runtime_proof_state_contract.py", True),
     ("runtime-source-cache", "tests/west_test_contracts/runtime_source_cache_contract.py", True),
     ("source-search", "tests/west_test_contracts/source_search_contract.py", True),
+    # The applicability review commands and the prefix bootstrap guidance are
+    # contracts added when those two defects were repaired; both run through
+    # this interpreter.
+    (
+        "native-applicability-review",
+        "tests/run-native-applicability-review-contract.sh",
+        True,
+    ),
+    (
+        "prefix-bootstrap-guidance",
+        "tests/west_test_contracts/prefix_bootstrap_guidance_contract.py",
+        True,
+    ),
 )
 
 # Contracts deliberately kept out of the tier. Each entry states the reason,

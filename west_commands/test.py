@@ -3442,6 +3442,27 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             merged["DARLING_LAUNCHER"] = launcher
         return merged
 
+    @staticmethod
+    def _bootstrap_prefix_advice(prefix: Path, *, guest_toolchain: bool) -> str:
+        """Name the bootstrap-only invocation that makes *prefix* usable.
+
+        ``--prefix`` resolves an existing prefix; it neither creates nor
+        provisions one, and prefix-backed work fails until the operator runs
+        the bootstrap provider. The baseline provider creates the launcher, and
+        the provisioning provider additionally installs the reviewed guest
+        CommandLineTools that guest C compilation requires.
+        """
+
+        profile = (
+            "homebrew-guest-toolchain-provisioning"
+            if guest_toolchain
+            else "homebrew-rootless-bootstrap-minimal"
+        )
+        return (
+            f"bootstrap this prefix first: west test --prefix {prefix} "
+            f"--bootstrap-runtime-profile {profile}"
+        )
+
     def _missing_requirements(self, invocation) -> list[str]:
         resources = set(invocation.get("requires_resources", []))
         missing = [
@@ -3456,23 +3477,37 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             missing.append("darling-prefix (--prefix, --prefix-profile, or DPREFIX)")
         if resources & {"darling-prefix", "darling-eunion-prefix"}:
             prefix = getattr(self, "_prefix", None)
+            prefix_path = Path(prefix).expanduser() if prefix else None
+            needs_guest_toolchain = bool(invocation.get("guest_c_fixture"))
             launcher = self._resolve_darling_launcher(prefix)
             if not launcher:
-                missing.append(
+                detail = (
                     "darling-launcher (DARLING, DARLING_LAUNCHER, "
                     "prefix/bin/darling, or ~/work/darling-prefix/bin/darling)"
                 )
-            if prefix:
-                if invocation.get("guest_c_fixture"):
-                    missing.extend(
-                        self._guest_c_fixture_prerequisite_problems(
-                            Path(prefix),
-                            invocation.get("guest_cc", ""),
-                            invocation.get("guest_cflags", ""),
+                if prefix_path is not None:
+                    detail += (
+                        f"; {prefix_path} is not bootstrapped: "
+                        + self._bootstrap_prefix_advice(
+                            prefix_path, guest_toolchain=needs_guest_toolchain
                         )
                     )
-                if "darling-eunion-prefix" in resources:
-                    missing.extend(self._eunion_prefix_prerequisite_problems(Path(prefix)))
+                missing.append(detail)
+            if prefix_path is not None and needs_guest_toolchain:
+                toolchain_problems = self._guest_c_fixture_prerequisite_problems(
+                    prefix_path,
+                    invocation.get("guest_cc", ""),
+                    invocation.get("guest_cflags", ""),
+                )
+                if toolchain_problems:
+                    missing.extend(toolchain_problems)
+                    if launcher:
+                        # A missing launcher already named the same command.
+                        missing.append(
+                            self._bootstrap_prefix_advice(
+                                prefix_path, guest_toolchain=True
+                            )
+                        )
         return missing
 
     def _prefix_boot_prerequisite_problems(self, prefix: Path) -> list[str]:
@@ -6080,9 +6115,14 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         launcher = self._resolve_darling_launcher(self._prefix)
         if args.env == "darling" and not launcher and not args.list:
             if self._prefix:
+                prefix_path = Path(self._prefix).expanduser()
                 self.die(
                     "env:darling CTest runs need the selected prefix launcher: "
-                    f"{Path(self._prefix).expanduser() / 'bin' / 'darling'}"
+                    f"{prefix_path / 'bin' / 'darling'}; {prefix_path} is not "
+                    "bootstrapped: "
+                    + self._bootstrap_prefix_advice(
+                        prefix_path, guest_toolchain=True
+                    )
                 )
             self.die(
                 "env:darling CTest runs need a Darling launcher; pass --prefix, "

@@ -1353,9 +1353,9 @@
     },
     "wget-residual:xnu/eunion-content-fd-validation.patch:1": {
       "name": "eunion_content_fd_validation",
-      "identity_sha256": "6a578091da005bf73f612d01b5926b1077b1856802e35b97e26bb0935f794788",
+      "identity_sha256": "d07d7155ba4a6c5fb11acd12314c15e7474acecc159fb374b3af65cdf2935c15",
       "policy": "split_semantic_reference_and_internal_gate",
-      "reason": "Full E-UNION production closure mixes public ftruncate descriptor/EBADF and filesystem semantics with copy-up and immutable LOWER invariants. Review Darwin/POSIX public behavior separately; shared script is not only the focal descriptor test."
+      "reason": "Full E-UNION production closure mixes public ftruncate descriptor/EBADF and filesystem semantics with copy-up and immutable LOWER invariants. Review Darwin/POSIX public behavior separately; shared script is not only the focal descriptor test. This declaration is the merged survivor of the byte-identical eunion_upper_parent_dominance binding and now also carries its RED marker 'FAIL  SP2 mkdir ignores lower symlink masked by upper directory', which the removed binding was reviewed for under the same policy: Invokes the broad experiments/e-union/run.sh suite, not solely SP2. The focal mechanism is upper directory masking a lower symlink during production mkdirat; layer selection is internal but observed mkdir/path errors and the rest of the shared oracle have public semantics. Both markers are expect-output-contains entries of this binding's source-base RED proof, so each is asserted by an oracle that runs."
     },
     "wget-residual:xnu/eunion-content-fd-validation.patch:2": {
       "name": "eunion_resolver",
@@ -1374,12 +1374,6 @@
       "identity_sha256": "e655c2fd889968e68fddcb592a4fe8c45adaa5669082750b574f660ccf085d51",
       "policy": "split_semantic_reference_and_internal_gate",
       "reason": "CTest/source-script variants cover production filesystem mutations, metadata/error policy, directory views and nested-root behavior. Public path, fd, errno and xattr semantics retain reference applicability; whiteout/opaque storage and immutable LOWER are Darling-specific. The nested runner's shared script does not merge binding identities."
-    },
-    "wget-residual:xnu/eunion-content-fd-validation.patch:5": {
-      "name": "eunion_upper_parent_dominance",
-      "identity_sha256": "49729ad55e504d5cd868d3677ea95092b70e83d878765877c27849b47605ff6e",
-      "policy": "split_semantic_reference_and_internal_gate",
-      "reason": "Invokes the broad experiments/e-union/run.sh suite, not solely SP2. The focal mechanism is upper directory masking a lower symlink during production mkdirat; layer selection is internal but observed mkdir/path errors and the rest of the shared oracle have public semantics."
     },
     "wget-residual:darlingserver/microthread-dispatch-handoff.patch:1": {
       "name": "microthread_dispatch_handoff_model",
