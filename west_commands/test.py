@@ -127,6 +127,8 @@ from test_runtime_evidence import RuntimeEvidenceStore
 import test_runtime_cache
 from test_runtime_source import RuntimeSourceMaterializer
 from test_runtime_identity import runtime_identity
+import test_stock_stack_cache
+import test_verdict_cache
 from guest_macho_validation import (
     add_cli_arguments,
     capture_invocation,
@@ -1443,10 +1445,150 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
 
         self.die(f"{patch['path']}: unsupported test runner {runner!r}")
 
+    def _metadata_verdict_store(self) -> Path | None:
+        """Return the verdict reuse store, or ``None`` when it is switched off."""
+
+        return test_verdict_cache.cache_root(
+            Path(self.manifest.repo_abspath), os.environ
+        )
+
+    @staticmethod
+    def _metadata_invocation_needs_guest(test, invocation) -> bool:
+        """Return whether one invocation runs inside a deployed guest runtime."""
+
+        if test.get("runtime-profile") or test.get("_ctest", {}).get("profiles"):
+            return True
+        if test.get("runs") == "guest" or test.get("env") == "darling":
+            return True
+        return bool(
+            set(invocation.get("requires_resources", ()))
+            & {"darling-prefix", "darling-eunion-prefix"}
+        )
+
+    def _metadata_runtime_identity(self, test, patch):
+        """Return the runtime identity one metadata test runs against.
+
+        A test that deploys a typed runtime provider is keyed on the same
+        identity the runtime reuse cache computes for that provider, plus the
+        proof document the deployment builds from - an override that changes the
+        built runtime has to change the key. A guest test without a provider is
+        keyed on the runtime the prefix retains; when the prefix identifies no
+        runtime the test cannot be keyed, because two prefixes are then not
+        known to be the same runtime.
+        """
+
+        profiles = list(dict.fromkeys([
+            *([test["runtime-profile"]] if test.get("runtime-profile") else []),
+            *test.get("_ctest", {}).get("profiles", []),
+        ]))
+        prefix_text = getattr(self, "_prefix", None)
+        if profiles:
+            try:
+                definition = compose_ctest_runtime_profiles(
+                    self._ctest_runtime_profile_definitions(), profiles
+                )
+            except ValueError:
+                return None, None
+            return (
+                definition,
+                {
+                    "profile": definition["name"],
+                    "identity": runtime_identity(
+                        topdir=Path(self.topdir),
+                        manifest_repo=Path(self.manifest.repo_abspath),
+                        profile_name=definition["name"],
+                        definition=definition,
+                        launcher=Path(prefix_text) / "bin" / "darling",
+                    ),
+                    "proof": self._runtime_profile_proof(
+                        definition,
+                        omit_patch=False,
+                        patch=patch,
+                        label_prefix=f"metadata verdict {patch['path']}",
+                    ),
+                },
+            )
+        if not prefix_text:
+            return None, None
+        digest = test_stock_stack_cache.runtime_identity_digest(
+            prefix=Path(prefix_text),
+            manifest_repo=Path(self.manifest.repo_abspath),
+            topdir=Path(self.topdir),
+            profile_name=None,
+        )
+        if digest is None:
+            return None, None
+        return None, {"profile": None, "identity-digest": digest}
+
+    def _metadata_verdict_identity(self, patch, test, invocation):
+        """Return the identity that decides whether this verdict may be reused.
+
+        ``None`` means the verdict cannot be keyed and the test is executed for
+        real. That is the honest answer for a test whose result depends on state
+        no identity input describes: a RED arm is an experiment about flake, a
+        guest Mach-O validation group publishes evidence this run has to
+        produce, a clean-shutdown test observes live prefix state, and a guest
+        test whose prefix identifies no runtime has no runtime identity to key
+        on.
+        """
+
+        if (
+            test.get("validation-group")
+            or test.get("verify-clean-shutdown")
+            or test.get("red")
+            or test.get("red-proof")
+        ):
+            return None
+        needs_guest = self._metadata_invocation_needs_guest(test, invocation)
+        if needs_guest and not getattr(self, "_prefix", None):
+            return None
+        if needs_guest:
+            definition, runtime = self._metadata_runtime_identity(test, patch)
+            if runtime is None:
+                return None
+        else:
+            definition, runtime = None, None
+        stack = None
+        if test_verdict_cache.STACK_RESOURCE in set(
+            invocation.get("requires_resources", ())
+        ):
+            stack = test_stock_stack_cache.stack_request(
+                prefix=Path(getattr(self, "_prefix")),
+                manifest_repo=Path(self.manifest.repo_abspath),
+                topdir=Path(self.topdir),
+                profile_name=None if definition is None else definition["name"],
+                environ=os.environ,
+            )
+            if stack is None:
+                return None
+        prefix_text = getattr(self, "_prefix", None)
+        return test_verdict_cache.verdict_identity(
+            test=test,
+            invocation=invocation,
+            runtime=runtime,
+            stack=stack,
+            toolchain=(
+                None
+                if not prefix_text
+                else test_stock_stack_cache.guest_toolchain_identity(
+                    Path(prefix_text), os.environ
+                )
+            ),
+            environ=os.environ,
+        )
+
     def _run_metadata_tests(self, tests, list_only: bool, unknown: list[str]) -> int:
         if unknown:
             self.die("metadata command tests do not accept raw ctest passthrough arguments")
         self._prune_stale_west_temp_worktrees()
+        verdict_store: Path | None = None
+        if not list_only:
+            verdict_store = self._metadata_verdict_store()
+            if verdict_store is None and test_verdict_cache.reuse_disabled(os.environ):
+                self.inf(
+                    "  verdict reuse disabled by WEST_TEST_VERDICT_CACHE: every "
+                    "selected test is executed"
+                )
         rc = 0
         seen_invocations: set[tuple] = set()
         for patch, test in tests:
@@ -1482,6 +1624,28 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 self.inf(f"  skipped duplicate invocation already run")
                 continue
             seen_invocations.add(identity)
+            verdict_key = None
+            if verdict_store is not None:
+                verdict_identity = self._metadata_verdict_identity(
+                    patch, test, invocation
+                )
+                if verdict_identity is None:
+                    test_verdict_cache.record_event(verdict_store, "verdict_unkeyed")
+                else:
+                    verdict_key = test_verdict_cache.identity_key(verdict_identity)
+                    cached = test_verdict_cache.read_verdict(verdict_store, verdict_key)
+                    if cached is not None:
+                        self.inf(
+                            f"  verdict cached {verdict_key} from "
+                            f"{cached['recorded-at']} ({cached['duration-seconds']}s): "
+                            f"{cached.get('ok-marker') or 'passed'}; the guest program "
+                            "is not re-executed for this run"
+                        )
+                        test_verdict_cache.record_event(verdict_store, "verdict_hits")
+                        continue
+                    test_verdict_cache.record_event(verdict_store, "verdict_misses")
+            started = time.time()
+            monotonic_started = time.monotonic()
             with self._required_profile_context(patch, invocation):
                 with self._metadata_runtime_profile_context(patch, test) as deployment:
                     runtime_env = deployment.env if deployment is not None else None
@@ -1513,8 +1677,30 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                     if result_rc == 0 and test.get("verify-clean-shutdown"):
                         if not self._verify_prefix_idle():
                             result_rc = 1
+            if verdict_key is not None and result_rc == 0:
+                bundle = self._latest_debug_bundle(invocation, since=started)
+                test_verdict_cache.record_verdict(
+                    verdict_store,
+                    verdict_key,
+                    identity=verdict_identity,
+                    duration_seconds=time.monotonic() - monotonic_started,
+                    ok_marker=invocation.get("ok_marker") or None,
+                    bundle=None if bundle is None else str(bundle),
+                    guest_stdout_sha256=test_verdict_cache.bundle_stdout_digest(bundle),
+                    provenance={"patch": patch["path"], "test": invocation["name"]},
+                )
             if result_rc:
                 rc = result_rc if rc == 0 else rc
+        if verdict_store is not None:
+            pruned = test_verdict_cache.prune(
+                verdict_store, test_verdict_cache.max_bytes(os.environ)
+            )
+            if pruned["evicted"]:
+                self.inf(
+                    f"  verdict cache evicted {len(pruned['evicted'])} entry(s), "
+                    f"{pruned['evicted_bytes']} bytes"
+                )
+            self.inf(f"  verdict reuse {test_verdict_cache.report(verdict_store)}")
         return rc
 
     def _metadata_needs_prefix(self, tests) -> bool:
@@ -1999,6 +2185,50 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             or getattr(self, "_bootstrap_stack_sample", None) is not None
         )
 
+    def _runtime_profile_proof(
+        self, definition, *, omit_patch, patch, label_prefix, red_proof=None
+    ) -> dict:
+        """Return the deployment inputs that decide which runtime is built.
+
+        The deployment builds a runtime from this document and the verdict cache
+        keys on it, so an input that reaches one of them and not the other would
+        let a verdict recorded against one runtime be reused for another. The
+        document is built here once and both callers use it.
+        """
+
+        try:
+            cmake_defines = merge_runtime_cmake_define_overrides(
+                definition.get("cmake-defines", {}),
+                getattr(self, "_runtime_cmake_define_overrides", {}),
+            )
+        except ValueError as error:
+            self.die(f"invalid runtime CMake override: {error}")
+        proof = {
+            "source-modules": definition["source-modules"],
+            "runtime-artifacts": definition["runtime-artifacts"],
+            "cmake-defines": cmake_defines,
+        }
+        if definition.get("compiler-launcher") is not None:
+            proof["compiler-launcher"] = definition["compiler-launcher"]
+        if definition.get("runtime-mode") is not None:
+            proof["runtime-mode"] = definition["runtime-mode"]
+        if omit_patch:
+            proof["bad-profile"] = "current-minus-patch"
+            if isinstance(red_proof, dict):
+                for key in ("source-revision", "current-minus-skip-patches"):
+                    if key in red_proof:
+                        proof[key] = red_proof[key]
+        proof["launcher-env"] = {
+            key: str(value)
+            for key, value in definition.get("launcher-env", {}).items()
+        }
+        if omit_patch and patch is None:
+            self.die(
+                f"{label_prefix} runtime profile cannot omit a patch "
+                "without patch metadata"
+            )
+        return proof
+
     @contextmanager
     def _runtime_profile_deployment_context(
         self,
@@ -2032,35 +2262,17 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         assert definition is not None
         profile_name = definition["name"]
         source_profile = definition["source-profile"]
-        try:
-            cmake_defines = merge_runtime_cmake_define_overrides(
-                definition.get("cmake-defines", {}),
-                getattr(self, "_runtime_cmake_define_overrides", {}),
-            )
-        except ValueError as error:
-            self.die(f"invalid runtime CMake override: {error}")
-        proof = {
-            "source-modules": definition["source-modules"],
-            "runtime-artifacts": definition["runtime-artifacts"],
-            "cmake-defines": cmake_defines,
-        }
-        if definition.get("compiler-launcher") is not None:
-            proof["compiler-launcher"] = definition["compiler-launcher"]
-        if definition.get("runtime-mode") is not None:
-            proof["runtime-mode"] = definition["runtime-mode"]
-        if omit_patch:
-            proof["bad-profile"] = "current-minus-patch"
-            if isinstance(red_proof, dict):
-                for key in ("source-revision", "current-minus-skip-patches"):
-                    if key in red_proof:
-                        proof[key] = red_proof[key]
+        proof = self._runtime_profile_proof(
+            definition,
+            omit_patch=omit_patch,
+            red_proof=red_proof,
+            patch=patch,
+            label_prefix=label_prefix,
+        )
         launcher_env = {
             key: str(value)
             for key, value in definition.get("launcher-env", {}).items()
         }
-        proof["launcher-env"] = launcher_env
-        if omit_patch and patch is None:
-            self.die(f"{label_prefix} runtime profile cannot omit a patch without patch metadata")
         anchor = patch or {
             "path": f"{label_prefix} runtime profile {profile_name}",
             "module": definition["source-module"],

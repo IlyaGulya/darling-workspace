@@ -305,6 +305,22 @@ refs, PR drafts, and agent handoff.
   acceptance evidence, and do not put a compile cache in front of the guest
   compiler: the source build is the workload these tests measure, and their
   receipt checks cannot tell a cached build from a real one.
+- Guest metadata verdicts are reused by identity: the test asset bytes, the test
+  declaration, the runner with its args, timeout and expected markers, the
+  runtime identity the test runs against, the stock stack snapshot identity when
+  that resource is consumed, the workload parameters, the guest toolchain and
+  the host architecture. Only a zero verdict is reused, a non-zero verdict is
+  always re-executed, a reused verdict is announced with its identity digest and
+  original run time, and `WEST_TEST_VERDICT_CACHE=off` forces a fresh run. A
+  cached verdict cannot detect flake - the unreproduced brew config segfault
+  passed on re-run and failed earlier - so acceptance claims need a fresh run on
+  the current identity, not a cached one.
+- `runtime-load-smoke` binds `tests/_runtime_load_probe.py` under both transports
+  to reproduce the load the stock replays provoke (concurrent guest CLT compile
+  and link, a fork/exec storm, descriptor churn) in minutes rather than hours.
+  It is a regression signal, not a substitute for the end-to-end stock
+  acceptance, and it stays in its own profile so the acceptance profile's claim
+  is unchanged.
 - Do not close patch coverage with source matching. Tests that grep, parse, or
   assert that specific code text exists are audit checks only; they must not be
   counted as the patch's behavioral test and must not be recorded as `kind:

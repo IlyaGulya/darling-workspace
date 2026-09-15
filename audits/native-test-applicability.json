@@ -1267,6 +1267,18 @@
       "policy": "darling_internal_gate",
       "reason": "Region generation is a Darling allocator invariant; the guest comparison is Darling-internal."
     },
+    "runtime-load-smoke:darling/runtime-load-smoke.patch:1": {
+      "name": "runtime_load_on",
+      "identity_sha256": "4f7775141b694a2c8315e65fd00b9935552b05b760f9d49d6cb3c2847871fc9e",
+      "policy": "darling_internal_gate",
+      "reason": "The generated fixture compiles translation units with concurrent guest CLT compiler processes, links them with concurrent linkers, storms fork/exec and churns inherited descriptors under the ring-ON transport. Those are process, transport and descriptor properties of the runtime under test; native Darwin has no equivalent darlingserver transport, so the verdict is a Darling-internal load gate rather than native reference evidence."
+    },
+    "runtime-load-smoke:darling/runtime-load-smoke.patch:2": {
+      "name": "runtime_load_off",
+      "identity_sha256": "a0cb0e4faf87b94df666f3b394ea466ebcbd1005a9248f8b9bbde3330cda8c2c",
+      "policy": "darling_internal_gate",
+      "reason": "The generated fixture compiles translation units with concurrent guest CLT compiler processes, links them with concurrent linkers, storms fork/exec and churns inherited descriptors under the ring-OFF transport. Those are process, transport and descriptor properties of the runtime under test; native Darwin has no equivalent darlingserver transport, so the verdict is a Darling-internal load gate rather than native reference evidence."
+    },
     "wget-residual:darling/homebrew-prefix-tooling.patch:1": {
       "name": "homebrew_build_tools_preflight",
       "identity_sha256": "0a80b5002de8bb823fc2d25eee2449ac74632f881a4c7c0b445d65a50786dd3b",

@@ -18,6 +18,15 @@ brew=/usr/local/bin/brew
 ruby=/usr/local/Homebrew/Library/Homebrew/vendor/portable-ruby/current/bin/ruby
 cc=/Library/Developer/CommandLineTools/usr/bin/clang
 export HOME="$work/home" HOMEBREW_CACHE="$work/cache" HOMEBREW_LOGS="$work/logs"
+# The host umask (0002 on this machine) must not reach shared guest state:
+# Homebrew refuses to write a trust store inside a group-writable directory, and
+# a phase that trips that guard can leave a formula unlinked for the next one.
+umask 022
+mkdir -p "$HOME"
+chmod go-w "$HOME" 2>/dev/null || true
+if [ -d "$HOME/.homebrew" ]; then
+    chmod -R go-w "$HOME/.homebrew" 2>/dev/null || true
+fi
 export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_FROM_API=1 HOMEBREW_NO_ANALYTICS=1
 export HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_FORCE_VENDOR_RUBY=1
 export PATH=/usr/local/Homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
