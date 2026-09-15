@@ -2,213 +2,9 @@
   "schema_version": 1,
   "kind": "rootless-namespace-writer-candidate-audit",
   "coverage_tier": "source",
-  "count": 1606,
-  "entries_digest": "b17b9243d08db25182dd7fbee1ec591ff01fe174eb0535aa8ac19f836831005e",
+  "count": 1612,
+  "entries_digest": "feca1ad866a3ba263dbb875997bbe56112830edd04010613bfd8564889a0f441",
   "entries": [
-    {
-      "repository": "darling-workspace",
-      "path": "west_commands/guest_macho_validation.py",
-      "sha256": "98b9689aa4d3e9d93c69a397b9384e6b94bb7b3d8a49e42e42ed4745d3a176aa",
-      "classification": "workspace-task-owned-tooling",
-      "reason": "west_commands/guest_macho_validation.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
-      "evidence": {
-        "runtime_scope": "workspace-task-root",
-        "mutation_operators": [
-          "mkdir",
-          "python-create",
-          "remove"
-        ],
-        "build_anchor": {
-          "repository": "darling-workspace",
-          "path": "west_commands/guest_macho_validation.py",
-          "sha256": "98b9689aa4d3e9d93c69a397b9384e6b94bb7b3d8a49e42e42ed4745d3a176aa",
-          "relation": "workspace-runtime-source"
-        }
-      }
-    },
-    {
-      "repository": "darling-workspace",
-      "path": "west_commands/patch.py",
-      "sha256": "886fc1f8f4f7b2ebab4aa0f25fa6b7d4ac5cf485773b257944fc54d682a5294a",
-      "classification": "workspace-task-owned-tooling",
-      "reason": "west_commands/patch.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
-      "evidence": {
-        "runtime_scope": "workspace-task-root",
-        "mutation_operators": [
-          "mkdir",
-          "python-create",
-          "remove"
-        ],
-        "build_anchor": {
-          "repository": "darling-workspace",
-          "path": "west_commands/patch.py",
-          "sha256": "886fc1f8f4f7b2ebab4aa0f25fa6b7d4ac5cf485773b257944fc54d682a5294a",
-          "relation": "workspace-runtime-source"
-        }
-      }
-    },
-    {
-      "repository": "darling-workspace",
-      "path": "west_commands/patch_stack_export.py",
-      "sha256": "2242f47bbe3831a4b18a449619bbdec4604aaaf02b64e2bc22f3ed1090dc24b5",
-      "classification": "workspace-task-owned-tooling",
-      "reason": "west_commands/patch_stack_export.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
-      "evidence": {
-        "runtime_scope": "workspace-task-root",
-        "mutation_operators": [
-          "mkdir",
-          "python-create"
-        ],
-        "build_anchor": {
-          "repository": "darling-workspace",
-          "path": "west_commands/patch_stack_export.py",
-          "sha256": "2242f47bbe3831a4b18a449619bbdec4604aaaf02b64e2bc22f3ed1090dc24b5",
-          "relation": "workspace-runtime-source"
-        }
-      }
-    },
-    {
-      "repository": "darling-workspace",
-      "path": "west_commands/patch_stack_lock_first.py",
-      "sha256": "6098c3637fb89c70830ab4304c5ae7e3100e45db52c86c32a5595e796d965133",
-      "classification": "workspace-task-owned-tooling",
-      "reason": "west_commands/patch_stack_lock_first.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
-      "evidence": {
-        "runtime_scope": "workspace-task-root",
-        "mutation_operators": [
-          "mkdir",
-          "python-create",
-          "remove"
-        ],
-        "build_anchor": {
-          "repository": "darling-workspace",
-          "path": "west_commands/patch_stack_lock_first.py",
-          "sha256": "6098c3637fb89c70830ab4304c5ae7e3100e45db52c86c32a5595e796d965133",
-          "relation": "workspace-runtime-source"
-        }
-      }
-    },
-    {
-      "repository": "darling-workspace",
-      "path": "west_commands/patch_stack_materialize.py",
-      "sha256": "1d62c833ba27c8d5249f8e2da1e3dfa72c4f486e0c69269dbe1c77f171873f0c",
-      "classification": "workspace-task-owned-tooling",
-      "reason": "west_commands/patch_stack_materialize.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
-      "evidence": {
-        "runtime_scope": "workspace-task-root",
-        "mutation_operators": [
-          "mkdir",
-          "python-create",
-          "remove"
-        ],
-        "build_anchor": {
-          "repository": "darling-workspace",
-          "path": "west_commands/patch_stack_materialize.py",
-          "sha256": "1d62c833ba27c8d5249f8e2da1e3dfa72c4f486e0c69269dbe1c77f171873f0c",
-          "relation": "workspace-runtime-source"
-        }
-      }
-    },
-    {
-      "repository": "darling-workspace",
-      "path": "west_commands/pr.py",
-      "sha256": "ebcaaba4e4f1a532f9105802278e9de6dba3272c201fac9a6bd151f73870a0e7",
-      "classification": "workspace-task-owned-tooling",
-      "reason": "west_commands/pr.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
-      "evidence": {
-        "runtime_scope": "workspace-task-root",
-        "mutation_operators": [
-          "python-create"
-        ],
-        "build_anchor": {
-          "repository": "darling-workspace",
-          "path": "west_commands/pr.py",
-          "sha256": "ebcaaba4e4f1a532f9105802278e9de6dba3272c201fac9a6bd151f73870a0e7",
-          "relation": "workspace-runtime-source"
-        }
-      }
-    },
-    {
-      "repository": "darling-workspace",
-      "path": "west_commands/source_worktree.py",
-      "sha256": "fbfa4193dc71887258b4b6af164f236e8ebda7e256577175931b99a9d5c3e9ba",
-      "classification": "workspace-task-owned-tooling",
-      "reason": "west_commands/source_worktree.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
-      "evidence": {
-        "runtime_scope": "workspace-task-root",
-        "mutation_operators": [
-          "mkdir",
-          "remove"
-        ],
-        "build_anchor": {
-          "repository": "darling-workspace",
-          "path": "west_commands/source_worktree.py",
-          "sha256": "fbfa4193dc71887258b4b6af164f236e8ebda7e256577175931b99a9d5c3e9ba",
-          "relation": "workspace-runtime-source"
-        }
-      }
-    },
-    {
-      "repository": "darling-workspace",
-      "path": "west_commands/test_cmake.py",
-      "sha256": "0a05a769e6a617a32becc0dd21d9f393947f13beb538e5cedcfdabef0bea0e4f",
-      "classification": "workspace-task-owned-tooling",
-      "reason": "west_commands/test_cmake.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
-      "evidence": {
-        "runtime_scope": "workspace-task-root",
-        "mutation_operators": [
-          "mkdir",
-          "python-create"
-        ],
-        "build_anchor": {
-          "repository": "darling-workspace",
-          "path": "west_commands/test_cmake.py",
-          "sha256": "0a05a769e6a617a32becc0dd21d9f393947f13beb538e5cedcfdabef0bea0e4f",
-          "relation": "workspace-runtime-source"
-        }
-      }
-    },
-    {
-      "repository": "darling-workspace",
-      "path": "west_commands/test_runtime_evidence.py",
-      "sha256": "acde7ea3bd350cc9e9826d59f28f53ff27207d74b4fabceaadeed6afb70aec89",
-      "classification": "workspace-task-owned-tooling",
-      "reason": "west_commands/test_runtime_evidence.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
-      "evidence": {
-        "runtime_scope": "workspace-task-root",
-        "mutation_operators": [
-          "mkdir",
-          "python-create"
-        ],
-        "build_anchor": {
-          "repository": "darling-workspace",
-          "path": "west_commands/test_runtime_evidence.py",
-          "sha256": "acde7ea3bd350cc9e9826d59f28f53ff27207d74b4fabceaadeed6afb70aec89",
-          "relation": "workspace-runtime-source"
-        }
-      }
-    },
-    {
-      "repository": "darling-workspace",
-      "path": "west_commands/test_runtime_source.py",
-      "sha256": "627a1e4b475d01c37def9f2f9aa18f1fd6f09b78a92ff943d5435118814a487d",
-      "classification": "workspace-task-owned-tooling",
-      "reason": "west_commands/test_runtime_source.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
-      "evidence": {
-        "runtime_scope": "workspace-task-root",
-        "mutation_operators": [
-          "mkdir",
-          "python-create",
-          "remove"
-        ],
-        "build_anchor": {
-          "repository": "darling-workspace",
-          "path": "west_commands/test_runtime_source.py",
-          "sha256": "627a1e4b475d01c37def9f2f9aa18f1fd6f09b78a92ff943d5435118814a487d",
-          "relation": "workspace-runtime-source"
-        }
-      }
-    },
     {
       "repository": "darling",
       "path": "src/CoreAudio/AudioFileTools/Utility/CAAudioFileConverter.cpp",
@@ -8380,6 +8176,45 @@
     },
     {
       "repository": "darling",
+      "path": "src/external/darlingserver/duct-tape/src/psynch.c",
+      "sha256": "527f988fd1db715e55df9835813d661a56d7befdd389357acc5264b12de5fbd9",
+      "classification": "caller-selected-library-output",
+      "reason": "src/external/darlingserver/duct-tape/src/psynch.c writes only the caller-selected DSERVER_*_TRACE_FILE diagnostic path when the environment names one; the source contains no registered shared lifecycle endpoint authority.",
+      "evidence": {
+        "runtime_scope": "caller-owned-path",
+        "mutation_operators": [
+          "open-create-or-truncate"
+        ],
+        "build_anchor": {
+          "repository": "darling",
+          "path": "src/external/darlingserver/duct-tape/CMakeLists.txt",
+          "sha256": "d2a1113319e0b646d299b0296d83efbb06960049dea50180f621dd64656753b0",
+          "relation": "nearest-cmake-ancestor"
+        }
+      }
+    },
+    {
+      "repository": "darling",
+      "path": "src/external/darlingserver/duct-tape/src/test-diagnostics.c",
+      "sha256": "59b9381d4f2a676eda4cb7b5906f3a7d0ba3b161cd3f0c6870be6eb063f6153d",
+      "classification": "caller-selected-library-output",
+      "reason": "src/external/darlingserver/duct-tape/src/test-diagnostics.c writes only the caller-selected DSERVER_*_TRACE_FILE diagnostic path when the environment names one; the source contains no registered shared lifecycle endpoint authority.",
+      "evidence": {
+        "runtime_scope": "caller-owned-path",
+        "mutation_operators": [
+          "open-create-or-truncate",
+          "remove"
+        ],
+        "build_anchor": {
+          "repository": "darling",
+          "path": "src/external/darlingserver/duct-tape/CMakeLists.txt",
+          "sha256": "d2a1113319e0b646d299b0296d83efbb06960049dea50180f621dd64656753b0",
+          "relation": "nearest-cmake-ancestor"
+        }
+      }
+    },
+    {
+      "repository": "darling",
       "path": "src/external/darlingserver/duct-tape/xnu/osfmk/kern/mach_node.c",
       "sha256": "3535266cc224ff35667fbb0c38b45dee31b2d6c19820fc0dcb3a8f80fae3b38e",
       "classification": "caller-selected-library-output",
@@ -8392,7 +8227,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/darlingserver/duct-tape/CMakeLists.txt",
-          "sha256": "995be0df066afcdcec9f6a07c37d90b39ab48cdab799eb591c1369c25f56b620",
+          "sha256": "d2a1113319e0b646d299b0296d83efbb06960049dea50180f621dd64656753b0",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -8400,7 +8235,7 @@
     {
       "repository": "darling",
       "path": "src/external/darlingserver/duct-tape/xnu/osfmk/kern/waitq.c",
-      "sha256": "3dc183a079c3a614e356ea04c79c019cef07e9a7e0cf933ad206cec740055823",
+      "sha256": "cc4227b8da2e9cc19aa694ec150ba5fa37169d52cd19e9959e2648cfabe2f4fc",
       "classification": "caller-selected-library-output",
       "reason": "src/external/darlingserver/duct-tape/xnu/osfmk/kern/waitq.c exposes library/framework mutation of a caller-selected object; the source contains no registered shared lifecycle endpoint authority.",
       "evidence": {
@@ -8411,129 +8246,49 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/darlingserver/duct-tape/CMakeLists.txt",
-          "sha256": "995be0df066afcdcec9f6a07c37d90b39ab48cdab799eb591c1369c25f56b620",
+          "sha256": "d2a1113319e0b646d299b0296d83efbb06960049dea50180f621dd64656753b0",
           "relation": "nearest-cmake-ancestor"
         }
       }
     },
     {
       "repository": "darling",
-      "path": "src/external/darlingserver/tools/closure-cache/closure-cache-builder.c",
-      "sha256": "ef8779eb3c1ba03bf615673d09634d8cab3a181372548f4edd196b1b6872d479",
-      "classification": "build-or-generator-output",
-      "reason": "src/external/darlingserver/tools/closure-cache/closure-cache-builder.c is build/setup/generator code whose namespace output belongs to the selected build tree, not the runtime prefix lifecycle.",
+      "path": "src/external/darlingserver/src/test-diagnostics.cpp",
+      "sha256": "7211481880e8de4347c040338f2150758cae451767a0f8673c3bd6789cc2fb78",
+      "classification": "caller-selected-library-output",
+      "reason": "src/external/darlingserver/src/test-diagnostics.cpp writes only the caller-selected DSERVER_*_TRACE_FILE diagnostic path when the environment names one; the source contains no registered shared lifecycle endpoint authority.",
       "evidence": {
-        "runtime_scope": "build-tree-only",
+        "runtime_scope": "caller-owned-path",
         "mutation_operators": [
           "open-create-or-truncate",
-          "remove",
-          "rename"
-        ],
-        "build_anchor": {
-          "repository": "darling",
-          "path": "src/external/darlingserver/tools/CMakeLists.txt",
-          "sha256": "f8910638bc9f9ff59528339f44532ffc363d390c887c1dfae519c4957e462a69",
-          "relation": "nearest-cmake-ancestor"
-        }
-      }
-    },
-    {
-      "repository": "darling",
-      "path": "src/external/darlingserver/tools/closure-cache/dcc2-builder.c",
-      "sha256": "d518357ebb17d83e83aa9c4f7d76ab3b9f87fadfae6bc9b57549c92cfd4d88c6",
-      "classification": "build-or-generator-output",
-      "reason": "src/external/darlingserver/tools/closure-cache/dcc2-builder.c is build/setup/generator code whose namespace output belongs to the selected build tree, not the runtime prefix lifecycle.",
-      "evidence": {
-        "runtime_scope": "build-tree-only",
-        "mutation_operators": [
-          "open-create-or-truncate",
-          "remove",
-          "rename"
-        ],
-        "build_anchor": {
-          "repository": "darling",
-          "path": "src/external/darlingserver/tools/CMakeLists.txt",
-          "sha256": "f8910638bc9f9ff59528339f44532ffc363d390c887c1dfae519c4957e462a69",
-          "relation": "nearest-cmake-ancestor"
-        }
-      }
-    },
-    {
-      "repository": "darling",
-      "path": "src/external/darlingserver/tools/closure-cache/dcc2-extractrx.c",
-      "sha256": "6ce81618c9fceafdeede18cc08675286e5b3a5d4596d1d5eb7aeb4814d71b759",
-      "classification": "build-or-generator-output",
-      "reason": "src/external/darlingserver/tools/closure-cache/dcc2-extractrx.c is build/setup/generator code whose namespace output belongs to the selected build tree, not the runtime prefix lifecycle.",
-      "evidence": {
-        "runtime_scope": "build-tree-only",
-        "mutation_operators": [
-          "write-open"
-        ],
-        "build_anchor": {
-          "repository": "darling",
-          "path": "src/external/darlingserver/tools/CMakeLists.txt",
-          "sha256": "f8910638bc9f9ff59528339f44532ffc363d390c887c1dfae519c4957e462a69",
-          "relation": "nearest-cmake-ancestor"
-        }
-      }
-    },
-    {
-      "repository": "darling",
-      "path": "src/external/darlingserver/tools/closure-cache/dcc4-builder.c",
-      "sha256": "7309b5be8eaeacd7bf77e5ac1b42ee45493d270a971cacf30c99c24a6481c546",
-      "classification": "build-or-generator-output",
-      "reason": "src/external/darlingserver/tools/closure-cache/dcc4-builder.c is build/setup/generator code whose namespace output belongs to the selected build tree, not the runtime prefix lifecycle.",
-      "evidence": {
-        "runtime_scope": "build-tree-only",
-        "mutation_operators": [
-          "open-create-or-truncate",
-          "remove",
-          "rename"
-        ],
-        "build_anchor": {
-          "repository": "darling",
-          "path": "src/external/darlingserver/tools/CMakeLists.txt",
-          "sha256": "f8910638bc9f9ff59528339f44532ffc363d390c887c1dfae519c4957e462a69",
-          "relation": "nearest-cmake-ancestor"
-        }
-      }
-    },
-    {
-      "repository": "darling",
-      "path": "src/external/darlingserver/tools/closure-cache/dcc5-builder.c",
-      "sha256": "bb1facda638f6516dcd37ea1205f134314b6662c91a080a4984a1e1d6d170e5e",
-      "classification": "build-or-generator-output",
-      "reason": "src/external/darlingserver/tools/closure-cache/dcc5-builder.c is build/setup/generator code whose namespace output belongs to the selected build tree, not the runtime prefix lifecycle.",
-      "evidence": {
-        "runtime_scope": "build-tree-only",
-        "mutation_operators": [
-          "open-create-or-truncate",
-          "remove",
-          "rename"
-        ],
-        "build_anchor": {
-          "repository": "darling",
-          "path": "src/external/darlingserver/tools/CMakeLists.txt",
-          "sha256": "f8910638bc9f9ff59528339f44532ffc363d390c887c1dfae519c4957e462a69",
-          "relation": "nearest-cmake-ancestor"
-        }
-      }
-    },
-    {
-      "repository": "darling",
-      "path": "src/external/darlingserver/tools/closure-cache/dcc5-redarms.py",
-      "sha256": "37802e5e640df1db210c14d3c992082fae4da2d36ec55326e1d070ae1fa4fbb6",
-      "classification": "build-or-generator-output",
-      "reason": "src/external/darlingserver/tools/closure-cache/dcc5-redarms.py is build/setup/generator code whose namespace output belongs to the selected build tree, not the runtime prefix lifecycle.",
-      "evidence": {
-        "runtime_scope": "build-tree-only",
-        "mutation_operators": [
           "remove"
         ],
         "build_anchor": {
           "repository": "darling",
-          "path": "src/external/darlingserver/tools/CMakeLists.txt",
-          "sha256": "f8910638bc9f9ff59528339f44532ffc363d390c887c1dfae519c4957e462a69",
+          "path": "src/external/darlingserver/CMakeLists.txt",
+          "sha256": "553df6805f0152105aacb4b2471ed3d6cb4abd9959e5ee5bd4d674c5ecefac9c",
+          "relation": "nearest-cmake-ancestor"
+        }
+      }
+    },
+    {
+      "repository": "darling",
+      "path": "src/external/darlingserver/tests/runtime_mode_test.cpp",
+      "sha256": "4da87d6f4e1decba32e39b2b9c0fd96b14c22b00b12d72fdf038805fa2dfae1b",
+      "classification": "test-fixture-task-owned",
+      "reason": "src/external/darlingserver/tests/runtime_mode_test.cpp is a test/regression fixture whose namespace mutations are confined to fixture-owned temporary paths.",
+      "evidence": {
+        "runtime_scope": "task-owned-fixture",
+        "mutation_operators": [
+          "chmod",
+          "link",
+          "remove",
+          "rename"
+        ],
+        "build_anchor": {
+          "repository": "darling",
+          "path": "src/external/darlingserver/CMakeLists.txt",
+          "sha256": "553df6805f0152105aacb4b2471ed3d6cb4abd9959e5ee5bd4d674c5ecefac9c",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -8785,7 +8540,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/dyld/CMakeLists.txt",
-          "sha256": "285c9dcb8c5522f5cccaaeb6cbecda18c5e2fed2ff9774e388e0944d518dce64",
+          "sha256": "bccd9fb32b93b2b8a3ffa4af2624032cd5ab263765f991a9be663367f37efa70",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -8804,7 +8559,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/dyld/CMakeLists.txt",
-          "sha256": "285c9dcb8c5522f5cccaaeb6cbecda18c5e2fed2ff9774e388e0944d518dce64",
+          "sha256": "bccd9fb32b93b2b8a3ffa4af2624032cd5ab263765f991a9be663367f37efa70",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -8812,7 +8567,7 @@
     {
       "repository": "darling",
       "path": "src/external/dyld/src/dyld2.cpp",
-      "sha256": "223bdcca3da03a0565975ae4e5f92e7672302cc7655094afe1b79379d2795830",
+      "sha256": "9854a63b12c8b55d32c8d8e987d2832f5444bd4796d264a544a546b0b2b86f45",
       "classification": "caller-selected-library-output",
       "reason": "src/external/dyld/src/dyld2.cpp exposes library/framework mutation of a caller-selected object; the source contains no registered shared lifecycle endpoint authority.",
       "evidence": {
@@ -8823,7 +8578,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/dyld/CMakeLists.txt",
-          "sha256": "285c9dcb8c5522f5cccaaeb6cbecda18c5e2fed2ff9774e388e0944d518dce64",
+          "sha256": "bccd9fb32b93b2b8a3ffa4af2624032cd5ab263765f991a9be663367f37efa70",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -8842,7 +8597,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/dyld/CMakeLists.txt",
-          "sha256": "285c9dcb8c5522f5cccaaeb6cbecda18c5e2fed2ff9774e388e0944d518dce64",
+          "sha256": "bccd9fb32b93b2b8a3ffa4af2624032cd5ab263765f991a9be663367f37efa70",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -8861,7 +8616,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/dyld/CMakeLists.txt",
-          "sha256": "285c9dcb8c5522f5cccaaeb6cbecda18c5e2fed2ff9774e388e0944d518dce64",
+          "sha256": "bccd9fb32b93b2b8a3ffa4af2624032cd5ab263765f991a9be663367f37efa70",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29045,7 +28800,28 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/xnu/darling/src/libsystem_kernel/emulation/CMakeLists.txt",
-          "sha256": "2564d00a8c2ce9e11aa5fd826f570c5d6d9518717743075576b34aa4f7158628",
+          "sha256": "9c3e33b7d557e3fd3b8bfc28317012b4415eee7eef12d9fbc1dd470fb883b218",
+          "relation": "nearest-cmake-ancestor"
+        }
+      }
+    },
+    {
+      "repository": "darling",
+      "path": "src/external/xnu/darling/src/libsystem_kernel/emulation/tests/eunion_resolver_test.c",
+      "sha256": "90f93124b706bb4531713b0900cf6b6648edbacc8d6d59eac5fea772e3bbf541",
+      "classification": "test-fixture-task-owned",
+      "reason": "src/external/xnu/darling/src/libsystem_kernel/emulation/tests/eunion_resolver_test.c is a test/regression fixture whose namespace mutations are confined to fixture-owned temporary paths.",
+      "evidence": {
+        "runtime_scope": "task-owned-fixture",
+        "mutation_operators": [
+          "mkdir",
+          "open-create-or-truncate",
+          "remove"
+        ],
+        "build_anchor": {
+          "repository": "darling",
+          "path": "src/external/xnu/darling/src/libsystem_kernel/emulation/CMakeLists.txt",
+          "sha256": "9c3e33b7d557e3fd3b8bfc28317012b4415eee7eef12d9fbc1dd470fb883b218",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29053,7 +28829,7 @@
     {
       "repository": "darling",
       "path": "src/external/xnu/darling/src/libsystem_kernel/tests/getattrlist_shared_packer_test.c",
-      "sha256": "058aaceee811ee41338b6e280add49d3b0f96474c1baaa7ca0aa45554a188406",
+      "sha256": "1e1e4cf321abbf22ffe1322fc8bc93dee2bf3135f26ff127e5a393089b19d4b2",
       "classification": "test-fixture-task-owned",
       "reason": "src/external/xnu/darling/src/libsystem_kernel/tests/getattrlist_shared_packer_test.c is a test/regression fixture whose namespace mutations are confined to fixture-owned temporary paths.",
       "evidence": {
@@ -31341,8 +31117,357 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/startup/CMakeLists.txt",
-          "sha256": "5567caef8025fb8d73add0ac737ea330c39d8ef5670ddb43fd53b07b4d587f20",
+          "sha256": "a6c604a6fc6a4d6bb0f9f07d82a606c93706f1aa6e1aa4b7dd4a7d5d86db4185",
           "relation": "nearest-cmake-ancestor"
+        }
+      }
+    },
+    {
+      "repository": "darling",
+      "path": "src/startup/tests/runtime_mode_test.c",
+      "sha256": "809dc9b6d5345244cc48f4f3b4ecd0d3941022c5b504fb62b9abf401e05f80d9",
+      "classification": "test-fixture-task-owned",
+      "reason": "src/startup/tests/runtime_mode_test.c is a test/regression fixture whose namespace mutations are confined to fixture-owned temporary paths.",
+      "evidence": {
+        "runtime_scope": "task-owned-fixture",
+        "mutation_operators": [
+          "chmod",
+          "link",
+          "mkdir",
+          "open-create-or-truncate",
+          "remove",
+          "rename"
+        ],
+        "build_anchor": {
+          "repository": "darling",
+          "path": "src/startup/CMakeLists.txt",
+          "sha256": "a6c604a6fc6a4d6bb0f9f07d82a606c93706f1aa6e1aa4b7dd4a7d5d86db4185",
+          "relation": "nearest-cmake-ancestor"
+        }
+      }
+    },
+    {
+      "repository": "darling-workspace",
+      "path": "west_commands/dev_check.py",
+      "sha256": "9c6b4bb3158170d89095d154b7e7a99c9b3561b43ca45e856dc4c4814b823f02",
+      "classification": "workspace-task-owned-tooling",
+      "reason": "west_commands/dev_check.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
+      "evidence": {
+        "runtime_scope": "workspace-task-root",
+        "mutation_operators": [
+          "mkdir",
+          "remove",
+          "rename"
+        ],
+        "build_anchor": {
+          "repository": "darling-workspace",
+          "path": "west_commands/dev_check.py",
+          "sha256": "9c6b4bb3158170d89095d154b7e7a99c9b3561b43ca45e856dc4c4814b823f02",
+          "relation": "workspace-runtime-source"
+        }
+      }
+    },
+    {
+      "repository": "darling-workspace",
+      "path": "west_commands/dev_start.py",
+      "sha256": "cbf00e33b31c893ae43041983940444a48c62232c4497f4efcb3ce1e3b5f965e",
+      "classification": "workspace-task-owned-tooling",
+      "reason": "west_commands/dev_start.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
+      "evidence": {
+        "runtime_scope": "workspace-task-root",
+        "mutation_operators": [
+          "mkdir",
+          "remove"
+        ],
+        "build_anchor": {
+          "repository": "darling-workspace",
+          "path": "west_commands/dev_start.py",
+          "sha256": "cbf00e33b31c893ae43041983940444a48c62232c4497f4efcb3ce1e3b5f965e",
+          "relation": "workspace-runtime-source"
+        }
+      }
+    },
+    {
+      "repository": "darling-workspace",
+      "path": "west_commands/guest_macho_validation.py",
+      "sha256": "cbe61f479eca6cca612f7921f3be1de26367a54d84a022eab90895276790abcc",
+      "classification": "workspace-task-owned-tooling",
+      "reason": "west_commands/guest_macho_validation.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
+      "evidence": {
+        "runtime_scope": "workspace-task-root",
+        "mutation_operators": [
+          "mkdir",
+          "python-create",
+          "remove"
+        ],
+        "build_anchor": {
+          "repository": "darling-workspace",
+          "path": "west_commands/guest_macho_validation.py",
+          "sha256": "cbe61f479eca6cca612f7921f3be1de26367a54d84a022eab90895276790abcc",
+          "relation": "workspace-runtime-source"
+        }
+      }
+    },
+    {
+      "repository": "darling-workspace",
+      "path": "west_commands/patch.py",
+      "sha256": "a35f29cf7a9435bde96e5a103696aca62dfae3939bf8cfbd7d13c963d0b7ac59",
+      "classification": "workspace-task-owned-tooling",
+      "reason": "west_commands/patch.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
+      "evidence": {
+        "runtime_scope": "workspace-task-root",
+        "mutation_operators": [
+          "mkdir",
+          "python-create",
+          "remove"
+        ],
+        "build_anchor": {
+          "repository": "darling-workspace",
+          "path": "west_commands/patch.py",
+          "sha256": "a35f29cf7a9435bde96e5a103696aca62dfae3939bf8cfbd7d13c963d0b7ac59",
+          "relation": "workspace-runtime-source"
+        }
+      }
+    },
+    {
+      "repository": "darling-workspace",
+      "path": "west_commands/patch_stack_export.py",
+      "sha256": "485bfd54332cc4f98e4ecef98d742a6bd599754d43cd44d49b88c48a8269ec38",
+      "classification": "workspace-task-owned-tooling",
+      "reason": "west_commands/patch_stack_export.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
+      "evidence": {
+        "runtime_scope": "workspace-task-root",
+        "mutation_operators": [
+          "mkdir",
+          "python-create"
+        ],
+        "build_anchor": {
+          "repository": "darling-workspace",
+          "path": "west_commands/patch_stack_export.py",
+          "sha256": "485bfd54332cc4f98e4ecef98d742a6bd599754d43cd44d49b88c48a8269ec38",
+          "relation": "workspace-runtime-source"
+        }
+      }
+    },
+    {
+      "repository": "darling-workspace",
+      "path": "west_commands/patch_stack_lock_first.py",
+      "sha256": "bb4b964cb2a56a2c7535cd702eb624834f3cc9e9a17bf2acb58e7b9bd3fe6c9d",
+      "classification": "workspace-task-owned-tooling",
+      "reason": "west_commands/patch_stack_lock_first.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
+      "evidence": {
+        "runtime_scope": "workspace-task-root",
+        "mutation_operators": [
+          "mkdir",
+          "python-create",
+          "remove"
+        ],
+        "build_anchor": {
+          "repository": "darling-workspace",
+          "path": "west_commands/patch_stack_lock_first.py",
+          "sha256": "bb4b964cb2a56a2c7535cd702eb624834f3cc9e9a17bf2acb58e7b9bd3fe6c9d",
+          "relation": "workspace-runtime-source"
+        }
+      }
+    },
+    {
+      "repository": "darling-workspace",
+      "path": "west_commands/patch_stack_materialize.py",
+      "sha256": "1d62c833ba27c8d5249f8e2da1e3dfa72c4f486e0c69269dbe1c77f171873f0c",
+      "classification": "workspace-task-owned-tooling",
+      "reason": "west_commands/patch_stack_materialize.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
+      "evidence": {
+        "runtime_scope": "workspace-task-root",
+        "mutation_operators": [
+          "mkdir",
+          "python-create",
+          "remove"
+        ],
+        "build_anchor": {
+          "repository": "darling-workspace",
+          "path": "west_commands/patch_stack_materialize.py",
+          "sha256": "1d62c833ba27c8d5249f8e2da1e3dfa72c4f486e0c69269dbe1c77f171873f0c",
+          "relation": "workspace-runtime-source"
+        }
+      }
+    },
+    {
+      "repository": "darling-workspace",
+      "path": "west_commands/pr.py",
+      "sha256": "ebcaaba4e4f1a532f9105802278e9de6dba3272c201fac9a6bd151f73870a0e7",
+      "classification": "workspace-task-owned-tooling",
+      "reason": "west_commands/pr.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
+      "evidence": {
+        "runtime_scope": "workspace-task-root",
+        "mutation_operators": [
+          "python-create"
+        ],
+        "build_anchor": {
+          "repository": "darling-workspace",
+          "path": "west_commands/pr.py",
+          "sha256": "ebcaaba4e4f1a532f9105802278e9de6dba3272c201fac9a6bd151f73870a0e7",
+          "relation": "workspace-runtime-source"
+        }
+      }
+    },
+    {
+      "repository": "darling-workspace",
+      "path": "west_commands/source_worktree.py",
+      "sha256": "2d9de4722c112e8b51bd594b9a77b3a4abe67bceb7518b38d6bbd98a73d58364",
+      "classification": "workspace-task-owned-tooling",
+      "reason": "west_commands/source_worktree.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
+      "evidence": {
+        "runtime_scope": "workspace-task-root",
+        "mutation_operators": [
+          "mkdir",
+          "remove"
+        ],
+        "build_anchor": {
+          "repository": "darling-workspace",
+          "path": "west_commands/source_worktree.py",
+          "sha256": "2d9de4722c112e8b51bd594b9a77b3a4abe67bceb7518b38d6bbd98a73d58364",
+          "relation": "workspace-runtime-source"
+        }
+      }
+    },
+    {
+      "repository": "darling-workspace",
+      "path": "west_commands/test_cmake.py",
+      "sha256": "0a05a769e6a617a32becc0dd21d9f393947f13beb538e5cedcfdabef0bea0e4f",
+      "classification": "workspace-task-owned-tooling",
+      "reason": "west_commands/test_cmake.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
+      "evidence": {
+        "runtime_scope": "workspace-task-root",
+        "mutation_operators": [
+          "mkdir",
+          "python-create"
+        ],
+        "build_anchor": {
+          "repository": "darling-workspace",
+          "path": "west_commands/test_cmake.py",
+          "sha256": "0a05a769e6a617a32becc0dd21d9f393947f13beb538e5cedcfdabef0bea0e4f",
+          "relation": "workspace-runtime-source"
+        }
+      }
+    },
+    {
+      "repository": "darling-workspace",
+      "path": "west_commands/test_homebrew.py",
+      "sha256": "6416db6970ccecf4f205b15eba13080b9f9219a5ad487ec3f33589c5b6665153",
+      "classification": "workspace-task-owned-tooling",
+      "reason": "west_commands/test_homebrew.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
+      "evidence": {
+        "runtime_scope": "workspace-task-root",
+        "mutation_operators": [
+          "mkdir",
+          "python-create",
+          "remove"
+        ],
+        "build_anchor": {
+          "repository": "darling-workspace",
+          "path": "west_commands/test_homebrew.py",
+          "sha256": "6416db6970ccecf4f205b15eba13080b9f9219a5ad487ec3f33589c5b6665153",
+          "relation": "workspace-runtime-source"
+        }
+      }
+    },
+    {
+      "repository": "darling-workspace",
+      "path": "west_commands/test_runtime_build.py",
+      "sha256": "f50cb676b19bee6521ca89a3809016d51e644656327aee9dc0edf50060e35889",
+      "classification": "workspace-task-owned-tooling",
+      "reason": "west_commands/test_runtime_build.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
+      "evidence": {
+        "runtime_scope": "workspace-task-root",
+        "mutation_operators": [
+          "mkdir"
+        ],
+        "build_anchor": {
+          "repository": "darling-workspace",
+          "path": "west_commands/test_runtime_build.py",
+          "sha256": "f50cb676b19bee6521ca89a3809016d51e644656327aee9dc0edf50060e35889",
+          "relation": "workspace-runtime-source"
+        }
+      }
+    },
+    {
+      "repository": "darling-workspace",
+      "path": "west_commands/test_runtime_evidence.py",
+      "sha256": "acde7ea3bd350cc9e9826d59f28f53ff27207d74b4fabceaadeed6afb70aec89",
+      "classification": "workspace-task-owned-tooling",
+      "reason": "west_commands/test_runtime_evidence.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
+      "evidence": {
+        "runtime_scope": "workspace-task-root",
+        "mutation_operators": [
+          "mkdir",
+          "python-create"
+        ],
+        "build_anchor": {
+          "repository": "darling-workspace",
+          "path": "west_commands/test_runtime_evidence.py",
+          "sha256": "acde7ea3bd350cc9e9826d59f28f53ff27207d74b4fabceaadeed6afb70aec89",
+          "relation": "workspace-runtime-source"
+        }
+      }
+    },
+    {
+      "repository": "darling-workspace",
+      "path": "west_commands/test_runtime_source.py",
+      "sha256": "9cbbc07e86c6187d8a5ef71796d7a12883329874632fa46968cb309b0b7a74eb",
+      "classification": "workspace-task-owned-tooling",
+      "reason": "west_commands/test_runtime_source.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
+      "evidence": {
+        "runtime_scope": "workspace-task-root",
+        "mutation_operators": [
+          "mkdir",
+          "python-create",
+          "remove"
+        ],
+        "build_anchor": {
+          "repository": "darling-workspace",
+          "path": "west_commands/test_runtime_source.py",
+          "sha256": "9cbbc07e86c6187d8a5ef71796d7a12883329874632fa46968cb309b0b7a74eb",
+          "relation": "workspace-runtime-source"
+        }
+      }
+    },
+    {
+      "repository": "darling-workspace",
+      "path": "west_commands/test_stock_stack_cache.py",
+      "sha256": "789ba3dc159947bea642145e917e6c549791b2030501eba9e4d8f178785a5f08",
+      "classification": "workspace-task-owned-tooling",
+      "reason": "west_commands/test_stock_stack_cache.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
+      "evidence": {
+        "runtime_scope": "workspace-task-root",
+        "mutation_operators": [
+          "mkdir",
+          "python-create",
+          "remove"
+        ],
+        "build_anchor": {
+          "repository": "darling-workspace",
+          "path": "west_commands/test_stock_stack_cache.py",
+          "sha256": "789ba3dc159947bea642145e917e6c549791b2030501eba9e4d8f178785a5f08",
+          "relation": "workspace-runtime-source"
+        }
+      }
+    },
+    {
+      "repository": "darling-workspace",
+      "path": "west_commands/test_store.py",
+      "sha256": "84170f191a03b1a4bcb38c38c7638820ca9c3aa69508d5f6a4e256e391867e42",
+      "classification": "workspace-task-owned-tooling",
+      "reason": "west_commands/test_store.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
+      "evidence": {
+        "runtime_scope": "workspace-task-root",
+        "mutation_operators": [
+          "mkdir"
+        ],
+        "build_anchor": {
+          "repository": "darling-workspace",
+          "path": "west_commands/test_store.py",
+          "sha256": "84170f191a03b1a4bcb38c38c7638820ca9c3aa69508d5f6a4e256e391867e42",
+          "relation": "workspace-runtime-source"
         }
       }
     }

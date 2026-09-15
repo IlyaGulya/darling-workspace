@@ -20,8 +20,27 @@ assert SPEC is not None and SPEC.loader is not None
 host_tier = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(host_tier)
 
-with patch.dict(os.environ, {"DARLING_HOST_TIER_WORKERS": "3"}, clear=True):
-    assert host_tier._worker_count() == 3
+with patch.dict(os.environ, {}, clear=True), patch.object(
+    host_tier.os, "cpu_count", return_value=32
+):
+    assert host_tier._worker_count(100) == 8
+    assert host_tier._worker_count(3) == 3
+
+with patch.dict(
+    os.environ, {"DARLING_HOST_TIER_WORKERS": "12"}, clear=True
+), patch.object(host_tier.os, "cpu_count", return_value=32):
+    assert host_tier._worker_count(12) == 12
+    assert host_tier._worker_count(32) == 12
+
+for value, command_count in (("0", 3), ("4", 3), ("many", 3)):
+    with patch.dict(os.environ, {"DARLING_HOST_TIER_WORKERS": value}, clear=True):
+        try:
+            host_tier._worker_count(command_count)
+        except SystemExit:
+            continue
+        raise AssertionError(
+            f"worker count {value!r} for {command_count} commands was accepted"
+        )
 
 with tempfile.TemporaryDirectory(prefix="host-tier-contract-") as raw:
     root = Path(raw)
