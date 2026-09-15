@@ -42,7 +42,111 @@ CONTRACTS = (
     "tests/run-rootless-debug-cleanup-contract.sh",
     "tests/run-west-test-runtime-source-reuse-contract.sh",
     "tests/run-west-test-metadata-invocation-identity-contract.sh",
+    # Recovered: these contracts existed and passed but were listed by no tier,
+    # so nothing ran them. Registered after running each one on this checkout.
+    "tests/run-check-python-syntax-contract.sh",
+    "tests/run-handoff-transaction-contract.sh",
+    "tests/run-rootless-diagnostics-contract.sh",
+    "tests/run-rootless-shutdown-consumer-contract.sh",
+    "tests/run-rtk-exit-status-contract.sh",
+    "tests/run-west-darling-build-contract.sh",
+    "tests/run-west-deploy-transaction-contract.sh",
+    "tests/run-west-dev-output-contract.sh",
+    "tests/run-west-doctor-output-contract.sh",
+    "tests/run-west-doctor-prefix-contract.sh",
+    "tests/run-west-dw-beads-alias-contract.sh",
+    "tests/run-west-extension-help-contract.sh",
+    "tests/run-west-job-contract.sh",
+    "tests/run-west-patch-explain-contract.sh",
+    "tests/run-west-patch-export-preflight-contract.sh",
+    "tests/run-west-patch-stack-preflight-contract.sh",
+    "tests/run-west-prefix-repair-contract.sh",
+    "tests/run-west-profile-discovery-contract.sh",
+    "tests/run-west-source-worktree-contract.sh",
+    "tests/run-west-test-ctest-lifecycle-contract.sh",
+    "tests/run-west-test-descriptor-transport-contract.sh",
+    "tests/run-west-test-dispatch-contract.sh",
+    "tests/run-west-test-execution-contract.sh",
+    "tests/run-west-test-expect-failure-contract.sh",
+    "tests/run-west-test-manifest-contract.sh",
+    "tests/run-west-test-resource-provider-contract.sh",
+    "tests/run-west-test-results-contract.sh",
+    "tests/run-west-test-runtime-red-contract.sh",
+    "tests/run-west-test-stacked-omission-contract.sh",
+    "tests/run-west-test-worktree-cleanup-contract.sh",
+    "tests/run-west-update-parallel-contract.sh",
+    "tests/run-patch-stack-mutation-contract.sh",
+    "tests/run-lifecycle-explorer-contract.sh",
+    "tests/run-lifecycle-fuzz-contract.sh",
+    "tests/run-lifecycle-operation-boundary-contract.sh",
+    "tests/run-lifecycle-trace-contract.sh",
+    # Documented in AGENTS.md as focused contracts but invoked by no entrypoint.
+    # run-west-test-testkit-contract.sh is the root of a family: the guest-macho,
+    # guest-toolchain, darling-c-test, runtime-build and macho-corpus contracts
+    # are only named by it, so registering it makes all of them reachable again.
+    "tests/run-west-patch-verify-contract.sh",
+    "tests/run-west-test-testkit-contract.sh",
+    "tests/run-west-test-add-compat-cmake-contract.sh",
+    "tests/run-west-test-gc-contract.sh",
+    "tests/run-west-test-guarded-timeout-contract.sh",
+    "tests/run-west-test-guest-command-contract.sh",
+    "tests/run-west-test-prefix-cleanup-contract.sh",
+    "tests/run-clt-provenance-contract.sh",
+    "tests/run-rootless-cleanup-contract.sh",
+    "tests/run-rootless-prefix-contract.sh",
 )
+
+# Contract runners deliberately kept out of the tier. Each entry states the
+# reason, and the census below fails the tier if a runner is in neither this
+# mapping nor CONTRACTS: an unaccounted contract silently proves nothing.
+EXCLUDED_CONTRACTS = {
+    "tests/run-ci-test-tiers-contract.sh":
+        "drives the tier runner itself; running the tier from inside the tier recurses",
+    "tests/run-objc4-macro-contract.sh":
+        "requires OBJC4_MACRO_CONTRACT_CANDIDATE, a reviewed objc4 source tree supplied by the operator",
+    "tests/run-lifecycle-real-kernel-contract.sh":
+        "runs a privileged cgroup-v2 fixture (bounded sudo) and needs an interpreter with os.pidfd_open",
+    "tests/run-perf-archive-forensic-contract.sh":
+        "fails: the archive-forensic exception ledger disagrees with the contract's expectation "
+        "(assert at perf_archive_forensic_contract.py:40); the runner was repaired to use the "
+        "house YAML-capable interpreter, which is what made the drift visible",
+    "tests/run-legacy-runtime-inventory-contract.sh":
+        "fails: locks/patch-stack legacy inventory disagrees with the current profile series",
+    "tests/run-namespace-writer-inventory-contract.sh":
+        "fails: lifecycle/namespace-writer-inventory-v1.json has no symbol anchor for "
+        "darling.startup.prefix-provision in the current darling checkout",
+}
+
+
+def unaccounted_contracts(tests_dir: Path) -> list[str]:
+    """Return contract runners that no entrypoint accounts for.
+
+    A runner counts as accounted for when this tier registers it, when it is
+    listed in EXCLUDED_CONTRACTS with a reason, when CI or patch metadata names
+    it, or when a contract this tier runs names it. A mention in an excluded
+    contract does not count: that contract does not run.
+    """
+    workspace = tests_dir.parent
+    registered = {Path(contract).name for contract in CONTRACTS}
+    accounted = registered | {Path(contract).name for contract in EXCLUDED_CONTRACTS}
+    sources = list((workspace / "ci").rglob("*.py"))
+    sources += list((workspace / "ci").rglob("*.sh"))
+    sources += list((workspace / ".github" / "workflows").glob("*"))
+    sources += list((workspace / "patches").glob("*/patches.yml"))
+    sources += [workspace / contract for contract in CONTRACTS]
+    for source in sources:
+        try:
+            text = source.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for path in tests_dir.glob("run-*contract*.sh"):
+            if path.name in text:
+                accounted.add(path.name)
+    return sorted(
+        path.name
+        for path in tests_dir.glob("run-*contract*.sh")
+        if path.name not in accounted
+    )
 
 
 class HostCommand(NamedTuple):
@@ -240,6 +344,14 @@ def run_commands(
 
 
 def main() -> int:
+    unaccounted = unaccounted_contracts(ROOT / "tests")
+    if unaccounted:
+        print(
+            "host tier contract census failed: these runners are in neither CONTRACTS nor "
+            "EXCLUDED_CONTRACTS, so nothing runs them:\n  " + "\n  ".join(unaccounted),
+            file=sys.stderr,
+        )
+        return 2
     commands = [
         HostCommand(Path(contract).stem, [str(ROOT / contract)], True)
         for contract in CONTRACTS

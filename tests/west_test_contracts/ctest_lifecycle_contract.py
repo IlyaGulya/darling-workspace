@@ -35,6 +35,25 @@ from west_commands.test_execution import ProcessResult
 
 os.environ.setdefault("WEST_RUNTIME_MIN_FREE_BYTES", "0")
 
+
+@contextmanager
+def runtime_cache_disabled():
+    """Disable the runtime reuse store for a from-source lifecycle section.
+
+    These sections assert the build phase order. With the store enabled the
+    reuse plan depends on what the machine happens to have cached, so the same
+    assertions would change meaning between hosts.
+    """
+    saved = os.environ.get("WEST_RUNTIME_BUILD_CACHE")
+    os.environ["WEST_RUNTIME_BUILD_CACHE"] = "off"
+    try:
+        yield
+    finally:
+        if saved is None:
+            os.environ.pop("WEST_RUNTIME_BUILD_CACHE", None)
+        else:
+            os.environ["WEST_RUNTIME_BUILD_CACHE"] = saved
+
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     prefix = root / "selected prefix ' $(printf wrong)"
@@ -296,6 +315,7 @@ with tempfile.TemporaryDirectory() as temp:
             keep_prefix_running=False,
             ctest_timeout_seconds=17,
             gc=False,
+            dry_run=False,
             red_audit=False,
             profile=None,
             guest_macho_validation_group=None,
@@ -338,6 +358,7 @@ with tempfile.TemporaryDirectory() as temp:
     server_trace.write_text("stale server trace\n")
     test = DarlingTest.__new__(DarlingTest)
     test.topdir = str(root)
+    test.manifest = SimpleNamespace(repo_abspath=str(root))
     test._prefix = str(root / "prefix")
     test._runtime_evidence_root = root / "evidence"
     test._active_profile = None
@@ -364,11 +385,14 @@ with tempfile.TemporaryDirectory() as temp:
     source_roots = []
 
     @contextmanager
-    def source_forest(anchor, proof, *, omit_patch, root, evidence_session):
+    def source_forest(anchor, proof, *, omit_patch, root, evidence_session, reuse_key):
         assert test._active_profile == "homebrew"
         assert anchor["module"] == "darling/src/external/xnu"
         assert proof["runtime-artifacts"][0]["build-targets"] == ["system_kernel"]
         assert not omit_patch
+        # The reuse store is disabled in this section, so the forest must come
+        # from the evidence root rather than from a cached entry.
+        assert reuse_key is None, reuse_key
         assert root.parent == evidence_session.directory
         events.append("source")
         source_roots.append(root / "darling")
@@ -399,13 +423,14 @@ with tempfile.TemporaryDirectory() as temp:
         profile == "homebrew",
         label == "CTest homebrew",
     )
-    with test._ctest_runtime_profile_context(["homebrew"]) as runtime_env:
-        assert events == ["preflight", "source", "build", "deploy"], events
-        assert runtime_env["DARLING"] == str(root / "prefix" / "bin" / "darling")
-        assert runtime_env["DARLING_LAUNCHER"] == str(root / "prefix" / "bin" / "darling")
-        assert runtime_env["DPREFIX"] == str(root / "prefix")
-        assert runtime_env["DSERVER_TEST_TRACE_FILE"] == str(server_trace)
-        assert not server_trace.exists()
+    with runtime_cache_disabled():
+        with test._ctest_runtime_profile_context(["homebrew"]) as runtime_env:
+            assert events == ["preflight", "source", "build", "deploy"], events
+            assert runtime_env["DARLING"] == str(root / "prefix" / "bin" / "darling")
+            assert runtime_env["DARLING_LAUNCHER"] == str(root / "prefix" / "bin" / "darling")
+            assert runtime_env["DPREFIX"] == str(root / "prefix")
+            assert runtime_env["DSERVER_TEST_TRACE_FILE"] == str(server_trace)
+            assert not server_trace.exists()
     assert events == ["preflight", "source", "build", "deploy", "restore"], events
     assert test._active_profile is None
 
@@ -414,6 +439,7 @@ with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     test = DarlingTest.__new__(DarlingTest)
     test.topdir = str(root)
+    test.manifest = SimpleNamespace(repo_abspath=str(root))
     test._prefix = str(root / "prefix")
     test._runtime_evidence_root = root / "evidence"
     test._active_profile = None
@@ -435,8 +461,9 @@ with tempfile.TemporaryDirectory() as temp:
     }
 
     @contextmanager
-    def source_forest(_anchor, _proof, *, omit_patch, root, evidence_session):
+    def source_forest(_anchor, _proof, *, omit_patch, root, evidence_session, reuse_key):
         assert not omit_patch
+        assert reuse_key is None, reuse_key
         assert root.parent == evidence_session.directory
         yield root / "darling"
 
@@ -444,8 +471,9 @@ with tempfile.TemporaryDirectory() as temp:
     test._runtime_red_build_artifacts = lambda *_args, **_kwargs: test.die("build failed")
     test._preflight_runtime_profile_stack = lambda *_args: None
     try:
-        with test._ctest_runtime_profile_context(["homebrew"]):
-            raise AssertionError("runtime build failure unexpectedly yielded")
+        with runtime_cache_disabled():
+            with test._ctest_runtime_profile_context(["homebrew"]):
+                raise AssertionError("runtime build failure unexpectedly yielded")
     except SystemExit as exc:
         assert str(exc) == "build failed", exc
     entries = list(test._runtime_evidence_root.glob("runtime-evidence-*"))
