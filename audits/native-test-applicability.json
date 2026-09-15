@@ -123,33 +123,33 @@
     },
     "acceptance-priorities:darling/homebrew-prefix-tooling.patch:14": {
       "name": "comparison_off_lz4_source",
-      "identity_sha256": "23f11fd6ac3e70752fda1115f7fdf8b6e57b0a9e53b060581207108933aa9c89",
+      "identity_sha256": "5aa45a5416b121de064f83e24043cbb28e7438ab170eb1e11003c3e978854ba2",
       "policy": "platform_setup_before_native",
-      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+      "reason": "Replay phases consume the staged stock stack instead of building it, so they now declare the homebrew-lz4 resource (restore, adopt or stage in that order), and the from-source lz4 tests declare WEST_STOCK_STACK_RESTORE=off so a snapshot can never stand in for the build they exist to measure. Reviewed as the same behavioral gate each binding was reviewed for; no test was added, removed or repointed."
     },
     "acceptance-priorities:darling/homebrew-prefix-tooling.patch:15": {
       "name": "comparison_off_stock_reinstall",
-      "identity_sha256": "d4e9e0e82d672ad241bad92655303ad84d94d30ceeae7c7b89c3c1ff8faa6e16",
+      "identity_sha256": "227628271bf53d70b196ff43ee14d4970985df5e015293a10a41358bf973aea4",
       "policy": "platform_setup_before_native",
-      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+      "reason": "Replay phases consume the staged stock stack instead of building it, so they now declare the homebrew-lz4 resource (restore, adopt or stage in that order), and the from-source lz4 tests declare WEST_STOCK_STACK_RESTORE=off so a snapshot can never stand in for the build they exist to measure. Reviewed as the same behavioral gate each binding was reviewed for; no test was added, removed or repointed."
     },
     "acceptance-priorities:darling/homebrew-prefix-tooling.patch:16": {
       "name": "comparison_off_openssl",
-      "identity_sha256": "1a5177cb800da4b8380565d6b9c77b712289b109abbd79a9ec4167e4f52e9f38",
+      "identity_sha256": "c24322cc5e222382cedf62b0e6cd9496558b9e8dacf88e699fbee60f5443ce8f",
       "policy": "platform_setup_before_native",
-      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+      "reason": "Replay phases consume the staged stock stack instead of building it, so they now declare the homebrew-lz4 resource (restore, adopt or stage in that order), and the from-source lz4 tests declare WEST_STOCK_STACK_RESTORE=off so a snapshot can never stand in for the build they exist to measure. Reviewed as the same behavioral gate each binding was reviewed for; no test was added, removed or repointed."
     },
     "acceptance-priorities:darling/homebrew-prefix-tooling.patch:17": {
       "name": "comparison_off_github",
-      "identity_sha256": "3bc8c0a5f0f918c4918b7df4c5642750b0599f9535b059f73cc1e1867633a7f5",
+      "identity_sha256": "577c349813ab3b32316f805f30216353e0b9efa4fded59a037acd9abd215a8b1",
       "policy": "platform_setup_before_native",
-      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+      "reason": "Replay phases consume the staged stock stack instead of building it, so they now declare the homebrew-lz4 resource (restore, adopt or stage in that order), and the from-source lz4 tests declare WEST_STOCK_STACK_RESTORE=off so a snapshot can never stand in for the build they exist to measure. Reviewed as the same behavioral gate each binding was reviewed for; no test was added, removed or repointed."
     },
     "acceptance-priorities:darling/homebrew-prefix-tooling.patch:18": {
       "name": "comparison_off_wget_repeat",
-      "identity_sha256": "c9bd554d5473ce2b8706b143cff442403e36c2ff456156713097f4e2001a5c1a",
+      "identity_sha256": "7506be1e51ce0a8a95e8e83f80f8ad18a2047b1d61180dc327b91da18a9cef42",
       "policy": "platform_setup_before_native",
-      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+      "reason": "Replay phases consume the staged stock stack instead of building it, so they now declare the homebrew-lz4 resource (restore, adopt or stage in that order), and the from-source lz4 tests declare WEST_STOCK_STACK_RESTORE=off so a snapshot can never stand in for the build they exist to measure. Reviewed as the same behavioral gate each binding was reviewed for; no test was added, removed or repointed."
     },
     "acceptance-priorities:darling/homebrew-prefix-tooling.patch:19": {
       "name": "comparison_on_resume_ownership",
@@ -165,33 +165,33 @@
     },
     "acceptance-priorities:darling/homebrew-prefix-tooling.patch:21": {
       "name": "comparison_on_lz4_source",
-      "identity_sha256": "4a7a6c12bf174ac1c0830d0d29e1010ac8f3e11e1849963fb9729ca7a5578189",
+      "identity_sha256": "c87593ed06eb9f6bb574c30b7e99fa8f0ae69474141c6c460972147d1e1b68d7",
       "policy": "platform_setup_before_native",
-      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+      "reason": "Replay phases consume the staged stock stack instead of building it, so they now declare the homebrew-lz4 resource (restore, adopt or stage in that order), and the from-source lz4 tests declare WEST_STOCK_STACK_RESTORE=off so a snapshot can never stand in for the build they exist to measure. Reviewed as the same behavioral gate each binding was reviewed for; no test was added, removed or repointed."
     },
     "acceptance-priorities:darling/homebrew-prefix-tooling.patch:22": {
       "name": "comparison_on_stock_reinstall",
-      "identity_sha256": "8e8627cd4395280cc754af971fe875f153eda58c1bce8cb79787aa6ced8aae28",
+      "identity_sha256": "3b30f7d5c5c6f60bdfa54f263249a05bdfaa8dc67ac94928b4a14a56efcf2622",
       "policy": "platform_setup_before_native",
-      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+      "reason": "Replay phases consume the staged stock stack instead of building it, so they now declare the homebrew-lz4 resource (restore, adopt or stage in that order), and the from-source lz4 tests declare WEST_STOCK_STACK_RESTORE=off so a snapshot can never stand in for the build they exist to measure. Reviewed as the same behavioral gate each binding was reviewed for; no test was added, removed or repointed."
     },
     "acceptance-priorities:darling/homebrew-prefix-tooling.patch:23": {
       "name": "comparison_on_openssl",
-      "identity_sha256": "9822a8b6900d5511d72f8d0b920c397db6c7029b4cd4bf94f77f688c3b031a6a",
+      "identity_sha256": "2035811436f06c188bd70e810d6c5e257d045e1e5d592d00f00655b8420b2dba",
       "policy": "platform_setup_before_native",
-      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+      "reason": "Replay phases consume the staged stock stack instead of building it, so they now declare the homebrew-lz4 resource (restore, adopt or stage in that order), and the from-source lz4 tests declare WEST_STOCK_STACK_RESTORE=off so a snapshot can never stand in for the build they exist to measure. Reviewed as the same behavioral gate each binding was reviewed for; no test was added, removed or repointed."
     },
     "acceptance-priorities:darling/homebrew-prefix-tooling.patch:24": {
       "name": "comparison_on_github",
-      "identity_sha256": "dd22c414b5d8679753b2c1ef4d7a3a00715812826b1cdc9295b963bc6c3f4118",
+      "identity_sha256": "81bbb16339d59cf72842e36f5f104234420768df7c6147ea2c07e7f0ef073256",
       "policy": "platform_setup_before_native",
-      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+      "reason": "Replay phases consume the staged stock stack instead of building it, so they now declare the homebrew-lz4 resource (restore, adopt or stage in that order), and the from-source lz4 tests declare WEST_STOCK_STACK_RESTORE=off so a snapshot can never stand in for the build they exist to measure. Reviewed as the same behavioral gate each binding was reviewed for; no test was added, removed or repointed."
     },
     "acceptance-priorities:darling/homebrew-prefix-tooling.patch:25": {
       "name": "comparison_on_wget_repeat",
-      "identity_sha256": "b4fe54ca0705941a2132a954e3f6bcedb4a4be27a366cfcb4a0c8ca712291e93",
+      "identity_sha256": "224a5f1a5d9641d0616dd21c1fafa83177c19c035af8eea160e281475eb28e8e",
       "policy": "platform_setup_before_native",
-      "reason": "Stock Homebrew build/install inside a Darling prefix; the reference is the package's own build result while prefix provisioning stays platform-specific."
+      "reason": "Replay phases consume the staged stock stack instead of building it, so they now declare the homebrew-lz4 resource (restore, adopt or stage in that order), and the from-source lz4 tests declare WEST_STOCK_STACK_RESTORE=off so a snapshot can never stand in for the build they exist to measure. Reviewed as the same behavioral gate each binding was reviewed for; no test was added, removed or repointed."
     },
     "arch:libunwind/static-no-jump-tables-for-dyld.patch:1": {
       "name": "dyld_static_libunwind_link",
@@ -851,7 +851,7 @@
       "name": "fd_guard_ebadf_contract",
       "identity_sha256": "9fc5a36b1e668002b4934691c61d8b4a07d16b43aa4bfb520a5dc6fa43a59e8b",
       "policy": "semantic_reference_review",
-      "reason": "Workspace fixture marks host fd 77 guarded and calls production dup/dup2/fcntl, requiring EBADF rather than abort or fallback. Guarded internal descriptor selection is Darling-specific; whether exposing it as out-of-range/EBADF—including destination dup2—is compatible needs explicit public-boundary review. Do not equate Darling guards with native guarded-fd API behavior."
+      "reason": "Workspace fixture marks host fd 77 guarded and calls production dup/dup2/fcntl, requiring EBADF rather than abort or fallback. Guarded internal descriptor selection is Darling-specific; whether exposing it as out-of-range/EBADF\u2014including destination dup2\u2014is compatible needs explicit public-boundary review. Do not equate Darling guards with native guarded-fd API behavior."
     },
     "homebrew:xnu/fd-guard-ebadf.patch:2": {
       "name": "fd_guard_ebadf_guest",
@@ -1019,7 +1019,7 @@
       "name": "pot_lifetime_binding",
       "identity_sha256": "e74385205ec2892cfb8784349aefb44b6ac4efe959e51506c67e4e1801eded2b",
       "policy": "internal_proof_exemption",
-      "reason": "linux-pidnamespace-parent-death-model: exported fixture models server → namespace PID 1 → guest using CLONE_NEWPID and PR_SET_PDEATHSIG. Linux namespace containment has no corresponding Darwin implementation. Does not prove production hook placement merely by passing the model."
+      "reason": "linux-pidnamespace-parent-death-model: exported fixture models server \u2192 namespace PID 1 \u2192 guest using CLONE_NEWPID and PR_SET_PDEATHSIG. Linux namespace containment has no corresponding Darwin implementation. Does not prove production hook placement merely by passing the model."
     },
     "homebrew:darlingserver/pot-guest-lifetime-binding.patch:2": {
       "name": "pot_lifetime_binding_runtime",
