@@ -34,6 +34,7 @@ CONTRACTS = (
     "tests/run-west-test-runtime-cache-contract.sh",
     "tests/run-west-test-stock-stack-cache-contract.sh",
     "tests/run-west-test-runtime-source-reuse-contract.sh",
+    "tests/run-west-test-metadata-invocation-identity-contract.sh",
 )
 
 
