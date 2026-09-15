@@ -38,6 +38,7 @@ CONTRACTS = (
     "tests/run-west-test-verdict-cache-contract.sh",
     "tests/run-west-test-applicability-preflight-diagnosis-contract.sh",
     "tests/run-west-test-metadata-run-report-contract.sh",
+    "tests/run-west-test-dry-run-contract.sh",
     "tests/run-west-test-runtime-source-reuse-contract.sh",
     "tests/run-west-test-metadata-invocation-identity-contract.sh",
 )

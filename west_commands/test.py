@@ -5814,6 +5814,16 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         if evidence_id:
             self.die("--runtime-evidence-id requires --runtime-evidence show or replay")
 
+        if args.dry_run and not args.gc:
+            # --dry-run only plans --gc. Everywhere else it was silently ignored
+            # and the selected tests ran, which is how a second prefix-backed run
+            # was started while one was already in flight.
+            self.die(
+                "--dry-run only plans what --gc would prune; without --gc it would "
+                "start the selected run. Pass --gc to plan a prune, or drop "
+                "--dry-run to run the selection."
+            )
+
         if getattr(args, "cleanup_prefix", False):
             incompatible = []
             if args.profile or args.patch or args.env or args.label or args.changed:
