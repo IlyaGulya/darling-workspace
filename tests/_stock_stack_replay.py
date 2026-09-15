@@ -12,8 +12,10 @@ import tempfile
 workspace = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(workspace / "west_commands"))
 from test_guest_execution import run_guest_shell_argv
+from stock_replay_program import resolve_wget_iterations, wget_repeat_phase
 
 prefix = Path(os.environ["DPREFIX"])
+wget_iterations, wget_acceptance = resolve_wget_iterations(os.environ)
 launcher = os.environ["DARLING_LAUNCHER"]
 phase = os.environ.get("WEST_STOCK_REPLAY_PHASE", "install")
 core = "ad6d3bbf8f5eac27a5ce90e695c6b41765d40bb7"
@@ -146,13 +148,7 @@ openssl-tests)
     "$brew" postinstall openssl@3
     ;;
 wget-repeat)
-    for iteration in 1 2 3 4 5 6 7 8 9 10 11 12; do
-        printf 'STOCK_WGET_REBUILD_BEGIN iteration=%s\n' "$iteration"
-        "$brew" reinstall --keep-tmp --build-from-source wget
-        /usr/local/bin/wget --timeout=60 --tries=1 -O "$work/wget-example.html" https://example.com/
-        test -s "$work/wget-example.html"
-        printf 'STOCK_WGET_REBUILD_OK iteration=%s\n' "$iteration"
-    done
+    __WGET_REPEAT_PHASE__
     ;;
 *) printf 'invalid phase: %s\n' "$phase" >&2; exit 2 ;;
 esac
@@ -173,6 +169,13 @@ esac
 test -s "$work/wget-example.html"
 printf 'STOCK_CLT13_REPLAY_OK phase=%s\n' "$phase"
 '''
+program = program.replace(
+    "__WGET_REPEAT_PHASE__", wget_repeat_phase(wget_iterations)
+)
+print("STOCK_WGET_REPEAT iterations=%s acceptance=%s" % (
+    wget_iterations, 1 if wget_acceptance else 0
+), flush=True)
+
 result = run_guest_shell_argv(
     launcher, prefix,
     ("/usr/bin/env", "-i", "/bin/bash", "-c", program, "west-stock-replay",
