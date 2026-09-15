@@ -44,6 +44,29 @@ def write_runtime_source_marker(entry: Path, key: str, revision: str) -> None:
     write_marker(entry, kind=SOURCE_KIND, key=key, darling=revision)
 
 
+def record_runtime_source_marker(entry: Path, key: str, source_root: Path) -> str | None:
+    """Mark a completed forest at its materialized revision.
+
+    Profile application commits inside the forest, so the revision the worktree
+    was created from is not what the forest ends up at. Recording the requested
+    revision would make every later reuse fail its own check; recording the
+    materialized HEAD keeps the check meaningful. A forest whose HEAD cannot be
+    resolved is left unmarked, so it is never reused.
+    """
+
+    resolved = subprocess.run(
+        ["git", "-C", str(source_root), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    head = resolved.stdout.strip()
+    if resolved.returncode or not head:
+        return None
+    write_runtime_source_marker(entry, key, head)
+    return head
+
+
 class RuntimeSourceMaterializer:
     """Source-forest domain service backed by one ``west test`` workspace.
 
@@ -609,18 +632,40 @@ class RuntimeSourceMaterializer:
         materialized_modules: set[Path],
         projects_by_path: dict[Path, Path],
     ) -> None:
-        """Drop an interrupted or stale entry so it cannot be reused partially."""
+        """Drop an interrupted or stale entry so it cannot be reused partially.
+
+        Hydrated nested gitlinks are worktrees of their own repositories, so the
+        repositories are collected from the ``gitdir`` pointers before the tree
+        is deleted and each is pruned afterwards. Leaving a registration behind
+        makes the next materialization fail with "missing but already registered
+        worktree" instead of rebuilding the forest.
+        """
 
         if not entry.exists():
             return
-        source_root = entry / "darling"
-        if source_root.is_dir() and not source_root.is_symlink():
-            remove_temporary_worktree(darling_repo, source_root)
-        shutil.rmtree(entry, ignore_errors=True)
         repos = {darling_repo}
         repos.update(
             repo for path, repo in projects_by_path.items() if path in materialized_modules
         )
+        for candidate in entry.rglob(".git"):
+            try:
+                text = candidate.read_text().strip()
+            except OSError:
+                continue
+            if not text.startswith("gitdir:"):
+                continue
+            gitdir = Path(text.split(":", 1)[1].strip())
+            if not gitdir.is_absolute():
+                gitdir = (candidate.parent / gitdir).resolve()
+            parts = gitdir.parts
+            if "worktrees" not in parts:
+                continue
+            repo = Path(*parts[: parts.index("worktrees")])
+            repos.add(repo.parent if repo.name == ".git" else repo)
+        source_root = entry / "darling"
+        if source_root.is_dir() and not source_root.is_symlink():
+            remove_temporary_worktree(darling_repo, source_root)
+        shutil.rmtree(entry, ignore_errors=True)
         for repo in sorted(repos):
             subprocess.run(
                 ["git", "-C", str(repo), "worktree", "prune"],
@@ -784,8 +829,11 @@ class RuntimeSourceMaterializer:
                 f"({time.monotonic() - profile_started:.1f}s)"
             )
             yielded = True
-            if reuse:
-                write_runtime_source_marker(temp, reuse_key, darling_ref)
+            if reuse and record_runtime_source_marker(temp, reuse_key, source_root) is None:
+                self._host.err(
+                    "runtime source forest is not a resolvable Git worktree; "
+                    f"it will not be reused: {source_root}"
+                )
             yield source_root
         except RuntimeRedProven:
             raise

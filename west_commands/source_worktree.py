@@ -84,6 +84,27 @@ def _gitlinks(repo: Path, revision: str) -> list[tuple[str, str]]:
     return entries
 
 
+def _add_detached_worktree(repo: Path, target: Path, revision: str) -> None:
+    """Add one detached worktree, recovering from a stale registration.
+
+    A source forest that was deleted without unregistering its nested worktrees
+    (a manual wipe, or a run killed before cleanup) leaves Git refusing the same
+    path with "missing but already registered worktree". Pruning that repository
+    clears the registration, so the add is retried once instead of failing every
+    later materialization.
+    """
+
+    arguments = ("worktree", "add", "--quiet", "--detach", str(target), revision)
+    try:
+        _git(repo, *arguments)
+        return
+    except SourceWorktreeError as error:
+        if "already registered worktree" not in str(error):
+            raise
+    _git(repo, "worktree", "prune")
+    _git(repo, *arguments)
+
+
 def _is_git_worktree(path: Path) -> bool:
     return (
         subprocess.run(
@@ -200,15 +221,7 @@ def prepare_source_worktree(
                     # added superproject worktree. They carry no caller state.
                     target.rmdir()
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    _git(
-                        canonical_child,
-                        "worktree",
-                        "add",
-                        "--quiet",
-                        "--detach",
-                        str(target),
-                        requested_revision,
-                    )
+                    _add_detached_worktree(canonical_child, target, requested_revision)
                     created = True
                 elif not _is_git_worktree(target):
                     raise SourceWorktreeError(
@@ -223,15 +236,7 @@ def prepare_source_worktree(
                     )
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                _git(
-                    canonical_child,
-                    "worktree",
-                    "add",
-                    "--quiet",
-                    "--detach",
-                    str(target),
-                    requested_revision,
-                )
+                _add_detached_worktree(canonical_child, target, requested_revision)
                 created = True
             entry = PreparedGitlink(
                 relative_path=str(relative_path),

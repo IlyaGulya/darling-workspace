@@ -271,7 +271,12 @@ refs, PR drafts, and agent handoff.
   configured defines and targets, the compiler fingerprint and the deploy
   prefix. Never widen that match to make a run faster, and never reuse a source
   forest whose completion marker is absent: an interrupted materialization is
-  discarded and rebuilt rather than consumed. The forest path must stay stable
+  discarded and rebuilt rather than consumed. Never delete the store with
+  `rm -rf`: its entries are Git worktrees registered in the Darling repository
+  and in every hydrated nested repository, so a manual wipe leaves registrations
+  whose directories are gone. Discard through the framework, which unregisters
+  them, and let `_add_detached_worktree` recover if one is found. The forest
+  path must stay stable
   across runs, because ccache normalises absolute paths against the current
   working directory, so a per-run temporary root makes every object a miss
   regardless of `CCACHE_BASEDIR` or `-fdebug-prefix-map`.
