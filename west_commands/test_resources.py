@@ -13,9 +13,9 @@ from dataclasses import dataclass
 from typing import Any
 
 try:
-    from .test_homebrew import homebrew_lz4_context
+    from .test_stock_stack_cache import stock_stack_context
 except ImportError:
-    from test_homebrew import homebrew_lz4_context
+    from test_stock_stack_cache import stock_stack_context
 
 
 @dataclass(frozen=True)
@@ -105,7 +105,9 @@ class HomebrewLz4Provider(ResourceProvider):
         return self.name in set(invocation.get("requires_resources", []))
 
     def context(self, command: Any, invocation: dict[str, Any], env: dict[str, str] | None):
-        return homebrew_lz4_context(env)
+        # Setup restores an identity-matched stock-stack snapshot or stages the
+        # pinned inputs exactly as before; teardown captures a complete stack.
+        return stock_stack_context(command, invocation, env)
 
 
 RESOURCE_PROVIDERS: tuple[ResourceProvider, ...] = (
