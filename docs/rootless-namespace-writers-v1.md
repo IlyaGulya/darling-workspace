@@ -23,10 +23,10 @@ required rather than another pathname check.
 
 ## Current writers
 
-The registry covers 139 finite production source paths (76 typed writer
+The registry covers 139 finite production source paths (78 typed writer
 records). The complete production-forest scan (anchored by the build/runtime
-closure) discovers 1,752 namespace-mutation candidates: 108 hit typed owner
-paths, 38 hit exact SHA-bound exclusions, and 1,606 have individual records in
+closure) discovers 1,757 namespace-mutation candidates: 108 hit typed owner
+paths, 37 hit exact SHA-bound exclusions, and 1,612 have individual records in
 `lifecycle/namespace-writer-candidate-audit-v1.json`. Every audit record has
 an exact source SHA-256, finite classification, path-specific reason, matched
 mutation operators, and SHA-bound build/runtime anchor. There is no implicit
@@ -174,7 +174,7 @@ or materialized per-path audit record, and every owner path must lie under the
 complete production forest. Negative fixtures cover direct, indirect and
 fully computed paths and run through the real `_check_scan_coverage()` path.
 
-The 38 current explicit excluded scan hits are exact regular files; subtree
+The 37 current explicit excluded scan hits are exact regular files; subtree
 exclusions are forbidden. They cover disposable workspace/XNU/security
 regression fixtures, upstream sample/test servers, caller-owned outputs and the
 Darlingserver debug tool. Changing an exclusion path, source content, reason,
@@ -182,10 +182,11 @@ or repository is a contract-visible change.
 
 ## Explicit exclusions
 
-`rootless_shutdown_lifecycle.py` writes only task-owned trace/evidence roots;
-it is not a runtime-prefix writer. E-UNION fixture setup in `test.py`,
-`test_guest_macho.py`, `test_guest_c.py`, Darlingserver debug tools, and
-Darlingserver tests are likewise excluded from the production inventory. Their
+`rootless_shutdown_lifecycle.py` no longer performs any namespace mutation, so
+it is not a scan candidate and is no longer an exclusion. E-UNION fixture setup
+in `test.py`, `test_guest_macho.py`, `test_guest_c.py`, Darlingserver debug
+tools, and Darlingserver tests are likewise excluded from the production
+inventory. Their
 temporary namespace must remain explicitly task-owned and cannot be used as
 evidence that a product writer holds the runtime lease.
 

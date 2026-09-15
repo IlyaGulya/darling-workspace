@@ -94,11 +94,47 @@ CONTRACTS = (
     "tests/run-clt-provenance-contract.sh",
     "tests/run-rootless-cleanup-contract.sh",
     "tests/run-rootless-prefix-contract.sh",
+    # Repaired after they were found failing: the two inventory registries were
+    # stale against the tree and the archive-forensic contract had frozen on a
+    # superseded lock. All three pass now, so they belong in the sweep.
+    "tests/run-legacy-runtime-inventory-contract.sh",
+    "tests/run-namespace-writer-inventory-contract.sh",
+    "tests/run-perf-archive-forensic-contract.sh",
 )
 
-# Contract runners deliberately kept out of the tier. Each entry states the
-# reason, and the census below fails the tier if a runner is in neither this
-# mapping nor CONTRACTS: an unaccounted contract silently proves nothing.
+# Contracts the tier runs as explicit commands rather than CONTRACTS entries,
+# because they need this interpreter (a python module carries no exec bit) or
+# because they must stay uncached. Each entry is
+# (name, workspace-relative path, cacheable).
+EXPLICIT_CONTRACTS = (
+    # Uncached on purpose: cached host evidence must not bypass a current
+    # metadata and applicability review.
+    ("native-inventory", "tests/run-native-inventory-contract.sh", False),
+    ("native-artifact", "tests/west_test_contracts/native_artifact_contract.py", True),
+    ("native-transport", "tests/west_test_contracts/native_transport_contract.py", True),
+    # Recovered: these contracts passed on this checkout and no entrypoint ran
+    # them. Each was run before it was registered here. They need the
+    # interpreter that runs this tier, which carries PyYAML, as the shell
+    # contracts that call python3 already assume.
+    ("dev-check", "tests/west_test_contracts/dev_check_contract.py", True),
+    ("dev-start", "tests/west_test_contracts/dev_start_contract.py", True),
+    ("dev-status", "tests/west_test_contracts/dev_status_contract.py", True),
+    ("fresh-prefix", "tests/west_test_contracts/fresh_prefix_contract.py", True),
+    ("host-tier", "tests/west_test_contracts/host_tier_contract.py", True),
+    ("patch-check-exit", "tests/west_test_contracts/patch_check_exit_contract.py", True),
+    (
+        "perf-profile-integration",
+        "tests/west_test_contracts/perf_profile_integration_contract.py",
+        True,
+    ),
+    ("runtime-proof-state", "tests/west_test_contracts/runtime_proof_state_contract.py", True),
+    ("runtime-source-cache", "tests/west_test_contracts/runtime_source_cache_contract.py", True),
+    ("source-search", "tests/west_test_contracts/source_search_contract.py", True),
+)
+
+# Contracts deliberately kept out of the tier. Each entry states the reason,
+# and the census below fails the tier if a contract is in neither this mapping
+# nor CONTRACTS: an unaccounted contract silently proves nothing.
 EXCLUDED_CONTRACTS = {
     "tests/run-ci-test-tiers-contract.sh":
         "drives the tier runner itself; running the tier from inside the tier recurses",
@@ -106,53 +142,117 @@ EXCLUDED_CONTRACTS = {
         "requires OBJC4_MACRO_CONTRACT_CANDIDATE, a reviewed objc4 source tree supplied by the operator",
     "tests/run-lifecycle-real-kernel-contract.sh":
         "runs a privileged cgroup-v2 fixture (bounded sudo) and needs an interpreter with os.pidfd_open",
-    "tests/run-perf-archive-forensic-contract.sh":
-        "fails: the archive-forensic exception ledger disagrees with the contract's expectation "
-        "(assert at perf_archive_forensic_contract.py:40); the runner was repaired to use the "
-        "house YAML-capable interpreter, which is what made the drift visible",
-    "tests/run-legacy-runtime-inventory-contract.sh":
-        "fails: locks/patch-stack legacy inventory disagrees with the current profile series",
-    "tests/run-namespace-writer-inventory-contract.sh":
-        "fails: lifecycle/namespace-writer-inventory-v1.json has no symbol anchor for "
-        "darling.startup.prefix-provision in the current darling checkout",
+    "tests/west_test_contracts/a0_typed_wake_fault_hook_contract.py":
+        "argparse tool, not a self-running contract: it needs --source, the materialized "
+        "darlingserver source root an operator selects",
+    "tests/west_test_contracts/native_bundle_contract.py":
+        "argparse tool, not a self-running contract: it needs --work-dir and a real Mac, "
+        "which docs/test-infra.md names as its evidence boundary",
+    "tests/west_test_contracts/v6_publication_closure_contract.py":
+        "argparse tool, not a self-running contract: it needs --closure and --lock to name "
+        "the publication closure and revisions under review",
+    "tests/west_test_contracts/test_facade_ownership_contract.py":
+        "fails: west_commands/test.py has grown to 6172 lines against its reviewed "
+        "5400-line facade budget; restoring the budget is a split of that module, not a "
+        "registration",
 }
 
 
-def unaccounted_contracts(tests_dir: Path) -> list[str]:
-    """Return contract runners that no entrypoint accounts for.
+def _contract_files(tests_dir: Path) -> dict[str, Path]:
+    """Map the name of every contract file the census covers to its path.
 
-    A runner counts as accounted for when this tier registers it, when it is
-    listed in EXCLUDED_CONTRACTS with a reason, when CI or patch metadata names
-    it, or when a contract this tier runs names it. A mention in an excluded
-    contract does not count: that contract does not run.
+    Two classes: shell runners and the framework contracts they call, which no
+    runner has to name because the tier runs them through the interpreter.
+    """
+    files = {path.name: path for path in tests_dir.glob("run-*contract*.sh")}
+    files.update(
+        {path.name: path for path in (tests_dir / "west_test_contracts").glob("*contract*.py")}
+    )
+    return files
+
+
+def _contract_family(name: str) -> str | None:
+    """Return the family a contract file belongs to, or None.
+
+    tests/run-<family>-contract.sh runs
+    tests/west_test_contracts/<family>_contract.py, so a decision that keeps a
+    runner out of the tier keeps the module behind it out too.
+    """
+    runner = re.fullmatch(r"run-(.+)-contract\.sh", name)
+    if runner is not None:
+        return runner.group(1).replace("-", "_")
+    module = re.fullmatch(r"(.+)_contract\.py", name)
+    if module is not None:
+        return module.group(1)
+    return None
+
+
+def unaccounted_contracts(tests_dir: Path) -> list[str]:
+    """Return contract files that no entrypoint accounts for.
+
+    A contract counts as accounted for when this tier registers it, when
+    EXCLUDED_CONTRACTS lists it or the runner of its family with a reason, when
+    CI or patch metadata names it, or when a contract this tier runs names it:
+    a registered contract that invokes another contract runs that one too.
+    A mention in an excluded contract does not count, since that contract does
+    not run.
     """
     workspace = tests_dir.parent
-    registered = {Path(contract).name for contract in CONTRACTS}
-    accounted = registered | {Path(contract).name for contract in EXCLUDED_CONTRACTS}
+    contracts = _contract_files(tests_dir)
+    excluded = {Path(contract).name for contract in EXCLUDED_CONTRACTS}
+    accounted = (
+        {Path(contract).name for contract in CONTRACTS}
+        | {Path(path).name for _, path, _ in EXPLICIT_CONTRACTS}
+        | excluded
+    )
+    excluded_families = {
+        family for family in map(_contract_family, excluded) if family is not None
+    }
+    for name in contracts:
+        family = _contract_family(name)
+        if family is not None and family in excluded_families:
+            accounted.add(name)
     sources = list((workspace / "ci").rglob("*.py"))
     sources += list((workspace / "ci").rglob("*.sh"))
     sources += list((workspace / ".github" / "workflows").glob("*"))
     sources += list((workspace / "patches").glob("*/patches.yml"))
     sources += [workspace / contract for contract in CONTRACTS]
-    for source in sources:
+    sources += [workspace / path for _, path, _ in EXPLICIT_CONTRACTS]
+    scanned: set[Path] = set()
+    while sources:
+        source = sources.pop()
+        try:
+            identity = source.resolve()
+        except OSError:
+            continue
+        if identity in scanned:
+            continue
+        scanned.add(identity)
         try:
             text = source.read_text()
         except (OSError, UnicodeDecodeError):
             continue
-        for path in tests_dir.glob("run-*contract*.sh"):
-            if path.name in text:
-                accounted.add(path.name)
-    return sorted(
-        path.name
-        for path in tests_dir.glob("run-*contract*.sh")
-        if path.name not in accounted
-    )
+        for name, path in contracts.items():
+            if name in accounted:
+                continue
+            if name in text:
+                accounted.add(name)
+                sources.append(path)
+    return sorted(name for name in contracts if name not in accounted)
 
 
 class HostCommand(NamedTuple):
     name: str
     argv: list[str]
     cacheable: bool
+
+
+def _explicit_command(name: str, path: str, cacheable: bool) -> HostCommand:
+    """Build the command that runs a workspace-relative contract path."""
+    argv = [str(ROOT / path)]
+    if path.endswith(".py"):
+        argv = [sys.executable, "-B", *argv]
+    return HostCommand(name, argv, cacheable)
 
 
 def _worker_count(command_count: int) -> int:
@@ -347,7 +447,7 @@ def main() -> int:
     unaccounted = unaccounted_contracts(ROOT / "tests")
     if unaccounted:
         print(
-            "host tier contract census failed: these runners are in neither CONTRACTS nor "
+            "host tier contract census failed: these contracts are in neither CONTRACTS nor "
             "EXCLUDED_CONTRACTS, so nothing runs them:\n  " + "\n  ".join(unaccounted),
             file=sys.stderr,
         )
@@ -356,27 +456,10 @@ def main() -> int:
         HostCommand(Path(contract).stem, [str(ROOT / contract)], True)
         for contract in CONTRACTS
     ]
-    commands.append(
-        HostCommand(
-            "native-inventory",
-            [str(ROOT / "tests/run-native-inventory-contract.sh")],
-            False,
-        )
-    )
-    commands.append(
-        HostCommand(
-            "native-artifact",
-            [sys.executable, "-B", str(ROOT / "tests/west_test_contracts/native_artifact_contract.py")],
-            True,
-        )
-    )
-    commands.append(
-        HostCommand(
-            "native-transport",
-            [sys.executable, "-B", str(ROOT / "tests/west_test_contracts/native_transport_contract.py")],
-            True,
-        )
-    )
+    commands += [
+        _explicit_command(name, path, cacheable)
+        for name, path, cacheable in EXPLICIT_CONTRACTS
+    ]
     profile_materialization = (
         []
         if os.environ.get("WEST_PREMATERIALIZED_PROFILE") == "homebrew"
