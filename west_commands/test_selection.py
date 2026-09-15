@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from typing import Callable
+from collections.abc import Mapping
+from typing import Any, Callable
 
 from test_ctest import is_ctest_binding
 
@@ -105,6 +106,31 @@ def metadata_test_labels(
         if test.get(axis):
             labels.add(f"{axis}:true")
     return labels
+
+
+def metadata_invocation_identity(
+    invocation: Mapping[str, Any], test: Mapping[str, Any]
+) -> tuple[Any, ...]:
+    """Return the identity that decides whether two metadata tests are one run.
+
+    Two tests that share a command but differ in runtime profile are different
+    experiments: the same fixture runs against a different runtime transport.
+    Deduplicating them silently drops one arm of every paired comparison - ten
+    tests were skipped this way in the 2026-09-14 acceptance run, which made the
+    "matched ON/OFF" claim partly vacuous - so the runtime profile, the
+    environment and the diagnostic mode are part of the identity, not only the
+    command.
+    """
+
+    profiles = test.get("runtime-profile") or test.get("runtime-profiles") or ()
+    if isinstance(profiles, str):
+        profiles = (profiles,)
+    return (
+        invocation.get("key"),
+        tuple(str(profile) for profile in profiles),
+        str(test.get("env", "host")),
+        str(invocation.get("diag") or ""),
+    )
 
 
 def select_metadata_tests_for_command(

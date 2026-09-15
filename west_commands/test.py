@@ -65,7 +65,11 @@ from test_ctest import (
     ctest_registration_indices,
     ctest_index_args,
 )
-from test_selection import select_metadata_tests, select_metadata_tests_for_command
+from test_selection import (
+    metadata_invocation_identity,
+    select_metadata_tests,
+    select_metadata_tests_for_command,
+)
 from test_dispatch import dispatch_fixture_runner
 from test_cmake import archive_git_tree_to, archive_source_to, run_darling_cmake_target_fixture
 from test_descriptor_transport import (
@@ -1444,7 +1448,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             self.die("metadata command tests do not accept raw ctest passthrough arguments")
         self._prune_stale_west_temp_worktrees()
         rc = 0
-        seen_invocations: set[str] = set()
+        seen_invocations: set[tuple] = set()
         for patch, test in tests:
             name = test.get("name", "-")
             env = test.get("env", "-")
@@ -1473,10 +1477,11 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                     f"{patch['path']}: missing required environment for {test.get('name', '-')}: "
                     f"{', '.join(missing_env)}"
                 )
-            if invocation["key"] in seen_invocations:
+            identity = metadata_invocation_identity(invocation, test)
+            if identity in seen_invocations:
                 self.inf(f"  skipped duplicate invocation already run")
                 continue
-            seen_invocations.add(invocation["key"])
+            seen_invocations.add(identity)
             with self._required_profile_context(patch, invocation):
                 with self._metadata_runtime_profile_context(patch, test) as deployment:
                     runtime_env = deployment.env if deployment is not None else None
@@ -4881,7 +4886,7 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         if unknown:
             self.die("metadata RED proofs do not accept raw ctest passthrough arguments")
         rc = 0
-        seen_invocations: set[str] = set()
+        seen_invocations: set[tuple] = set()
         self._prune_stale_west_temp_worktrees()
         with ExitStack() as source_base_green_stack:
             self._source_base_green_stack = source_base_green_stack
@@ -4929,10 +4934,11 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                             f"{patch['path']}: missing required environment for {name}: "
                             f"{', '.join(missing_env)}"
                         )
+                    identity = metadata_invocation_identity(invocation, test)
                     invocation_key = (
-                        f"{patch['path']}:{invocation['key']}"
+                        (patch["path"], *identity)
                         if mode == "source-base"
-                        else invocation["key"]
+                        else identity
                     )
                     if invocation_key in seen_invocations:
                         self.inf("  skipped duplicate invocation already run")
