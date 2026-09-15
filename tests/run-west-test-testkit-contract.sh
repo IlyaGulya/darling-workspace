@@ -125,7 +125,10 @@ done
 
 # The E-UNION host suite has source-base RED proof and must run against a
 # materialized selected profile through the same CTest label used by GREEN.
-eunion_metadata="$(west test --profile homebrew --patch xnu/eunion-hardening.patch --env host --list)"
+# It is declared in wget-residual: that chain carries the patches its assertions
+# need (xnu/eunion-large-directory.patch, xnu/eunion-content-fd-validation.patch),
+# while homebrew's chain stops earlier and made the suite structurally RED.
+eunion_metadata="$(west test --profile wget-residual --patch xnu/eunion-content-fd-validation.patch --env host --list)"
 printf '%s\n' "$eunion_metadata" | grep -q 'host/eunion_hardening_host_suite' ||
 	{ printf '%s\n' "$eunion_metadata" >&2; exit 1; }
 

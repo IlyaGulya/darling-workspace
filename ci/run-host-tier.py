@@ -481,6 +481,30 @@ def main() -> int:
             False,
         )
     )
+    # The E-UNION host suites assert behaviour that only the wget-residual chain
+    # provides, so they are declared in that profile and run here. Measured at
+    # about 100 seconds end to end, most of it materialization.
+    wget_materialization = (
+        []
+        if os.environ.get("WEST_PREMATERIALIZED_PROFILE") == "wget-residual"
+        else ["--materialize-profile"]
+    )
+    commands.append(
+        HostCommand(
+            "wget-residual-host-metadata",
+            [
+                "west",
+                "test",
+                "--profile",
+                "wget-residual",
+                "--env",
+                "host",
+                *wget_materialization,
+                *sys.argv[1:],
+            ],
+            False,
+        )
+    )
     raw_cache_root = os.environ.get("WEST_HOST_CONTRACT_CACHE_DIR")
     raw_cache_key = os.environ.get("WEST_HOST_CONTRACT_CACHE_KEY")
     return run_commands(

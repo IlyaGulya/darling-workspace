@@ -2768,19 +2768,6 @@ patches:
   publication-status: blocked
   publication-blocker: E-UNION core is a local architectural consolidation; publication remains blocked until the repackaged rootless stack passes its full guest audit.
   tests:
-  - name: eunion_core_host_suite
-    kind: unit
-    coverage-tier: host
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    note: Host behavioral RED-to-GREEN suite for the E-UNION core filesystem model.
   - name: eunion_path_direnum_guest
     use: eunion-guest-c-runtime
     fixtures: eunion-overlay
@@ -2879,30 +2866,6 @@ patches:
   publication-status: blocked
   publication-blocker: E-UNION syscall coverage and hardening are a local architectural consolidation; publication remains blocked until the repackaged rootless stack passes its full guest audit.
   tests:
-  - name: eunion_resolver
-    kind: unit
-    coverage-tier: host
-    runs: host
-    diag: bare
-    ctest-label: eunion-host
-    ctest-source-override: DARLING_XNU_SRC
-    requires-profile: homebrew
-    note: CTest host behavior test compiling the production resolver against real upper/lower fixtures, whiteout and opaque metadata.
-  - name: eunion_hardening_host_suite
-    kind: unit
-    coverage-tier: host
-    runs: host
-    diag: bare
-    ctest-label: eunion-host
-    ctest-source-override: DARLING_XNU_SRC
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-      source-revision: f033c5773992dfa57b6657f10f53f719664a5f18
-      expect-output-contains:
-      - 'FAIL  RESOLVE1 upper non-directory blocks lower directory'
-    note: Host behavioral RED-to-GREEN suite for syscall-site copy-up, template protection, nested path handling, metadata/error policy and directory-view lifecycle; the selected XNU source is compiled and run through the eunion-host CTest label and the fixed source passes 293 assertions.
   - name: eunion_mutation_guest
     use: eunion-guest-c-runtime
     kind: guest
@@ -3167,22 +3130,6 @@ patches:
       contents: |
         STALE_B
     note: Guest regression for mkdir over an rmdir-whiteouted lower directory and lower-template preservation.
-  - name: eunion_nested_lower_root_host_suite
-    kind: unit
-    coverage-tier: host
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-      source-revision: f033c5773992dfa57b6657f10f53f719664a5f18
-      expect-output-contains:
-      - 'FAIL  RESOLVE1 upper non-directory blocks lower directory'
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run-nested-lower-root.sh
-    note: Host behavior for nested lower-template roots and fd-path unexpand; the contract must run with materialize-profile because a final immutable source tip is one series boundary, not the cumulative canonical profile integration tree.
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -5302,26 +5249,26 @@ patches:
   bead: dar-arsg
   publication-status: blocked
   publication-blocker: Local fresh-prefix CLT and lz4 acceptance passed; canonical clean-ODB validation, immutable hosted source closure and release review remain required.
-  tests:
-  - name: eunion_upper_parent_dominance
-    kind: unit
-    coverage-tier: host
-    runs: host
-    diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
-      expect-output-contains:
-      - 'FAIL  SP2 mkdir ignores lower symlink masked by upper directory'
-    runner: source-contract-script
-    repo: darling-workspace
-    script: experiments/e-union/run.sh
-    timeout-seconds: 60
+  test-exception:
+    reason: behavioral-proof-in-wget-residual-profile
+    scope: >-
+      This patch carries no homebrew-local behavioural test. Its behavioural
+      proof is declared in the wget-residual profile on the
+      xnu/eunion-content-fd-validation.patch entry as
+      eunion_upper_parent_dominance (binding
+      wget-residual:xnu/eunion-content-fd-validation.patch:5), whose RED proof
+      expects 'FAIL  SP2 mkdir ignores lower symlink masked by upper directory'.
+      Only the wget-residual chain carries
+      xnu/eunion-content-fd-validation.patch and
+      xnu/eunion-large-directory.patch, which the shared harness
+      experiments/e-union/run.sh (runner.c) asserts unconditionally.
     note: >-
-      Execute production mkdirat and EUNION parent preparation against a real
-      upper directory masking a lower symlink. Creation must succeed in upper
-      without following or changing the masked lower alias.
+      That declaration does not execute independently: its command is
+      byte-identical to eunion_content_fd_validation on the same entry, so
+      west test skips it as a duplicate invocation and its own
+      expect-output-contains oracle is never evaluated. The SP2 assertions do
+      run inside the surviving full-harness invocation. This exception records
+      where the proof is declared, not an independent-execution claim.
   sha256sum: 7c3e6217721e5746fd469aee8ae987d877f3c78d4c0e8e605f70bc05eebdba6e
 - path: darling/rootless-homebrew-userland.patch
   module: darling

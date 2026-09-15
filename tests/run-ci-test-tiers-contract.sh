@@ -135,6 +135,9 @@ DARLING_TESTKIT_BUILD="$tmp/package-build" \
 	"$repo/ci/run-test-tier.sh" macos-package "$tmp/oracle"
 
 grep -F -x -q 'west test --profile homebrew --env host --materialize-profile' "$tmp/commands"
+# The E-UNION host suites live in the wget-residual profile, whose chain provides
+# the behaviour they assert, so the host tier sweeps that profile too.
+grep -F -x -q 'west test --profile wget-residual --env host --materialize-profile' "$tmp/commands"
 grep -F -x -q "west test --profile homebrew --patch darling/rootless-prefix-initialization.patch --env darling --label name:(rootless_prefix_initialization_guest|rootless_prebuilt_macho_regression) --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-smoke" "$tmp/commands"
 grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-corpus --bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal --runtime-build-timeout-seconds 600" "$tmp/commands"
 grep -F -q "west test --profile homebrew --env darling --guest-macho-validation-group homebrew --guest-macho-evidence-dir $repo/.west-test/guest-macho-validation-diagnostics/homebrew/fixtures --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-corpus" "$tmp/commands"

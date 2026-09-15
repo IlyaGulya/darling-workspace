@@ -88,6 +88,65 @@ patches:
     script: experiments/e-union/run.sh
     timeout-seconds: 60
     note: Execute production ftruncate and E-UNION copy-up; rejected descriptors must report EBADF without copying up or mutating LOWER.
+  - name: eunion_resolver
+    kind: unit
+    coverage-tier: host
+    runs: host
+    diag: bare
+    ctest-label: eunion-host
+    ctest-source-override: DARLING_XNU_SRC
+    requires-profile: wget-residual
+    note: CTest host behavior test compiling the production resolver against real upper/lower fixtures, whiteout and opaque metadata.
+  - name: eunion_hardening_host_suite
+    kind: unit
+    coverage-tier: host
+    runs: host
+    diag: bare
+    ctest-label: eunion-host
+    ctest-source-override: DARLING_XNU_SRC
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+      source-revision: f033c5773992dfa57b6657f10f53f719664a5f18
+      expect-output-contains:
+      - 'FAIL  RESOLVE1 upper non-directory blocks lower directory'
+    note: Host behavioral RED-to-GREEN suite for syscall-site copy-up, template protection, nested path handling, metadata/error policy and directory-view lifecycle; the selected XNU source is compiled and run through the eunion-host CTest label and the fixed source passes 293 assertions.
+  - name: eunion_nested_lower_root_host_suite
+    kind: unit
+    coverage-tier: host
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+      source-revision: f033c5773992dfa57b6657f10f53f719664a5f18
+      expect-output-contains:
+      - 'FAIL  RESOLVE1 upper non-directory blocks lower directory'
+    runner: source-contract-script
+    repo: darling-workspace
+    script: experiments/e-union/run-nested-lower-root.sh
+    note: Host behavior for nested lower-template roots and fd-path unexpand; the contract must run with materialize-profile because a final immutable source tip is one series boundary, not the cumulative canonical profile integration tree.
+  - name: eunion_upper_parent_dominance
+    kind: unit
+    coverage-tier: host
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: source-base
+      source-env: XNU_SRC_ROOT
+      expect-output-contains:
+      - 'FAIL  SP2 mkdir ignores lower symlink masked by upper directory'
+    runner: source-contract-script
+    repo: darling-workspace
+    script: experiments/e-union/run.sh
+    timeout-seconds: 60
+    note: >-
+      Execute production mkdirat and EUNION parent preparation against a real
+      upper directory masking a lower symlink. Creation must succeed in upper
+      without following or changing the masked lower alias.
   sha256sum: 9ca0a7dd504aff7dd8d79a14fbb69a74bea1ad8975127bee716c8030c5fad69e
 - path: darlingserver/preserve-wait-state-on-resume.patch
   module: darling/src/external/darlingserver

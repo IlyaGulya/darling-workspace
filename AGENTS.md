@@ -471,6 +471,32 @@ individual runner bodies. Add or extend `west_commands/test_resources.py` for
 common resources such as host trace files, host stat deltas, DCC cache, or
 E-UNION prefix setup, and cover provider ordering/selection with a focused
 contract.
+- A test declaration belongs to the profile whose patch chain satisfies its
+assertions. `west test --profile <P>` loads tests only from
+`patches/<P>/patches.yml`; `base-profile` governs tree composition, never test
+declarations, so a stacked profile does not see its base profile's tests.
+Attach a test to an entry that profile already owns rather than adding an entry
+whose patch file lives in another profile.
+- A profile resolves a patch entry to a file inside its own directory, and the
+lock-first mapping locks the series the profile owns. An entry outside that
+locked batch is invisible to the materializer while still breaking
+`west patch apply`, `check` and `export`, so a declaration that needs one means
+the series itself has to change, not the test.
+- Register every contract runner: `tests/run-*-contract*.sh` in
+`CONTRACTS` and `tests/west_test_contracts/*contract*.py` in
+`EXPLICIT_CONTRACTS` of `ci/run-host-tier.py`, or list it in
+`EXCLUDED_CONTRACTS` with a reason. The tier's census refuses to start when a
+contract is accounted for nowhere, because a contract that nothing runs cannot
+fail and therefore reports nothing.
+- `west test` treats an empty selection as fatal, including a label filter that
+matches nothing. Never narrow a selection to make a failing test disappear:
+that converts a real signal into silence.
+- The host tier sweeps both `homebrew` and `wget-residual` host metadata, so a
+host test runs where its chain satisfies it instead of being gated away.
+- The checked-in audit registries under `locks/patch-stack/` and `lifecycle/`
+have no generator script; their contracts are the only thing that can notice
+when they drift from the tree, so those contracts stay registered rather than
+excluded.
 - Runtime RED artifact planning belongs in `west_commands/test_runtime.py`.
 Keep pure plan/display/target-mapping logic there with focused contracts; leave
 only side-effecting build/deploy/restore orchestration in `west_commands/test.py`.

@@ -86,13 +86,31 @@ def hold_with_cleanup(name):
     root = Path(os.environ["DEV_CHECK_PARALLEL_CLEANUP"])
     root.mkdir(parents=True, exist_ok=True)
     orphan = root / f"{name}.orphan"
+    cleaned = root / f"{name}.cleaned"
+    cancel_requested = [False]
+
+    def cancel(_signum, _frame):
+        # A cancelled peer is signalled more than once. The first request owns
+        # the cleanup and the rest must not interrupt it: a repeated SIGINT
+        # landing inside the cleanup would abandon the orphan this contract
+        # asserts against.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        cancel_requested[0] = True
+
+    signal.signal(signal.SIGINT, cancel)
     orphan.write_text("owned\n", encoding="utf-8")
-    try:
-        (root / f"{name}.holding").write_text("holding\n", encoding="utf-8")
-        time.sleep(60)
-    finally:
-        orphan.unlink(missing_ok=True)
-        (root / f"{name}.cleaned").write_text("cleaned\n", encoding="utf-8")
+    (root / f"{name}.holding").write_text("holding\n", encoding="utf-8")
+    # Hold until the orchestrator cancels this peer. The deadline only guards
+    # against a cancellation that never arrives; it is not the ordering.
+    deadline = time.monotonic() + 300
+    while not cancel_requested[0]:
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.01)
+    orphan.unlink(missing_ok=True)
+    cleaned.write_text("cleaned\n", encoding="utf-8")
+    if cancel_requested[0]:
+        raise SystemExit(130)
 
 
 def wait_for_holders():
@@ -284,6 +302,7 @@ FAKE_ORACLE = r'''#!/usr/bin/env python3
 import hashlib
 import json
 import os
+import signal
 import sys
 from pathlib import Path
 import time
@@ -329,13 +348,31 @@ def hold_with_cleanup(name):
     root = Path(os.environ["DEV_CHECK_PARALLEL_CLEANUP"])
     root.mkdir(parents=True, exist_ok=True)
     orphan = root / f"{name}.orphan"
+    cleaned = root / f"{name}.cleaned"
+    cancel_requested = [False]
+
+    def cancel(_signum, _frame):
+        # A cancelled peer is signalled more than once. The first request owns
+        # the cleanup and the rest must not interrupt it: a repeated SIGINT
+        # landing inside the cleanup would abandon the orphan this contract
+        # asserts against.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        cancel_requested[0] = True
+
+    signal.signal(signal.SIGINT, cancel)
     orphan.write_text("owned\n", encoding="utf-8")
-    try:
-        (root / f"{name}.holding").write_text("holding\n", encoding="utf-8")
-        time.sleep(60)
-    finally:
-        orphan.unlink(missing_ok=True)
-        (root / f"{name}.cleaned").write_text("cleaned\n", encoding="utf-8")
+    (root / f"{name}.holding").write_text("holding\n", encoding="utf-8")
+    # Hold until the orchestrator cancels this peer. The deadline only guards
+    # against a cancellation that never arrives; it is not the ordering.
+    deadline = time.monotonic() + 300
+    while not cancel_requested[0]:
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.01)
+    orphan.unlink(missing_ok=True)
+    cleaned.write_text("cleaned\n", encoding="utf-8")
+    if cancel_requested[0]:
+        raise SystemExit(130)
 
 parallel_barrier("immutable-oracle")
 assert_isolated("oracle")
@@ -444,14 +481,30 @@ def hold(name):
     root.mkdir(parents=True, exist_ok=True)
     orphan = root / f"{name}.orphan"
     holding = root / f"{name}.holding"
+    cleaned = root / f"{name}.cleaned"
+    cancel_requested = [False]
+
+    def cancel(_signum, _frame):
+        # A cancelled peer is signalled more than once. The first request owns
+        # the cleanup and the rest must not interrupt it: a repeated SIGINT
+        # landing inside the cleanup would abandon the holding marker and the
+        # orphan this contract asserts against.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        cancel_requested[0] = True
+
+    signal.signal(signal.SIGINT, cancel)
     orphan.write_text("owned\n", encoding="utf-8")
     holding.write_text("holding\n", encoding="utf-8")
-    try:
-        time.sleep(60)
-    finally:
-        holding.unlink(missing_ok=True)
-        orphan.unlink(missing_ok=True)
-        (root / f"{name}.cleaned").write_text("cleaned\n", encoding="utf-8")
+    deadline = time.monotonic() + 300
+    while not cancel_requested[0]:
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.01)
+    holding.unlink(missing_ok=True)
+    orphan.unlink(missing_ok=True)
+    cleaned.write_text("cleaned\n", encoding="utf-8")
+    if cancel_requested[0]:
+        raise SystemExit(130)
 
 
 def wait_for_holder():
@@ -777,6 +830,27 @@ def must_reject(callback: Callable[[], object], fragment: str) -> None:
         assert fragment in str(error), error
     else:
         raise AssertionError(f"dev check accepted invalid input requiring {fragment!r}")
+
+
+def wait_for_markers(root: Path, expected: set[str]) -> set[str]:
+    """Return the cleanup markers the cancelled peers write in their own groups.
+
+    A cancelled peer writes them in its own process group, and the receipt is
+    built once that group is quiescent, so they are normally in place by the
+    time the receipt is read. Wait for them anyway: this read and the group's
+    last write are independent, and reading once is what made this assertion
+    flake under load. Only the reading is tolerant; the caller still asserts
+    the exact set, so a peer that never cleans up still fails the contract.
+    """
+    deadline = time.monotonic() + 10
+    observed = {path.name for path in root.glob("*.cleaned")}
+    while observed != expected:
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+        observed = {path.name for path in root.glob("*.cleaned")}
+    return observed
+
 
 def package_copy(source: Path, destination: Path) -> Path:
     shutil.copytree(source, destination)
@@ -2367,13 +2441,14 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         assert failed_parallel_results[name]["cancelled_by_peer"] is True
         assert failed_parallel_results[name]["process_group_quiescent"] is True
     assert "acceptance-candidate-apply" not in failed_parallel_results
-    observed_parallel_cleanup = {
-        path.name for path in parallel_cleanup.glob("*.cleaned")
-    }
-    assert observed_parallel_cleanup == {
+    expected_parallel_cleanup = {
         "host-materialized-test.cleaned",
         "immutable-oracle.cleaned",
-    }, observed_parallel_cleanup
+    }
+    observed_parallel_cleanup = wait_for_markers(
+        parallel_cleanup, expected_parallel_cleanup
+    )
+    assert observed_parallel_cleanup == expected_parallel_cleanup, observed_parallel_cleanup
     assert not list(parallel_cleanup.glob("*.orphan"))
     assert not checkpoint_path.exists()
 
@@ -2414,12 +2489,14 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
             "process_group_quiescent"
         ] is True
     assert "acceptance-candidate-apply" not in interrupted_parallel_results
-    assert {
-        path.name for path in parallel_cleanup.glob("*.cleaned")
-    } == {
+    expected_interrupted_cleanup = {
         "host-materialized-test.cleaned",
         "immutable-oracle.cleaned",
     }
+    assert (
+        wait_for_markers(parallel_cleanup, expected_interrupted_cleanup)
+        == expected_interrupted_cleanup
+    )
     assert not list(parallel_cleanup.glob("*.orphan"))
 
     checkpoint_path.write_bytes(checkpoint_data)
@@ -2457,9 +2534,10 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
         for name in dev_check._FINAL_TIER_STEP_NAMES:
             assert final_results[name]["process_group_quiescent"] is True
         assert final_results["acceptance-guest-smoke"]["cancelled_by_peer"] is True
-        assert {
-            path.name for path in final_tier_cleanup.glob("*.cleaned")
-        } == {"acceptance-guest-smoke.cleaned"}
+        assert (
+            wait_for_markers(final_tier_cleanup, {"acceptance-guest-smoke.cleaned"})
+            == {"acceptance-guest-smoke.cleaned"}
+        )
         assert (final_tier_cleanup / "final-cleanup").is_file()
         assert not list(final_tier_cleanup.glob("*.orphan"))
         assert not list(final_tier_cleanup.glob("*.holding"))
@@ -3568,8 +3646,16 @@ with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
             and argv == evidence_inode_plan["steps"][0]["argv"]
         ):
             evidence_inode_swap[0] = True
-            swapped_inode_evidence.unlink()
-            swapped_inode_evidence.write_bytes(foreign_evidence_inode)
+            # Create the foreign file first and move it into place. Unlinking
+            # the evidence file and writing a new one lets the allocator hand
+            # the freed inode number straight back, and then the replacement
+            # carries the identity dev check is looking for, so the injection
+            # disappears. Allocating both inodes at once keeps them distinct.
+            foreign_inode = swapped_inode_evidence.with_name(
+                "foreign-evidence-inode.json"
+            )
+            foreign_inode.write_bytes(foreign_evidence_inode)
+            os.replace(foreign_inode, swapped_inode_evidence)
         return outcome
 
     dev_check._run_process = swap_evidence_inode_after_step
