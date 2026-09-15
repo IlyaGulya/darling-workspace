@@ -7,7 +7,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "west_commands"))
 
-from rootless_debug_cleanup import cleanup_rootless_debug_tree, validate_rootless_debug_tree
+from rootless_debug_cleanup import (
+    PREFIX_STATE_MARKER,
+    cleanup_rootless_debug_tree,
+    validate_rootless_debug_tree,
+    validate_rootless_disposable_prefix,
+)
 
 
 with tempfile.TemporaryDirectory(dir="/tmp", prefix="darling-rootless-contract-debug-") as temp:
@@ -74,3 +79,27 @@ for invalid in (Path("/tmp/darling-rootless-nomount"), Path("/tmp/other-debug-20
         raise AssertionError(f"unsafe cleanup target was accepted: {invalid}")
 
 print("PASS rootless-debug-cleanup-contract")
+
+with tempfile.TemporaryDirectory(dir="/tmp", prefix="darling-rootless-contract-boot-") as temp:
+    prefix = Path(temp)
+    (prefix / PREFIX_STATE_MARKER).write_text("{}\n")
+    assert validate_rootless_disposable_prefix(prefix) == prefix.resolve()
+    removed = cleanup_rootless_debug_tree(
+        prefix,
+        mount_targets=lambda _path: [],
+        processes_for_path=lambda _path: [],
+    )
+    assert removed.success and removed.removed, removed
+    assert not prefix.exists()
+
+with tempfile.TemporaryDirectory(dir="/tmp", prefix="darling-rootless-contract-boot-") as temp:
+    # The same shape without the marker is refused: a name that merely looks like a
+    # prefix is not proof that the framework owns it.
+    prefix = Path(temp)
+    try:
+        validate_rootless_disposable_prefix(prefix)
+    except ValueError as error:
+        assert PREFIX_STATE_MARKER in str(error), error
+    else:
+        raise AssertionError("an unmarked look-alike prefix was accepted")
+    assert prefix.exists(), "a refused prefix must still be there"
