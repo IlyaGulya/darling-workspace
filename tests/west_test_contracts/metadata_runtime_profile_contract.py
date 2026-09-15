@@ -33,6 +33,11 @@ from west_commands.test_runtime_identity import runtime_identity
 
 test = DarlingTest.__new__(DarlingTest)
 test.inf = lambda _message: None
+# The metadata run keys its verdict store on the manifest repository. A
+# disposable root keeps that lookup, and any verdict it writes, off the live
+# workspace; nothing in this contract reads the real profile metadata.
+_manifest_root = tempfile.TemporaryDirectory(prefix="west-metadata-manifest-")
+test.manifest = SimpleNamespace(repo_abspath=_manifest_root.name)
 test._prune_stale_west_temp_worktrees = lambda: None
 test._display_invocation = lambda _invocation: "guest fixture"
 test._missing_requirements = lambda _invocation: []

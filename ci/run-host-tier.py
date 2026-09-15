@@ -150,6 +150,19 @@ EXPLICIT_CONTRACTS = (
         "tests/west_test_contracts/prefix_bootstrap_guidance_contract.py",
         True,
     ),
+    # Extracted from west_commands/test.py when it came back inside its facade
+    # budget; each covers the logic that moved, so nothing moved uncovered.
+    ("ctest-selection-argv", "tests/run-west-test-ctest-selection-argv-contract.sh", True),
+    ("prefix-lifecycle-helpers", "tests/run-west-test-prefix-lifecycle-helpers-contract.sh", True),
+    ("runtime-plan-helpers", "tests/run-west-test-runtime-plan-helpers-contract.sh", True),
+    ("cmake-fixture-backend", "tests/run-west-test-cmake-fixture-backend-contract.sh", True),
+    # The facade budget is met again, so this guard belongs in the sweep rather
+    # than in the exclusion list.
+    (
+        "test-facade-ownership",
+        "tests/west_test_contracts/test_facade_ownership_contract.py",
+        True,
+    ),
 )
 
 # Contracts deliberately kept out of the tier. Each entry states the reason,
@@ -171,10 +184,6 @@ EXCLUDED_CONTRACTS = {
     "tests/west_test_contracts/v6_publication_closure_contract.py":
         "argparse tool, not a self-running contract: it needs --closure and --lock to name "
         "the publication closure and revisions under review",
-    "tests/west_test_contracts/test_facade_ownership_contract.py":
-        "fails: west_commands/test.py has grown to 6172 lines against its reviewed "
-        "5400-line facade budget; restoring the budget is a split of that module, not a "
-        "registration",
 }
 
 

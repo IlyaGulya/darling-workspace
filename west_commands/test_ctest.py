@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import sys
+import tempfile
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from shlex import quote
-import json
+
+from test_runtime import (
+    load_ctest_runtime_profiles,
+    partition_ctest_runtime_profiles,
+)
 
 
 def is_ctest_binding(test: dict) -> bool:
@@ -249,3 +258,307 @@ def ctest_uses_prefix(*, env: str | None, list_only: bool) -> bool:
     """Whether a CTest selection owns a live Darling prefix lifecycle."""
 
     return env == "darling" and not list_only
+
+
+class CtestSelectionMixin:
+
+    def _display_ctest_label(self, label: str) -> str:
+        build = self._testkit_dir() / "build"
+        return ctest_label_display(build, label)
+
+    def _ctest_catalogue(self, build: Path) -> list[dict]:
+        discovery = self._run_bounded(
+            ctest_selection_command(build), cwd=Path(self.topdir), env=None,
+            timeout_seconds=30, capture_output=True,
+        )
+        if discovery.returncode:
+            self._dump_command_tail("CTest catalogue discovery", discovery)
+            self.die(f"could not discover CTest suite {build}")
+        try:
+            return json.loads(discovery.stdout)["tests"]
+        except (KeyError, TypeError, ValueError) as error:
+            self.die(f"invalid CTest catalogue in {build}: {error}")
+
+    def _ensure_ctest_build(self, invocation=None) -> Path:
+        if invocation and invocation.get("ctest_build"):
+            build = Path(invocation["ctest_build"])
+            built = getattr(self, "_compiled_ctest_builds", set())
+            if build not in built:
+                self._run_testkit_build_command("build", ["ninja", "-C", str(build)])
+                self._compiled_ctest_builds = built | {build}
+            return build
+        build = getattr(self, "_ctest_build", None)
+        if build is not None:
+            return build
+        build = self._configure_and_build(self._testkit_dir(), self._executor)
+        self._ctest_build = build
+        return build
+
+    def _ctest_label_args(self, invocation) -> list[str]:
+        build = self._ensure_ctest_build(invocation)
+        if invocation.get("ctest_index") is not None:
+            label_args = ctest_command(build, passthrough=ctest_index_args([invocation["ctest_index"]]))
+        elif invocation.get("ctest_name"):
+            label_args = ctest_command(build, passthrough=["-R", ctest_test_name_regex([invocation["ctest_name"]])])
+        else:
+            label_args = ctest_label_args(build, invocation["ctest_label"])
+        discovery = self._run_bounded(
+            ctest_selection_command(build, label_args=label_args[4:]),
+            cwd=Path(self.topdir),
+            env=None,
+            timeout_seconds=30,
+            capture_output=True,
+        )
+        if discovery.returncode:
+            self._dump_command_tail("CTest label discovery", discovery)
+            self.die(f"could not discover CTest label {invocation['ctest_label']!r}")
+        try:
+            selected = json.loads(discovery.stdout).get("tests", [])
+        except json.JSONDecodeError as error:
+            self.die(f"CTest label discovery returned invalid JSON: {error}")
+        if not selected:
+            self.die(
+                f"CTest label {invocation['ctest_label']!r} selected no tests in {build}; "
+                "refusing a false GREEN"
+            )
+        if invocation.get("ctest_index") is not None:
+            identities = [
+                (test["name"], next((item["value"] for item in test.get("properties", [])
+                                    if item["name"] == "WORKING_DIRECTORY"), None))
+                for test in selected
+            ]
+            if identities.count((invocation["ctest_name"], invocation["ctest_directory"])) != 1:
+                self.die("CTest registration changed after discovery; refusing to run a different case")
+        return label_args
+
+    def _ctest_cmake_defines(
+        self, invocation, *, source_override=None, source_root=None
+    ) -> dict[str, str]:
+        """Return CMake inputs needed by a source-bound CTest invocation."""
+
+        defines: dict[str, str] = {}
+        if source_override:
+            defines[str(source_override)] = str(
+                source_root
+                if source_root is not None
+                else self._project_path(invocation["source_module"])
+            )
+        if invocation.get("ctest_label") == "eunion-host":
+            defines["DARLING_ENABLE_EUNION_HOST_SUITE"] = "ON"
+        return defines
+
+    @contextmanager
+    def _ctest_source_override_context(self, invocation):
+        override = invocation.get("ctest_source_override")
+        if not override or invocation.get("ctest_build"):
+            yield invocation
+            return
+        with tempfile.TemporaryDirectory(prefix="west-ctest-source-") as temp:
+            configured = dict(invocation)
+            configured["ctest_build"] = self._configure_and_build(
+                self._testkit_dir(),
+                self._executor,
+                darling_launcher=self._resolve_darling_launcher(self._prefix),
+                prefix=self._prefix,
+                bundle_root=str(getattr(self, "_bundle_root", "")),
+                build_dir=Path(temp) / "build",
+                cmake_defines=self._ctest_cmake_defines(
+                    invocation, source_override=override
+                ),
+            )
+            yield configured
+
+    def _ctest_runtime_profile_definitions(self) -> dict[str, dict]:
+        path = self._testkit_dir() / "runtime-profiles.yml"
+        try:
+            return load_ctest_runtime_profiles(path)
+        except (OSError, ValueError) as error:
+            self.die(f"invalid CTest runtime profile definitions at {path}: {error}")
+
+    def _selected_ctest_runtime_groups(
+        self,
+        build: Path,
+        label_args: list[str],
+        passthrough: list[str],
+        additional_profiles: list[str],
+        *,
+        env: str | None = None,
+        diag: str | None = None,
+    ) -> list[dict]:
+        """Return lifecycle groups for exactly the CTest-selected cases."""
+
+        discovery = self._run_bounded(
+            ctest_selection_command(
+                build, label_args=label_args, passthrough=passthrough
+            ),
+            cwd=Path(self.topdir),
+            env=None,
+            timeout_seconds=30,
+            capture_output=True,
+        )
+        if discovery.returncode:
+            self._dump_command_tail("CTest runtime profile discovery", discovery)
+            self.die("could not discover CTest runtime profiles")
+        try:
+            payload = json.loads(discovery.stdout)
+        except json.JSONDecodeError as error:
+            self.die(f"CTest runtime profile discovery returned invalid JSON: {error}")
+        if not payload.get("tests"):
+            self.die("CTest selectors matched no registrations; refusing an empty selection")
+        try:
+            catalogue = self._ctest_catalogue(build) if label_args or passthrough else payload["tests"]
+            indices = ctest_registration_indices(catalogue, payload["tests"])
+        except ValueError as error:
+            self.die(f"invalid scoped CTest selection: {error}")
+        for registration, index in zip(payload["tests"], indices):
+            registration["_ctest_index"] = index
+        try:
+            variants = ctest_metadata_variants(
+                {}, payload["tests"], default_env="macos" if sys.platform == "darwin" else "host"
+            )
+        except ValueError as error:
+            self.die(f"invalid CTest environment selection: {error}")
+        selections = [
+            {
+                "name": variant["_ctest"]["name"],
+                "index": variant["_ctest"]["index"],
+                "darling": variant["env"] == "darling",
+                "profiles": variant["_ctest"]["profiles"],
+            }
+            for variant in variants
+            if (not env or variant["env"] == env)
+            and (not diag or self._resolved_diag(variant) == diag)
+        ]
+        if not selections:
+            self.die(f"CTest selectors matched no applicable registrations (env={env or 'any'}, diag={diag or 'any'})")
+        try:
+            return partition_ctest_runtime_profiles(
+                self._ctest_runtime_profile_definitions(),
+                selections,
+                additional_profiles,
+            )
+        except ValueError as error:
+            self.die(f"invalid CTest runtime profile selection: {error}")
+
+    @contextmanager
+    def _ctest_runtime_profile_context(self, profiles: list[str]):
+        """Build and temporarily deploy the runtime declared by selected CTest cases."""
+
+        if not profiles:
+            prefix_text = getattr(self, "_prefix", None)
+            runtime_env = os.environ.copy()
+            if prefix_text:
+                runtime_env.update(self._darling_prefix_env(prefix_text))
+                launcher = self._resolve_darling_launcher(prefix_text)
+                if launcher:
+                    runtime_env["DARLING"] = launcher
+                    runtime_env["DARLING_LAUNCHER"] = launcher
+            yield runtime_env
+            return
+        with self._runtime_profile_deployment_context(
+            profiles, label_prefix="CTest", retain_deployment=False
+        ) as deployment:
+            yield deployment.env
+
+    @contextmanager
+    def _metadata_ctest_selection(self, selected, *, env, diag, label, additional_profiles):
+        """Resolve references in the active source profile before prefix acquisition."""
+        from test_selection import select_metadata_tests
+        resolved = []
+        builds = {}
+        catalogues = {}
+        unavailable = []
+        with ExitStack() as stack:
+            for patch, test in selected:
+                if not is_ctest_binding(test):
+                    resolved.append((patch, test))
+                    continue
+                invocation = self._test_invocation(patch, test)
+                override = invocation.get("ctest_source_override")
+                defines = self._ctest_cmake_defines(invocation, source_override=override)
+                scope = (str(self._testkit_dir()), tuple(sorted(defines.items())))
+                if scope not in builds:
+                    scratch = stack.enter_context(tempfile.TemporaryDirectory(prefix="west-ctest-selection-"))
+                    builds[scope] = self._configure_and_build(
+                        self._testkit_dir(), self._executor,
+                        darling_launcher=self._resolve_darling_launcher(self._prefix),
+                        prefix=self._prefix,
+                        bundle_root=str(getattr(self, "_bundle_root", "")),
+                        build_dir=Path(scratch) / "build",
+                        cmake_defines=defines,
+                        compile_tests=False,
+                    )
+                    catalogues[scope] = self._ctest_catalogue(builds[scope])
+                build = builds[scope]
+                discovery = self._run_bounded(
+                    ctest_selection_command(build, label_args=ctest_reference_args(test)),
+                    cwd=Path(self.topdir), env=None, timeout_seconds=30, capture_output=True,
+                )
+                if discovery.returncode:
+                    self._dump_command_tail("CTest reference discovery", discovery)
+                    self.die(f"{patch['path']}: could not resolve CTest reference {ctest_reference_args(test)}")
+                try:
+                    registrations = json.loads(discovery.stdout)["tests"]
+                    if not registrations:
+                        raise ValueError(f"missing CTest reference {ctest_reference_args(test)}")
+                    indices = ctest_registration_indices(catalogues[scope], registrations)
+                    for registration, index in zip(registrations, indices):
+                        registration["_ctest_index"] = index
+                    variants = ctest_metadata_variants(
+                        test, registrations, default_env="macos" if sys.platform == "darwin" else "host"
+                    )
+                    chosen = select_metadata_tests(
+                        {"patches": [{**patch, "tests": variants}]},
+                        patch_path=None, bead=None, env=env, diag=diag, label=label,
+                        red_only=False, resolved_diag=self._resolved_diag,
+                    ).selected
+                    for _, variant in chosen:
+                        registration = variant["_ctest"]
+                        profiles = list(dict.fromkeys([
+                            *([variant["runtime-profile"]] if variant.get("runtime-profile") else []),
+                            *registration["profiles"],
+                        ]))
+                        groups = partition_ctest_runtime_profiles(
+                            self._ctest_runtime_profile_definitions(),
+                            [{"name": registration["name"], "darling": variant["env"] == "darling",
+                              "profiles": profiles}],
+                            additional_profiles,
+                        )
+                        registration["profiles"] = groups[0]["profiles"]
+                        registration["build"] = str(build)
+                        resolved.append((patch, variant))
+                    if not chosen:
+                        available = sorted({variant["env"] for variant in variants})
+                        unavailable.append(
+                            f"{patch['path']}:{test.get('name') or ctest_reference_args(test)}: "
+                            f"available environments: {', '.join(available) or 'none'}"
+                        )
+                except (KeyError, TypeError, ValueError) as error:
+                    self.die(f"{patch['path']}: invalid CTest reference: {error}")
+            if not resolved:
+                detail = "; ".join(unavailable) or "metadata selectors matched no runnable bindings"
+                self.die(f"no tests selected (env={env or 'any'}): {detail}")
+            # The outer prefix lease shuts down the existing runtime before
+            # entering a provider. Its launcher mode must already be known.
+            launcher_env = {}
+            definitions = None
+            for _, test in resolved:
+                profiles = list(test.get("_ctest", {}).get("profiles", []))
+                if test.get("runtime-profile"):
+                    profiles.append(test["runtime-profile"])
+                for name in dict.fromkeys(profiles):
+                    if definitions is None:
+                        definitions = self._ctest_runtime_profile_definitions()
+                    if name not in definitions:
+                        self.die(f"unknown runtime profile: {name}")
+                    for key, value in definitions[name].get("launcher-env", {}).items():
+                        value = str(value)
+                        if key in launcher_env and launcher_env[key] != value:
+                            self.die(f"selected runtime profiles conflict on launcher environment {key}")
+                        launcher_env[key] = value
+            previous_prefix_env = getattr(self, "_prefix_env", {})
+            self._prefix_env = {**previous_prefix_env, **launcher_env}
+            try:
+                yield resolved
+            finally:
+                self._prefix_env = previous_prefix_env

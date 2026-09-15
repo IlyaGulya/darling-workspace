@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from shlex import quote
 from typing import Callable, Sequence
 
 from test_ctest import ctest_label_args
@@ -429,3 +430,231 @@ def check_required_compile_options(invocation, log_path: Path, *, err: Reporter)
             )
             return 1
     return 0
+
+
+class CmakeFixtureMixin:
+
+    def _run_darling_cmake_target_fixture(self, invocation, env=None) -> int:
+        rc = run_darling_cmake_target_fixture(
+            invocation,
+            env=env,
+            executor=getattr(self, "_executor", None),
+            bundle_root=getattr(self, "_bundle_root", "~/work/darling-debug"),
+            inf=self.inf,
+            err=self.err,
+            die=self.die,
+        )
+        if rc:
+            self._record_failure_phase(invocation, "configure")
+        return rc
+
+    def _run_cmake_configure_fixture(self, invocation, env=None) -> int:
+        if invocation.get("diag", "bare") != "bare":
+            self.die(f"{invocation['name']}: cmake-configure-fixture currently supports diag:bare only")
+        run_env = env if env is not None else invocation.get("env")
+        if not run_env:
+            run_env = os.environ.copy()
+        else:
+            run_env = dict(run_env)
+        source_root = invocation["cwd"]
+        source_root_env = invocation.get("source_root_env")
+        if source_root_env and run_env.get(source_root_env):
+            source_root = Path(run_env[source_root_env])
+        if not (source_root / "CMakeLists.txt").is_file():
+            self.err(f"{invocation['name']}: CMakeLists.txt not found: {source_root}")
+            self._record_failure_phase(invocation, "setup")
+            return 1
+
+        with tempfile.TemporaryDirectory(prefix=f"west-cmake-configure-{invocation['name']}-") as temp:
+            tempdir = Path(temp)
+            bin_dir = tempdir / "bin"
+            build_dir = tempdir / "build"
+            bin_dir.mkdir()
+            build_dir.mkdir()
+            for marker in invocation.get("marker_files", []):
+                marker_path = source_root / marker["path"]
+                if marker_path.exists():
+                    continue
+                marker_path.parent.mkdir(parents=True, exist_ok=True)
+                marker_path.write_text(marker.get("content", ""))
+            for name, spec in invocation.get("fake_tools", {}).items():
+                tool_path = bin_dir / name
+                log_line = f"printf '%s\\n' \"$*\" >> {quote(str(tempdir / f'{name}.log'))}\n" if spec.get("log_args") else ""
+                tool_path.write_text(
+                    "#!/usr/bin/env bash\n"
+                    "set -euo pipefail\n"
+                    f"{log_line}"
+                    f"printf '%s' {quote(spec.get('stdout', ''))}\n"
+                    f"printf '%s' {quote(spec.get('stderr', ''))} >&2\n"
+                    f"exit {int(spec.get('returncode', 0))}\n"
+                )
+                tool_path.chmod(0o755)
+            child_env = dict(run_env)
+            child_env["PATH"] = f"{bin_dir}:{child_env.get('PATH', '')}"
+            args = [
+                "cmake",
+                "-S",
+                str(source_root),
+                "-B",
+                str(build_dir),
+                *invocation.get("configure_args", []),
+            ]
+            result = self._run_bounded(
+                args,
+                cwd=invocation["cwd"],
+                env=child_env,
+                timeout_seconds=int(invocation.get("timeout_seconds", 600)),
+                capture_output=True,
+            )
+            if result.timed_out:
+                self.err(f"{invocation['name']}: cmake configure timed out")
+                self._record_failure_phase(invocation, "configure")
+                return 124
+            output = result.stdout + result.stderr
+            def write_output_tail() -> None:
+                lines = output.splitlines()
+                tail = "\n".join(lines[-120:])
+                if tail:
+                    sys.stderr.write(tail + "\n")
+            expect = invocation.get("expect") or {}
+            rc_mode = expect.get("returncode", 0)
+            if rc_mode == "nonzero":
+                if result.returncode == 0:
+                    self.err(f"{invocation['name']}: cmake configure succeeded unexpectedly")
+                    self._record_failure_phase(invocation, "configure")
+                    return 1
+            elif result.returncode != int(rc_mode):
+                write_output_tail()
+                self._record_failure_phase(invocation, "configure")
+                self.err(
+                    f"{invocation['name']}: cmake configure rc {result.returncode}, "
+                    f"want {rc_mode}"
+                )
+                return 1
+            for needle in expect.get("output-contains", []):
+                if str(needle) not in output:
+                    write_output_tail()
+                    self.err(f"{invocation['name']}: cmake output missing {needle!r}")
+                    self._record_failure_phase(invocation, "configure")
+                    return 1
+            for tool, checks in (expect.get("tool-args-contains") or {}).items():
+                log_path = tempdir / f"{tool}.log"
+                log = log_path.read_text() if log_path.is_file() else ""
+                for needle in checks:
+                    if str(needle) not in log:
+                        write_output_tail()
+                        self.err(f"{invocation['name']}: {tool} args missing {needle!r}")
+                        return 1
+            return 0
+
+    def _run_source_build_fixture(self, invocation, env=None) -> int:
+        if invocation.get("diag", "bare") != "bare":
+            self.die(f"{invocation['name']}: source-build-fixture currently supports diag:bare only")
+        run_env = env if env is not None else invocation.get("env")
+        if not run_env:
+            run_env = os.environ.copy()
+        else:
+            run_env = dict(run_env)
+        source_root = invocation["cwd"]
+        source_root_env = invocation.get("source_root_env")
+        if source_root_env and run_env.get(source_root_env):
+            source_root = Path(run_env[source_root_env])
+        relative_script = invocation["script_path"].relative_to(invocation["cwd"])
+        fixture_path = invocation["script_path"]
+        if not fixture_path.is_file():
+            source_fixture = source_root / relative_script
+            if source_fixture.is_file():
+                fixture_path = source_fixture
+            else:
+                self.die(f"{invocation['name']}: fixture not found: {fixture_path}")
+        with tempfile.TemporaryDirectory(prefix=f"west-source-build-{invocation['name']}-") as temp:
+            tempdir = Path(temp)
+            build_root = tempdir / "source"
+            rc = archive_source_to(
+                source_root,
+                build_root,
+                timeout_seconds=int(invocation.get("timeout_seconds", 600)),
+            )
+            if rc:
+                return rc
+            build_fixture = build_root / relative_script
+            if not build_fixture.is_file():
+                build_fixture.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(fixture_path, build_fixture)
+            child_env = dict(run_env)
+            child_env["WEST_TEST_TMP"] = str(tempdir)
+            child_env["WEST_TEST_SOURCE_ROOT"] = str(build_root)
+            timeout_seconds = int(invocation.get("timeout_seconds", 600))
+            for command in [*invocation.get("build_commands", []), *invocation.get("run_commands", [])]:
+                self.inf(f"  source-build-fixture: {command}")
+                result = self._run_bounded(
+                    ["/bin/bash", "-lc", command],
+                    cwd=build_root,
+                    env=child_env,
+                    timeout_seconds=timeout_seconds,
+                )
+                if result.timed_out:
+                    self.err(
+                        f"  source-build-fixture timed out after "
+                        f"{timeout_seconds}s: {command}"
+                    )
+                    self._record_failure_phase(
+                        invocation,
+                        "build" if command in invocation.get("build_commands", []) else "run",
+                    )
+                    return 124
+                if result.returncode:
+                    self._record_failure_phase(
+                        invocation,
+                        "build" if command in invocation.get("build_commands", []) else "run",
+                    )
+                    return result.returncode
+            return 0
+
+    def _configure_and_build(
+        self,
+        testkit: Path,
+        executor: str | None,
+        *,
+        darling_launcher: str | None = None,
+        prefix: str | None = None,
+        bundle_root: str | None = None,
+        build_dir: Path | None = None,
+        cmake_defines: dict[str, str] | None = None,
+        compile_tests: bool = True,
+    ) -> Path:
+        build = build_dir or testkit / "build"
+        cfg = ["cmake", "-S", str(testkit), "-B", str(build), "-G", "Ninja"]
+        for name, value in sorted((cmake_defines or {}).items()):
+            cfg.append(f"-D{name}={value}")
+        if executor:
+            cfg.append(f"-DDARLING_TEST_EXECUTOR={executor}")
+        if prefix:
+            cfg.append(f"-DDARLING_TEST_PREFIX={prefix}")
+        if getattr(self, "_prefix_env", {}).get("DARLING_NOOVERLAYFS") == "1":
+            cfg.append("-DDARLING_TEST_NO_OVERLAYFS=ON")
+        if bundle_root:
+            cfg.append(f"-DDARLING_TEST_BUNDLE_ROOT={bundle_root}")
+        self.inf(f"configuring: {testkit}")
+        self._run_testkit_build_command("configure", cfg)
+        if compile_tests:
+            self._run_testkit_build_command("build", ["ninja", "-C", str(build)])
+        return build
+
+    def _run_testkit_build_command(self, stage: str, args) -> None:
+        """Run a CTest suite build without letting toolchain hangs escape west."""
+
+        timeout_seconds = int(os.environ.get("WEST_TEST_BUILD_TIMEOUT_SECONDS", "1800"))
+        result = self._run_bounded(
+            args,
+            cwd=Path(self.topdir),
+            env=None,
+            timeout_seconds=timeout_seconds,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return
+        if result.timed_out:
+            self.err(f"testkit {stage} timed out after {timeout_seconds}s")
+        self._dump_command_tail(f"testkit {stage}", result)
+        self.die(f"testkit {stage} failed with rc {result.returncode}")
