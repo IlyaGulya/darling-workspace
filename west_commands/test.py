@@ -1584,11 +1584,21 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         if test_verdict_cache.STACK_RESOURCE in set(
             invocation.get("requires_resources", ())
         ):
+            # Ask under the name the prefix retains. The marker names the profile
+            # that provisioned the prefix, and a deployed ring profile never
+            # matches it, so naming the deployed profile returned no identity and
+            # every test that consumes the stock stack was unkeyable - the exact
+            # tests the reuse exists for. A prefix that retains nothing falls back
+            # to the deployed name, which computes the identity from the source.
+            retained = test_stock_stack_cache.retained_profile_name(
+                Path(getattr(self, "_prefix"))
+            )
             stack = test_stock_stack_cache.stack_request(
                 prefix=Path(getattr(self, "_prefix")),
                 manifest_repo=Path(self.manifest.repo_abspath),
                 topdir=Path(self.topdir),
-                profile_name=None if definition is None else definition["name"],
+                profile_name=retained
+                or (None if definition is None else definition["name"]),
                 environ=os.environ,
             )
             if stack is None:

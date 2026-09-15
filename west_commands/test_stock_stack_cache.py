@@ -270,6 +270,29 @@ def runtime_identity_digest(
         return None
 
 
+def retained_profile_name(prefix: Path) -> str | None:
+    """Return the profile name a prefix's retained marker records, if any.
+
+    The marker names the profile that provisioned the prefix, which is the
+    bootstrap provider. A deployed profile never matches it, so a caller asking
+    the prefix for its runtime identity must ask under the retained name rather
+    than the profile the test deploys: naming the deployed profile is what made
+    every test that consumes the stock stack unkeyable.
+    """
+
+    marker = prefix / ".west-runtime-profile.json"
+    if not marker.is_file() or marker.is_symlink():
+        return None
+    try:
+        record = json.loads(marker.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(record, dict) or record.get("schema") != 2:
+        return None
+    name = record.get("profile")
+    return name if isinstance(name, str) and name else None
+
+
 def stack_request(
     *,
     prefix: Path,
@@ -997,6 +1020,10 @@ def stock_stack_context(
             prefix=prefix,
             manifest_repo=manifest_repo,
             topdir=topdir,
+            # A metadata test carries no runtime_profile here, so the prefix's
+            # retained fingerprint is the identity. A caller that does name a
+            # deployed profile gets no request, because the marker records the
+            # bootstrap provider and the two never match.
             profile_name=invocation.get("runtime_profile"),
             environ=cache_environment,
         )
