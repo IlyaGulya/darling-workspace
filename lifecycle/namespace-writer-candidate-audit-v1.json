@@ -3,7 +3,7 @@
   "kind": "rootless-namespace-writer-candidate-audit",
   "coverage_tier": "source",
   "count": 1612,
-  "entries_digest": "feca1ad866a3ba263dbb875997bbe56112830edd04010613bfd8564889a0f441",
+  "entries_digest": "31f22b170cc663c2e7cbee0aa08938caba84e4d44a282ec28236ce249b2ca2d1",
   "entries": [
     {
       "repository": "darling",
@@ -31333,7 +31333,7 @@
     {
       "repository": "darling-workspace",
       "path": "west_commands/test_cmake.py",
-      "sha256": "0a05a769e6a617a32becc0dd21d9f393947f13beb538e5cedcfdabef0bea0e4f",
+      "sha256": "ef9a0370efd8b4f0dcc309471045f9e4a7bf45fa7986ff003a0c756c82a2e3fd",
       "classification": "workspace-task-owned-tooling",
       "reason": "west_commands/test_cmake.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
       "evidence": {
@@ -31345,7 +31345,7 @@
         "build_anchor": {
           "repository": "darling-workspace",
           "path": "west_commands/test_cmake.py",
-          "sha256": "0a05a769e6a617a32becc0dd21d9f393947f13beb538e5cedcfdabef0bea0e4f",
+          "sha256": "ef9a0370efd8b4f0dcc309471045f9e4a7bf45fa7986ff003a0c756c82a2e3fd",
           "relation": "workspace-runtime-source"
         }
       }

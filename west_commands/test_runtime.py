@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from shlex import quote
 from typing import Any
 
 import yaml
+
+from test_runtime_identity import runtime_identity
+import test_runtime_cache
 
 
 ROOTLESS_BOOTSTRAP_RESOURCE = "rootless-bootstrap"
@@ -910,3 +916,249 @@ def applicability_preflight_advice(profile: str, output: str) -> str:
         f"Repair or rebase that profile with `west patch verify --profile {profile}` "
         "before retrying; this is not a runtime test failure."
     )
+
+
+class RuntimePlanMixin:
+
+    def _display_invocation(self, invocation) -> str:
+        if invocation.get("darling_cmake_target_fixture"):
+            return invocation["display"]
+        if invocation.get("guest_argv_fixture"):
+            return invocation["display"]
+        if invocation.get("guest_macho_fixture"):
+            return invocation["display"]
+        if invocation.get("guest_command_fixture"):
+            return invocation["display"]
+        if invocation.get("diag", "bare") == "bare":
+            return invocation["display"]
+        if invocation.get("guest_c_fixture"):
+            executor = getattr(self, "_executor", None) or "<darling-debug-runner>"
+            args = [
+                executor,
+                "run",
+                "--name",
+                f"west-test-{invocation['name']}",
+                "--bundle-root",
+                str(getattr(self, "_bundle_root", "~/work/darling-debug")),
+                "--timeout-seconds",
+                str(invocation.get("debug_timeout_seconds", invocation.get("timeout_seconds", 600))),
+                "--",
+                "<guest-c-fixture>",
+                invocation["display"],
+            ]
+            return " ".join(quote(str(arg)) for arg in args)
+        args = self._debug_runner_args(invocation, display_only=True)
+        return " ".join(quote(str(arg)) for arg in args)
+
+    def _runtime_diagnostic_output(self, invocation) -> str:
+        """Read trace files owned by the invocation and its runtime provider."""
+
+        parts = []
+        seen_paths = set()
+        for path in (
+            *invocation.get("_host_trace_paths", []),
+            *invocation.get("_runtime_diagnostic_trace_paths", []),
+        ):
+            path = Path(path)
+            if path in seen_paths:
+                continue
+            seen_paths.add(path)
+            if path.is_file():
+                parts.append(path.read_text(errors="replace"))
+        return "".join(parts)
+
+    def _bound_runtime_reuse_store(
+        self, plan: test_runtime_cache.RuntimeReusePlan
+    ) -> None:
+        """Enforce the reuse store bound once per invocation.
+
+        Sizing a materialised forest costs a walk over several gigabytes, so the
+        bound is applied on the first runtime profile of a run and then left
+        alone rather than re-measured for every profile.
+        """
+
+        if getattr(self, "_runtime_reuse_bounded", False):
+            return
+        self._runtime_reuse_bounded = True
+        pruned = test_runtime_cache.prune(
+            plan.store,
+            test_runtime_cache.max_bytes(os.environ),
+            protect=[plan.source_entry],
+        )
+        if pruned["evicted"]:
+            self.inf(
+                f"  runtime reuse evicted {len(pruned['evicted'])} entry(s), "
+                f"{pruned['evicted_bytes']} bytes"
+            )
+
+    def _runtime_reuse_plan(
+        self,
+        *,
+        profile_name: str,
+        definition: dict,
+        proof: dict,
+        patch: dict,
+        prefix_text: str,
+        omit_patch: bool,
+    ) -> test_runtime_cache.RuntimeReusePlan | None:
+        """Return the identity-keyed reuse plan for one runtime profile.
+
+        The plan is derived from the same identity the retained-runtime path
+        already refuses to reuse across, plus the configure command the build
+        will run, so a repeat acceptance run reuses instead of rebuilding while
+        any source, metadata, define or toolchain change forces a rebuild.
+        """
+        from test_runtime_build import RuntimeBuildService
+
+        store = test_runtime_cache.cache_root(
+            Path(self.manifest.repo_abspath), os.environ
+        )
+        if store is None:
+            return None
+        identity = runtime_identity(
+            topdir=Path(self.topdir),
+            manifest_repo=Path(self.manifest.repo_abspath),
+            profile_name=profile_name,
+            definition=definition,
+            launcher=Path(prefix_text) / "bin" / "darling",
+        )
+        source_key = test_runtime_cache.source_key(
+            test_runtime_cache.source_identity(
+                identity,
+                omit_patch=omit_patch,
+                patch_path=str(patch.get("path", "")),
+                bad_profile=proof.get("bad-profile"),
+                bad_revision=(
+                    self._bad_revision(patch, proof) if omit_patch else None
+                ),
+            )
+        )
+        build_key = RuntimeBuildService(self).runtime_build_identity(
+            proof,
+            Path(prefix_text),
+            store,
+            source_key,
+            configure_args=self._runtime_red_configure_args,
+        )
+        return test_runtime_cache.RuntimeReusePlan(
+            store=store, source_key=source_key, build_key=build_key
+        )
+
+    @contextmanager
+    def _guest_runtime_source_forest(
+        self,
+        patch,
+        proof,
+        *,
+        omit_patch: bool,
+        root: Path | None = None,
+        evidence_session=None,
+        reuse_key: str | None = None,
+    ):
+        """Create a temporary Darling source forest for a runtime build.
+
+        The top-level Darling tree and every nested gitlink are detached local
+        worktrees. When omit_patch is true, the target patch and explicit
+        current-minus skips are removed to build the RED runtime. Otherwise the
+        full active profile is materialized to build the GREEN runtime. This
+        keeps live checkouts and the caller's prefix stable while giving CMake
+        one coherent source root.
+        """
+        with self._runtime_source_materializer().guest_runtime_source_forest(
+            patch,
+            proof,
+            omit_patch=omit_patch,
+            root=root,
+            evidence_session=evidence_session,
+            reuse_key=reuse_key,
+        ) as source_root:
+            yield source_root
+
+    def _cmake_cache_value(self, build_dir: Path, key: str) -> str | None:
+        from test_runtime_build import RuntimeBuildService
+        return RuntimeBuildService.cmake_cache_value(build_dir, key)
+
+    def _runtime_red_configure_args(
+        self, proof, prefix: Path, scratch_root: Path | None = None
+    ) -> list[str]:
+        from test_runtime_build import RuntimeBuildService
+        return RuntimeBuildService(self).configure_args(proof, prefix, scratch_root)
+
+    def _runtime_red_build_artifacts(
+        self,
+        source_root: Path,
+        proof,
+        prefix: Path,
+        scratch_root: Path,
+        *,
+        label: str = "RED",
+        allow_failure: bool = False,
+        cache: tuple[Path, str] | None = None,
+        on_reuse: Callable[[bool], None] | None = None,
+    ) -> Path:
+        from test_runtime_build import RuntimeBuildService
+        return RuntimeBuildService(self).build_artifacts(
+            source_root,
+            proof,
+            prefix,
+            scratch_root,
+            label=label,
+            allow_failure=allow_failure,
+            configure_args=self._runtime_red_configure_args,
+            dump_command_tail=self._dump_command_tail,
+            runner=self._run_bounded,
+            timeout_seconds=getattr(self, "_runtime_build_timeout_seconds", None),
+            cache=cache,
+            on_reuse=on_reuse,
+        )
+
+    def _runtime_red_find_build_output(
+        self, build_root: Path, deploy_path: str
+    ) -> Path:
+        from test_runtime_build import RuntimeBuildService
+        return RuntimeBuildService(self).find_build_output(build_root, deploy_path)
+
+    def _runtime_macho_inspect(self, path: Path, flag: str) -> str:
+        from test_runtime_deploy import RuntimeDeploymentService
+        return RuntimeDeploymentService(self).macho_inspect(path, flag)
+
+    def _runtime_macho_dependencies(self, path: Path) -> list[str]:
+        from test_runtime_deploy import RuntimeDeploymentService
+        return RuntimeDeploymentService(self).macho_dependencies(path)
+
+    def _runtime_macho_dylib_providers(
+        self, build_root: Path, explicit: dict[str, Path]
+    ) -> dict[str, Path]:
+        from test_runtime_deploy import RuntimeDeploymentService
+        return RuntimeDeploymentService(self).macho_dylib_providers(build_root, explicit)
+
+    def _runtime_red_deploy_targets(self, prefix: Path, deploy_path: str) -> list[Path]:
+        try:
+            return runtime_deploy_targets(prefix, deploy_path)
+        except ValueError:
+            self.die(f"guest-runtime-deploy deploy path must be relative: {deploy_path}")
+
+    @contextmanager
+    def _runtime_red_deployed_artifacts(
+        self,
+        proof,
+        build_root: Path,
+        prefix: Path,
+        *,
+        label: str = "RED",
+        restore_deployment: bool = True,
+        lifecycle_env: dict[str, str] | None = None,
+    ):
+        from test_runtime_deploy import RuntimeDeploymentService
+        with RuntimeDeploymentService(self).deployed(
+            proof,
+            build_root,
+            prefix,
+            label=label,
+            restore_deployment=restore_deployment,
+            lifecycle_env=lifecycle_env,
+        ):
+            yield
+
+    def _display_guest_runtime_deploy_plan(self, proof) -> str:
+        return describe_runtime_deploy_plan(proof)

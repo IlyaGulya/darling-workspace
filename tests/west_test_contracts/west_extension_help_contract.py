@@ -31,6 +31,8 @@ OUTPUT_FILE_LIMIT = 1024 * 1024
 SETUP_TIMEOUT_SECONDS = 10
 TERMINATION_TIMEOUT_SECONDS = 2
 HASH_CHUNK_SIZE = 64 * 1024
+SHEBANG_LIMIT = 256
+CONTRACT_NAME = "west-extension-help-contract"
 REQUIRED_DW_HELP_PATHS = {
     ("dw", "summary"),
     ("dw", "beads"),
@@ -39,21 +41,145 @@ REQUIRED_DW_HELP_PATHS = {
 }
 
 
+def _note(message: str) -> None:
+    """Report an environment resolution to the operator once per run.
+
+    The re-executed pass inherits the marker and stays quiet, so a resolution
+    is stated once, by the pass that resolved it.
+    """
+    if os.environ.get(CONTRACT_RUNTIME_MARKER) != "1":
+        print(f"{CONTRACT_NAME}: {message}", file=sys.stderr)
+
+
+def _first_line(path: Path) -> bytes:
+    """Return the first line of a file as bytes.
+
+    The resolved west can be a launcher rather than a script, so this never
+    decodes: reading a binary with a strict codec is what used to raise
+    UnicodeDecodeError from inside this contract.
+    """
+    try:
+        with path.open("rb") as stream:
+            return stream.readline(SHEBANG_LIMIT)
+    except OSError as error:
+        raise RuntimeError(f"cannot read the resolved west executable {path}: {error}") from error
+
+
+def _shebang_interpreter(script: Path) -> Path | None:
+    """Return the interpreter a script's `#!` line names, or None when it has none."""
+    first_line = _first_line(script)
+    if not first_line.startswith(b"#!"):
+        return None
+    try:
+        shebang = first_line.decode("utf-8").strip()
+    except UnicodeDecodeError as error:
+        raise RuntimeError(
+            f"the `#!` line of {script} is not UTF-8: {first_line!r}"
+        ) from error
+    interpreter = Path(shebang[2:].strip())
+    if not interpreter.is_file():
+        raise RuntimeError(
+            f"the interpreter named by the `#!` line of {script} does not exist: {interpreter}"
+        )
+    return interpreter
+
+
+def _dispatched_west_entry_point(executable: Path) -> Path | None:
+    """Return the entry script a launcher on PATH runs for west, or None.
+
+    `which west` can name a launcher rather than a Python entry script: the mise
+    shim is a symlink to the mise binary, which selects a tool by the name it was
+    invoked with and needs mise's own data directory, so it also fails under the
+    isolated HOME this contract gives every help invocation. mise names the
+    console script its shim dispatches to.
+    """
+    launcher = shutil.which("mise")
+    if launcher is None:
+        return None
+    try:
+        completed = subprocess.run(
+            [launcher, "which", "west"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=SETUP_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    if not lines:
+        return None
+    entry_point = Path(lines[-1]).absolute()
+    if entry_point == executable or not entry_point.is_file():
+        return None
+    return entry_point
+
+
+def _imports_west(interpreter: Path) -> bool:
+    """Return whether an interpreter can import west."""
+    try:
+        completed = subprocess.run(
+            [str(interpreter), "-c", "import west"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=SETUP_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
 def _west_executable() -> Path:
+    """Resolve west to the Python entry script this workspace runs.
+
+    `which west` is honored as it stands. When it names a launcher instead, the
+    launcher's own dispatcher names the entry script it runs, and that script is
+    what this contract executes: it carries the interpreter pin, and unlike the
+    launcher it does not depend on its tool manager's data directory.
+    """
     executable = shutil.which("west")
     if executable is None:
-        raise RuntimeError("west is not available in PATH; run this contract in the pinned tool environment")
-    return Path(executable).resolve()
+        raise RuntimeError(
+            "west is not available in PATH; run this contract in the pinned tool environment"
+        )
+    path = Path(executable).absolute()
+    if _shebang_interpreter(path) is not None:
+        return path
+    entry_point = _dispatched_west_entry_point(path)
+    if entry_point is not None and _shebang_interpreter(entry_point) is not None:
+        _note(f"{path} is not a Python entry script; running {entry_point} instead")
+        return entry_point
+    return path
 
 
 def _west_interpreter(executable: Path) -> Path:
-    first_line = executable.read_bytes().splitlines()[0].decode("utf-8", errors="strict")
-    if not first_line.startswith("#!/"):
-        raise RuntimeError(f"cannot identify the pinned West interpreter from {executable}: {first_line!r}")
-    interpreter = Path(first_line[2:].strip())
-    if not interpreter.is_file():
-        raise RuntimeError(f"pinned West interpreter does not exist: {interpreter}")
-    return interpreter
+    """Return the interpreter that provides the pinned west.
+
+    An entry script names it in its `#!` line. A launcher that names none leaves
+    the interpreter running this contract, which the host tier provides, but only
+    once it has been shown to import west: the pin is a claim about west, not
+    about a shebang this environment may not have.
+    """
+    interpreter = _shebang_interpreter(executable)
+    if interpreter is not None:
+        return interpreter
+    dispatched = _dispatched_west_entry_point(executable)
+    if dispatched is not None:
+        interpreter = _shebang_interpreter(dispatched)
+        if interpreter is not None:
+            return interpreter
+    running = Path(sys.executable)
+    if _imports_west(running):
+        _note(f"{executable} names no interpreter; pinning west to {running}, which imports west")
+        return running
+    raise RuntimeError(
+        f"cannot identify the interpreter that provides west: {executable} names none and "
+        f"{running} does not import west"
+    )
 
 
 def _ensure_pinned_runtime(executable: Path) -> None:
@@ -945,7 +1071,7 @@ def main() -> None:
     finally:
         _terminate_processes(_process_snapshot(None, token))
 
-    print(f"PASS west-extension-help-contract ({len(paths)} help paths)")
+    print(f"PASS {CONTRACT_NAME} ({len(paths)} help paths)")
 
 
 if __name__ == "__main__":

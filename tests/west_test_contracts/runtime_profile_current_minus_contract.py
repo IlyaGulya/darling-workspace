@@ -9,6 +9,7 @@ import tempfile
 import types
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -37,6 +38,14 @@ with tempfile.TemporaryDirectory() as temp:
 
     test = DarlingTest.__new__(DarlingTest)
     test.topdir = str(root)
+    # The runtime reuse plan resolves the runtime identity from the manifest
+    # repository's profile metadata, so the disposable root carries the profile
+    # the fixture selects rather than the live workspace.
+    (root / "patches" / "homebrew").mkdir(parents=True)
+    (root / "patches" / "homebrew" / "patches.yml").write_text(
+        "patches:\n- path: smoke/one.patch\n  module: darling\n"
+    )
+    test.manifest = SimpleNamespace(repo_abspath=str(root))
     test._prefix = str(prefix)
     test._runtime_evidence_root = root / "evidence"
     test._active_profile = "outer-profile"
@@ -60,10 +69,11 @@ with tempfile.TemporaryDirectory() as temp:
     captured: dict[str, object] = {}
 
     @contextmanager
-    def source_forest(anchor, proof, *, omit_patch, root, evidence_session):
+    def source_forest(anchor, proof, *, omit_patch, root, evidence_session, reuse_key=None):
         captured["anchor"] = anchor
         captured["proof"] = proof
         captured["omit_patch"] = omit_patch
+        captured["reuse_key"] = reuse_key
         assert root.parent == evidence_session.directory
         yield root / "darling"
 
@@ -82,22 +92,31 @@ with tempfile.TemporaryDirectory() as temp:
         "module": "darling/src/external/darlingserver",
         "source-base": "deadbeef",
     }
-    with test._runtime_profile_deployment_context(
-        ["rootless"],
-        label_prefix="metadata RED",
-        retain_deployment=False,
-        patch=patch,
-        omit_patch=True,
-        red_proof={
-            "source-revision": "old-runtime-commit",
-            "current-minus-skip-patches": ["darling/downstream.patch"],
-        },
-    ) as deployment:
-        assert deployment.env["DARLING"] == str(launcher)
-        assert deployment.env["DARLING_ROOTLESS"] == "1"
+    # With reuse enabled the code materializes into the identity-keyed reuse
+    # store; this arm asserts the disposable evidence-session forest, so it pins
+    # reuse off. The identity-keyed path is covered by the runtime source reuse
+    # and cache contracts.
+    os.environ["WEST_RUNTIME_BUILD_CACHE"] = "off"
+    try:
+        with test._runtime_profile_deployment_context(
+            ["rootless"],
+            label_prefix="metadata RED",
+            retain_deployment=False,
+            patch=patch,
+            omit_patch=True,
+            red_proof={
+                "source-revision": "old-runtime-commit",
+                "current-minus-skip-patches": ["darling/downstream.patch"],
+            },
+        ) as deployment:
+            assert deployment.env["DARLING"] == str(launcher)
+            assert deployment.env["DARLING_ROOTLESS"] == "1"
+    finally:
+        os.environ.pop("WEST_RUNTIME_BUILD_CACHE")
 
     assert captured["anchor"] == patch
     assert captured["omit_patch"] is True
+    assert captured["reuse_key"] is None, "reuse is pinned off for this arm"
     assert captured["proof"] == {
         "source-modules": ["darling"],
         "runtime-artifacts": [],
@@ -150,7 +169,7 @@ forwarded: dict[str, object] = {}
 class SourceMaterializer:
     @contextmanager
     def guest_runtime_source_forest(
-        self, patch, proof, *, omit_patch, root, evidence_session
+        self, patch, proof, *, omit_patch, root, evidence_session, reuse_key=None
     ):
         forwarded.update(
             patch=patch,
@@ -158,6 +177,7 @@ class SourceMaterializer:
             omit_patch=omit_patch,
             root=root,
             evidence_session=evidence_session,
+            reuse_key=reuse_key,
         )
         yield root / "darling"
 
@@ -179,6 +199,7 @@ assert forwarded == {
     "omit_patch": True,
     "root": evidence_root,
     "evidence_session": evidence_session,
+    "reuse_key": None,
 }
 
 print("PASS runtime-profile-current-minus-contract")

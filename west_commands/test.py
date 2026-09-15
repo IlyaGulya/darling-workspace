@@ -28,9 +28,7 @@ import argparse
 import json
 import os
 import re
-import resource
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
@@ -51,18 +49,13 @@ from prefix_repair import (
     repair_prefix_boot_prerequisites,
 )
 from test_ctest import (
+    CtestSelectionMixin,
     ctest_command,
-    ctest_label_args,
-    ctest_label_display,
-    ctest_selection_command,
     ctest_selector_label_args,
     ctest_runtime_group_passthrough,
-    ctest_test_name_regex,
     ctest_uses_prefix,
-    ctest_metadata_variants,
     is_ctest_binding,
     ctest_reference_args,
-    ctest_registration_indices,
     ctest_index_args,
 )
 from test_selection import (
@@ -70,11 +63,10 @@ from test_selection import (
     metadata_run_summary,
     metadata_selection_plan,
     metadata_test_outcome,
-    select_metadata_tests,
     select_metadata_tests_for_command,
 )
 from test_dispatch import dispatch_fixture_runner
-from test_cmake import archive_git_tree_to, archive_source_to, run_darling_cmake_target_fixture
+from test_cmake import archive_git_tree_to, CmakeFixtureMixin
 from test_descriptor_transport import (
     DescriptorTraceError,
     window_specs as descriptor_trace_window_specs,
@@ -83,12 +75,11 @@ from test_execution import process_output_text, run_bounded
 from fresh_prefix import create_fresh_prefix, remove_fresh_prefix
 from test_guest_execution import (
     failure_phase_from_output,
-    resolve_guest_execution,
+    # Kept in this namespace on purpose: focused contracts patch and read the
+    # facade's ``test.run_guest_argv`` rather than the owning module.
     run_guest_argv,
     run_guest_argv_fixture,
     run_guest_command_fixture,
-    run_guest_shell,
-    shutdown_guest_prefix,
 )
 try:
     from .test_guest_macho import run_guest_macho_fixture
@@ -115,11 +106,11 @@ from profile_catalog import (
 from test_profile import ProfileOperationsMixin
 from test_prefix import (
     cleanup_rootless_runtime_sockets,
+    PrefixLifecycleMixin,
     PrefixLifecycleOwner,
     remove_stale_init_pid,
     remove_stale_server_socket,
     RootlessRuntimeSocketCleanupResult,
-    rootless_prefix_process_snapshot,
 )
 from test_resources import resource_context
 from test_runtime_proof import ProofObservation, RedOracle, RuntimeProofStateMachine
@@ -127,7 +118,6 @@ from test_runtime_deploy import RuntimeDeploymentService
 from test_results import InvocationResult, RuntimeBuildFailure, RuntimeRedProven
 from test_runtime_build import RuntimeBuildService
 from test_runtime_evidence import RuntimeEvidenceStore
-import test_runtime_cache
 from test_runtime_source import RuntimeSourceMaterializer
 from test_runtime_identity import runtime_identity
 import test_stock_stack_cache
@@ -142,28 +132,33 @@ from guest_macho_validation import (
 from test_runtime import (
     applicability_preflight_advice,
     compose_ctest_runtime_profiles,
-    describe_runtime_deploy_plan,
-    load_ctest_runtime_profiles,
     merge_runtime_cmake_define_overrides,
     parse_runtime_cmake_define_overrides,
-    partition_ctest_runtime_profiles,
     preflight_retry_allowed,
-    runtime_build_targets,
-    runtime_deploy_targets,
-    ROOTLESS_BOOTSTRAP_RESOURCE,
+    RuntimePlanMixin,
 )
 from test_worktrees import prune_stale_west_temp_worktrees
 from test_bootstrap import (
     BootstrapRuntimeProfileMixin,
     RuntimeProfileDeployment,
     RuntimeProviderFailure,
+    # Kept in this namespace on purpose: focused contracts read the facade's
+    # ``test.RETAINED_RUNTIME_PROFILE_MARKER`` to build a retained prefix.
     RETAINED_RUNTIME_PROFILE_MARKER,
     bootstrap_syscall_stall_summary,
     bootstrap_trace_fatal_signal,
 )
 
 
-class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestCommand):
+class DarlingTest(
+    ProfileOperationsMixin,
+    BootstrapRuntimeProfileMixin,
+    PrefixLifecycleMixin,
+    CtestSelectionMixin,
+    CmakeFixtureMixin,
+    RuntimePlanMixin,
+    WestCommand,
+):
     def __init__(self):
         super().__init__(
             "test",
@@ -575,53 +570,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         verified.add(source_profile)
         self._verified_runtime_profile_stacks = verified
 
-    def _resolve_prefix(self, args) -> str | None:
-        self._prefix_env = {}
-        if args.no_overlayfs:
-            self._prefix_env["DARLING_NOOVERLAYFS"] = "1"
-        if args.prefix and args.prefix_profile:
-            self.die("--prefix and --prefix-profile are mutually exclusive")
-        prefix = None
-        if args.prefix:
-            prefix = args.prefix
-            if prefix.startswith("existing:"):
-                prefix = prefix.removeprefix("existing:")
-        elif args.prefix_profile:
-            profiles = {
-                "homebrew": "~/work/darling-prefix-homebrew-test",
-                "smoke": "~/work/darling-prefix-smoke",
-            }
-            if args.prefix_profile == "homebrew":
-                self._prefix_env["DARLING_NOOVERLAYFS"] = "1"
-            prefix = profiles.get(args.prefix_profile, args.prefix_profile)
-        elif os.environ.get("DPREFIX"):
-            prefix = os.environ["DPREFIX"]
-        if prefix is None:
-            return None
-        resolved = str(Path(prefix).expanduser())
-        self._load_retained_prefix_env(Path(resolved))
-        return resolved
-
-    def _load_retained_prefix_env(self, prefix: Path) -> None:
-        """Restore provider flags before a separate process resets a prefix."""
-
-        marker_path = prefix / RETAINED_RUNTIME_PROFILE_MARKER
-        try:
-            marker = json.loads(marker_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            return
-        if not isinstance(marker, dict) or marker.get("schema") != 2:
-            return
-        profile_name = marker.get("profile")
-        if not isinstance(profile_name, str) or not profile_name:
-            return
-        definition = self._ctest_runtime_profile_definitions().get(profile_name)
-        if definition is None or marker.get("source-profile") != definition.get("source-profile"):
-            return
-        self._prefix_env.update(
-            {key: str(value) for key, value in definition.get("launcher-env", {}).items()}
-        )
-
     def _resolve_darling_launcher(self, prefix: str | None) -> str | None:
         if prefix:
             candidate = Path(prefix).expanduser() / "bin" / "darling"
@@ -640,15 +588,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         if candidate.exists():
             return str(candidate)
         return None
-
-    def _darling_prefix_env(self, prefix: str | Path) -> dict[str, str]:
-        prefix_text = str(prefix)
-        env = {
-            "DPREFIX": prefix_text,
-            "DARLING_PREFIX": prefix_text,
-        }
-        env.update(getattr(self, "_prefix_env", {}))
-        return env
 
     def _resolve_executor(self, explicit: str | None) -> str | None:
         if explicit:
@@ -1801,15 +1740,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 return True
         return False
 
-    def _verify_prefix_idle(self) -> bool:
-        """Run the host-side idle oracle after a guest test claims shutdown."""
-
-        prefix = getattr(self, "_prefix", None)
-        if not prefix:
-            self.err("clean-shutdown verification needs a selected Darling prefix")
-            return False
-        return self._prefix_lifecycle_owner().finalize(Path(prefix))
-
     def _prune_stale_west_temp_worktrees(self) -> None:
         projects = getattr(self.manifest, "projects", [])
         repos = [
@@ -1849,306 +1779,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         return False
 
     @contextmanager
-    def _metadata_ctest_selection(self, selected, *, env, diag, label, additional_profiles):
-        """Resolve references in the active source profile before prefix acquisition."""
-        resolved = []
-        builds = {}
-        catalogues = {}
-        unavailable = []
-        with ExitStack() as stack:
-            for patch, test in selected:
-                if not is_ctest_binding(test):
-                    resolved.append((patch, test))
-                    continue
-                invocation = self._test_invocation(patch, test)
-                override = invocation.get("ctest_source_override")
-                defines = self._ctest_cmake_defines(invocation, source_override=override)
-                scope = (str(self._testkit_dir()), tuple(sorted(defines.items())))
-                if scope not in builds:
-                    scratch = stack.enter_context(tempfile.TemporaryDirectory(prefix="west-ctest-selection-"))
-                    builds[scope] = self._configure_and_build(
-                        self._testkit_dir(), self._executor,
-                        darling_launcher=self._resolve_darling_launcher(self._prefix),
-                        prefix=self._prefix,
-                        bundle_root=str(getattr(self, "_bundle_root", "")),
-                        build_dir=Path(scratch) / "build",
-                        cmake_defines=defines,
-                        compile_tests=False,
-                    )
-                    catalogues[scope] = self._ctest_catalogue(builds[scope])
-                build = builds[scope]
-                discovery = run_bounded(
-                    ctest_selection_command(build, label_args=ctest_reference_args(test)),
-                    cwd=Path(self.topdir), env=None, timeout_seconds=30, capture_output=True,
-                )
-                if discovery.returncode:
-                    self._dump_command_tail("CTest reference discovery", discovery)
-                    self.die(f"{patch['path']}: could not resolve CTest reference {ctest_reference_args(test)}")
-                try:
-                    registrations = json.loads(discovery.stdout)["tests"]
-                    if not registrations:
-                        raise ValueError(f"missing CTest reference {ctest_reference_args(test)}")
-                    indices = ctest_registration_indices(catalogues[scope], registrations)
-                    for registration, index in zip(registrations, indices):
-                        registration["_ctest_index"] = index
-                    variants = ctest_metadata_variants(
-                        test, registrations, default_env="macos" if sys.platform == "darwin" else "host"
-                    )
-                    chosen = select_metadata_tests(
-                        {"patches": [{**patch, "tests": variants}]},
-                        patch_path=None, bead=None, env=env, diag=diag, label=label,
-                        red_only=False, resolved_diag=self._resolved_diag,
-                    ).selected
-                    for _, variant in chosen:
-                        registration = variant["_ctest"]
-                        profiles = list(dict.fromkeys([
-                            *([variant["runtime-profile"]] if variant.get("runtime-profile") else []),
-                            *registration["profiles"],
-                        ]))
-                        groups = partition_ctest_runtime_profiles(
-                            self._ctest_runtime_profile_definitions(),
-                            [{"name": registration["name"], "darling": variant["env"] == "darling",
-                              "profiles": profiles}],
-                            additional_profiles,
-                        )
-                        registration["profiles"] = groups[0]["profiles"]
-                        registration["build"] = str(build)
-                        resolved.append((patch, variant))
-                    if not chosen:
-                        available = sorted({variant["env"] for variant in variants})
-                        unavailable.append(
-                            f"{patch['path']}:{test.get('name') or ctest_reference_args(test)}: "
-                            f"available environments: {', '.join(available) or 'none'}"
-                        )
-                except (KeyError, TypeError, ValueError) as error:
-                    self.die(f"{patch['path']}: invalid CTest reference: {error}")
-            if not resolved:
-                detail = "; ".join(unavailable) or "metadata selectors matched no runnable bindings"
-                self.die(f"no tests selected (env={env or 'any'}): {detail}")
-            # The outer prefix lease shuts down the existing runtime before
-            # entering a provider. Its launcher mode must already be known.
-            launcher_env = {}
-            definitions = None
-            for _, test in resolved:
-                profiles = list(test.get("_ctest", {}).get("profiles", []))
-                if test.get("runtime-profile"):
-                    profiles.append(test["runtime-profile"])
-                for name in dict.fromkeys(profiles):
-                    if definitions is None:
-                        definitions = self._ctest_runtime_profile_definitions()
-                    if name not in definitions:
-                        self.die(f"unknown runtime profile: {name}")
-                    for key, value in definitions[name].get("launcher-env", {}).items():
-                        value = str(value)
-                        if key in launcher_env and launcher_env[key] != value:
-                            self.die(f"selected runtime profiles conflict on launcher environment {key}")
-                        launcher_env[key] = value
-            previous_prefix_env = getattr(self, "_prefix_env", {})
-            self._prefix_env = {**previous_prefix_env, **launcher_env}
-            try:
-                yield resolved
-            finally:
-                self._prefix_env = previous_prefix_env
-
-    def _display_ctest_label(self, label: str) -> str:
-        build = self._testkit_dir() / "build"
-        return ctest_label_display(build, label)
-
-    def _ctest_catalogue(self, build: Path) -> list[dict]:
-        discovery = run_bounded(
-            ctest_selection_command(build), cwd=Path(self.topdir), env=None,
-            timeout_seconds=30, capture_output=True,
-        )
-        if discovery.returncode:
-            self._dump_command_tail("CTest catalogue discovery", discovery)
-            self.die(f"could not discover CTest suite {build}")
-        try:
-            return json.loads(discovery.stdout)["tests"]
-        except (KeyError, TypeError, ValueError) as error:
-            self.die(f"invalid CTest catalogue in {build}: {error}")
-
-    def _ensure_ctest_build(self, invocation=None) -> Path:
-        if invocation and invocation.get("ctest_build"):
-            build = Path(invocation["ctest_build"])
-            built = getattr(self, "_compiled_ctest_builds", set())
-            if build not in built:
-                self._run_testkit_build_command("build", ["ninja", "-C", str(build)])
-                self._compiled_ctest_builds = built | {build}
-            return build
-        build = getattr(self, "_ctest_build", None)
-        if build is not None:
-            return build
-        build = self._configure_and_build(self._testkit_dir(), self._executor)
-        self._ctest_build = build
-        return build
-
-    def _ctest_label_args(self, invocation) -> list[str]:
-        build = self._ensure_ctest_build(invocation)
-        if invocation.get("ctest_index") is not None:
-            label_args = ctest_command(build, passthrough=ctest_index_args([invocation["ctest_index"]]))
-        elif invocation.get("ctest_name"):
-            label_args = ctest_command(build, passthrough=["-R", ctest_test_name_regex([invocation["ctest_name"]])])
-        else:
-            label_args = ctest_label_args(build, invocation["ctest_label"])
-        discovery = run_bounded(
-            ctest_selection_command(build, label_args=label_args[4:]),
-            cwd=Path(self.topdir),
-            env=None,
-            timeout_seconds=30,
-            capture_output=True,
-        )
-        if discovery.returncode:
-            self._dump_command_tail("CTest label discovery", discovery)
-            self.die(f"could not discover CTest label {invocation['ctest_label']!r}")
-        try:
-            selected = json.loads(discovery.stdout).get("tests", [])
-        except json.JSONDecodeError as error:
-            self.die(f"CTest label discovery returned invalid JSON: {error}")
-        if not selected:
-            self.die(
-                f"CTest label {invocation['ctest_label']!r} selected no tests in {build}; "
-                "refusing a false GREEN"
-            )
-        if invocation.get("ctest_index") is not None:
-            identities = [
-                (test["name"], next((item["value"] for item in test.get("properties", [])
-                                    if item["name"] == "WORKING_DIRECTORY"), None))
-                for test in selected
-            ]
-            if identities.count((invocation["ctest_name"], invocation["ctest_directory"])) != 1:
-                self.die("CTest registration changed after discovery; refusing to run a different case")
-        return label_args
-
-    def _ctest_cmake_defines(
-        self, invocation, *, source_override=None, source_root=None
-    ) -> dict[str, str]:
-        """Return CMake inputs needed by a source-bound CTest invocation."""
-
-        defines: dict[str, str] = {}
-        if source_override:
-            defines[str(source_override)] = str(
-                source_root
-                if source_root is not None
-                else self._project_path(invocation["source_module"])
-            )
-        if invocation.get("ctest_label") == "eunion-host":
-            defines["DARLING_ENABLE_EUNION_HOST_SUITE"] = "ON"
-        return defines
-
-    @contextmanager
-    def _ctest_source_override_context(self, invocation):
-        override = invocation.get("ctest_source_override")
-        if not override or invocation.get("ctest_build"):
-            yield invocation
-            return
-        with tempfile.TemporaryDirectory(prefix="west-ctest-source-") as temp:
-            configured = dict(invocation)
-            configured["ctest_build"] = self._configure_and_build(
-                self._testkit_dir(),
-                self._executor,
-                darling_launcher=self._resolve_darling_launcher(self._prefix),
-                prefix=self._prefix,
-                bundle_root=str(getattr(self, "_bundle_root", "")),
-                build_dir=Path(temp) / "build",
-                cmake_defines=self._ctest_cmake_defines(
-                    invocation, source_override=override
-                ),
-            )
-            yield configured
-
-    def _ctest_runtime_profile_definitions(self) -> dict[str, dict]:
-        path = self._testkit_dir() / "runtime-profiles.yml"
-        try:
-            return load_ctest_runtime_profiles(path)
-        except (OSError, ValueError) as error:
-            self.die(f"invalid CTest runtime profile definitions at {path}: {error}")
-
-    def _selected_ctest_runtime_groups(
-        self,
-        build: Path,
-        label_args: list[str],
-        passthrough: list[str],
-        additional_profiles: list[str],
-        *,
-        env: str | None = None,
-        diag: str | None = None,
-    ) -> list[dict]:
-        """Return lifecycle groups for exactly the CTest-selected cases."""
-
-        discovery = run_bounded(
-            ctest_selection_command(
-                build, label_args=label_args, passthrough=passthrough
-            ),
-            cwd=Path(self.topdir),
-            env=None,
-            timeout_seconds=30,
-            capture_output=True,
-        )
-        if discovery.returncode:
-            self._dump_command_tail("CTest runtime profile discovery", discovery)
-            self.die("could not discover CTest runtime profiles")
-        try:
-            payload = json.loads(discovery.stdout)
-        except json.JSONDecodeError as error:
-            self.die(f"CTest runtime profile discovery returned invalid JSON: {error}")
-        if not payload.get("tests"):
-            self.die("CTest selectors matched no registrations; refusing an empty selection")
-        try:
-            catalogue = self._ctest_catalogue(build) if label_args or passthrough else payload["tests"]
-            indices = ctest_registration_indices(catalogue, payload["tests"])
-        except ValueError as error:
-            self.die(f"invalid scoped CTest selection: {error}")
-        for registration, index in zip(payload["tests"], indices):
-            registration["_ctest_index"] = index
-        try:
-            variants = ctest_metadata_variants(
-                {}, payload["tests"], default_env="macos" if sys.platform == "darwin" else "host"
-            )
-        except ValueError as error:
-            self.die(f"invalid CTest environment selection: {error}")
-        selections = [
-            {
-                "name": variant["_ctest"]["name"],
-                "index": variant["_ctest"]["index"],
-                "darling": variant["env"] == "darling",
-                "profiles": variant["_ctest"]["profiles"],
-            }
-            for variant in variants
-            if (not env or variant["env"] == env)
-            and (not diag or self._resolved_diag(variant) == diag)
-        ]
-        if not selections:
-            self.die(f"CTest selectors matched no applicable registrations (env={env or 'any'}, diag={diag or 'any'})")
-        try:
-            return partition_ctest_runtime_profiles(
-                self._ctest_runtime_profile_definitions(),
-                selections,
-                additional_profiles,
-            )
-        except ValueError as error:
-            self.die(f"invalid CTest runtime profile selection: {error}")
-
-    @contextmanager
-    def _ctest_runtime_profile_context(self, profiles: list[str]):
-        """Build and temporarily deploy the runtime declared by selected CTest cases."""
-
-        if not profiles:
-            prefix_text = getattr(self, "_prefix", None)
-            runtime_env = os.environ.copy()
-            if prefix_text:
-                runtime_env.update(self._darling_prefix_env(prefix_text))
-                launcher = self._resolve_darling_launcher(prefix_text)
-                if launcher:
-                    runtime_env["DARLING"] = launcher
-                    runtime_env["DARLING_LAUNCHER"] = launcher
-            yield runtime_env
-            return
-        with self._runtime_profile_deployment_context(
-            profiles, label_prefix="CTest", retain_deployment=False
-        ) as deployment:
-            yield deployment.env
-
-    @contextmanager
     def _metadata_runtime_profile_context(
         self, patch, test, *, omit_patch=False, red_proof=None
     ):
@@ -2185,68 +1815,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             **deployment_args,
         ) as deployment:
             yield deployment
-
-    def _retained_runtime_profile(self, profile_name: str) -> RuntimeProfileDeployment:
-        """Use a provider retained by ``--bootstrap-runtime-profile``.
-
-        The marker is an identity check, not a source snapshot. It prevents a
-        follow-up metadata run from silently using a prefix provisioned for a
-        different runtime profile.
-        """
-
-        prefix_text = getattr(self, "_prefix", None)
-        if not prefix_text:
-            self.die("--reuse-prefix-runtime requires --prefix or DPREFIX")
-        prefix = Path(prefix_text)
-        marker_path = prefix / RETAINED_RUNTIME_PROFILE_MARKER
-        try:
-            marker = json.loads(marker_path.read_text())
-        except (OSError, json.JSONDecodeError) as error:
-            self.die(
-                "--reuse-prefix-runtime needs a retained provider marker at "
-                f"{marker_path}: {error}; run --bootstrap-runtime-profile first"
-            )
-        definition = self._ctest_runtime_profile_definitions().get(profile_name)
-        if definition is None:
-            self.die(f"unknown retained runtime profile: {profile_name}")
-        launcher = prefix / "bin" / "darling"
-        if not launcher.is_file():
-            self.die(
-                "--reuse-prefix-runtime retained prefix has no launcher: "
-                f"{launcher}"
-            )
-        expected_fingerprint = runtime_identity(
-            topdir=Path(self.topdir),
-            manifest_repo=Path(self.manifest.repo_abspath),
-            profile_name=profile_name,
-            definition=definition,
-            launcher=launcher,
-        )
-        if (
-            not isinstance(marker, dict)
-            or marker.get("schema") != 2
-            or marker.get("profile") != profile_name
-            or marker.get("source-profile") != definition.get("source-profile")
-            or marker.get("fingerprint") != expected_fingerprint
-        ):
-            actual = marker.get("profile") if isinstance(marker, dict) else None
-            self.die(
-                "--reuse-prefix-runtime retained provider fingerprint mismatch: selected "
-                f"{profile_name!r}, retained {actual!r}; bootstrap the selected profile again"
-            )
-        runtime_env = os.environ.copy()
-        runtime_env.update(self._darling_prefix_env(prefix))
-        runtime_env.update(
-            {key: str(value) for key, value in definition.get("launcher-env", {}).items()}
-        )
-        runtime_env["DARLING"] = str(launcher)
-        runtime_env["DARLING_LAUNCHER"] = str(launcher)
-        return RuntimeProfileDeployment(
-            name=profile_name,
-            prefix=prefix,
-            build_root=prefix,
-            env=runtime_env,
-        )
 
     @staticmethod
     def _with_runtime_diagnostics(invocation, deployment):
@@ -2682,53 +2250,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                 parts.append(path.read_text(errors="replace"))
         return "".join(parts)
 
-    def _runtime_diagnostic_output(self, invocation) -> str:
-        """Read trace files owned by the invocation and its runtime provider."""
-
-        parts = []
-        seen_paths = set()
-        for path in (
-            *invocation.get("_host_trace_paths", []),
-            *invocation.get("_runtime_diagnostic_trace_paths", []),
-        ):
-            path = Path(path)
-            if path in seen_paths:
-                continue
-            seen_paths.add(path)
-            if path.is_file():
-                parts.append(path.read_text(errors="replace"))
-        return "".join(parts)
-
-    def _display_invocation(self, invocation) -> str:
-        if invocation.get("darling_cmake_target_fixture"):
-            return invocation["display"]
-        if invocation.get("guest_argv_fixture"):
-            return invocation["display"]
-        if invocation.get("guest_macho_fixture"):
-            return invocation["display"]
-        if invocation.get("guest_command_fixture"):
-            return invocation["display"]
-        if invocation.get("diag", "bare") == "bare":
-            return invocation["display"]
-        if invocation.get("guest_c_fixture"):
-            executor = getattr(self, "_executor", None) or "<darling-debug-runner>"
-            args = [
-                executor,
-                "run",
-                "--name",
-                f"west-test-{invocation['name']}",
-                "--bundle-root",
-                str(getattr(self, "_bundle_root", "~/work/darling-debug")),
-                "--timeout-seconds",
-                str(invocation.get("debug_timeout_seconds", invocation.get("timeout_seconds", 600))),
-                "--",
-                "<guest-c-fixture>",
-                invocation["display"],
-            ]
-            return " ".join(quote(str(arg)) for arg in args)
-        args = self._debug_runner_args(invocation, display_only=True)
-        return " ".join(quote(str(arg)) for arg in args)
-
     def _run_invocation(self, invocation, env=None) -> int:
         return dispatch_fixture_runner(
             invocation,
@@ -2747,20 +2268,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             ),
             fallback=self._run_command_invocation,
         )
-
-    def _run_darling_cmake_target_fixture(self, invocation, env=None) -> int:
-        rc = run_darling_cmake_target_fixture(
-            invocation,
-            env=env,
-            executor=getattr(self, "_executor", None),
-            bundle_root=getattr(self, "_bundle_root", "~/work/darling-debug"),
-            inf=self.inf,
-            err=self.err,
-            die=self.die,
-        )
-        if rc:
-            self._record_failure_phase(invocation, "configure")
-        return rc
 
     def _run_command_invocation(self, invocation, env=None) -> int:
         run_env = env if env is not None else invocation.get("env")
@@ -2792,6 +2299,20 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
 
         self._failure_phase = phase
         print(f"WEST_TEST_FAILURE_PHASE={phase}", file=sys.stderr)
+
+    # --- process seams ------------------------------------------------------
+    #
+    # Focused contracts replace ``west_commands.test.run_bounded`` and
+    # ``west_commands.test.run_guest_argv`` to intercept execution.  Methods
+    # that moved to a mixin therefore call these facades instead of the
+    # imported function, so the module the contract patches stays the module
+    # that resolves the call.
+
+    def _run_bounded(self, *args, **kwargs):
+        return run_bounded(*args, **kwargs)
+
+    def _run_guest_argv(self, *args, **kwargs):
+        return run_guest_argv(*args, **kwargs)
 
     def _run_invocation_captured(self, invocation, env=None) -> InvocationResult:
         """Run an invocation and return its output and structured failure phase."""
@@ -3114,105 +2635,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
                             return 1
         return 0
 
-    def _run_cmake_configure_fixture(self, invocation, env=None) -> int:
-        if invocation.get("diag", "bare") != "bare":
-            self.die(f"{invocation['name']}: cmake-configure-fixture currently supports diag:bare only")
-        run_env = env if env is not None else invocation.get("env")
-        if not run_env:
-            run_env = os.environ.copy()
-        else:
-            run_env = dict(run_env)
-        source_root = invocation["cwd"]
-        source_root_env = invocation.get("source_root_env")
-        if source_root_env and run_env.get(source_root_env):
-            source_root = Path(run_env[source_root_env])
-        if not (source_root / "CMakeLists.txt").is_file():
-            self.err(f"{invocation['name']}: CMakeLists.txt not found: {source_root}")
-            self._record_failure_phase(invocation, "setup")
-            return 1
-
-        with tempfile.TemporaryDirectory(prefix=f"west-cmake-configure-{invocation['name']}-") as temp:
-            tempdir = Path(temp)
-            bin_dir = tempdir / "bin"
-            build_dir = tempdir / "build"
-            bin_dir.mkdir()
-            build_dir.mkdir()
-            for marker in invocation.get("marker_files", []):
-                marker_path = source_root / marker["path"]
-                if marker_path.exists():
-                    continue
-                marker_path.parent.mkdir(parents=True, exist_ok=True)
-                marker_path.write_text(marker.get("content", ""))
-            for name, spec in invocation.get("fake_tools", {}).items():
-                tool_path = bin_dir / name
-                log_line = f"printf '%s\\n' \"$*\" >> {quote(str(tempdir / f'{name}.log'))}\n" if spec.get("log_args") else ""
-                tool_path.write_text(
-                    "#!/usr/bin/env bash\n"
-                    "set -euo pipefail\n"
-                    f"{log_line}"
-                    f"printf '%s' {quote(spec.get('stdout', ''))}\n"
-                    f"printf '%s' {quote(spec.get('stderr', ''))} >&2\n"
-                    f"exit {int(spec.get('returncode', 0))}\n"
-                )
-                tool_path.chmod(0o755)
-            child_env = dict(run_env)
-            child_env["PATH"] = f"{bin_dir}:{child_env.get('PATH', '')}"
-            args = [
-                "cmake",
-                "-S",
-                str(source_root),
-                "-B",
-                str(build_dir),
-                *invocation.get("configure_args", []),
-            ]
-            result = run_bounded(
-                args,
-                cwd=invocation["cwd"],
-                env=child_env,
-                timeout_seconds=int(invocation.get("timeout_seconds", 600)),
-                capture_output=True,
-            )
-            if result.timed_out:
-                self.err(f"{invocation['name']}: cmake configure timed out")
-                self._record_failure_phase(invocation, "configure")
-                return 124
-            output = result.stdout + result.stderr
-            def write_output_tail() -> None:
-                lines = output.splitlines()
-                tail = "\n".join(lines[-120:])
-                if tail:
-                    sys.stderr.write(tail + "\n")
-            expect = invocation.get("expect") or {}
-            rc_mode = expect.get("returncode", 0)
-            if rc_mode == "nonzero":
-                if result.returncode == 0:
-                    self.err(f"{invocation['name']}: cmake configure succeeded unexpectedly")
-                    self._record_failure_phase(invocation, "configure")
-                    return 1
-            elif result.returncode != int(rc_mode):
-                write_output_tail()
-                self._record_failure_phase(invocation, "configure")
-                self.err(
-                    f"{invocation['name']}: cmake configure rc {result.returncode}, "
-                    f"want {rc_mode}"
-                )
-                return 1
-            for needle in expect.get("output-contains", []):
-                if str(needle) not in output:
-                    write_output_tail()
-                    self.err(f"{invocation['name']}: cmake output missing {needle!r}")
-                    self._record_failure_phase(invocation, "configure")
-                    return 1
-            for tool, checks in (expect.get("tool-args-contains") or {}).items():
-                log_path = tempdir / f"{tool}.log"
-                log = log_path.read_text() if log_path.is_file() else ""
-                for needle in checks:
-                    if str(needle) not in log:
-                        write_output_tail()
-                        self.err(f"{invocation['name']}: {tool} args missing {needle!r}")
-                        return 1
-            return 0
-
     def _run_source_script_fixture(self, invocation, env=None) -> int:
         if invocation.get("diag", "bare") != "bare":
             self.die(f"{invocation['name']}: source-script-fixture currently supports diag:bare only")
@@ -3311,70 +2733,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             self.die(f"{invocation['name']}: missing darling stat tool: {tool}")
         invocation["_host_stat_tool"] = str(tool)
         yield env
-
-    def _run_source_build_fixture(self, invocation, env=None) -> int:
-        if invocation.get("diag", "bare") != "bare":
-            self.die(f"{invocation['name']}: source-build-fixture currently supports diag:bare only")
-        run_env = env if env is not None else invocation.get("env")
-        if not run_env:
-            run_env = os.environ.copy()
-        else:
-            run_env = dict(run_env)
-        source_root = invocation["cwd"]
-        source_root_env = invocation.get("source_root_env")
-        if source_root_env and run_env.get(source_root_env):
-            source_root = Path(run_env[source_root_env])
-        relative_script = invocation["script_path"].relative_to(invocation["cwd"])
-        fixture_path = invocation["script_path"]
-        if not fixture_path.is_file():
-            source_fixture = source_root / relative_script
-            if source_fixture.is_file():
-                fixture_path = source_fixture
-            else:
-                self.die(f"{invocation['name']}: fixture not found: {fixture_path}")
-        with tempfile.TemporaryDirectory(prefix=f"west-source-build-{invocation['name']}-") as temp:
-            tempdir = Path(temp)
-            build_root = tempdir / "source"
-            rc = archive_source_to(
-                source_root,
-                build_root,
-                timeout_seconds=int(invocation.get("timeout_seconds", 600)),
-            )
-            if rc:
-                return rc
-            build_fixture = build_root / relative_script
-            if not build_fixture.is_file():
-                build_fixture.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(fixture_path, build_fixture)
-            child_env = dict(run_env)
-            child_env["WEST_TEST_TMP"] = str(tempdir)
-            child_env["WEST_TEST_SOURCE_ROOT"] = str(build_root)
-            timeout_seconds = int(invocation.get("timeout_seconds", 600))
-            for command in [*invocation.get("build_commands", []), *invocation.get("run_commands", [])]:
-                self.inf(f"  source-build-fixture: {command}")
-                result = run_bounded(
-                    ["/bin/bash", "-lc", command],
-                    cwd=build_root,
-                    env=child_env,
-                    timeout_seconds=timeout_seconds,
-                )
-                if result.timed_out:
-                    self.err(
-                        f"  source-build-fixture timed out after "
-                        f"{timeout_seconds}s: {command}"
-                    )
-                    self._record_failure_phase(
-                        invocation,
-                        "build" if command in invocation.get("build_commands", []) else "run",
-                    )
-                    return 124
-                if result.returncode:
-                    self._record_failure_phase(
-                        invocation,
-                        "build" if command in invocation.get("build_commands", []) else "run",
-                    )
-                    return result.returncode
-            return 0
 
     def _run_guest_c_fixture(self, invocation, env=None) -> int:
         return run_guest_c_fixture(self, invocation, env)
@@ -3528,213 +2886,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
     def _resource_context(self, invocation, env):
         with resource_context(self, invocation, env) as resource_env:
             yield resource_env
-
-    @contextmanager
-    def _eunion_prefix_context(self, invocation, env):
-        resources = set(invocation.get("requires_resources", []))
-        if "darling-eunion-prefix" not in resources:
-            yield
-            return
-
-        prefix_text = (env or {}).get("DPREFIX") or getattr(self, "_prefix", None)
-        if not prefix_text:
-            self.die(f"{invocation['name']}: darling-eunion-prefix needs DPREFIX")
-        prefix = Path(prefix_text)
-        marker = prefix / ".union-work"
-        created_marker = False
-        created_template_files: list[Path] = []
-        created_template_symlinks: list[Path] = []
-        created_template_dirs: list[Path] = []
-        created_upper_files: list[Path] = []
-        created_upper_dirs: list[Path] = []
-        cleanup_dirs: list[tuple[Path, Path]] = []
-        template_assertions: list[dict] = []
-        forbidden_template_paths = list(invocation.get("eunion_forbid_template_paths", []))
-        required_upper_paths = list(invocation.get("eunion_require_upper_paths", []))
-        probe_dirs: list[tuple[Path, Path]] = []
-        blocked_upper_files: list[Path] = []
-
-        def cleanup_fixture_state() -> None:
-            for path in reversed(created_upper_files):
-                try:
-                    path.unlink()
-                except FileNotFoundError:
-                    pass
-            for path in reversed(created_template_files):
-                try:
-                    path.unlink()
-                except FileNotFoundError:
-                    pass
-            for path in reversed(created_template_symlinks):
-                try:
-                    path.unlink()
-                except FileNotFoundError:
-                    pass
-            for path in reversed(created_upper_dirs):
-                try:
-                    path.rmdir()
-                except OSError:
-                    pass
-            for path in reversed(created_template_dirs):
-                try:
-                    path.rmdir()
-                except OSError:
-                    pass
-            for upper_dir, lower_dir in reversed(cleanup_dirs):
-                shutil.rmtree(upper_dir, ignore_errors=True)
-                shutil.rmtree(lower_dir, ignore_errors=True)
-            for upper_dir, lower_dir in reversed(probe_dirs):
-                shutil.rmtree(upper_dir, ignore_errors=True)
-                shutil.rmtree(lower_dir, ignore_errors=True)
-            if created_marker:
-                try:
-                    marker.rmdir()
-                except OSError:
-                    self.err(f"{invocation['name']}: preserving non-empty E-UNION marker {marker}")
-
-        try:
-            if marker.exists() and not marker.is_dir():
-                self.die(f"{invocation['name']}: E-UNION marker is not a directory: {marker}")
-            if not marker.exists():
-                marker.mkdir(parents=True, mode=0o700)
-                created_marker = True
-
-            for index, guest_path in enumerate(invocation.get("eunion_cleanup_dirs", [])):
-                guest_path = str(guest_path)
-                if (
-                    not guest_path.startswith("/private/var/tmp/west-")
-                    or ".." in Path(guest_path).parts
-                ):
-                    self.die(
-                        f"{invocation['name']}: eunion-cleanup-dirs[{index}] needs "
-                        "an absolute /private/var/tmp/west-* guest path without '..'"
-                    )
-                rel = Path(guest_path.lstrip("/"))
-                cleanup_dirs.append((prefix / rel, prefix / "libexec/darling" / rel))
-
-            self._shutdown_runtime_prefix(prefix)
-            self._boot_eunion_runtime_prefix(invocation, env, prefix)
-
-            for index, spec in enumerate(invocation.get("eunion_template_files", [])):
-                if not isinstance(spec, dict):
-                    self.die(f"{invocation['name']}: eunion-template-files entries must be mappings")
-                guest_path = str(spec.get("guest-path", ""))
-                if not guest_path.startswith("/") or ".." in Path(guest_path).parts:
-                    self.die(
-                        f"{invocation['name']}: eunion-template-files[{index}] needs "
-                        "an absolute guest-path without '..'"
-                    )
-                rel = Path(guest_path.lstrip("/"))
-                upper_path = prefix / rel
-                lower_path = prefix / "libexec/darling" / rel
-                if upper_path.exists():
-                    blocked_upper_files.append(upper_path)
-                    continue
-                created_template_dirs.extend(
-                    self._mkdirs_for_fixture(lower_path.parent, prefix / "libexec/darling")
-                )
-                if not lower_path.exists():
-                    lower_path.write_text(str(spec.get("contents", "")))
-                    created_template_files.append(lower_path)
-                if "mode" in spec:
-                    lower_path.chmod(self._parse_file_mode(invocation, "eunion-template-files", index, spec["mode"]))
-                for name, value in (spec.get("xattrs") or {}).items():
-                    try:
-                        os.setxattr(lower_path, str(name).encode(), str(value).encode())
-                    except OSError as exc:
-                        self.die(
-                            f"{invocation['name']}: failed to set E-UNION template xattr "
-                            f"{name} on {lower_path}: {exc}"
-                        )
-                template_assertions.append(
-                    {
-                        "path": lower_path,
-                        "contents": str(spec.get("contents", "")),
-                        "mode": spec.get("mode"),
-                        "xattrs": {str(k): str(v) for k, v in (spec.get("xattrs") or {}).items()},
-                        "absent_xattrs": [str(item) for item in spec.get("absent-xattrs", [])],
-                    }
-                )
-            if blocked_upper_files:
-                self.die(
-                    f"{invocation['name']}: E-UNION lower fixture would be shadowed by "
-                    f"upper file(s): {', '.join(str(path) for path in blocked_upper_files)}"
-                )
-
-            for index, spec in enumerate(invocation.get("eunion_template_symlinks", [])):
-                if not isinstance(spec, dict):
-                    self.die(f"{invocation['name']}: eunion-template-symlinks entries must be mappings")
-                guest_path = str(spec.get("guest-path", ""))
-                target = str(spec.get("target", ""))
-                if not guest_path.startswith("/") or ".." in Path(guest_path).parts:
-                    self.die(
-                        f"{invocation['name']}: eunion-template-symlinks[{index}] needs "
-                        "an absolute guest-path without '..'"
-                    )
-                allow_parent_target = bool(spec.get("allow-parent-target", False))
-                if not target or target.startswith("/") or (
-                    not allow_parent_target and ".." in Path(target).parts
-                ):
-                    self.die(
-                        f"{invocation['name']}: eunion-template-symlinks[{index}] needs "
-                        "a non-empty relative target without '..' unless "
-                        "allow-parent-target is true"
-                    )
-                rel = Path(guest_path.lstrip("/"))
-                upper_path = prefix / rel
-                lower_path = prefix / "libexec/darling" / rel
-                if upper_path.exists() or upper_path.is_symlink():
-                    self.die(f"{invocation['name']}: E-UNION symlink fixture shadowed by upper path: {upper_path}")
-                created_template_dirs.extend(
-                    self._mkdirs_for_fixture(lower_path.parent, prefix / "libexec/darling")
-                )
-                if lower_path.exists() or lower_path.is_symlink():
-                    self.die(f"{invocation['name']}: E-UNION symlink fixture already exists: {lower_path}")
-                lower_path.symlink_to(target)
-                created_template_symlinks.append(lower_path)
-
-            for index, spec in enumerate(invocation.get("eunion_upper_files", [])):
-                if not isinstance(spec, dict):
-                    self.die(f"{invocation['name']}: eunion-upper-files entries must be mappings")
-                guest_path = str(spec.get("guest-path", ""))
-                if not guest_path.startswith("/") or ".." in Path(guest_path).parts:
-                    self.die(
-                        f"{invocation['name']}: eunion-upper-files[{index}] needs "
-                        "an absolute guest-path without '..'"
-                    )
-                upper_path = prefix / guest_path.lstrip("/")
-                if upper_path.exists():
-                    self.die(f"{invocation['name']}: E-UNION upper fixture already exists: {upper_path}")
-                created_upper_dirs.extend(self._mkdirs_for_fixture(upper_path.parent, prefix))
-                upper_path.write_text(str(spec.get("contents", "")))
-                created_upper_files.append(upper_path)
-            self._verify_eunion_runtime_prefix(invocation, env, prefix, probe_dirs)
-        except BaseException:
-            self._shutdown_runtime_prefix(prefix)
-            cleanup_fixture_state()
-            raise
-
-        try:
-            yield
-        finally:
-            try:
-                self._verify_eunion_forbidden_template_paths_after(
-                    invocation,
-                    prefix,
-                    forbidden_template_paths,
-                )
-                self._verify_eunion_upper_paths_after(
-                    invocation,
-                    prefix,
-                    required_upper_paths,
-                )
-            finally:
-                self._shutdown_runtime_prefix(prefix)
-                try:
-                    if invocation.get("eunion_verify_template_files_after"):
-                        self._verify_eunion_template_files_after(invocation, template_assertions)
-                finally:
-                    cleanup_fixture_state()
 
     @contextmanager
     def _dcc_cache_context(self, invocation, env):
@@ -3917,302 +3068,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             handle.seek(first_image_src_size_offset)
             handle.write((value + 1).to_bytes(8, "little", signed=False))
 
-    def _boot_eunion_runtime_prefix(self, invocation, env, prefix: Path) -> None:
-        launcher = (
-            (env or {}).get("DARLING_LAUNCHER")
-            or (env or {}).get("DARLING")
-            or self._resolve_darling_launcher(str(prefix))
-        )
-        if not launcher:
-            self.die(f"{invocation['name']}: darling-eunion-prefix needs a Darling launcher")
-
-        child_env = dict(env or os.environ.copy())
-        child_env.update(self._darling_prefix_env(prefix))
-        timeout_seconds = self._eunion_bootstrap_timeout_seconds(invocation)
-        command_prefix: tuple[str, ...] = ()
-        trace_dir = getattr(self, "_bootstrap_syscall_trace", None)
-        stack_sample_dir = getattr(self, "_bootstrap_stack_sample", None)
-        if trace_dir is not None:
-            trace_dir = self._resolve_bootstrap_diagnostic_dir(trace_dir)
-            trace_dir.mkdir(parents=True, exist_ok=True)
-            trace_prefix = trace_dir / "eunion-bootstrap"
-            command_prefix = ("strace", "-D", "-ff", "-o", str(trace_prefix))
-            self.inf(f"{invocation['name']}: E-UNION bootstrap syscall trace: {trace_dir}")
-        elif stack_sample_dir is not None:
-            stack_sample_dir = Path(stack_sample_dir)
-            command_prefix = self._bootstrap_stack_sample_command(
-                stack_sample_dir,
-                sample_name="eunion-bootstrap",
-                label=f"{invocation['name']}: E-UNION bootstrap",
-            )
-        result = run_guest_argv(
-            str(launcher),
-            prefix,
-            ["/usr/bin/true"],
-            cwd=Path.cwd(),
-            env=child_env,
-            timeout_seconds=timeout_seconds,
-            capture_output=True,
-            command_prefix=command_prefix,
-        )
-        if stack_sample_dir is not None:
-            self._render_bootstrap_stack_sample(
-                stack_sample_dir,
-                sample_name="eunion-bootstrap",
-                label=f"{invocation['name']}: E-UNION bootstrap",
-            )
-        diagnostic_dir = trace_dir or stack_sample_dir
-        if diagnostic_dir is not None:
-            self._capture_bootstrap_server_trace(
-                prefix,
-                diagnostic_dir,
-                label=f"{invocation['name']}: E-UNION bootstrap",
-            )
-        if result.returncode != 0:
-            output = process_output_text(result).strip()
-            evidence = getattr(self, "_active_runtime_evidence", None)
-            if evidence is not None:
-                evidence.record_failure_detail(
-                    phase="bootstrap",
-                    summary="E-UNION runtime readiness executable did not reach a verdict",
-                    returncode=result.returncode,
-                    command=[
-                        str(launcher),
-                        "exec",
-                        "/usr/bin/true",
-                    ],
-                    output=output,
-                    artifacts=[
-                        Path(prefix) / ".west-rootless-boot.log",
-                        Path(prefix) / "private/var/tmp/.west-rootless-boot.log",
-                        Path(prefix) / ".west-rootless-guest-fd.log",
-                    ],
-                )
-            if output:
-                self.err(f"{invocation['name']}: E-UNION prefix bootstrap output:\n{output}")
-            elif result.timed_out:
-                diagnostic_hint = ""
-                if trace_dir is not None:
-                    diagnostic_hint = f"; syscall trace: {trace_dir}"
-                elif stack_sample_dir is not None:
-                    diagnostic_hint = f"; stack sample: {stack_sample_dir}"
-                self.err(
-                    f"{invocation['name']}: E-UNION runtime readiness timed out after {timeout_seconds}s "
-                    f"without output{diagnostic_hint}"
-                )
-            self._record_failure_phase(invocation, "bootstrap")
-            self.die(
-                f"{invocation['name']}: failed to boot Darling E-UNION prefix "
-                f"before fixture setup (rc={result.returncode})"
-            )
-
-    def _eunion_bootstrap_timeout_seconds(self, invocation) -> int:
-        override = getattr(self, "_bootstrap_timeout_seconds", None)
-        if override is not None:
-            return override
-        profile_name = invocation.get("runtime-profile")
-        if profile_name:
-            definition = self._ctest_runtime_profile_definitions().get(profile_name)
-            if definition is not None:
-                return int(definition["bootstrap-smoke-timeout-seconds"])
-        return 15
-
-    def _resolve_bootstrap_diagnostic_dir(self, value: str | Path) -> Path:
-        """Resolve diagnostic output like the command's configured working tree."""
-
-        path = Path(value).expanduser()
-        if not path.is_absolute():
-            path = Path(getattr(self, "topdir", Path.cwd())) / path
-        return path.resolve()
-
-    def _bootstrap_stack_sample_command(
-        self,
-        sample_dir: Path,
-        *,
-        sample_name: str,
-        label: str,
-    ) -> tuple[str, ...]:
-        if shutil.which("perf") is None:
-            self.die("--bootstrap-stack-sample requires perf on the host")
-        sample_dir.mkdir(parents=True, exist_ok=True)
-        self.inf(f"{label} stack sample: {sample_dir}")
-        return (
-            "perf",
-            "record",
-            "--all-user",
-            "--call-graph",
-            "fp",
-            "--output",
-            str(sample_dir / f"{sample_name}.perf.data"),
-            "--",
-        )
-
-    def _render_bootstrap_stack_sample(
-        self,
-        sample_dir: Path,
-        *,
-        sample_name: str,
-        label: str,
-    ) -> None:
-        sample_data = sample_dir / f"{sample_name}.perf.data"
-        if not sample_data.is_file():
-            self.die(f"{label} stack sample was not written: {sample_data}")
-        rendered_sample = run_bounded(
-            ["perf", "script", "--input", str(sample_data)],
-            cwd=Path(self.topdir),
-            env=None,
-            timeout_seconds=30,
-            capture_output=True,
-        )
-        if rendered_sample.timed_out or rendered_sample.returncode != 0:
-            self.die(f"{label} stack sample could not be rendered: {sample_data}")
-        (sample_dir / f"{sample_name}.perf.txt").write_text(
-            f"{rendered_sample.stdout}{rendered_sample.stderr}"
-        )
-
-    def _capture_bootstrap_server_trace(
-        self,
-        prefix: Path,
-        diagnostic_dir: Path,
-        *,
-        label: str,
-    ) -> None:
-        server_trace = prefix / "private/var/log/dserver-rpc-trace.log"
-        if not server_trace.is_file():
-            return
-        captured_server_trace = diagnostic_dir / "darlingserver-rpc.log"
-        shutil.copy2(server_trace, captured_server_trace)
-        self.inf(f"{label} server trace: {captured_server_trace}")
-
-    def _parse_file_mode(self, invocation, field: str, index: int, value) -> int:
-        try:
-            if isinstance(value, int):
-                return value
-            return int(str(value), 8)
-        except (TypeError, ValueError):
-            self.die(f"{invocation['name']}: {field}[{index}] has invalid mode: {value!r}")
-
-    def _verify_eunion_template_files_after(self, invocation, assertions) -> None:
-        for assertion in assertions:
-            path = assertion["path"]
-            expected = assertion["contents"]
-            try:
-                got = path.read_text()
-            except FileNotFoundError:
-                self.die(f"{invocation['name']}: E-UNION template fixture was removed: {path}")
-            if got != expected:
-                self.die(f"{invocation['name']}: E-UNION template fixture was modified: {path}")
-            if assertion.get("mode") is not None:
-                expected_mode = self._parse_file_mode(invocation, "eunion-template-files", 0, assertion["mode"])
-                actual_mode = path.stat().st_mode & 0o7777
-                if actual_mode != expected_mode:
-                    self.die(
-                        f"{invocation['name']}: E-UNION template fixture mode changed: "
-                        f"{path} got {actual_mode:o} want {expected_mode:o}"
-                    )
-            for name, expected_value in assertion.get("xattrs", {}).items():
-                try:
-                    got_value = os.getxattr(path, name.encode()).decode()
-                except OSError as exc:
-                    self.die(
-                        f"{invocation['name']}: E-UNION template fixture xattr missing "
-                        f"{name} on {path}: {exc}"
-                    )
-                if got_value != expected_value:
-                    self.die(
-                        f"{invocation['name']}: E-UNION template fixture xattr changed: "
-                        f"{path} {name} got {got_value!r} want {expected_value!r}"
-                    )
-            for name in assertion.get("absent_xattrs", []):
-                try:
-                    got_value = os.getxattr(path, name.encode())
-                except OSError:
-                    continue
-                self.die(
-                    f"{invocation['name']}: E-UNION template fixture xattr was added: "
-                    f"{path} {name}={got_value!r}"
-                )
-
-    def _verify_eunion_forbidden_template_paths_after(
-        self,
-        invocation,
-        prefix: Path,
-        guest_paths: list[str],
-    ) -> None:
-        for guest_path in guest_paths:
-            rel = Path(str(guest_path).lstrip("/"))
-            lower_path = prefix / "libexec/darling" / rel
-            if os.path.lexists(lower_path):
-                self.die(
-                    f"{invocation['name']}: forbidden E-UNION template path was created: "
-                    f"{guest_path} ({lower_path})"
-                )
-
-    def _verify_eunion_upper_paths_after(
-        self,
-        invocation,
-        prefix: Path,
-        guest_paths: list[str],
-    ) -> None:
-        for guest_path in guest_paths:
-            rel = Path(str(guest_path).lstrip("/"))
-            upper_path = prefix / rel
-            if not os.path.lexists(upper_path):
-                self.die(
-                    f"{invocation['name']}: required E-UNION upper path is missing: "
-                    f"{guest_path} ({upper_path})"
-                )
-
-    def _verify_eunion_runtime_prefix(self, invocation, env, prefix: Path, probe_dirs) -> None:
-        launcher = (
-            (env or {}).get("DARLING_LAUNCHER")
-            or (env or {}).get("DARLING")
-            or self._resolve_darling_launcher(str(prefix))
-        )
-        if not launcher:
-            self.die(f"{invocation['name']}: darling-eunion-prefix needs a Darling launcher")
-
-        name = f"west-eunion-probe-{os.getpid()}-{int(time.time() * 1000)}"
-        guest_dir = f"/private/var/tmp/{name}"
-        upper_dir = prefix / "private/var/tmp" / name
-        lower_dir = prefix / "libexec/darling/private/var/tmp" / name
-        upper_dir.mkdir(parents=True)
-        lower_dir.mkdir(parents=True)
-        probe_dirs.append((upper_dir, lower_dir))
-        (lower_dir / "lower.txt").write_text("LOWER\n")
-        (lower_dir / "shadow.txt").write_text("LOWER_SHADOW\n")
-        (upper_dir / "upper.txt").write_text("UPPER\n")
-        (upper_dir / "shadow.txt").write_text("UPPER_SHADOW\n")
-
-        child_env = dict(env or os.environ.copy())
-        child_env.update(self._darling_prefix_env(prefix))
-        script = (
-            "set -e; "
-            f"test \"$(cat {quote(guest_dir + '/lower.txt')})\" = LOWER; "
-            f"test \"$(cat {quote(guest_dir + '/upper.txt')})\" = UPPER; "
-            f"test \"$(cat {quote(guest_dir + '/shadow.txt')})\" = UPPER_SHADOW"
-        )
-        output_path = lower_dir / "probe-output.txt"
-        with output_path.open("w+") as output:
-            result = run_guest_shell(
-                str(launcher),
-                prefix,
-                script,
-                cwd=Path.cwd(),
-                env=child_env,
-                timeout_seconds=15,
-                stdout=output,
-                stderr=subprocess.STDOUT,
-            )
-        if result.returncode != 0:
-            output = output_path.read_text(errors="replace").strip()
-            if output:
-                self.err(output)
-            self.die(
-                f"{invocation['name']}: Darling prefix is not running as an "
-                "active E-UNION upper-over-template root; upper/lower probe failed"
-            )
-
     def _mkdirs_for_fixture(self, target: Path, root: Path) -> list[Path]:
         root = root.resolve()
         to_create = []
@@ -4282,9 +3137,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             "because it would run against the already deployed Darling prefix. "
             "Use a GREEN-only guest gate or add an isolated bad/fixed deploy runner."
         )
-
-    def _display_guest_runtime_deploy_plan(self, proof) -> str:
-        return describe_runtime_deploy_plan(proof)
 
     def _runtime_source_materializer(self) -> RuntimeSourceMaterializer:
         """Return the domain owner for disposable runtime source trees."""
@@ -4356,149 +3208,8 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
 
 
 
-    def _bound_runtime_reuse_store(
-        self, plan: test_runtime_cache.RuntimeReusePlan
-    ) -> None:
-        """Enforce the reuse store bound once per invocation.
-
-        Sizing a materialised forest costs a walk over several gigabytes, so the
-        bound is applied on the first runtime profile of a run and then left
-        alone rather than re-measured for every profile.
-        """
-
-        if getattr(self, "_runtime_reuse_bounded", False):
-            return
-        self._runtime_reuse_bounded = True
-        pruned = test_runtime_cache.prune(
-            plan.store,
-            test_runtime_cache.max_bytes(os.environ),
-            protect=[plan.source_entry],
-        )
-        if pruned["evicted"]:
-            self.inf(
-                f"  runtime reuse evicted {len(pruned['evicted'])} entry(s), "
-                f"{pruned['evicted_bytes']} bytes"
-            )
-
-    def _runtime_reuse_plan(
-        self,
-        *,
-        profile_name: str,
-        definition: dict,
-        proof: dict,
-        patch: dict,
-        prefix_text: str,
-        omit_patch: bool,
-    ) -> test_runtime_cache.RuntimeReusePlan | None:
-        """Return the identity-keyed reuse plan for one runtime profile.
-
-        The plan is derived from the same identity the retained-runtime path
-        already refuses to reuse across, plus the configure command the build
-        will run, so a repeat acceptance run reuses instead of rebuilding while
-        any source, metadata, define or toolchain change forces a rebuild.
-        """
-
-        store = test_runtime_cache.cache_root(
-            Path(self.manifest.repo_abspath), os.environ
-        )
-        if store is None:
-            return None
-        identity = runtime_identity(
-            topdir=Path(self.topdir),
-            manifest_repo=Path(self.manifest.repo_abspath),
-            profile_name=profile_name,
-            definition=definition,
-            launcher=Path(prefix_text) / "bin" / "darling",
-        )
-        source_key = test_runtime_cache.source_key(
-            test_runtime_cache.source_identity(
-                identity,
-                omit_patch=omit_patch,
-                patch_path=str(patch.get("path", "")),
-                bad_profile=proof.get("bad-profile"),
-                bad_revision=(
-                    self._bad_revision(patch, proof) if omit_patch else None
-                ),
-            )
-        )
-        build_key = RuntimeBuildService(self).runtime_build_identity(
-            proof,
-            Path(prefix_text),
-            store,
-            source_key,
-            configure_args=self._runtime_red_configure_args,
-        )
-        return test_runtime_cache.RuntimeReusePlan(
-            store=store, source_key=source_key, build_key=build_key
-        )
-
-    @contextmanager
-    def _guest_runtime_source_forest(
-        self,
-        patch,
-        proof,
-        *,
-        omit_patch: bool,
-        root: Path | None = None,
-        evidence_session=None,
-        reuse_key: str | None = None,
-    ):
-        """Create a temporary Darling source forest for a runtime build.
-
-        The top-level Darling tree and every nested gitlink are detached local
-        worktrees. When omit_patch is true, the target patch and explicit
-        current-minus skips are removed to build the RED runtime. Otherwise the
-        full active profile is materialized to build the GREEN runtime. This
-        keeps live checkouts and the caller's prefix stable while giving CMake
-        one coherent source root.
-        """
-        with self._runtime_source_materializer().guest_runtime_source_forest(
-            patch,
-            proof,
-            omit_patch=omit_patch,
-            root=root,
-            evidence_session=evidence_session,
-            reuse_key=reuse_key,
-        ) as source_root:
-            yield source_root
 
 
-    def _cmake_cache_value(self, build_dir: Path, key: str) -> str | None:
-        return RuntimeBuildService.cmake_cache_value(build_dir, key)
-
-
-    def _runtime_red_configure_args(
-        self, proof, prefix: Path, scratch_root: Path | None = None
-    ) -> list[str]:
-        return RuntimeBuildService(self).configure_args(proof, prefix, scratch_root)
-
-
-    def _runtime_red_build_artifacts(
-        self,
-        source_root: Path,
-        proof,
-        prefix: Path,
-        scratch_root: Path,
-        *,
-        label: str = "RED",
-        allow_failure: bool = False,
-        cache: tuple[Path, str] | None = None,
-        on_reuse: Callable[[bool], None] | None = None,
-    ) -> Path:
-        return RuntimeBuildService(self).build_artifacts(
-            source_root,
-            proof,
-            prefix,
-            scratch_root,
-            label=label,
-            allow_failure=allow_failure,
-            configure_args=self._runtime_red_configure_args,
-            dump_command_tail=self._dump_command_tail,
-            runner=run_bounded,
-            timeout_seconds=getattr(self, "_runtime_build_timeout_seconds", None),
-            cache=cache,
-            on_reuse=on_reuse,
-        )
 
 
     def _dump_command_tail(self, label: str, result) -> None:
@@ -4506,53 +3217,10 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         return
 
 
-    def _runtime_red_find_build_output(
-        self, build_root: Path, deploy_path: str
-    ) -> Path:
-        return RuntimeBuildService(self).find_build_output(build_root, deploy_path)
-
-
-    def _runtime_macho_inspect(self, path: Path, flag: str) -> str:
-        return RuntimeDeploymentService(self).macho_inspect(path, flag)
-
-    def _runtime_macho_dependencies(self, path: Path) -> list[str]:
-        return RuntimeDeploymentService(self).macho_dependencies(path)
-
-    def _runtime_macho_dylib_providers(
-        self, build_root: Path, explicit: dict[str, Path]
-    ) -> dict[str, Path]:
-        return RuntimeDeploymentService(self).macho_dylib_providers(build_root, explicit)
-
-    def _runtime_red_deploy_targets(self, prefix: Path, deploy_path: str) -> list[Path]:
-        try:
-            return runtime_deploy_targets(prefix, deploy_path)
-        except ValueError:
-            self.die(f"guest-runtime-deploy deploy path must be relative: {deploy_path}")
 
     def _runtime_replace_file(self, src: Path, dst: Path) -> None:
         from deploy_transaction import DeploymentTransaction
         DeploymentTransaction._replace_file(src, dst)
-
-    @contextmanager
-    def _runtime_red_deployed_artifacts(
-        self,
-        proof,
-        build_root: Path,
-        prefix: Path,
-        *,
-        label: str = "RED",
-        restore_deployment: bool = True,
-        lifecycle_env: dict[str, str] | None = None,
-    ):
-        with RuntimeDeploymentService(self).deployed(
-            proof,
-            build_root,
-            prefix,
-            label=label,
-            restore_deployment=restore_deployment,
-            lifecycle_env=lifecycle_env,
-        ):
-            yield
 
     def _emit_bootstrap_heartbeat(
         self, prefix: Path, target: str, elapsed: float
@@ -5367,6 +4035,90 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             Path(prefix), keep_running=getattr(self, "_keep_prefix_running", False)
         )
 
+    # Provider retention stays in the facade: its identity check is defined by
+    # ``test_bootstrap``, which owns the marker written into the prefix.
+    def _load_retained_prefix_env(self, prefix: Path) -> None:
+        """Restore provider flags before a separate process resets a prefix."""
+
+        marker_path = prefix / RETAINED_RUNTIME_PROFILE_MARKER
+        try:
+            marker = json.loads(marker_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(marker, dict) or marker.get("schema") != 2:
+            return
+        profile_name = marker.get("profile")
+        if not isinstance(profile_name, str) or not profile_name:
+            return
+        definition = self._ctest_runtime_profile_definitions().get(profile_name)
+        if definition is None or marker.get("source-profile") != definition.get("source-profile"):
+            return
+        self._prefix_env.update(
+            {key: str(value) for key, value in definition.get("launcher-env", {}).items()}
+        )
+
+    def _retained_runtime_profile(self, profile_name: str) -> RuntimeProfileDeployment:
+        """Use a provider retained by ``--bootstrap-runtime-profile``.
+
+        The marker is an identity check, not a source snapshot. It prevents a
+        follow-up metadata run from silently using a prefix provisioned for a
+        different runtime profile.
+        """
+
+        prefix_text = getattr(self, "_prefix", None)
+        if not prefix_text:
+            self.die("--reuse-prefix-runtime requires --prefix or DPREFIX")
+        prefix = Path(prefix_text)
+        marker_path = prefix / RETAINED_RUNTIME_PROFILE_MARKER
+        try:
+            marker = json.loads(marker_path.read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            self.die(
+                "--reuse-prefix-runtime needs a retained provider marker at "
+                f"{marker_path}: {error}; run --bootstrap-runtime-profile first"
+            )
+        definition = self._ctest_runtime_profile_definitions().get(profile_name)
+        if definition is None:
+            self.die(f"unknown retained runtime profile: {profile_name}")
+        launcher = prefix / "bin" / "darling"
+        if not launcher.is_file():
+            self.die(
+                "--reuse-prefix-runtime retained prefix has no launcher: "
+                f"{launcher}"
+            )
+        expected_fingerprint = runtime_identity(
+            topdir=Path(self.topdir),
+            manifest_repo=Path(self.manifest.repo_abspath),
+            profile_name=profile_name,
+            definition=definition,
+            launcher=launcher,
+        )
+        if (
+            not isinstance(marker, dict)
+            or marker.get("schema") != 2
+            or marker.get("profile") != profile_name
+            or marker.get("source-profile") != definition.get("source-profile")
+            or marker.get("fingerprint") != expected_fingerprint
+        ):
+            actual = marker.get("profile") if isinstance(marker, dict) else None
+            self.die(
+                "--reuse-prefix-runtime retained provider fingerprint mismatch: selected "
+                f"{profile_name!r}, retained {actual!r}; bootstrap the selected profile again"
+            )
+        runtime_env = os.environ.copy()
+        runtime_env.update(self._darling_prefix_env(prefix))
+        runtime_env.update(
+            {key: str(value) for key, value in definition.get("launcher-env", {}).items()}
+        )
+        runtime_env["DARLING"] = str(launcher)
+        runtime_env["DARLING_LAUNCHER"] = str(launcher)
+        return RuntimeProfileDeployment(
+            name=profile_name,
+            prefix=prefix,
+            build_root=prefix,
+            env=runtime_env,
+        )
+
     def _prefix_lifecycle_owner(self) -> PrefixLifecycleOwner:
         return PrefixLifecycleOwner(
             resolve_launcher=self._resolve_darling_launcher,
@@ -5397,55 +4149,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
         self, prefix: Path
     ) -> RootlessRuntimeSocketCleanupResult:
         return cleanup_rootless_runtime_sockets(prefix)
-
-    def _ps_entries(self) -> list[tuple[int, int, str]]:
-        result = subprocess.run(
-            ["ps", "-eo", "pid=,ppid=,args="],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        entries = []
-        for line in result.stdout.splitlines():
-            parts = line.strip().split(None, 2)
-            if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
-                entries.append((int(parts[0]), int(parts[1]), parts[2]))
-        return entries
-
-    def _prefix_process_snapshot(self, prefix: Path) -> list[str]:
-        return self._prefix_lifecycle_owner().process_snapshot(prefix)
-
-    @staticmethod
-    def _bootstrap_runtime_state(prefix: Path) -> str:
-        """Capture rootless state before prefix cleanup removes the evidence."""
-
-        lines = ["--- bootstrap runtime state ---", "rootless processes:"]
-        processes = rootless_prefix_process_snapshot(prefix)
-        lines.extend(processes or ["<none>"])
-        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-        lines.extend((f"RLIMIT_NOFILE soft={soft} hard={hard}",))
-        nr_open = Path("/proc/sys/fs/nr_open")
-        if nr_open.is_file():
-            lines.append(f"/proc/sys/fs/nr_open={nr_open.read_text().strip()}")
-        lines.append("runtime paths:")
-        for relative in (
-            ".darlingserver.stat.sock",
-            "var/run/shellspawn.sock",
-            "var/tmp/launchd/sock",
-            ".west-rootless-boot.log",
-            ".west-rootless-guest-fd.log",
-            "private/var/tmp/.west-rootless-boot.log",
-            "private/var/log/dserver-rpc-trace.log",
-        ):
-            path = prefix / relative
-            try:
-                mode = path.lstat().st_mode
-            except FileNotFoundError:
-                lines.append(f"{relative}: absent")
-                continue
-            kind = "socket" if stat.S_ISSOCK(mode) else "file"
-            lines.append(f"{relative}: {kind} mode={oct(stat.S_IMODE(mode))}")
-        return "\n".join(lines)
 
     def _kill_dserver_for_prefix(self, prefix: Path) -> None:
         self._prefix_lifecycle_owner()._kill_server(prefix)
@@ -5506,54 +4209,6 @@ class DarlingTest(ProfileOperationsMixin, BootstrapRuntimeProfileMixin, WestComm
             if head and manifest_rev and head != manifest_rev:
                 changed.append(label_name)
         return changed
-
-    def _configure_and_build(
-        self,
-        testkit: Path,
-        executor: str | None,
-        *,
-        darling_launcher: str | None = None,
-        prefix: str | None = None,
-        bundle_root: str | None = None,
-        build_dir: Path | None = None,
-        cmake_defines: dict[str, str] | None = None,
-        compile_tests: bool = True,
-    ) -> Path:
-        build = build_dir or testkit / "build"
-        cfg = ["cmake", "-S", str(testkit), "-B", str(build), "-G", "Ninja"]
-        for name, value in sorted((cmake_defines or {}).items()):
-            cfg.append(f"-D{name}={value}")
-        if executor:
-            cfg.append(f"-DDARLING_TEST_EXECUTOR={executor}")
-        if prefix:
-            cfg.append(f"-DDARLING_TEST_PREFIX={prefix}")
-        if getattr(self, "_prefix_env", {}).get("DARLING_NOOVERLAYFS") == "1":
-            cfg.append("-DDARLING_TEST_NO_OVERLAYFS=ON")
-        if bundle_root:
-            cfg.append(f"-DDARLING_TEST_BUNDLE_ROOT={bundle_root}")
-        self.inf(f"configuring: {testkit}")
-        self._run_testkit_build_command("configure", cfg)
-        if compile_tests:
-            self._run_testkit_build_command("build", ["ninja", "-C", str(build)])
-        return build
-
-    def _run_testkit_build_command(self, stage: str, args) -> None:
-        """Run a CTest suite build without letting toolchain hangs escape west."""
-
-        timeout_seconds = int(os.environ.get("WEST_TEST_BUILD_TIMEOUT_SECONDS", "1800"))
-        result = run_bounded(
-            args,
-            cwd=Path(self.topdir),
-            env=None,
-            timeout_seconds=timeout_seconds,
-            capture_output=True,
-        )
-        if result.returncode == 0:
-            return
-        if result.timed_out:
-            self.err(f"testkit {stage} timed out after {timeout_seconds}s")
-        self._dump_command_tail(f"testkit {stage}", result)
-        self.die(f"testkit {stage} failed with rc {result.returncode}")
 
     @staticmethod
     def _clear_ctest_failure_record(build: Path) -> None:
