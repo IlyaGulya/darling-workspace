@@ -296,6 +296,16 @@ refs, PR drafts, and agent handoff.
   recorded sha256 differs, or a lost formula source receipt is a miss, and a
   miss stages the pinned resource and rebuilds from source rather than serving
   a partially verified stack.
+  A miss on a prefix that already holds an installation is adopted instead of
+  staged: the stock replay phases consume the stack that is there, and staging
+  refuses such a prefix by design, so a replay test declares the `homebrew-lz4`
+  resource and gets the stack restored, adopted, or staged, in that order. A
+  test whose subject is the from-source build itself declares
+  `WEST_STOCK_STACK_RESTORE=off` in its own `env-vars`: it always stages,
+  because a snapshot must never stand in for the build that test measures, and
+  the store stays enabled so its completed stack is still captured for the
+  replay phases. Cache decisions read the invocation's environment overlaid on
+  the host environment, never one instead of the other.
 - The stock replay's wget-repeat phase reinstalls wget from source twelve times
   on purpose: the repetition is what exposes intermittent transport and
   lifecycle failures, so that count is the acceptance workload. For iteration
