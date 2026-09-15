@@ -296,6 +296,15 @@ refs, PR drafts, and agent handoff.
   recorded sha256 differs, or a lost formula source receipt is a miss, and a
   miss stages the pinned resource and rebuilds from source rather than serving
   a partially verified stack.
+- The stock replay's wget-repeat phase reinstalls wget from source twelve times
+  on purpose: the repetition is what exposes intermittent transport and
+  lifecycle failures, so that count is the acceptance workload. For iteration
+  only, `WEST_STOCK_WGET_ITERATIONS` lowers it; every shortened run reports
+  `STOCK_WGET_REPEAT iterations=N acceptance=0` in its own output, and its
+  result is not acceptance evidence. Do not shorten the count while collecting
+  acceptance evidence, and do not put a compile cache in front of the guest
+  compiler: the source build is the workload these tests measure, and their
+  receipt checks cannot tell a cached build from a real one.
 - Do not close patch coverage with source matching. Tests that grep, parse, or
   assert that specific code text exists are audit checks only; they must not be
   counted as the patch's behavioral test and must not be recorded as `kind:
