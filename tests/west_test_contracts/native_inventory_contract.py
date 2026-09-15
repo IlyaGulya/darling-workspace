@@ -122,6 +122,55 @@ with tempfile.TemporaryDirectory(prefix="west-native-inventory-contract-") as te
                    "coverage-tier": "compile", "repo": "fixture-owner", "script": "probe.c"}],
     })
     reject_changed_profile(compile_case, "unreviewed-compile", "probe:compile.patch:1")
+
+    def reject_and_capture(changed, directory):
+        (profile / "patches.yml").write_text(json.dumps(changed))
+        rejected_output = top / directory
+        rejected = collect(rejected_output)
+        assert rejected.returncode != 0, "unreviewed binding was silently accepted"
+        assert not (rejected_output / "inventory.json").exists(), \
+            "a rejected census must not publish a successful inventory snapshot"
+        return rejected.stderr
+
+    # Every gap is reported at once. Stopping at the first one makes a metadata
+    # edit look like a single missing review while the rest stay invisible.
+    several_gaps = deepcopy(profile_data)
+    for name in ("fourth.patch", "fifth.patch"):
+        several_gaps["patches"].append({
+            "path": name, "module": "src/fixture",
+            "tests": [{"name": "shared_probe", "use": "shared"}],
+        })
+    several_gaps["patches"][1]["tests"][0]["run-args"] = ["changed-declaration"]
+    stderr = reject_and_capture(several_gaps, "several-gaps")
+    for binding in ("probe:fourth.patch:1", "probe:fifth.patch:1", "probe:second.patch:1"):
+        assert binding in stderr, \
+            f"every applicability gap must be named, not only the first: {binding} missing"
+    assert "3 applicability problem(s)" in stderr, \
+        "the report must state how many problems were found"
+
+    # A policy entry whose binding no longer exists is a re-recording artifact:
+    # silently keeping it lets the review record drift away from the metadata.
+    (profile / "patches.yml").write_text(json.dumps(profile_data))
+    orphaned = dict(reviews)
+    orphaned["probe:ghost.patch:1"] = {
+        "policy": "native_reference", "identity_sha256": "0" * 64,
+        "reason": "Synthetic public scenario for the inventory contract.",
+    }
+    policy.write_text(json.dumps({
+        "groups": [{"policy": "native_reference",
+                    "reason": "Synthetic public scenario for the inventory contract."}],
+        "bindings": orphaned,
+    }))
+    try:
+        orphan_stderr = reject_and_capture(profile_data, "orphan-policy")
+        assert "probe:ghost.patch:1" in orphan_stderr, \
+            "a policy entry with no binding must be reported, not ignored"
+    finally:
+        policy.write_text(json.dumps({
+            "groups": [{"policy": "native_reference",
+                        "reason": "Synthetic public scenario for the inventory contract."}],
+            "bindings": reviews,
+        }))
     assert not built_marker.exists() and not executed_marker.exists()
 
 print("PASS native-inventory-contract")

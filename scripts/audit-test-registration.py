@@ -98,6 +98,11 @@ policy_groups = {group["policy"]: group for group in policy_spec["groups"]}
 if len(policy_groups) != len(policy_spec["groups"]):
     raise ValueError("duplicate applicability policy group")
 reviewed_bindings = policy_spec["bindings"]
+# Every applicability problem is collected before anything is raised. Reporting
+# only the first one makes a metadata edit look like a single missing review
+# while the rest of the profile's gaps stay invisible, and orphans left behind by
+# a re-recording would never be reported at all.
+applicability_gaps = []
 
 for row in bindings:
     matching = [case for case in ctest_cases if row["asset_path"] and case["source"]
@@ -111,9 +116,13 @@ for row in bindings:
     row["identity_sha256"] = hashlib.sha256(declaration_bytes).hexdigest()
     review = reviewed_bindings.get(row["binding_id"])
     if review is None:
-        raise ValueError(f"binding has no reviewed applicability policy: {row['binding_id']}")
+        applicability_gaps.append(
+            f"unreviewed binding (no policy recorded): {row['binding_id']}")
+        continue
     if review["identity_sha256"] != row["identity_sha256"]:
-        raise ValueError(f"binding declaration changed since applicability review: {row['binding_id']}")
+        applicability_gaps.append(
+            f"binding declaration changed since its applicability review: {row['binding_id']}")
+        continue
     policy = policy_groups[review["policy"]]
     row["native_policy"] = {"policy": policy["policy"], "reason": review["reason"]}
     row["audit_execution_status"] = "not_run"
@@ -127,6 +136,17 @@ for row in bindings:
             row["declared_commit_asset"] = "present" if check.returncode == 0 else "unresolved"
             if check.returncode:
                 row["declared_commit_asset_diagnostic"] = check.stderr.strip()
+
+applicability_gaps.extend(
+    f"applicability policy entry has no binding (orphaned by a rename or re-recording): {name}"
+    for name in sorted(set(reviewed_bindings) - {row["binding_id"] for row in bindings}))
+if applicability_gaps:
+    listing = "\n".join(f"  - {gap}" for gap in sorted(applicability_gaps))
+    raise ValueError(
+        f"{len(applicability_gaps)} applicability problem(s); all of them are listed here, "
+        f"not only the first:\n{listing}\n"
+        "Review each one and record its policy together with the current declaration identity "
+        "in audits/native-test-applicability.json.")
 
 summary = {
     "profiles": len(profiles), "patch_entries": len(patches), "test_bindings": len(bindings),
