@@ -14,6 +14,11 @@ from prefix_repair import prefix_mount_targets
 
 
 _DEBUG_TREE_NAME = re.compile(r"darling-rootless-[A-Za-z0-9_.-]+-debug-[A-Za-z0-9_.-]+$")
+_PREFIX_TREE_NAME = re.compile(r"darling-rootless-[A-Za-z0-9_.-]+$")
+# The framework writes this into every prefix it creates, and it is what
+# makes a bootstrap prefix identifiable as ours rather than merely named
+# like one.
+PREFIX_STATE_MARKER = ".darling-prefix-state-v2"
 
 
 @dataclass
@@ -26,20 +31,44 @@ class RootlessDebugCleanupResult:
         return not self.problems
 
 
-def validate_rootless_debug_tree(path: Path, *, temp_root: Path = Path("/tmp")) -> Path:
-    """Return a canonical disposable debug path or reject a broad deletion target."""
+def validate_rootless_disposable_prefix(
+    path: Path, *, temp_root: Path = Path("/tmp")
+) -> Path:
+    """Return a canonical disposable prefix path or reject a broad target.
+
+    A debug tree is accepted by name, as it always was. A bootstrap prefix - the
+    kind ``west test --prefix /tmp/darling-rootless-<name>
+    --bootstrap-runtime-profile <profile>`` creates - is accepted when it carries
+    the framework's own prefix-state marker, because that marker is how the
+    framework identifies a prefix it owns; a directory that merely has a similar
+    name is refused.
+    """
 
     root = temp_root.resolve()
     target = path.expanduser().resolve(strict=False)
-    if target.parent != root or not _DEBUG_TREE_NAME.fullmatch(target.name):
-        raise ValueError(
-            f"rootless debug cleanup only accepts {root}/darling-rootless-*-debug-*"
-        )
+    if target.parent != root:
+        raise ValueError(f"prefix cleanup only accepts trees directly under {root}")
+    by_name = _DEBUG_TREE_NAME.fullmatch(target.name)
+    if not by_name:
+        marked = _PREFIX_TREE_NAME.fullmatch(target.name) and (
+            target / PREFIX_STATE_MARKER
+        ).exists()
+        if not marked:
+            raise ValueError(
+                f"prefix cleanup only accepts {root}/darling-rootless-*-debug-* or a "
+                f"{root}/darling-rootless-* tree carrying {PREFIX_STATE_MARKER}"
+            )
     if target.is_symlink():
-        raise ValueError(f"rootless debug cleanup refuses symlink: {target}")
+        raise ValueError(f"prefix cleanup refuses symlink: {target}")
     if not target.is_dir():
-        raise ValueError(f"rootless debug tree is not a directory: {target}")
+        raise ValueError(f"disposable prefix is not a directory: {target}")
     return target
+
+
+def validate_rootless_debug_tree(path: Path, *, temp_root: Path = Path("/tmp")) -> Path:
+    """Return a canonical disposable debug path or reject a broad deletion target."""
+
+    return validate_rootless_disposable_prefix(path, temp_root=temp_root)
 
 
 def rootless_debug_processes(path: Path, *, proc_root: Path = Path("/proc")) -> list[str]:
@@ -86,16 +115,16 @@ def cleanup_rootless_debug_tree(
     mount_targets: Callable[[Path], list[Path]] = prefix_mount_targets,
     processes_for_path: Callable[[Path], list[str]] = rootless_debug_processes,
 ) -> RootlessDebugCleanupResult:
-    """Remove one completed debug prefix, never a live or mounted runtime tree."""
+    """Remove one completed disposable prefix, never a live or mounted runtime tree."""
 
-    target = validate_rootless_debug_tree(path)
+    target = validate_rootless_disposable_prefix(path)
     result = RootlessDebugCleanupResult()
     mounts = mount_targets(target)
     if mounts:
-        result.problems.extend(f"mounted filesystem under debug tree: {mount}" for mount in mounts)
+        result.problems.extend(f"mounted filesystem under disposable prefix: {mount}" for mount in mounts)
     processes = processes_for_path(target)
     if processes:
-        result.problems.extend(f"live rootless debug process: {entry}" for entry in processes)
+        result.problems.extend(f"live rootless prefix process: {entry}" for entry in processes)
     if not result.success or dry_run:
         return result
     try:
