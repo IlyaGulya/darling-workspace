@@ -11,7 +11,14 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Callable, Any, Iterator
+
+
+# Ownership evidence every unit carries from birth. A published unit is
+# identified by its manifest; this marker distinguishes a unit of ours that
+# was interrupted before its manifest existed from an unrelated directory
+# that merely shares the name.
+UNIT_MARKER = ".unit.json"
 
 
 class RuntimeEvidenceSession:
@@ -28,6 +35,19 @@ class RuntimeEvidenceSession:
         self._worktrees: list[dict[str, str]] = []
         self._diagnostics: list[dict[str, Any]] = []
         self._requested_failure: BaseException | None = None
+        # Ownership evidence written at birth. A published unit is identified by
+        # its manifest, and this marker is what lets GC tell a unit of ours that
+        # was interrupted before its manifest existed from an unrelated directory
+        # that merely shares the name.
+        self._created_at = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        self._marker = {
+            "schema": 1,
+            "owner": "runtime-evidence",
+            "state": "inflight",
+            "label": label,
+            "created-at": self._created_at,
+        }
+        self._write_json(UNIT_MARKER, self._marker)
 
     @property
     def directory(self) -> Path:
@@ -132,6 +152,27 @@ class RuntimeEvidenceSession:
             return self._directory
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
         target = self._root / f"runtime-evidence-{stamp}-{uuid.uuid4().hex[:12]}"
+        manifest = {
+            "schema": 1,
+            "status": "failed",
+            "label": self._label,
+            "created-at": stamp,
+            "context": self._context,
+            "failure": {"type": type(failure).__name__, "message": str(failure)},
+            "paths": {"source": "source/darling", "build": "build"},
+            "worktrees": self._worktrees,
+        }
+        if self._diagnostics:
+            manifest["diagnostics"] = self._diagnostics
+        # Publish the manifest while the unit is still hidden, then rename. The
+        # published name is the ownership signal entries() reads, so a unit must
+        # never become visible without it: renaming first and writing the manifest
+        # afterwards left a window where an interrupted retention produced a
+        # multi-gigabyte runtime-evidence-* that entries() ignored and explicit GC
+        # could not reclaim.
+        self._write_json("manifest.json", manifest)
+        self._marker["state"] = "retained"
+        self._write_json(UNIT_MARKER, self._marker)
         if self._worktrees:
             target.mkdir()
             self._relocate_worktrees(target)
@@ -145,22 +186,6 @@ class RuntimeEvidenceSession:
         else:
             self._directory.rename(target)
         self._directory = target
-        manifest = {
-            "schema": 1,
-            "status": "failed",
-            "label": self._label,
-            "created-at": stamp,
-            "context": self._context,
-            "failure": {"type": type(failure).__name__, "message": str(failure)},
-            "paths": {"source": "source/darling", "build": "build"},
-            "worktrees": self._worktrees,
-        }
-        if self._diagnostics:
-            manifest["diagnostics"] = self._diagnostics
-        manifest_path = target / "manifest.json"
-        temporary = manifest_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-        temporary.replace(manifest_path)
         self._retained = True
         self._release_lock()
         return target
@@ -301,7 +326,53 @@ class RuntimeEvidenceStore:
             "attachments": checked,
         }
 
-    def gc(self, *, max_age_hours: float, keep_last: int, dry_run: bool) -> list[Path]:
+    @staticmethod
+    def unit_kind(entry: Path) -> str:
+        """Classify a directory by the ownership evidence it carries.
+
+        ``retained`` and ``inflight`` are units of this store; ``unowned`` is a
+        directory that merely shares the published name. GC never deletes an
+        unowned directory: a name is not ownership, and refusing an arbitrary
+        look-alike is the point of the rule.
+        """
+        manifest = entry / "manifest.json"
+        if manifest.is_file() and not manifest.is_symlink():
+            return "retained"
+        marker = entry / UNIT_MARKER
+        if marker.is_file() and not marker.is_symlink():
+            return "inflight"
+        return "unowned"
+
+    def unowned_units(self) -> list[Path]:
+        """Published-name directories that carry no ownership evidence.
+
+        These are reported rather than collected. An interrupted retention used
+        to be able to produce one; after the manifest is published before the
+        rename it cannot, so a name-matching directory without a manifest and
+        without a unit marker is not ours to remove.
+        """
+        if not self._root.is_dir():
+            return []
+        return sorted(
+            (
+                entry
+                for entry in self._root.iterdir()
+                if entry.is_dir()
+                and not entry.is_symlink()
+                and entry.name.startswith("runtime-evidence-")
+                and self.unit_kind(entry) == "unowned"
+            ),
+            key=lambda entry: entry.stat().st_mtime,
+        )
+
+    def gc(
+        self,
+        *,
+        max_age_hours: float,
+        keep_last: int,
+        dry_run: bool,
+        progress: Callable[[str], None] | None = None,
+    ) -> list[Path]:
         if max_age_hours < 0:
             raise ValueError("runtime evidence max age must be >= 0")
         if keep_last < 0:
@@ -315,11 +386,18 @@ class RuntimeEvidenceStore:
         selected.extend(self._orphan_inflight_entries(cutoff))
         if not dry_run:
             for entry in selected:
+                # A multi-gigabyte unit takes long enough to delete that a silent
+                # run is indistinguishable from a hung one, so each unit is
+                # announced before and after its removal.
+                if progress is not None:
+                    progress(f"pruning {entry.name}")
                 if entry.name.startswith(".inflight-"):
                     self._remove_inflight_worktrees(entry)
                 else:
                     self._remove_worktrees(entry)
                 shutil.rmtree(entry)
+                if progress is not None:
+                    progress(f"pruned {entry.name}")
         return selected
 
     def _orphan_inflight_entries(self, cutoff: float) -> list[Path]:
