@@ -4,6 +4,10 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 
+# Undeclared keeps the previous defaults; the contract decides that explicitly
+# rather than inheriting whatever the caller exported.
+unset DW_STATE_ROOT
+
 export PYTHONDONTWRITEBYTECODE=1
 
 tmp="$(mktemp -d)"
@@ -200,5 +204,26 @@ test ! -e "$tmp/west-red-proof-runtime-count-old" ||
 	{ cat "$tmp/count.out" >&2; exit 1; }
 test -d "$tmp/west-runtime-count-new" ||
 	{ cat "$tmp/count.out" >&2; exit 1; }
+
+# One owned state root per task or lane: with DW_STATE_ROOT declared, the planner
+# works beneath it, and a root outside it is refused rather than obeyed.
+lane="$tmp/lane-state"
+mkdir -p "$lane"
+DW_STATE_ROOT="$lane" west test --gc --dry-run --gc-runtime-evidence >"$tmp/lane.out" 2>&1 ||
+	{ cat "$tmp/lane.out" >&2; exit 1; }
+grep -q "no bundle dir at $lane/bundles" "$tmp/lane.out" ||
+	{ cat "$tmp/lane.out" >&2; exit 1; }
+grep -q "no proof scratch root at $lane/scratch" "$tmp/lane.out" ||
+	{ cat "$tmp/lane.out" >&2; exit 1; }
+if DW_STATE_ROOT="$lane" west test --gc --dry-run --bundle-root "$tmp/elsewhere" \
+	>"$tmp/refuse.out" 2>&1; then
+	echo "a maintenance pass obeyed a root outside the declared state root" >&2
+	cat "$tmp/refuse.out" >&2
+	exit 1
+fi
+grep -q 'outside the declared state root' "$tmp/refuse.out" ||
+	{ cat "$tmp/refuse.out" >&2; exit 1; }
+grep -q "$lane" "$tmp/refuse.out" ||
+	{ cat "$tmp/refuse.out" >&2; exit 1; }
 
 printf 'PASS west-test-gc-contract\n'

@@ -444,6 +444,14 @@ refs, PR drafts, and agent handoff.
   unmarked name-match is reported instead of deleted - so a run reclaims less
   than it used to, deliberately, and says what it left. Snapshot the affected
   paths and copy required evidence outside the GC root before running it.
+- One owned state root per task or lane. Set `DW_STATE_ROOT` and debug bundles,
+  proof scratch, runtime evidence and `west dev` job state are created beneath it
+  (`bundles/`, `scratch/`, `evidence/`, `jobs/`), so two concurrent lanes cannot
+  write into each other's state. With a root declared, a maintenance pass refuses
+  a `--bundle-root`, `--proof-scratch-root` or `--runtime-evidence-root` that
+  points outside it, naming the root it refused to leave, because reaching
+  another lane's state is silent until something is already gone. Undeclared
+  keeps the previous defaults, so existing callers are unchanged.
 - GC collects only what it can prove it owns, and a name is never ownership. A
   retained runtime-evidence unit is identified by its manifest, an in-flight one
   by its unit marker and its released flock, a published unit interrupted before

@@ -43,6 +43,43 @@ def store_disabled(environ: Mapping[str, str], name: str) -> bool:
     return raw is not None and raw.strip().lower() in DISABLED_VALUES
 
 
+# One owned state root per task or lane. When it is declared, everything a run
+# produces - job state, debug bundles, proof scratch, runtime evidence - lives
+# beneath it, and a maintenance operation refuses to touch anything outside it.
+# Undeclared keeps the previous defaults, so existing callers are unchanged.
+STATE_ROOT_ENV = "DW_STATE_ROOT"
+
+
+def state_root(environ: Mapping[str, str] | None = None) -> Path | None:
+    """The declared state root for this task or lane, or None when undeclared."""
+
+    source = os.environ if environ is None else environ
+    value = str(source.get(STATE_ROOT_ENV, "") or "").strip()
+    if not value:
+        return None
+    return Path(value).expanduser().resolve()
+
+
+def state_subdir(name: str, environ: Mapping[str, str] | None = None) -> Path | None:
+    """A named directory beneath the declared state root, or None when undeclared."""
+
+    root = state_root(environ)
+    return None if root is None else root / name
+
+
+def inside_state_root(path: Path, environ: Mapping[str, str] | None = None) -> bool:
+    """Whether ``path`` is inside the declared root; always true when undeclared."""
+
+    root = state_root(environ)
+    if root is None:
+        return True
+    try:
+        Path(path).expanduser().resolve().relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 def store_root(
     manifest_repo: Path,
     environ: Mapping[str, str],

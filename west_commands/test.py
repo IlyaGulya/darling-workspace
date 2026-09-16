@@ -138,7 +138,13 @@ from test_runtime import (
     RuntimePlanMixin,
 )
 from test_worktrees import prunable_west_temp_worktrees, prune_stale_west_temp_worktrees
-from test_store import scratch_owner
+from test_store import (
+    STATE_ROOT_ENV,
+    inside_state_root,
+    scratch_owner,
+    state_root,
+    state_subdir,
+)
 from test_bootstrap import (
     BootstrapRuntimeProfileMixin,
     RuntimeProfileDeployment,
@@ -380,8 +386,8 @@ class DarlingTest(
         parser.add_argument(
             "--bundle-root",
             metavar="DIR",
-            default="~/work/darling-debug",
-            help="debug bundle directory (default ~/work/darling-debug)",
+            help="debug bundle directory (default DW_STATE_ROOT/bundles, "
+            "otherwise ~/work/darling-debug)",
         )
         parser.add_argument(
             "--dry-run",
@@ -391,18 +397,17 @@ class DarlingTest(
         parser.add_argument(
             "--proof-scratch-root",
             metavar="DIR",
-            default=tempfile.gettempdir(),
             help="with --gc, directory to scan for stale runtime, source-proof, and "
-            f"deploy-proof scratch plus guest runner output (default {tempfile.gettempdir()}). "
-            "Runtime evidence units are scoped separately by --runtime-evidence-root",
+            "deploy-proof scratch plus guest runner output (default DW_STATE_ROOT/scratch, "
+            f"otherwise {tempfile.gettempdir()}). Runtime evidence units are scoped "
+            "separately by --runtime-evidence-root",
         )
         parser.add_argument(
             "--runtime-evidence-root",
             metavar="DIR",
-            default=".west-test/runtime-evidence",
             help="durable root for failed runtime source/build evidence units "
-            "(default .west-test/runtime-evidence); with --gc --gc-runtime-evidence, "
-            "the root that pass collects",
+            "(default DW_STATE_ROOT/evidence, otherwise .west-test/runtime-evidence); "
+            "with --gc --gc-runtime-evidence, the root that pass collects",
         )
         parser.add_argument(
             "--runtime-evidence",
@@ -4500,6 +4505,21 @@ class DarlingTest(
     def _do_run(self, args, unknown):
         self._prefix = self._resolve_prefix(args)
         self._executor = self._resolve_executor(args.executor)
+        # One owned state root per task or lane. When DW_STATE_ROOT is declared,
+        # the defaults for bundles, proof scratch and runtime evidence live
+        # beneath it, so two concurrent lanes cannot write into each other's
+        # state and a cleanup cannot reach outside its own root. Undeclared
+        # keeps the previous defaults, so existing callers are unchanged.
+        if not getattr(args, "bundle_root", None):
+            args.bundle_root = str(
+                state_subdir("bundles") or Path("~/work/darling-debug").expanduser()
+            )
+        if not getattr(args, "proof_scratch_root", None):
+            args.proof_scratch_root = str(state_subdir("scratch") or tempfile.gettempdir())
+        if not getattr(args, "runtime_evidence_root", None):
+            args.runtime_evidence_root = str(
+                state_subdir("evidence") or ".west-test/runtime-evidence"
+            )
         self._bundle_root = str(Path(args.bundle_root).expanduser())
         self._runtime_evidence_root = Path(
             getattr(args, "runtime_evidence_root", ".west-test/runtime-evidence")
@@ -4602,6 +4622,22 @@ class DarlingTest(
             return
 
         if args.gc:
+            # A maintenance pass acts only inside its own root. With a declared
+            # state root, a flag that points elsewhere is refused rather than
+            # obeyed: reaching another lane's state is the failure the shared
+            # roots produced, and it is silent until something is already gone.
+            declared = state_root()
+            for label, root in (
+                ("bundle", args.bundle_root),
+                ("proof scratch", args.proof_scratch_root),
+                ("runtime evidence", self._runtime_evidence_root),
+            ):
+                if not inside_state_root(Path(root)):
+                    self.die(
+                        f"{label} root {Path(root).expanduser()} is outside the declared "
+                        f"state root {declared} ({STATE_ROOT_ENV}); a maintenance pass "
+                        "only acts inside its own root"
+                    )
             self._gc_bundles(
                 Path(args.bundle_root), args.keep_last, args.max_bundle_mb,
                 dry_run=args.dry_run,
