@@ -526,6 +526,22 @@ drives other runners holds more than one worker slot (`CONTRACT_WEIGHTS` in
 pool of `cpu_count` workers lets several of them oversubscribe the machine and
 a load failure is indistinguishable from a regression. Never fix that class of
 failure with a retry: a retry hides the failure this rule exists to surface.
+- A profile-composition lock is derived, not hand-written. It records the tree
+each module starts from and the tree every locked patch produces, and only a
+replay of the locked series knows those values, so
+`scripts/generate_profile_composition.py --check` is the review step and the
+same command without `--check` reissues the file, naming the field that
+disagreed. A series change stales the receipt of every profile whose chain
+contains it - for the homebrew chain that is five files - and the materialization
+refuses to run until they are reissued. The generator never reads a value out of
+the checked-in lock, the materialization still validates against it, and a
+style-only difference is reported as a tooling bug instead of being written over.
+- `west patch export` refreshes the patch file and `patches.yml`. It does not
+refresh the immutable lock, the migration receipt, or the profile-composition
+binding, and it cannot: the lock needs a published immutable tag, and the
+binding needs a replay. A series change is therefore complete only when all
+four agree, which is what the migration-inventory and composition contracts and
+the materialization check.
 - `west test` treats an empty selection as fatal, including a label filter that
 matches nothing. Never narrow a selection to make a failing test disappear:
 that converts a real signal into silence.

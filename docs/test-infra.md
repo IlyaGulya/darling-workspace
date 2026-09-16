@@ -757,6 +757,66 @@ invocation. It runs in about two seconds, is registered in the tier it checks,
 and still fails when a tier command line changes (verified by mutating the
 wget-residual sweep argv and a guest-toolchain command line).
 
+### Reissuing a profile composition
+
+A `locks/patch-stack/<profile>-profile-composition-v2.yml` lock is the receipt
+for a profile's series: per module, the tree the module starts from, the tree
+every locked patch produces, and the final and integration-final trees. Only a
+replay knows those values, and `scripts/generate_profile_composition.py` does
+that replay - the same lock-first machinery the materializer uses - then renders
+the file in the checked-in style.
+
+The worked example is the thread-create fix joining the `mldr` series. The
+materialization refused to run with
+
+```
+darling/mldr-thread-create-futex-wait.patch: immutable replay tree a07675d1c363cb8ac1c4f38b2a1051dfe11d5627
+differs from expected profile boundary tree 8dd0c122dc6eb51d743f15d70ce0fc2c351fe698
+```
+
+and the derivation reproduced `a07675d1` independently. Comparing the two trees
+showed exactly two differing files, and the derived blobs were the fixed ones
+(`ea61d009`, from the fix commit) against the receipt's pre-fix ones
+(`daf89968`, from the first commit) - so the receipt was stale, not the replay
+wrong. Reissuing five files (homebrew, perf, arch, wget-residual,
+ring-comparison) made `west test --profile homebrew --env host
+--materialize-profile` materialize and run 64 metadata cases with no failures.
+
+Two properties make the derivation trustworthy rather than circular. It never
+reads a value out of the checked-in lock - trees come from a replay of the
+locked immutable refs, and the entry list is built from the typed mapping rather
+than through `plan()`, which would bind a dependent profile's still-stale
+prerequisite digest. And the receipt stays a check: materialization compares
+against it on every run, which is exactly how the drift was found.
+
+Rules the derivation follows, each with its reason:
+
+- **The entry list comes from the mapping, not from the lock.** A dependent
+  profile cannot even be planned while its checked-in lock still records the old
+  digest of the prerequisite being reissued.
+- **`starting.tree` of a module is the tree before its first locked patch.** For
+  a stacked profile that is the prerequisite profile's final tree, which is why
+  the profile graph is derived prerequisite-first.
+- **Nested modules reproduce byte-for-byte; a parent tree does not
+  necessarily.** A parent tree carries gitlink commit IDs, which are generated
+  lifecycle evidence, and `verify_inherited_parent_boundary` exists to normalize
+  untouched child records for that reason.
+- **`integration_final_tree` equals `final_tree`** for every module, which the
+  generator asserts instead of assuming.
+- **A style-only difference is a failure, not a write.** Formatting churn in a
+  generated registry hides the real change; the same principle already applies
+  to `west patch export`.
+- **A write run reports the same field-level diff as `--check` and exits zero**;
+  only `--check` promises not to have fixed anything.
+
+Cost is the reason this is a deliberate command and not part of the tier: each
+invocation replays every profile in the requested chain, needs the immutable
+mirror, and takes minutes. The tier's gate for a stale receipt is the profile
+materialization it already runs; the focused contract
+`tests/run-profile-composition-derivation-contract.sh` covers the derivation's
+decisions cheaply - which field a drift is reported against, the style refusal,
+the module mapping, and a prerequisite described from the derived bytes.
+
 Guest
 E-UNION cases use `guest-c-fixture` metadata because their lower and
 upper trees must be staged inside an isolated Darling prefix by the typed
