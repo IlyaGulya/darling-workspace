@@ -384,6 +384,7 @@ class RuntimeEvidenceStore:
             if index >= keep_last or stale:
                 selected.append(entry)
         selected.extend(self._orphan_inflight_entries(cutoff))
+        selected.extend(self._orphan_incomplete_units(cutoff))
         if not dry_run:
             for entry in selected:
                 # A multi-gigabyte unit takes long enough to delete that a silent
@@ -391,7 +392,7 @@ class RuntimeEvidenceStore:
                 # announced before and after its removal.
                 if progress is not None:
                     progress(f"pruning {entry.name}")
-                if entry.name.startswith(".inflight-"):
+                if entry.name.startswith(".inflight-") or not (entry / "manifest.json").is_file():
                     self._remove_inflight_worktrees(entry)
                 else:
                     self._remove_worktrees(entry)
@@ -399,6 +400,29 @@ class RuntimeEvidenceStore:
                 if progress is not None:
                     progress(f"pruned {entry.name}")
         return selected
+
+    def _orphan_incomplete_units(self, cutoff: float) -> list[Path]:
+        """Published units that were interrupted before their manifest existed.
+
+        A unit of ours that carries its marker but no manifest is structurally
+        owned and incomplete, which is exactly the state an interrupted retention
+        used to leave behind and nothing could reclaim. It is selected by age
+        like any other unit, and never by name alone.
+        """
+        if not self._root.is_dir():
+            return []
+        orphans = []
+        for entry in self._root.iterdir():
+            if (
+                not entry.name.startswith("runtime-evidence-")
+                or not entry.is_dir()
+                or entry.is_symlink()
+                or entry.stat().st_mtime > cutoff
+            ):
+                continue
+            if self.unit_kind(entry) == "inflight":
+                orphans.append(entry)
+        return sorted(orphans, key=lambda entry: entry.stat().st_mtime)
 
     def _orphan_inflight_entries(self, cutoff: float) -> list[Path]:
         if not self._root.is_dir():

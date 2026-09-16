@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from test_store import SCRATCH_KIND, SCRATCH_MARKER_NAME, write_marker
 from pathlib import Path
 import re
 import shlex
@@ -85,6 +86,24 @@ def scenario_command(scenario: str, values: dict[str, str], west_argv: list[str]
     return command
 
 
+def job_state_dir(bundle_root, scenario: str) -> Path:
+    """Create the state directory of a job about to be started, and mark it.
+
+    Job state lives inside the root the bundle pass scans, so it carries its
+    ownership explicitly: the job that created it. That is what lets a pass tell
+    a live job's state from a directory that merely shares the name.
+    """
+    state = Path(bundle_root) / "jobs" / f"{scenario}-{uuid.uuid4().hex}"
+    write_marker(
+        state,
+        kind=SCRATCH_KIND,
+        key=f"west-dev-job:{scenario}:{state.name}",
+        name=SCRATCH_MARKER_NAME,
+        scenario=scenario,
+    )
+    return state
+
+
 def run_scenario_action(host, args, west_argv: list[str]) -> None:
     root = Path(host.manifest.repo_abspath)
     job_tool = root / "scripts/west-job.sh"
@@ -137,7 +156,7 @@ def run_scenario_action(host, args, west_argv: list[str]) -> None:
         prefix.mkdir(parents=True, exist_ok=True)
     elif not prefix.is_dir():
         raise ValueError(f"prefix does not exist: {prefix}; run homebrew-prepare first")
-    state = Path(values["bundle-root"]) / "jobs" / f"{args.scenario}-{uuid.uuid4().hex}"
+    state = job_state_dir(values["bundle-root"], args.scenario)
     host.inf(f"JOB={state}")
     subprocess.run([str(job_tool), "start", "--state-dir", str(state), "--", *command], cwd=root, check=True)
     entry = ["mise", "-C", str(root), "run", "dw", "dev"]

@@ -138,6 +138,7 @@ from test_runtime import (
     RuntimePlanMixin,
 )
 from test_worktrees import prunable_west_temp_worktrees, prune_stale_west_temp_worktrees
+from test_store import scratch_owner
 from test_bootstrap import (
     BootstrapRuntimeProfileMixin,
     RuntimeProfileDeployment,
@@ -392,14 +393,16 @@ class DarlingTest(
             metavar="DIR",
             default=tempfile.gettempdir(),
             help="with --gc, directory to scan for stale runtime, source-proof, and "
-            f"deploy-proof scratch plus guest runner output (default {tempfile.gettempdir()})",
+            f"deploy-proof scratch plus guest runner output (default {tempfile.gettempdir()}). "
+            "Runtime evidence units are scoped separately by --runtime-evidence-root",
         )
         parser.add_argument(
             "--runtime-evidence-root",
             metavar="DIR",
             default=".west-test/runtime-evidence",
             help="durable root for failed runtime source/build evidence units "
-            "(default .west-test/runtime-evidence)",
+            "(default .west-test/runtime-evidence); with --gc --gc-runtime-evidence, "
+            "the root that pass collects",
         )
         parser.add_argument(
             "--runtime-evidence",
@@ -4324,11 +4327,12 @@ class DarlingTest(
             "west-red-proof-runtime-*",
             "west-green-proof-runtime-*",
             "west-red-proof-source-*",
+            "west-green-proof-source-*",
             "west-red-proof-deploy-*",
             "west-ctest-runtime-*",
             "west-runtime-*",
         )
-        all_scratch_dirs = sorted(
+        candidates = sorted(
             {
                 path
                 for pattern in patterns
@@ -4338,6 +4342,20 @@ class DarlingTest(
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )
+        # A name is not ownership. Only a directory whose creator wrote the
+        # ownership marker before filling it is selected; the rest are reported
+        # with the size they hold, because deleting a name-match that belongs to
+        # someone else is the failure this rule exists to prevent, and staying
+        # silent about it would hide the disk instead of reclaiming it.
+        all_scratch_dirs = []
+        for path in candidates:
+            if scratch_owner(path) is None:
+                self.inf(
+                    "left alone (scratch without an ownership marker): "
+                    f"{path} ({self._format_size(self._dir_size(path))})"
+                )
+            else:
+                all_scratch_dirs.append(path)
         freed = 0
         retained = 0
         pruned = 0
@@ -4407,18 +4425,17 @@ class DarlingTest(
             ),
             key=lambda path: path.stat().st_mtime,
         )
-        freed = 0
-        verb = "would prune" if dry_run else "pruned"
+        # The same rule as the scratch pass: a file name is not ownership. These
+        # are outputs of a runner that now unlinks its own output on every exit
+        # path, so anything matching here is either historical or someone else's,
+        # and both are reported rather than removed. Reclaiming the space is an
+        # operator decision with the path and size in hand.
         for output in outputs:
-            size = output.stat().st_size
-            freed += size
-            self.inf(f"{verb} guest runner output ({size}B): {output}")
-            if not dry_run:
-                output.unlink(missing_ok=True)
-        action = "would free" if dry_run else "freed"
+            self.inf(
+                f"left alone (guest runner output, {output.stat().st_size}B): {output}"
+            )
         self.inf(
-            "guest-runner gc: "
-            f"{verb} {len(outputs)} file(s), {action} {freed}B from {root}"
+            f"guest-runner gc: left alone {len(outputs)} file(s) under {root}"
         )
 
     def _gc_west_temp_worktree_registrations(self, *, dry_run: bool) -> None:

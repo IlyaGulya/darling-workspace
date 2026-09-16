@@ -439,24 +439,29 @@ refs, PR drafts, and agent handoff.
   directory, so anything appearing after the plan was removed without ever being
   planned. That predicate is fixed and the plan now names the stale-worktree
   mutation the real run performs, so plan and effect agree on the three prune
-  passes. What remains unfixed is ownership: the proof-scratch and guest-runner
-  passes still select by name, age and count with no marker or lease, so a
-  name-matching directory of someone else's is still eligible. Snapshot the
-  affected paths and copy required evidence outside the GC root before running it.
-- GC collects only what it can prove it owns. A retained runtime-evidence unit is
-  identified by its manifest, an in-flight one by its unit marker and its
-  released flock, a debug bundle by its timestamp name; a directory that merely
-  shares one of those names is reported with its path and size and left alone,
-  because a name is not ownership. A manifest is written while its unit is still
-  hidden and the rename that publishes it follows, so a published name always
-  means complete. Removing a unit is announced before and after, since deleting
-  a multi-gigabyte unit in silence is indistinguishable from a hang.
-- `west test --gc --gc-runtime-evidence` collects the workspace store at
-  `<topdir>/.west-test/runtime-evidence` and nothing points it elsewhere. Never
-  invoke it to exercise a fixture: `--proof-scratch-root` scopes only the
-  proof-scratch pass, so a scoped-looking run still collects the real store. Use
-  `--dry-run` to inspect it, and keep the only copy of acceptance evidence
-  outside a GC-managed root.
+  passes. Ownership is now required as well: the proof-scratch and guest-runner
+  passes collect only marked scratch, job state carries its marker, and an
+  unmarked name-match is reported instead of deleted - so a run reclaims less
+  than it used to, deliberately, and says what it left. Snapshot the affected
+  paths and copy required evidence outside the GC root before running it.
+- GC collects only what it can prove it owns, and a name is never ownership. A
+  retained runtime-evidence unit is identified by its manifest, an in-flight one
+  by its unit marker and its released flock, a published unit interrupted before
+  its manifest by that same marker, a debug bundle by its timestamp name, and
+  disposable scratch or job state by the `.west-test-scratch.json` marker its
+  creator writes through `test_store.owned_scratch_dir` before filling it. A
+  directory that merely shares one of those names is reported with its path and
+  size and left alone, including an unowned guest-runner output. A manifest is
+  written while its unit is still hidden and the rename that publishes it
+  follows, so a published name always means complete. Removing a unit is
+  announced before and after, since deleting a multi-gigabyte unit in silence is
+  indistinguishable from a hang.
+- `west test --gc --gc-runtime-evidence` collects `<topdir>/.west-test/runtime-evidence`
+  unless `--runtime-evidence-root DIR` points it elsewhere. `--proof-scratch-root`
+  scopes only the proof-scratch and guest-runner passes, so a run that looks
+  scoped still collects the real evidence store: pass both when exercising a
+  fixture, and use `--dry-run` to inspect either pass. Keep the only copy of
+  acceptance evidence outside a GC-managed root.
 - Never keep the only copy of acceptance evidence inside a GC-managed root such
   as `/home/ilyagulya/work/darling-debug`. Keep at least one copy outside it with
   a SHA-256 manifest. When evidence survives only as a hash or verdict record in
