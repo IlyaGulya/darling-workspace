@@ -253,36 +253,36 @@ modules:
     expected_applied_tree: 1e0b6acdda67e574bdef4f8e191c95e4d1eb8ead
   - patch: darling/mldr-thread-create-futex-wait.patch
     lock: darling-mldr-thread-create-futex-wait-v1.yml
-    expected_applied_tree: 8dd0c122dc6eb51d743f15d70ce0fc2c351fe698
+    expected_applied_tree: a07675d1c363cb8ac1c4f38b2a1051dfe11d5627
   - patch: darling/mldr-recv-adaptive-spin.patch
     lock: darling-mldr-recv-adaptive-spin-v1.yml
-    expected_applied_tree: ba986c58819c28f4d2faeaa39b15cef23691e5ea
+    expected_applied_tree: e6da88dfe29c0a278aebd80f61e2446c551d3dd1
   - patch: darling/rootless-runtime-integration.patch
     lock: darling-rootless-runtime-integration-v1.yml
-    expected_applied_tree: e22796246d9ac4ac433634ba8ce64f2339d0b632
+    expected_applied_tree: 3a2d46075d51a91600946b534115b23917aa6eec
   - patch: darling/rootless-bootstrapper-ordering.patch
     lock: darling-rootless-bootstrapper-ordering-v1.yml
-    expected_applied_tree: adb78fd6991c2354e03438ddef50d7bb7ec3cdd0
+    expected_applied_tree: 457c604764ccfd52f3a93762ab321abc8675e337
   - patch: darling/rootless-prefix-initialization.patch
     lock: darling-rootless-prefix-initialization-v1.yml
-    expected_applied_tree: 83c618404ce9f07f122598c2cdd5a13b70f20126
+    expected_applied_tree: 536ddb6bb16aacc7a030b3446b20fa2ec9bb25c5
   - patch: darling/rootless-shellspawn-delay.patch
     lock: darling-rootless-shellspawn-delay-v1.yml
-    expected_applied_tree: fa62be36d212f7f49a268e96d8d1ee7970c59d27
+    expected_applied_tree: 4bb52cbff9df95762c58898dc13f9e9f34cc3c13
   - patch: darling/rootless-shellspawn-lifecycle.patch
     lock: darling-rootless-shellspawn-lifecycle-v1.yml
-    expected_applied_tree: e6092e1522b253d43e62a915ff137596f31b2878
+    expected_applied_tree: 02030e9733e8bb0b53d6b3bf224f34b3112d63c8
   - patch: darling/runtime-mode-canonical.patch
     lock: darling-runtime-mode-canonical-v1.yml
-    expected_applied_tree: 5e8144538bdc7cb7958dc22edc4016e8b64a6591
+    expected_applied_tree: d7c048aadf8e943cac083dbbc554d3d08d66bbc3
   - patch: darling/prefix-lifecycle-state-v2.patch
     lock: darling-prefix-lifecycle-state-v2-v1.yml
-    expected_applied_tree: 7297ee393ed21d13484b1734e5e5694967f96851
+    expected_applied_tree: 8e6f8a1af3ab73aa84d06c2fa4abbb4cb5a55b2c
   - patch: darling/rootless-homebrew-userland.patch
     lock: darling-rootless-homebrew-userland-v1.yml
-    expected_applied_tree: 331143f48e6a70a18665f99edde5715ab9958016
-  final_tree: 331143f48e6a70a18665f99edde5715ab9958016
-  integration_final_tree: 331143f48e6a70a18665f99edde5715ab9958016
+    expected_applied_tree: c6f16a7c0f7949377b049c613fe1b7bbe5beab70
+  final_tree: c6f16a7c0f7949377b049c613fe1b7bbe5beab70
+  integration_final_tree: c6f16a7c0f7949377b049c613fe1b7bbe5beab70
 - module: darling/src/external/installer
   starting:
     tree: 2c58e1c8da659d1c018efce169086dc247b31884
