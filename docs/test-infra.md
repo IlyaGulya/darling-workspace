@@ -718,9 +718,11 @@ The eleven contracts that chain owns are registered individually in
 `EXPLICIT_CONTRACTS` now, so they execute in about 1.6 seconds together. The
 chain runner itself stays in `EXCLUDED_CONTRACTS` with its reason: its west
 steps materialize profiles whose lock-first batches fetch
-`refs/tags/patch-stack/*` from the immutable mirror, which hangs offline. When
-that fetch fails fast or the mirror is reachable, registering the chain is what
-finishes the job.
+`refs/tags/patch-stack/*` from the immutable mirror. That fetch is bounded and
+non-interactive, so it now fails closed with a named unreachable-mirror error
+instead of hanging for twenty minutes, but a workstation without mirror access
+still cannot run the chain to the end. Registering the chain is what finishes the
+job where the mirror is reachable.
 
 One stale assertion in that chain was repaired rather than excused. It grepped
 the `west test --list` output for `ctest .* -L bead:dar-gwn.5`, but a metadata

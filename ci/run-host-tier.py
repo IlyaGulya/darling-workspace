@@ -226,10 +226,12 @@ EXPLICIT_CONTRACTS = (
 EXCLUDED_CONTRACTS = {
     "tests/run-west-test-metadata-contract.sh":
         "cannot complete without the immutable mirror: its west steps materialize profiles whose "
-        "lock-first batches fetch refs/tags/patch-stack/* from the mirror, which hangs offline "
-        "(owned by the verify-hang bead). Its eleven python contracts are registered individually "
-        "in EXPLICIT_CONTRACTS so they execute; this runner is what would drive the remaining "
-        "west/patch-check steps once that fetch fails fast or the mirror is reachable",
+        "lock-first batches fetch refs/tags/patch-stack/* from the mirror. That fetch is bounded "
+        "and non-interactive now, so it fails closed with a named unreachable-mirror error rather "
+        "than hanging, but a workstation with no mirror access still cannot run the chain to the "
+        "end. Its eleven python contracts are registered individually in EXPLICIT_CONTRACTS so "
+        "they execute in the tier; this runner is what drives the remaining west and "
+        "west patch check steps where the mirror is reachable",
     "tests/run-objc4-macro-contract.sh":
         "requires OBJC4_MACRO_CONTRACT_CANDIDATE, a reviewed objc4 source tree supplied by the operator",
     "tests/run-lifecycle-real-kernel-contract.sh":
