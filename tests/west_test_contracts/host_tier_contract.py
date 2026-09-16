@@ -104,6 +104,56 @@ assert all(
     command.weight == 1 or command.name in host_tier.CONTRACT_WEIGHTS for command in built
 )
 
+# The census credits a contract only when it can see an invocation by path. Each
+# of these four forms named a contract in this tree while nothing ran it, so each
+# is asserted to be refused - a revert to a plain substring test would restore
+# exactly the silence this rule closed.
+assert host_tier._invokes("bash tests/run-west-x-contract.sh\n", "run-west-x-contract.sh")
+assert host_tier._invokes(
+    "PYTHONDONTWRITEBYTECODE=1 python3 -B tests/west_test_contracts/x_contract.py\n",
+    "x_contract.py",
+)
+assert not host_tier._invokes(
+    'chain="$repo/tests/run-west-x-contract.sh"\n', "run-west-x-contract.sh"
+)
+assert not host_tier._invokes(
+    'bash "$chain" --transport-gate-probe\n', "run-west-x-contract.sh"
+)
+assert not host_tier._invokes(
+    "# tests/run-west-x-contract.sh is the chain\n", "run-west-x-contract.sh"
+)
+# A declaration in patch metadata is an execution: the profile runs that script.
+assert host_tier._invokes("    script: tests/run-west-x-contract.sh\n", "run-west-x-contract.sh")
+# The tier's own registration lists must not credit a contract through a probe.
+assert not host_tier._invokes(
+    'metadata_contract="$repo/tests/run-west-test-metadata-contract.sh"\n'
+    'bash "$metadata_contract" --transport-gate-probe\n',
+    "run-west-test-metadata-contract.sh",
+)
+
+# End to end, on a synthetic tree: a contract named only through a variable and a
+# probe is not covered, while one invoked by path is. This is the behaviour the
+# rule exists for, so it is asserted against the census itself and not only
+# against the helper - a revert to a plain substring test fails here.
+with tempfile.TemporaryDirectory(prefix="host-tier-census-") as raw:
+    workspace = Path(raw)
+    tests = workspace / "tests"
+    (tests / "west_test_contracts").mkdir(parents=True)
+    (workspace / "ci").mkdir()
+    (tests / "west_test_contracts" / "probe_only_contract.py").write_text("print('never runs')\n")
+    (tests / "run-census-invoked-contract.sh").write_text("#!/usr/bin/env bash\ntrue\n")
+    (tests / "run-census-probed-contract.sh").write_text("#!/usr/bin/env bash\ntrue\n")
+    (workspace / "ci" / "entry.sh").write_text(
+        "bash tests/run-census-invoked-contract.sh\n"
+        'chain="$repo/tests/west_test_contracts/probe_only_contract.py"\n'
+        'python3 "$chain" --probe\n'
+        "bash tests/run-census-probed-contract.sh --transport-gate-probe\n"
+    )
+    census = host_tier.unaccounted_contracts(tests)
+    assert "probe_only_contract.py" in census, census
+    assert "run-census-probed-contract.sh" in census, census
+    assert "run-census-invoked-contract.sh" not in census, census
+
 # A command's weight is slots it holds while running, so a heavy command cannot
 # run beside anything that leaves it no room. Two commands that each cost the
 # whole budget must therefore serialize: if the weight were ignored, their
