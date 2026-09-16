@@ -137,7 +137,7 @@ from test_runtime import (
     preflight_retry_allowed,
     RuntimePlanMixin,
 )
-from test_worktrees import prune_stale_west_temp_worktrees
+from test_worktrees import prunable_west_temp_worktrees, prune_stale_west_temp_worktrees
 from test_bootstrap import (
     BootstrapRuntimeProfileMixin,
     RuntimeProfileDeployment,
@@ -148,6 +148,14 @@ from test_bootstrap import (
     bootstrap_syscall_stall_summary,
     bootstrap_trace_fatal_signal,
 )
+
+
+# A debug bundle is a timestamp-named directory, <YYYYMMDDTHHMMSSZ>-<name>.
+# The GC bundle pass selects by this shape and by nothing else: selecting by
+# age and count over every directory under the root made unrelated state
+# eligible, including a west dev job directory and another workstream's
+# experiment root.
+BUNDLE_NAME = re.compile(r"^[0-9]{8}T[0-9]{6}Z-")
 
 
 class DarlingTest(
@@ -4253,11 +4261,23 @@ class DarlingTest(
         if not root.is_dir():
             self.inf(f"no bundle dir at {root}")
             return
-        bundles = sorted(
-            (d for d in root.iterdir() if d.is_dir()),
-            key=lambda d: d.stat().st_mtime,
-            reverse=True,
-        )
+        # The name predicate is the whole safety property of this pass. Without
+        # it the pass treats every directory under the root as a bundle and
+        # selects by age and count, which is how a west dev job state directory
+        # and another workstream's experiment root became eligible for deletion:
+        # one that appeared after a dry run was counted into the "over count"
+        # set and removed without ever being planned.
+        bundles: list[Path] = []
+        left_alone = 0
+        for entry in root.iterdir():
+            if not entry.is_dir():
+                continue
+            if not BUNDLE_NAME.match(entry.name):
+                left_alone += 1
+                self.inf(f"left alone (not a west-test bundle): {entry.name}")
+                continue
+            bundles.append(entry)
+        bundles.sort(key=lambda d: d.stat().st_mtime, reverse=True)
         cap = max_mb * 1024 * 1024
         freed = 0
         kept = 0
@@ -4278,6 +4298,11 @@ class DarlingTest(
         self.inf(
             f"gc: kept {kept}, {action} {freed // (1024 * 1024)}M from {root}"
         )
+        if left_alone:
+            self.inf(
+                f"gc: left alone {left_alone} entries under {root} that are "
+                "not west-test bundles"
+            )
 
     def _gc_runtime_proof_scratch(
         self,
@@ -4395,6 +4420,34 @@ class DarlingTest(
             "guest-runner gc: "
             f"{verb} {len(outputs)} file(s), {action} {freed}B from {root}"
         )
+
+    def _gc_west_temp_worktree_registrations(self, *, dry_run: bool) -> None:
+        """Prune stale west temp worktree registrations, reporting them first.
+
+        The plan and the real run select with the same predicate and print the
+        same lines. The real run used to perform this mutation without the plan
+        mentioning it at all, which is the difference this pass exists to
+        remove: a plan that omits an effect is not a plan of that effect.
+        """
+        repos = [
+            Path(project.abspath)
+            for project in getattr(self.manifest, "projects", [])
+            if getattr(project, "name", None) != "manifest"
+        ]
+        if dry_run:
+            count = 0
+            for repo in repos:
+                for entry in prunable_west_temp_worktrees(repo):
+                    count += 1
+                    self.inf(
+                        f"would prune stale west temp worktree registration in {repo}: {entry}"
+                    )
+            self.inf(f"stale-worktree gc: would prune {count} registration(s)")
+            return
+        pruned = prune_stale_west_temp_worktrees(repos)
+        for entry in pruned:
+            self.inf(f"pruned stale west temp worktree registration: {entry}")
+        self.inf(f"stale-worktree gc: pruned {len(pruned)} registration(s)")
 
     # --- entrypoint ---------------------------------------------------------
 
@@ -4542,11 +4595,10 @@ class DarlingTest(
                 args.proof_scratch_keep_last,
                 dry_run=args.dry_run,
             )
-            if not args.dry_run:
-                # Source-proof scratch can contain detached Git worktrees.
-                # Once its directory is removed, prune only the stale West
-                # entries from the owning project repositories.
-                self._prune_stale_west_temp_worktrees()
+            # Source-proof scratch can contain detached Git worktrees. The plan
+            # reports the registrations the real run would prune, so the two
+            # agree; only the real run removes them.
+            self._gc_west_temp_worktree_registrations(dry_run=args.dry_run)
             self._gc_guest_runner_output(
                 Path(args.proof_scratch_root),
                 args.proof_scratch_max_age_hours,
@@ -4564,8 +4616,7 @@ class DarlingTest(
                     self.inf(f"{verb} runtime evidence: {entry}")
                 # Runtime evidence GC can remove the last directory reference
                 # to a source worktree. Prune its now-stale Git metadata too.
-                if not args.dry_run:
-                    self._prune_stale_west_temp_worktrees()
+                self._gc_west_temp_worktree_registrations(dry_run=args.dry_run)
             return
 
         if getattr(args, "gc_runtime_evidence", False):

@@ -34,6 +34,67 @@ ln -s "$tmp/canonical-worktree" "$tmp/west-ctest-runtime-symlink"
 ln -s "$tmp/canonical-worktree/outside" "$tmp/west-red-proof-runtime-old/build/outside-link"
 git -C ../darling worktree add --quiet --detach "$source_worktree" HEAD
 
+# A bundle is a timestamp-named directory and nothing else. A west dev job
+# directory and another workstream's experiment root live under the same root in
+# practice, and selecting by age and count over every directory is how they
+# became eligible for deletion.
+mkdir -p \
+	"$tmp/bundles/20260101T000000Z-oldest" \
+	"$tmp/bundles/20260101T000001Z-middle" \
+	"$tmp/bundles/20260101T000002Z-newest" \
+	"$tmp/bundles/jobs/scenario-1" \
+	"$tmp/bundles/another-workstream"
+printf 'bundle\n' >"$tmp/bundles/20260101T000000Z-oldest/log"
+printf 'bundle\n' >"$tmp/bundles/20260101T000001Z-middle/log"
+printf 'bundle\n' >"$tmp/bundles/20260101T000002Z-newest/log"
+printf 'job state\n' >"$tmp/bundles/jobs/scenario-1/state"
+printf 'evidence\n' >"$tmp/bundles/another-workstream/notes.md"
+
+# The plan names what it would prune and what it refuses to touch.
+mkdir -p "$tmp/bundle-scratch"
+west test --gc \
+	--bundle-root "$tmp/bundles" \
+	--proof-scratch-root "$tmp/bundle-scratch" \
+	--proof-scratch-max-age-hours 9999 \
+	--keep-last 1 \
+	--dry-run >"$tmp/bundle-dry.out"
+grep -q 'would prune (count' "$tmp/bundle-dry.out" ||
+	{ cat "$tmp/bundle-dry.out" >&2; exit 1; }
+grep -q 'not a west-test bundle' "$tmp/bundle-dry.out" ||
+	{ cat "$tmp/bundle-dry.out" >&2; exit 1; }
+grep -q 'stale-worktree gc: would prune' "$tmp/bundle-dry.out" ||
+	{ cat "$tmp/bundle-dry.out" >&2; exit 1; }
+test -d "$tmp/bundles/jobs/scenario-1" ||
+	{ cat "$tmp/bundle-dry.out" >&2; exit 1; }
+
+# The real run keeps the same set: timestamped bundles go, everything else stays.
+west test --gc \
+	--bundle-root "$tmp/bundles" \
+	--proof-scratch-root "$tmp/bundle-scratch" \
+	--proof-scratch-max-age-hours 9999 \
+	--keep-last 1 >"$tmp/bundle-gc.out"
+grep -q 'pruned (count' "$tmp/bundle-gc.out" ||
+	{ cat "$tmp/bundle-gc.out" >&2; exit 1; }
+grep -q 'stale-worktree gc: pruned' "$tmp/bundle-gc.out" ||
+	{ cat "$tmp/bundle-gc.out" >&2; exit 1; }
+# Which timestamped bundle survives is decided by mtime, not by its name, so the
+# assertion is on the count: exactly the kept one remains, and the pass did
+# delete the rest.
+survivors=0
+for bundle in "$tmp"/bundles/2026*Z-*; do
+	[[ -d "$bundle" ]] || continue
+	survivors=$((survivors + 1))
+done
+test "$survivors" = 1 ||
+	{ cat "$tmp/bundle-gc.out" >&2; echo "expected one surviving bundle, saw $survivors" >&2; exit 1; }
+test ! -e "$tmp/bundles/20260101T000000Z-oldest" ||
+	test ! -e "$tmp/bundles/20260101T000001Z-middle" ||
+	{ cat "$tmp/bundle-gc.out" >&2; exit 1; }
+test -d "$tmp/bundles/jobs/scenario-1" ||
+	{ cat "$tmp/bundle-gc.out" >&2; echo "gc deleted a west dev job directory" >&2; exit 1; }
+test -f "$tmp/bundles/another-workstream/notes.md" ||
+	{ cat "$tmp/bundle-gc.out" >&2; echo "gc deleted an unrelated directory" >&2; exit 1; }
+
 west test --gc \
 	--bundle-root "$tmp/bundles" \
 	--proof-scratch-root "$tmp" \
