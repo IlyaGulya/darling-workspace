@@ -3515,11 +3515,11 @@ patches:
     script: tests/progress_classifier_test.py
     note: Host RED->GREEN classifier contract for distinguishing slow progress from wedges.
 - path: darling/mldr-thread-create-futex-wait.patch
-  sha256sum: 34fca6f71c1bc83bed9e9ebca2efc8f1f8eb596c376a5214b53262ae441ec1f0
+  sha256sum: de8d5626661274a57ebe92ec809e345992e08c534d5dafcf318a3d0e8424a3cb
   module: darling
   source-branch: fix/mldr-thread-create-futex-wait
   source-base: 73a11f00a54d62504b7162325a88993dfaa6e087
-  source-commit: dd6b42e57eed3cd4d1f576fcca8869b9b12efc21
+  source-commit: c0640633d073cb7500d55ada7b8e7950ba79a69f
   bead: dar-dar6x4-perf-5dq.1
   publication-status: blocked
   publication-blocker: replaces the UNBOUNDED thread-create-checkin busy-spin (sched_yield) with an ADAPTIVE bounded-spin-then-FUTEX_WAIT handshake in __darling_thread_create (keeps the fast-path spin so the common sub-100us checkin is not regressed, but caps CPU so a slow checkin can never monopolise a core). Correctness validated RED->GREEN by tests/regression/thread_create_checkin_wait.c (creator ~1ms CPU vs a core spinning 141-300ms) and futex compiled into both creator+child paths. Live single-storm A/B was within noise (~+3.6% creates/s fixed); a pure-FUTEX variant regressed the fast warm-server case ~25% (p50 16us spin beats a futex round-trip), which is why the adaptive form was chosen. Multistorm aggregate A/B was too noisy on this host (clickhouse contention, baseline alone 5.4k-8.3k/s) to resolve. Wants a second reviewer + a clean-host perf measurement before upstreaming. See dar-dar6x4-perf-5dq.1.
