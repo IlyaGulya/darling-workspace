@@ -817,6 +817,47 @@ materialization it already runs; the focused contract
 decisions cheaply - which field a drift is reported against, the style refusal,
 the module mapping, and a prerequisite described from the derived bytes.
 
+### What an export leaves behind
+
+A series lives in four artifacts, and `west patch export` writes two of them:
+
+| artifact | refreshed by |
+|---|---|
+| `patches/<profile>/<path>.patch` and `patches.yml` | `west patch export` |
+| `locks/patch-stack/<module>-<patch>-v1.yml` | hand-edited today; needs a create-only tag published to the mirror first |
+| `locks/patch-stack/migration-inventory-v1.yml` | hand-edited today; restates the lock |
+| `locks/patch-stack/<profile>-profile-composition-*.yml` | `scripts/generate_profile_composition.py` |
+
+The other two cannot be derived inside the export, so it reports instead of
+guessing, at the moment the change is in hand. On a consistent tree it says
+nothing; with a lock that still describes the previous series it prints, for
+each exported entry:
+
+```
+darling-mldr-thread-create-futex-wait-v1.yml: still records source_commit dd6b42e5…,
+but darling/mldr-thread-create-futex-wait.patch now exports c0640633… (2 commit(s))
+  publish it create-only: git push https://github.com/darling-next/darling.git c0640633…:refs/tags/patch-stack/v1/sources/c0640633…
+  then refresh the lock (schema-v2, mirror.source_oid/source_ref, source_commit,
+  ordered_commits, expected_tree) and its row in migration-inventory-v1.yml -
+  neither has a refresh command today
+  reissue the compositions this moves: scripts/generate_profile_composition.py
+  --profile homebrew (its dependents: perf, wget-residual, arch, ring-comparison)
+```
+
+The dependents are the transitive closure of the compositions that name this
+profile as a prerequisite, which is why the homebrew chain lists four further
+profiles: those are the leaves a homebrew change reaches.
+
+This exists because the alternative was measured. Adding one commit to the
+thread-create series was found late and three times over: first by a receipt
+contract, then by the tier's registry contract, and finally by the homebrew
+profile materialization, which is the most expensive place to learn it. The
+report is covered by `tests/run-patch-series-bindings-contract.sh`, which proves
+the four decisions cheaply on a synthetic locks root: which binding is behind,
+the commit the artifact carries, the refspec that publishes it, the receipt row
+that still disagrees, and the transitive closure - plus silence when everything
+agrees, because a reminder that fires on a current tree is noise.
+
 Guest
 E-UNION cases use `guest-c-fixture` metadata because their lower and
 upper trees must be staged inside an isolated Darling prefix by the typed

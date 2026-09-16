@@ -30,6 +30,7 @@ import patch_stack_materialize
 import patch_stack_lock_first
 import patch_stack_export
 import patch_stack_profile_composition
+import patch_series_bindings
 import patch_explain
 from profile_catalog import (
     PATCH_PROFILE_KIND,
@@ -2114,6 +2115,31 @@ class DarlingPatch(WestCommand):
                 if changed
                 else f"refreshed {profile_path.relative_to(Path(self.manifest.repo_abspath))}"
             )
+        self._report_binding_staleness(profile_dir, plans)
+
+    def _report_binding_staleness(self, profile_dir: Path, plans) -> None:
+        """Name the immutable bindings this export did not refresh.
+
+        The patch and patches.yml are two of the four artifacts a series change
+        touches. The lock, the migration receipt and the compositions bind the
+        same series and cannot be derived here - the lock needs a create-only
+        tag published first - so the export says which ones are behind instead
+        of leaving them to be found by gates that run much later.
+        """
+        locks_root = Path(self.manifest.repo_abspath) / "locks" / "patch-stack"
+        if not locks_root.is_dir():
+            return
+        for plan in plans:
+            lines = patch_series_bindings.binding_report(
+                locks_root,
+                profile=profile_dir.name,
+                module=plan.patch["module"],
+                patch=plan.patch["path"],
+                commit=plan.commit,
+                exported=plan.exported,
+            )
+            for line in lines:
+                self.inf(line)
 
     def _plan_export(
         self,
