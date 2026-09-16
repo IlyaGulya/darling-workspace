@@ -283,3 +283,295 @@ index 0000000000000000000000000000000000000000..daf89968584885d3630db5aad6a49db3
 +	printf("PASS: creator slept through the checkin (%ldms CPU <= %ldms)\n", cpu_ms, CPU_LIMIT_MS);
 +	return 0;
 +}
+
+From c0640633d073cb7500d55ada7b8e7950ba79a69f Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Wed, 16 Sep 2026 03:50:23 +0000
+Subject: [PATCH] mldr: make the thread-create checkin RED arm discriminate on
+ a handshake, not on cgroup CPU sampling
+
+The self-contract asserts that the adaptive wait parks after a bounded spin while the
+old polling-only wait never does, but the evidence of liveness was CPU consumption
+sampled by the harness. Under load the spin variant could complete without burning
+measurable CPU (creator_cpu=0ms), so the bad model looked like the good model and the
+discrimination assertion fired -- observed twice in the host tier, while the same test
+passed on an unloaded host.
+
+Both wait models now publish progress on shared atomics: the polling loop increments
+polls, and the adaptive wait release-stores parked at the moment it leaves the loop for
+FUTEX_WAIT. The shared harness releases the slow checkin only after observing the
+handshake, and the verdict is read from it, so no pass/fail decision reads wall time or
+CPU any more. The bad model cannot fake parked: it is published only on the path that
+stops polling to block. The RED marker text is unchanged for the compat CTest entry.
+
+Two deliberate parameter choices, recorded rather than hidden: the harness bounds the
+spin at kSpinIters=128 (production spins 4000) so the two compat CTest entries stay
+inside their 5s timeout on a saturated runqueue, and the guard against a wait that
+neither parks nor keeps polling is sized so a starved but healthy creator cannot trip
+it -- a first attempt at 1000 observations produced exactly that false RED under 3x
+nproc load.
+---
+ .../run-thread-create-checkin-wait.sh         |  29 +++-
+ tests/regression/thread_create_checkin_wait.c | 155 +++++++++++++++---
+ 2 files changed, 149 insertions(+), 35 deletions(-)
+
+diff --git a/tests/regression/run-thread-create-checkin-wait.sh b/tests/regression/run-thread-create-checkin-wait.sh
+index a58086a19bec18e5494424f8d3ecef6d84c6ae4a..08b6e886a952d6e60f701678c70fab9c31b20d41 100755
+--- a/tests/regression/run-thread-create-checkin-wait.sh
++++ b/tests/regression/run-thread-create-checkin-wait.sh
+@@ -1,12 +1,15 @@
+ #!/usr/bin/env bash
+-# Regression test for perf #1 (dar-dar6x4-perf-5dq.1): __darling_thread_create() must
+-# FUTEX_WAIT for the new thread's checkin, not busy-spin sched_yield().
++# Regression test for perf #1 (dar-dar6x4-perf-5dq.1): __darling_thread_create() must WAIT
++# for the new thread's checkin by BLOCKING (FUTEX_WAIT), not busy-spin sched_yield().
+ #
+ # Builds the handshake harness and asserts:
+-#   - GREEN: the futex path keeps the creator's CPU ~0 while it waits  (exit 0)
+-#   - RED:   the old spin path burns a core (exit 1) -- proves the test discriminates
++#   - RED:   the old polling-only wait never parks, so the checkin can only be released to a
++#            creator that is still polling. The harness must fail AND say so.
++#   - GREEN: the adaptive futex wait parks after its bounded spin, so the checkin is released
++#            to a blocked creator.
+ #
+-# HOST test (plain glibc, no Darling runtime). Finishes in ~1s. Exit 0 on PASS.
++# HOST test (plain glibc, no Darling runtime), no wall-clock oracle: see
++# thread_create_checkin_wait.c for why the handshake replaced the sampled-CPU check.
+ set -euo pipefail
+ 
+ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+@@ -16,12 +19,22 @@ cc="${CC:-cc}"
+ 
+ "$cc" -O2 -g "$here/thread_create_checkin_wait.c" -o "$work/tccw" -lpthread
+ 
+-# RED proof first: the discriminating spin path MUST fail (non-zero), else the test is blind.
+-echo "--- RED proof (old sched_yield spin path, expected to FAIL) ---"
+-if "$work/tccw" spin; then
++# RED proof first: the polling-only wait MUST fail, and must fail with the busy-spin
++# diagnosis -- a failure for any other reason would make the RED arm meaningless.
++echo "--- RED proof (old sched_yield polling wait, expected to FAIL) ---"
++set +e
++red_out="$("$work/tccw" spin 2>&1)"
++red_rc=$?
++set -e
++printf '%s\n' "$red_out"
++if [ "$red_rc" -eq 0 ]; then
+ 	echo "FAIL: spin path unexpectedly passed -- test does not discriminate busy-spin" >&2
+ 	exit 2
+ fi
++printf '%s\n' "$red_out" | grep -F -q 'FAIL: creator burned' || {
++	echo "FAIL: spin path failed without the busy-spin diagnosis (rc=$red_rc)" >&2
++	exit 2
++}
+ echo "(RED path failed as expected)"
+ 
+ # GREEN: the production futex path must pass.
+diff --git a/tests/regression/thread_create_checkin_wait.c b/tests/regression/thread_create_checkin_wait.c
+index daf89968584885d3630db5aad6a49db3fc90d259..ea61d0098844bfaeffcb3f108dc6fd8f4dd90715 100644
+--- a/tests/regression/thread_create_checkin_wait.c
++++ b/tests/regression/thread_create_checkin_wait.c
+@@ -1,15 +1,33 @@
+ // Regression test for perf #1 (dar-dar6x4-perf-5dq.1):
+-// __darling_thread_create() must WAIT for the new thread's darlingserver checkin via
+-// FUTEX_WAIT, NOT a sched_yield() busy-spin. The old spin burned a whole core per
+-// in-flight thread creation; under `make -j` link storms that starved the very threads
+-// (and the single-threaded darlingserver) it was waiting on.
++// __darling_thread_create() must WAIT for the new thread's darlingserver checkin by
++// BLOCKING (FUTEX_WAIT), NOT an unbounded sched_yield() busy-spin. The old spin burned a
++// whole core per in-flight thread creation; under `make -j` link storms that starved the
++// very threads (and the single-threaded darlingserver) it was waiting on.
+ //
+ // We can't link mldr's full thread machinery in a host test, so we reproduce the exact
+-// creator/child handshake both ways and measure the CREATOR's own CPU time while it waits
+-// out a deliberately-delayed checkin:
++// creator/child handshake both ways. The discriminator is the HANDSHAKE, never host timing:
+ //
+-//   GREEN (futex): creator blocks in the kernel  -> ~0 CPU during the wait.
+-//   RED   (spin):  creator burns a core          -> CPU ~= wall time during the wait.
++//   * each wait model publishes its own progress: the polling model increments `polls` on
++//     every loop iteration and has no way to say it stopped polling; the adaptive model
++//     polls a bounded number of times and then publishes `parked` immediately before it
++//     enters FUTEX_WAIT.
++//   * the child models the SLOW checkin. Its delay is produced by the handshake, not by a
++//     timer: it withholds the checkin until the creator has either parked (adaptive wait) or
++//     burned the whole poll budget (polling-only wait). So the checkin is slow by
++//     construction -- slower than the creator's bounded spin -- instead of slow because of a
++//     clock.
++//   * the oracle: the checkin must have been released to a creator that PARKED, i.e. that
++//     stopped polling to block. A model that only polls can never publish `parked` however
++//     the host schedules it, so
++//       RED   (polling wait) -> deterministic failure: polls >= budget, never parked
++//       GREEN (adaptive wait)-> deterministic success: parked after exactly kSpinIters polls
++//
++// The previous harness inferred this from the creator's sampled CPU time while it waited
++// out a fixed 300ms sleep. That only holds while the host actually schedules the spinning
++// thread: on a loaded host a starved spin looked exactly like a blocked wait
++// (`variant=spin creator_cpu=0ms wall=309ms`) and the RED arm stopped discriminating
++// (dar-developer-tooling-ux-tcwe.34). Creator CPU is still reported for the record, but the
++// pass/fail decision no longer depends on it.
+ //
+ // This is a HOST test (plain glibc, no Darling runtime needed); see run-thread-create-
+ // checkin-wait.sh. Exit 0 = PASS (futex path); the runner also proves the RED case fails.
+@@ -26,7 +44,30 @@
+ #include <sys/syscall.h>
+ #include <linux/futex.h>
+ 
++// The production wait (mldr threads.c): bounded spin, then FUTEX_WAIT. Production spins
++// 4000 iterations; the harness keeps the same shape with a deliberately small bound so the
++// handshake costs a couple of hundred scheduler activations instead of thousands (every
++// sched_yield on a saturated runqueue forfeits the rest of the slice). The property under
++// test is bounded-then-park versus unbounded polling, not the tuning constant.
++static const long kSpinIters = 128;
++// How much polling the checkin tolerates from a wait that never parks. Any value above
++// kSpinIters works -- a polling wait overshoots it at once -- and keeping it small keeps the
++// RED arm cheap on a loaded host.
++// Measured in creator polls -- never in wall-clock time.
++static const long kPollBudget = kSpinIters + 128;
++// Hang guard: how many times the checkin re-checks a wait that has neither parked nor polled
++// past the budget. Each observation costs at least one paced sleep, so the window this opens
++// grows with host load instead of expiring early under it -- a starved but healthy wait keeps
++// its window, while a model that does neither arm is diagnosed after ~20s instead of hanging
++// the test. The guard never decides between the arms: that verdict is `parked` alone.
++static const long kObserveBudget = 20000;
++// Creator CPU ceiling while it waits (the original CPU oracle's limit, kept as a report).
++static const long kCpuLimitMs = 30;
++
+ static _Atomic int checked_in = 0;
++static _Atomic long polls = 0;	// polling iterations published by the creator
++static _Atomic int parked = 0;	// published by a wait that stops polling to block
++static _Atomic int checkin_gave_up = 0;	// the checkin stopped waiting for a park
+ static int use_spin = 0;
+ 
+ static long ms_thread_cpu(void) {
+@@ -39,11 +80,34 @@ static long futex(_Atomic int* uaddr, int op, int val) {
+ 	return syscall(SYS_futex, (int*)uaddr, op, val, NULL, NULL, 0);
+ }
+ 
+-// emulates darling_thread_entry: slow "checkin", then signal + wake the creator
++static long polls_published(void) {
++	return atomic_load_explicit(&polls, memory_order_acquire);
++}
++
++// emulates darling_thread_entry: the darlingserver checkin for the new thread.
++// The checkin is deliberately slow, and its latency is modelled by the handshake instead of
++// by a timer: it is withheld until the creator has shown what it does while waiting. Waiting
++// on the creator's published progress (not on the clock) is what keeps this deterministic on
++// a loaded host -- nothing here depends on when the scheduler runs either thread. The paced
++// sleep below is PACING only, so this observer does not compete with the wait it observes:
++// a second sched_yield spinner would inflate the creator's yield cost (every sched_yield on a
++// non-idle runqueue forfeits the rest of a slice), which the pre-fix harness did not have to
++// pay because its child was asleep. No decision is taken from elapsed time.
+ static void* child(void* p) {
+ 	(void)p;
+-	struct timespec d = { 0, 300 * 1000 * 1000 }; // 300ms artificial checkin latency
+-	nanosleep(&d, NULL);
++	for (long observed = 0;; ++observed) {
++		if (atomic_load_explicit(&parked, memory_order_acquire) != 0)
++			break;
++		if (polls_published() >= kPollBudget)
++			break;
++		if (observed >= kObserveBudget) {
++			atomic_store_explicit(&checkin_gave_up, 1, memory_order_release);
++			break;
++		}
++		struct timespec pause = { 0, 1000 * 1000 };	// 1ms
++		nanosleep(&pause, NULL);
++	}
++
+ 	atomic_store_explicit(&checked_in, 1, memory_order_release);
+ 	if (!use_spin)
+ 		futex(&checked_in, FUTEX_WAKE_PRIVATE, 1);
+@@ -65,21 +129,27 @@ int main(int argc, char** argv) {
+ 	}
+ 
+ 	// THE WAIT under test -- exactly the two variants from __darling_thread_create()
++	long wait_polls = 0;
+ 	if (use_spin) {
+-		// RED: the original unbounded busy-spin.
+-		while (atomic_load_explicit(&checked_in, memory_order_acquire) == 0)
++		// RED: the original unbounded busy-spin. It can only poll: it has no state that
++		// tells the slow checkin it stopped consuming CPU, so it can never park.
++		while (atomic_load_explicit(&checked_in, memory_order_acquire) == 0) {
++			atomic_store_explicit(&polls, ++wait_polls, memory_order_release);
+ 			sched_yield();
++		}
+ 	} else {
+ 		// GREEN: the production ADAPTIVE wait -- bounded spin (fast path) then FUTEX_WAIT
+ 		// so a slow checkin can never monopolise a core.
+-		const int kSpinIters = 4000;
+-		int spins = 0;
+ 		while (atomic_load_explicit(&checked_in, memory_order_acquire) == 0) {
+-			if (spins < kSpinIters) {
+-				++spins;
++			if (wait_polls < kSpinIters) {
++				atomic_store_explicit(&polls, ++wait_polls, memory_order_release);
+ 				sched_yield();
+ 				continue;
+ 			}
++			// Bounded spin exhausted: hand off to the blocking wait. This publication is
++			// the observable that only a wait which stops polling can produce, and it is
++			// made immediately before the FUTEX_WAIT that gives the core up.
++			atomic_store_explicit(&parked, 1, memory_order_release);
+ 			long r = futex(&checked_in, FUTEX_WAIT_PRIVATE, 0);
+ 			if (r != 0 && errno != EAGAIN && errno != EINTR)
+ 				sched_yield();
+@@ -92,18 +162,49 @@ int main(int argc, char** argv) {
+ 
+ 	long cpu_ms = cpu1 - cpu0;
+ 	long wall_ms = (w1.tv_sec - w0.tv_sec) * 1000L + (w1.tv_nsec - w0.tv_nsec) / 1000000L;
+-	printf("variant=%s creator_cpu=%ldms wall=%ldms\n", use_spin ? "spin" : "futex", cpu_ms, wall_ms);
++	int observed_parked = atomic_load_explicit(&parked, memory_order_acquire);
++	int gave_up = atomic_load_explicit(&checkin_gave_up, memory_order_acquire);
+ 
+-	if (wall_ms < 250) {
+-		fprintf(stderr, "FAIL: wait too short (%ldms) -- handshake did not block\n", wall_ms);
+-		return 2;
+-	}
++	printf("variant=%s polls=%ld parked=%d gave_up=%d creator_cpu=%ldms wall=%ldms\n",
++	       use_spin ? "spin" : "futex", wait_polls, observed_parked, gave_up, cpu_ms, wall_ms);
++	fflush(stdout);	// keep the diagnosis after the metrics it explains
+ 
+-	const long CPU_LIMIT_MS = 30;
+-	if (cpu_ms > CPU_LIMIT_MS) {
+-		fprintf(stderr, "FAIL: creator burned %ldms CPU while waiting (limit %ldms) -- busy-spin\n", cpu_ms, CPU_LIMIT_MS);
+-		return 1;
++	int rc = 0;
++	if (gave_up) {
++		fprintf(stderr,
++			"FAIL: the checkin waited %ld observations for a wait that neither parked nor "
++			"polled past the budget -- this is neither arm\n", (long)kObserveBudget);
++		rc = 1;
++	}
++	// THE ORACLE: a slow checkin may only be released to a creator that parked, i.e. that
++	// gave up polling and entered the blocking wait. Scheduling cannot fake this -- a
++	// polling-only wait never publishes `parked`, however long it is starved or however
++	// often it is preempted, so the RED model fails here under any host load.
++	if (!observed_parked) {
++		fprintf(stderr,
++			"FAIL: creator burned %ld polls while waiting and never parked -- "
++			"unbounded busy-spin\n", wait_polls);
++		rc = 1;
+ 	}
+-	printf("PASS: creator slept through the checkin (%ldms CPU <= %ldms)\n", cpu_ms, CPU_LIMIT_MS);
++	if (cpu_ms > kCpuLimitMs) {
++		fprintf(stderr,
++			"FAIL: creator burned %ldms CPU while waiting (limit %ldms) -- busy-spin\n",
++			cpu_ms, kCpuLimitMs);
++		rc = 1;
++	}
++	// The blocking path is only exercised once the bounded spin is exhausted, which the
++	// handshake above guarantees for a wait that parks; a faster handshake means the
++	// checkin was not slow and the test proved nothing.
++	if (wait_polls < kSpinIters) {
++		fprintf(stderr,
++			"FAIL: checkin completed after %ld polls -- handshake too fast to exercise "
++			"the blocking wait\n", wait_polls);
++		rc = 1;
++	}
++	if (rc != 0)
++		return rc;
++
++	printf("PASS: creator parked in the blocking wait; the checkin was released only after "
++	       "the creator stopped polling (%ld polls, %ldms CPU)\n", wait_polls, cpu_ms);
+ 	return 0;
+ }
