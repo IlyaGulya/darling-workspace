@@ -2,6 +2,7 @@
 """Bind perf profile boundaries across the Rootless homebrew prerequisite."""
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import yaml
@@ -40,12 +41,24 @@ def main() -> None:
     assert composition["schema_version"] == 3
     prerequisite = composition["prerequisites"]
     assert [item["profile"] for item in prerequisite] == ["homebrew"]
-    # Both trees track the perf composition's 2026-09-05 re-lock (3610b0f),
-    # which followed the homebrew composition to this darling tree.
-    assert prerequisite[0]["module_trees"]["darling"] == "331143f48e6a70a18665f99edde5715ab9958016"
+    # The composition is derived, so these bind it to the composition it comes
+    # from instead of to a literal. Reissuing the homebrew receipt must move the
+    # perf prerequisite with it, and the digest check is what would have caught
+    # the stale receipt directly: it still named the homebrew composition's
+    # previous bytes while the ledger it described had moved on.
+    homebrew_bytes = (LOCKS / "homebrew-profile-composition-v2.yml").read_bytes()
+    homebrew = yaml.safe_load(homebrew_bytes)
+    homebrew_darling = next(item["final_tree"] for item in homebrew["modules"] if item["module"] == "darling")
+    assert prerequisite[0]["composition"] == "homebrew-profile-composition-v2.yml"
+    assert prerequisite[0]["sha256"] == hashlib.sha256(homebrew_bytes).hexdigest()
+    assert prerequisite[0]["module_trees"]["darling"] == homebrew_darling
     assert "source_oid" not in composition["modules"][0]["starting"]
-    assert composition["modules"][0]["starting"]["tree"] == "331143f48e6a70a18665f99edde5715ab9958016"
-    assert composition["modules"][0]["series"][0]["expected_applied_tree"] == "2134b23d4980d7b4cdd534c9e42b4c04d6b303b5"
+    assert composition["modules"][0]["starting"]["tree"] == homebrew_darling
+    # A module's final tree is the tree its last locked patch produced. The
+    # values themselves are verified against a replay by --materialize-profile
+    # and by the composition derivation's --check, not by a literal here.
+    for module in composition["modules"]:
+        assert module["final_tree"] == module["series"][-1]["expected_applied_tree"], module["module"]
     generated = {
         "43b4e876ad032635cfc5308ada0dc1bd383398b9",
         "585b0e89a7be83eaf8b8c0bd0ea7e69d1add0fea",
