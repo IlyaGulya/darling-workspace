@@ -542,6 +542,14 @@ binding, and it cannot: the lock needs a published immutable tag, and the
 binding needs a replay. A series change is therefore complete only when all
 four agree, which is what the migration-inventory and composition contracts and
 the materialization check.
+- Never pin a derived value in a contract. A tree the derivation computes, a
+digest of a generated file, or a boundary the replay produces will move for
+legitimate reasons, and a literal turns that into a regression report about the
+ledger instead of about the code. Bind the value to its source - the file it is
+derived from, the prerequisite it must agree with - and leave the value itself
+to the gate that recomputes it: `--check` for a derived registry and
+`--materialize-profile` for a profile composition. A stale receipt is what the
+digest check catches; a literal only reports that the derivation ran.
 - `west test` treats an empty selection as fatal, including a label filter that
 matches nothing. Never narrow a selection to make a failing test disappear:
 that converts a real signal into silence.
