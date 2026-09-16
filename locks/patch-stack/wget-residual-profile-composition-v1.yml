@@ -3,8 +3,8 @@ profile: wget-residual
 prerequisites:
 - profile: homebrew
   composition: homebrew-profile-composition-v2.yml
-  sha256: 265a4799fe4f70c569b46e4ac87b18b97449151d6e42ebaf9df34dd081c65cb4
-  frozen_manifest: &id001
+  sha256: 44e2172a553503abb53f5c4fea55e6a439d7274a7502c73de1b13a457c486878
+  frozen_manifest:
     path: west.lock.yml
     sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
   module_trees:
@@ -14,9 +14,11 @@ prerequisites:
     darling/src/external/perl: 4f1f2a7a7818800a8e39d1cddbcf7832c246e375
     darling/src/external/libressl-2.8.3: c8ba46eeec25cfc71d0642c253e4ebe18c2898ae
     darling/src/external/libpthread: addb3f6964e54573b34c189b7eeb5c54f3b34f5e
-    darling: 331143f48e6a70a18665f99edde5715ab9958016
+    darling: c6f16a7c0f7949377b049c613fe1b7bbe5beab70
     darling/src/external/installer: a616bc3fd5afce5c9ca62a34e3d0fad30c4b45c6
-frozen_manifest: *id001
+frozen_manifest:
+  path: west.lock.yml
+  sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
 mapping:
   path: lock-first-series-wget-residual-v1.yml
   sha256: 763564e7e1b4f247aa8c9be85608e84ffe64daabc2ffe432d63b764587d66680
@@ -25,31 +27,31 @@ mapping:
 modules:
 - module: darling
   starting:
-    tree: 331143f48e6a70a18665f99edde5715ab9958016
+    tree: c6f16a7c0f7949377b049c613fe1b7bbe5beab70
   series:
   - patch: darling/rootless-homebrew-coreservices.patch
     lock: darling-rootless-homebrew-coreservices-wget-v1.yml
-    expected_applied_tree: 4b780294bd52ff794ab42a1ea3245579128b525b
+    expected_applied_tree: a108f3187d7c7af6f6d2a803edac94c5878b3eff
   - patch: darling/rootless-shutdown-guest-tree.patch
     lock: darling-rootless-shutdown-guest-tree-wget-v1.yml
-    expected_applied_tree: e10b9207d49b9a19c98746d2eed3ebcb8d375c97
+    expected_applied_tree: b7053bcbabdf671058ee245df0504036941d8da1
   - patch: darling/runtime-prefix-unlink-race.patch
     lock: darling-runtime-prefix-unlink-race-wget-v1.yml
-    expected_applied_tree: 6aef05102381ac37bf60f637249990a224e8437d
+    expected_applied_tree: 371cc0391b6d7d241f282727e61b70ac3d424790
   - patch: darling/runtime-lifecycle-owner.patch
     lock: darling-runtime-lifecycle-owner-wget-v1.yml
-    expected_applied_tree: 334988e4675108c80be48a98367944ff3f7a2841
+    expected_applied_tree: 8d4bde1f1813f3f0f4aae320a5c8b8f093abc662
   - patch: darling/homebrew-prefix-tooling.patch
     lock: darling-homebrew-prefix-tooling-wget-v1.yml
-    expected_applied_tree: 0fe27fab9993b3786999db9b86946ae79ea09914
+    expected_applied_tree: 451bd6f8a7276abc9686eafec71db5b439d3e45b
   - patch: darling/mldr-stack-growth-reservation.patch
     lock: darling-mldr-stack-growth-reservation-wget-v1.yml
-    expected_applied_tree: dc58b0435f7466df75119c84bc6f8e353a3f7777
+    expected_applied_tree: 35712bc6bb9ee4e0d95c5ddbddb2c30effbbdc32
   - patch: darling/rootless-hosts-default.patch
     lock: darling-rootless-hosts-default-wget-v1.yml
-    expected_applied_tree: 715129f3a51ffb05f9cc6790599a150bf8b62a28
-  final_tree: 715129f3a51ffb05f9cc6790599a150bf8b62a28
-  integration_final_tree: 715129f3a51ffb05f9cc6790599a150bf8b62a28
+    expected_applied_tree: 902060dd91c3ee25f362ce72e79ae28922067950
+  final_tree: 902060dd91c3ee25f362ce72e79ae28922067950
+  integration_final_tree: 902060dd91c3ee25f362ce72e79ae28922067950
 - module: darling/src/external/xnu
   starting:
     tree: 46bc1531768e94578dfeb505d42d9f002d78065a

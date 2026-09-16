@@ -535,6 +535,7 @@ def materialize_batch_into(
     composition: dict[str, Any] | None = None,
     skip_patches: set[str] | None = None,
     skipped_before: bool = False,
+    record: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Validate and replay one module's immutable series in one transaction.
 
@@ -548,11 +549,20 @@ def materialize_batch_into(
     immutable locks are still fetched and validated, but selected series are
     omitted and later series are proven by exact range-diff/patch identity
     rather than by a canonical boundary tree that necessarily includes the
-    omitted change. ``skipped_before`` carries that same authority across
+    ``skipped_before`` carries that same authority across
     batches: when one module's series spans several stacked profile phases and
     an earlier phase omitted a series, every entry of this batch follows the
     omission and is proven the same way, because the module no longer starts
     at the boundary the composition declares.
+
+    ``record`` turns the replay into a derivation instead of a comparison: each
+    module's starting tree, its applied tree after every patch, and its final
+    tree are written into the mapping for the caller to reissue a profile
+    composition lock with. The lock's own exact-replay proof still runs, so a
+    recorded tree is always the result of replaying the locked immutable
+    series; only the comparison against a declared profile boundary is skipped,
+    because a caller that is deriving that boundary has nothing to compare
+    against yet. Nothing else may pass this argument.
     """
     if not entries or len({entry["module"] for entry in entries}) != 1:
         raise LockFirstError("lock-first batch must contain one non-empty module")
@@ -641,10 +651,24 @@ def materialize_batch_into(
                 expected_tree = proof["resulting_tree"]
             elif not omitted_before:
                 _require_exact_replay(repo, proof, before, after)
-                expected_tree = _composition_boundary(composition, entry)
+                # A deriving caller has no declared boundary to compare with;
+                # the exact-replay proof just above is what makes the recorded
+                # tree a replay of the locked series rather than a free value.
+                expected_tree = (
+                    applied_tree if record is not None
+                    else _composition_boundary(composition, entry)
+                )
             else:
                 _require_exact_replay(repo, proof, before, after)
                 expected_tree = applied_tree
+            if record is not None:
+                captured = record.setdefault(
+                    entry["module"], {"starting": None, "boundaries": {}}
+                )
+                if captured["starting"] is None:
+                    captured["starting"] = before_tree
+                captured["boundaries"][entry["patch"]] = applied_tree
+                captured["final"] = applied_tree
             if applied_tree != expected_tree:
                 try:
                     if (entry["module"] != "darling" or composition is None or

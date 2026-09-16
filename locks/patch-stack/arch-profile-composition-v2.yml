@@ -3,12 +3,12 @@ profile: arch
 prerequisites:
 - profile: perf
   composition: perf-profile-composition-v2.yml
-  sha256: 26e281f678a698e6a99fb77c81460c9c0de18594fa2e92ac1537bb9239915db1
+  sha256: 41dbda88e6a25b9405d142d797a3020220e78bc8d9fc66682a792aae3fd94833
   frozen_manifest:
     path: west.lock.yml
     sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
   module_trees:
-    darling: 2134b23d4980d7b4cdd534c9e42b4c04d6b303b5
+    darling: 2a0ee50cf6a46636bf079283b9aeff1043af2ab3
     darling/src/external/xnu: f049baeba1dfa88a3e7de95c789d3de03439c036
     darling/src/external/dyld: 967445c7fbe8c6db155160c323cb4ece3a5cd1df
     darling/src/external/darlingserver: 46f9c2395a7dcff1e9312598cd4a63f365885b1a
@@ -92,13 +92,13 @@ modules:
   integration_final_tree: 34bddc3265e696c7d52f4a323c237236ff384ba1
 - module: darling
   starting:
-    tree: 2134b23d4980d7b4cdd534c9e42b4c04d6b303b5
+    tree: 2a0ee50cf6a46636bf079283b9aeff1043af2ab3
   series:
   - patch: darling/ci-host-regression-tests.patch
     lock: darling-ci-host-regression-profile-v6.yml
-    expected_applied_tree: 12e683492abf6b842ebe5e592b0866e8bff50893
+    expected_applied_tree: 297b4bef8eb7dc07175f8aca942a90e5562919d9
   - patch: darling/shellspawn-exit-status.patch
     lock: darling-shellspawn-exit-status-rootless-profile-v8.yml
-    expected_applied_tree: 80a917ef741149bbb43b227e86f9a133fb95091f
-  final_tree: 80a917ef741149bbb43b227e86f9a133fb95091f
-  integration_final_tree: 80a917ef741149bbb43b227e86f9a133fb95091f
+    expected_applied_tree: 1b04d16999d7c9c94ea39fe1db921f83920c119c
+  final_tree: 1b04d16999d7c9c94ea39fe1db921f83920c119c
+  integration_final_tree: 1b04d16999d7c9c94ea39fe1db921f83920c119c
