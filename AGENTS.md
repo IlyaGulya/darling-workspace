@@ -432,12 +432,31 @@ refs, PR drafts, and agent handoff.
 - `tests/run-west-test-gc-contract.sh` is the focused GC contract for debug
   bundles and stale runtime proof scratch dirs; update it when changing
   `west test --gc`, proof scratch naming, or dry-run pruning behavior.
-- Treat `west test --gc` as unsafe for unattended use until its dry-run and its
-  actual deletion set agree. The 2026-09-14 run deleted every non-timestamped
-  directory under `darling-debug`, including another experiment root and the
-  preserved CPack core, while its dry-run listed only timestamped west-test
-  bundles. Snapshot the affected paths and copy required evidence outside the
-  GC root before running it.
+- Treat `west test --gc` as unsafe for unattended use. The 2026-09-14 run deleted
+  every non-timestamped directory under `darling-debug`, including another
+  experiment root and the preserved CPack core, while its dry-run listed only
+  timestamped west-test bundles - it selected bundles by age and count over every
+  directory, so anything appearing after the plan was removed without ever being
+  planned. That predicate is fixed and the plan now names the stale-worktree
+  mutation the real run performs, so plan and effect agree on the three prune
+  passes. What remains unfixed is ownership: the proof-scratch and guest-runner
+  passes still select by name, age and count with no marker or lease, so a
+  name-matching directory of someone else's is still eligible. Snapshot the
+  affected paths and copy required evidence outside the GC root before running it.
+- GC collects only what it can prove it owns. A retained runtime-evidence unit is
+  identified by its manifest, an in-flight one by its unit marker and its
+  released flock, a debug bundle by its timestamp name; a directory that merely
+  shares one of those names is reported with its path and size and left alone,
+  because a name is not ownership. A manifest is written while its unit is still
+  hidden and the rename that publishes it follows, so a published name always
+  means complete. Removing a unit is announced before and after, since deleting
+  a multi-gigabyte unit in silence is indistinguishable from a hang.
+- `west test --gc --gc-runtime-evidence` collects the workspace store at
+  `<topdir>/.west-test/runtime-evidence` and nothing points it elsewhere. Never
+  invoke it to exercise a fixture: `--proof-scratch-root` scopes only the
+  proof-scratch pass, so a scoped-looking run still collects the real store. Use
+  `--dry-run` to inspect it, and keep the only copy of acceptance evidence
+  outside a GC-managed root.
 - Never keep the only copy of acceptance evidence inside a GC-managed root such
   as `/home/ilyagulya/work/darling-debug`. Keep at least one copy outside it with
   a SHA-256 manifest. When evidence survives only as a hash or verdict record in

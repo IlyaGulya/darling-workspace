@@ -223,4 +223,78 @@ with tempfile.TemporaryDirectory() as temp:
     assert store.gc(max_age_hours=0, keep_last=0, dry_run=False) == [stale_entry]
     assert not stale_entry.exists()
 
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp) / "evidence"
+    store = RuntimeEvidenceStore(root)
+
+    # Ownership evidence exists from birth, and retention records the state the
+    # unit is actually in.
+    probe = store.start("marker at birth", {"provider": "homebrew"})
+    marker_path = probe.directory / ".unit.json"
+    assert marker_path.is_file(), sorted(path.name for path in probe.directory.iterdir())
+    assert json.loads(marker_path.read_text())["state"] == "inflight"
+    retained = probe.retain(RuntimeError("marker after retention"))
+    assert json.loads((retained / ".unit.json").read_text())["state"] == "retained"
+    assert json.loads((retained / "manifest.json").read_text())["schema"] == 1
+    store.gc(max_age_hours=0, keep_last=0, dry_run=False)
+
+    # Interruption semantics: a retention that dies before its manifest exists
+    # must publish nothing. The rename is the publish, so the manifest is written
+    # while the unit is still hidden.
+    doomed = store.start("interrupted retention", {"provider": "homebrew"})
+    healthy_write = doomed._write_json
+
+    def fail_manifest(name, value):
+        if name == "manifest.json":
+            raise RuntimeError("interrupted before the manifest was published")
+        return healthy_write(name, value)
+
+    doomed._write_json = fail_manifest
+    try:
+        doomed.retain(RuntimeError("interrupted"))
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("injected manifest failure unexpectedly passed")
+    assert [entry.name for entry in root.iterdir() if entry.name.startswith("runtime-evidence-")] == []
+    assert doomed.directory.name.startswith(".inflight-"), doomed.directory
+    doomed._write_json = healthy_write
+    doomed.discard()
+
+    # The bad model this replaced, kept as the reason the order matters: renaming
+    # first and writing the manifest afterwards publishes a directory that
+    # entries() ignores and GC cannot reclaim. That is how a multi-gigabyte
+    # orphan appeared in the field, visible to ls and invisible to the tooling.
+    bad_root = Path(temp) / "bad-model"
+    bad_root.mkdir()
+    bad_unit = Path(tempfile.mkdtemp(prefix=".inflight-", dir=bad_root))
+    (bad_unit / "payload").write_text("multi-gigabyte in the field\n")
+    bad_published = bad_root / "runtime-evidence-19700101T000000Z-deadbeef1234"
+    bad_unit.rename(bad_published)
+    bad_store = RuntimeEvidenceStore(bad_root)
+    assert bad_store.entries() == [], bad_store.entries()
+    assert bad_store.gc(max_age_hours=0, keep_last=0, dry_run=False) == []
+    assert bad_published.is_dir()
+
+    # A name is not ownership: the look-alike is reported, and never deleted.
+    assert bad_store.unowned_units() == [bad_published], bad_store.unowned_units()
+    assert bad_store.unit_kind(bad_published) == "unowned"
+
+    lookalike = root / "runtime-evidence-lookalike-0000"
+    lookalike.mkdir()
+    (lookalike / "payload").write_text("not ours\n")
+    assert store.unowned_units() == [lookalike], store.unowned_units()
+    assert store.gc(max_age_hours=0, keep_last=0, dry_run=True) == []
+    store.gc(max_age_hours=0, keep_last=0, dry_run=False)
+    assert lookalike.is_dir(), "GC deleted a directory it could not prove it owned"
+
+    # Removing a unit is announced before and after, so a long deletion is not
+    # indistinguishable from a hung one.
+    with store.session("progress", {"provider": "homebrew"}) as session:
+        session.preserve(RuntimeError("retain for progress"))
+    lines: list[str] = []
+    selected = store.gc(max_age_hours=0, keep_last=0, dry_run=False, progress=lines.append)
+    assert len(selected) == 1, selected
+    assert lines == [f"pruning {selected[0].name}", f"pruned {selected[0].name}"], lines
+
 print("PASS runtime-evidence-contract")

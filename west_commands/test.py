@@ -4610,10 +4610,19 @@ class DarlingTest(
                     max_age_hours=args.proof_scratch_max_age_hours,
                     keep_last=args.proof_scratch_keep_last,
                     dry_run=args.dry_run,
+                    progress=self.inf,
                 )
                 verb = "would prune" if args.dry_run else "pruned"
                 for entry in entries:
                     self.inf(f"{verb} runtime evidence: {entry}")
+                # A name is not ownership. A published-name directory with no
+                # manifest and no unit marker is reported with the size it holds
+                # instead of being deleted or silently ignored.
+                for entry in evidence_store.unowned_units():
+                    self.inf(
+                        "left alone (runtime evidence with no manifest or unit marker): "
+                        f"{entry} ({self._format_size(self._dir_size(entry))})"
+                    )
                 # Runtime evidence GC can remove the last directory reference
                 # to a source worktree. Prune its now-stale Git metadata too.
                 self._gc_west_temp_worktree_registrations(dry_run=args.dry_run)
