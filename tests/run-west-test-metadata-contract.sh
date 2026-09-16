@@ -898,18 +898,37 @@ west test --profile homebrew \
 	fail 'materialize-profile changed the live xnu checkout'
 assert_no_temp_worktrees
 
-ctest_label="$(
+ctest_listing="$(
 	west test --profile __metadata_contract \
 		--patch test/ctest-label.patch \
 		--list
 )"
 
-printf '%s\n' "$ctest_label" | grep -q 'ctest .* -L bead:dar-gwn.5' ||
+# The listing must show the CTest command the metadata reference resolves to,
+# wrapped by the guarded executor. The reference may be pinned as the declared
+# label or as the exact index it resolved to, so this compares the two
+# selections against the built catalogue instead of pinning one spelling: a
+# command that selects a different test than the label names is the false GREEN
+# this step exists to catch.
+ctest_selection="$(printf '%s\n' "$ctest_listing" |
+	python3 tests/west_test_contracts/metadata_display_contract.py --print-ctest-selection)" ||
 	fail 'ctest-label metadata did not resolve to a runnable ctest command'
-printf '%s\n' "$ctest_label" |
-	display_has_guarded_ctest 'bead:dar-gwn.5' ||
-	fail 'ctest-label metadata did not preserve diag:guarded wrapping'
-if printf '%s\n' "$ctest_label" | grep -q 'list-only'; then
+ctest_build="${ctest_selection%%	*}"
+resolved_selection="${ctest_selection#*	}"
+declare -a resolved_args
+read -r -a resolved_args <<<"$resolved_selection"
+declare -a label_args=(-L bead:dar-gwn.5)
+label_tests="$(ctest --test-dir "$ctest_build" -N "${label_args[@]}" 2>/dev/null | sed -n 's/^ *Test *#[0-9]*: //p' | sort)"
+resolved_tests="$(ctest --test-dir "$ctest_build" -N "${resolved_args[@]}" 2>/dev/null | sed -n 's/^ *Test *#[0-9]*: //p' | sort)"
+[ -n "$label_tests" ] || fail 'ctest-label metadata: the declared label selects no tests'
+[ "$label_tests" = "$resolved_tests" ] ||
+	fail "ctest-label metadata resolved to a different test than the label names: $resolved_selection"
+# The parse above already proves the guarded wrapping: it only returns a
+# selection from a line that is a darling-debug-runner invocation carrying a
+# ctest payload after the separator. The label spelling of that payload is not
+# asserted here, because a resolvable label is pinned as the exact index it
+# resolved to; the matcher's own contract keeps the label spelling covered.
+if printf '%s\n' "$ctest_listing" | grep -q 'list-only'; then
 	fail 'ctest-label metadata is still reported as list-only'
 fi
 
