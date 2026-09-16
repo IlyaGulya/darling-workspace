@@ -688,6 +688,73 @@ entry outside the profile's locked series is invisible to the lock-first
 materializer while still breaking `west patch apply`, `check` and `export`, so a
 series changes only when the series, not the test, is the thing that is wrong.
 
+### What the contract census credits
+
+`ci/run-host-tier.py` refuses to start when a contract is neither registered
+(`CONTRACTS`, `EXPLICIT_CONTRACTS`) nor excluded with a reason
+(`EXCLUDED_CONTRACTS`). The transitive part of that rule is deliberately narrow:
+a contract is credited only when a source the tier already reaches invokes it
+**by path**. Four ways of naming a contract prove nothing, and all four were
+found in the tree:
+
+- a variable assignment that stores the path for a call made elsewhere:
+  `tests/run-west-job-contract.sh` assigned
+  `tests/run-west-test-metadata-contract.sh` to a variable and called it only
+  with `--transport-gate-probe`, which prints a marker and returns before the
+  body. The chain, and the eleven python contracts it drives, were counted as
+  covered while nothing executed them; two of the eleven had rotted to
+  `AttributeError` unseen.
+- a line that only passes a probe flag. Probes are the convention
+  (`--transport-gate-probe`, `--self-contract-probe`,
+  `--metadata-display-contract-probe`); a probe is a gate test, not an
+  execution of the contract behind it.
+- a comment. While this rule was being written, a comment naming the chain in
+  the runner was itself enough to keep it "covered".
+- a test-synthesized profile under `patches/__*`. Those are fixtures a running
+  test materializes, not declarations, and one leftover credited the chain
+  again.
+
+The eleven contracts that chain owns are registered individually in
+`EXPLICIT_CONTRACTS` now, so they execute in about 1.6 seconds together. The
+chain runner itself stays in `EXCLUDED_CONTRACTS` with its reason: its west
+steps materialize profiles whose lock-first batches fetch
+`refs/tags/patch-stack/*` from the immutable mirror, which hangs offline. When
+that fetch fails fast or the mirror is reachable, registering the chain is what
+finishes the job.
+
+One stale assertion in that chain was repaired rather than excused. It grepped
+the `west test --list` output for `ctest .* -L bead:dar-gwn.5`, but a metadata
+`ctest:` reference that resolves is pinned as the exact index it resolved to,
+so the listing carries `-I 28,28,1`. The step now parses the guarded payload
+and compares what the label and the resolved selection actually select, which
+is a stronger oracle than the string it replaced - and it is the same
+distinction the display matcher's own contract covers with its fixtures.
+
+### Scheduling the host tier by weight
+
+The tier runs its commands with a slot budget rather than one slot per process.
+A contract that drives other runners or a nested tier declares its cost in
+`CONTRACT_WEIGHTS`, each entry with the measured reason (42 runner invocations
+for the metadata chain, 11 for the testkit root, 34 subprocess sites in
+`dev_check_contract.py`). Commands holding more than one slot cannot be
+scheduled beside a peer that leaves them no room, light commands are submitted
+first so a waiting heavy command does not block them, and a weight keyed on a
+command that does not exist fails the tier instead of being ignored. The
+motivation is that a load failure and a regression look identical in the
+result: `run-west-extension-help-contract.sh` and `dev_check_contract.py` both
+failed inside the tier and passed alone. The answer is scheduling, never a
+retry.
+
+The tier's own wiring contract stopped executing the tier to check it.
+`tests/run-ci-test-tiers-contract.sh` copies `ci/run-host-tier.py` and
+`ci/run-test-tier.sh` into a mirror repository, reads the registered contract
+paths out of the copied runner, writes a stub for each, and runs the mirror
+tier for real - so the census, the weighted scheduling and the command
+construction all execute, while the ~90 contracts are stubs that record their
+invocation. It runs in about two seconds, is registered in the tier it checks,
+and still fails when a tier command line changes (verified by mutating the
+wget-residual sweep argv and a guest-toolchain command line).
+
 Guest
 E-UNION cases use `guest-c-fixture` metadata because their lower and
 upper trees must be staged inside an isolated Darling prefix by the typed

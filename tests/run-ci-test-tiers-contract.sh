@@ -77,9 +77,93 @@ export ROOTLESS_TIER_REPO_CHILD_OUTPUT="$tmp/rootless-tier-repo-child"
 : >"$ROOTLESS_TIER_REPO_CHILD_OUTPUT"
 unset ROOTLESS_TIER_REPO
 
-export PATCH_STACK_MATERIALIZE_CONTRACT_SKIP_WEST_SUBPROCESS=1
-"$repo/ci/run-test-tier.sh" host
-unset PATCH_STACK_MATERIALIZE_CONTRACT_SKIP_WEST_SUBPROCESS
+# The host tier runs its whole contract registry, which costs minutes of wall
+# time and a verdict that moves with machine load. Drive the tier's own wiring
+# in a throwaway mirror instead: the mirror holds a copy of the tier and its
+# runner, and a stub for every contract the runner registers, so the tier's
+# command construction runs for real while the contracts it names do not.
+#
+# The tier refuses to run when a contract file exists that no entrypoint
+# accounts for. That census reads the live tree and runs no contract, so it
+# stays a real assertion even though the tier's commands are stubbed below.
+python3 - "$repo/ci/run-host-tier.py" "$repo/tests" <<'CENSUS'
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("darling_host_tier_census", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+unaccounted = module.unaccounted_contracts(Path(sys.argv[2]))
+if unaccounted:
+    print(
+        "host tier contract census failed: these contracts are in neither CONTRACTS "
+        "nor EXCLUDED_CONTRACTS, so nothing runs them:\n  " + "\n  ".join(unaccounted),
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+CENSUS
+host_repo="$tmp/host-tier-repo"
+host_stub_log="$tmp/host-tier-stub-commands"
+mkdir -p "$host_repo/ci"
+cp "$repo/ci/run-test-tier.sh" "$host_repo/ci/run-test-tier.sh"
+cp "$repo/ci/run-host-tier.py" "$host_repo/ci/run-host-tier.py"
+cp "$repo/ci/rootless-prefix.sh" "$host_repo/ci/rootless-prefix.sh"
+chmod +x "$host_repo/ci/run-test-tier.sh" "$host_repo/ci/run-host-tier.py"
+host_root="$(cd "$host_repo" && pwd -P)"
+export CI_CONTRACT_STUB_LOG="$host_stub_log"
+: >"$CI_CONTRACT_STUB_LOG"
+python3 - "$host_repo/ci/run-host-tier.py" >"$tmp/host-tier-registry" <<'REGISTRY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("darling_host_tier_registry", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print("\n".join([*module.CONTRACTS, *(path for _, path, _ in module.EXPLICIT_CONTRACTS)]))
+REGISTRY
+while IFS= read -r contract; do
+	[ -n "$contract" ] || continue
+	[ -f "$repo/$contract" ] || {
+		echo "host tier registers a contract that does not exist: $contract" >&2
+		exit 1
+	}
+	mkdir -p "$host_repo/$(dirname "$contract")"
+	case "$contract" in
+		*.py)
+			cat >"$host_repo/$contract" <<'PY'
+"""Stubbed contract: record the invocation the host tier resolved, then pass."""
+import os
+import sys
+
+with open(os.environ["CI_CONTRACT_STUB_LOG"], "a", encoding="utf-8") as stream:
+    stream.write(" ".join(sys.argv) + "\n")
+raise SystemExit(0)
+PY
+			;;
+		*)
+			cat >"$host_repo/$contract" <<'SH'
+#!/usr/bin/env bash
+# Stubbed contract: record the invocation the host tier resolved, then pass.
+printf '%s\n' "$0${1:+ $*}" >>"$CI_CONTRACT_STUB_LOG"
+exit 0
+SH
+			chmod +x "$host_repo/$contract"
+			;;
+	esac
+done <"$tmp/host-tier-registry"
+"$host_repo/ci/run-test-tier.sh" host
+while IFS= read -r contract; do
+	[ -n "$contract" ] || continue
+	grep -F -x -q "$host_root/$contract" "$host_stub_log" || {
+		echo "host tier did not run its registered contract: $contract" >&2
+		exit 1
+	}
+done <"$tmp/host-tier-registry"
+[ "$(wc -l <"$host_stub_log")" -eq "$(wc -l <"$tmp/host-tier-registry")" ] || {
+	echo 'host tier did not run each registered contract exactly once' >&2
+	exit 1
+}
 host_tier="$(sed -n '/^\thost)/,/^\tguest-smoke)/p' "$repo/ci/run-test-tier.sh")"
 printf '%s\n' "$host_tier" | grep -F -q 'exec "$root/ci/run-host-tier.py"'
 host_runner="$repo/ci/run-host-tier.py"
@@ -97,7 +181,7 @@ for contract in \
 do
 	grep -F -q "\"tests/$contract\"" "$host_runner"
 done
-grep -F -q 'default = min(8, max(1, os.cpu_count() or 1), len(CONTRACTS) + 1)' "$host_runner"
+grep -F -q 'default = min(8, max(1, os.cpu_count() or 1), command_count)' "$host_runner"
 grep -F -q 'return run_commands(' "$host_runner"
 grep -F -q 'else ["--materialize-profile"]' "$host_runner"
 "$repo/ci/run-test-tier.sh" guest-smoke

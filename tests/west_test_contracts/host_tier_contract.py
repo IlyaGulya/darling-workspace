@@ -80,6 +80,75 @@ with tempfile.TemporaryDirectory(prefix="host-tier-contract-") as raw:
         assert value["cache_key"] == key
         assert value["returncode"] == 0
 
+# The weight table is a declaration about commands that exist. A weight keyed on
+# a typo would be silently ignored and the command it meant to throttle would
+# keep oversubscribing the machine, so the table is checked against the tier's
+# own registration lists.
+registered = {Path(contract).stem for contract in host_tier.CONTRACTS} | {
+    name for name, _, _ in host_tier.EXPLICIT_CONTRACTS
+}
+sweeps = {"homebrew-host-metadata", "wget-residual-host-metadata"}
+declared = set(host_tier.CONTRACT_WEIGHTS) - sweeps
+assert declared <= registered, sorted(declared - registered)
+assert host_tier._weight_for("a-command-nobody-weighted") == 1
+# The table has to match the commands the tier really builds, not just the
+# registration lists: everything the builder emits is checked against it, and
+# two commands must never share a name, or a weight would apply twice.
+built = host_tier.build_commands([], prematerialized=None)
+assert host_tier._validate_weights(built) == []
+assert len({command.name for command in built}) == len(built)
+assert [command.weight for command in built if command.name == "homebrew-host-metadata"] == [3]
+assert [command.weight for command in built if command.name == "wget-residual-host-metadata"] == [3]
+assert all(command.weight >= 1 for command in built)
+assert all(
+    command.weight == 1 or command.name in host_tier.CONTRACT_WEIGHTS for command in built
+)
+
+# A command's weight is slots it holds while running, so a heavy command cannot
+# run beside anything that leaves it no room. Two commands that each cost the
+# whole budget must therefore serialize: if the weight were ignored, their
+# start/end records would interleave. This is the property that keeps a command
+# driving other runners from being scheduled next to a peer.
+with tempfile.TemporaryDirectory(prefix="host-tier-weight-contract-") as raw:
+    root = Path(raw)
+    logger = root / "logger.py"
+    logger.write_text(
+        "import sys, time\n"
+        "name, log = sys.argv[1], sys.argv[2]\n"
+        "with open(log, 'a') as stream:\n"
+        "    stream.write(f'{name} start\\n')\n"
+        "    stream.flush()\n"
+        "time.sleep(1.5)\n"
+        "with open(log, 'a') as stream:\n"
+        "    stream.write(f'{name} end\\n')\n"
+        "    stream.flush()\n"
+    )
+    log = root / "log"
+    log.write_text("")
+    weighted = [
+        host_tier.HostCommand(
+            name,
+            [os.sys.executable, str(logger), name, str(log)],
+            False,
+            2,
+        )
+        for name in ("heavy-a", "heavy-b")
+    ]
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert (
+            host_tier.run_commands(
+                weighted, workers=2, cache_root=None, cache_key=None
+            )
+            == 0
+        )
+    order = [line.split()[0] for line in log.read_text().splitlines()]
+    assert order == ["heavy-a", "heavy-a", "heavy-b", "heavy-b"] or order == [
+        "heavy-b",
+        "heavy-b",
+        "heavy-a",
+        "heavy-a",
+    ], order
+
 with tempfile.TemporaryDirectory(prefix="host-profile-contract-") as raw:
     root = Path(raw)
     workspace = root / "materialized-v2/homebrew/guest"

@@ -107,6 +107,12 @@ CONTRACTS = (
     # Proves the checked-in registries derive from the tree, and that a drift in
     # any of them fails naming the disagreeing field.
     "tests/run-registry-derivation-contract.sh",
+    # Proves the tier's own wiring: which commands it builds, in which order,
+    # and with which arguments. It stubs every registered contract in a mirror
+    # repo instead of driving the real tier, so it is cheap enough to run inside
+    # the tier it checks - the registered names are read out of the runner
+    # itself, so a contract added to the tier is stubbed rather than executed.
+    "tests/run-ci-test-tiers-contract.sh",
 )
 
 # Contracts the tier runs as explicit commands rather than CONTRACTS entries,
@@ -163,14 +169,67 @@ EXPLICIT_CONTRACTS = (
         "tests/west_test_contracts/test_facade_ownership_contract.py",
         True,
     ),
+    # Recovered from a chain nothing executed: these eleven modules were named
+    # only from inside tests/run-west-test-metadata-contract.sh, which no
+    # entrypoint ran (its one caller passed --transport-gate-probe and returned
+    # before the body), so two of them had rotted to AttributeError unseen.
+    # They are registered individually here because the chain as a whole cannot
+    # complete on a workstation without mirror access.
+    ("metadata-selection", "tests/west_test_contracts/selection_contract.py", True),
+    (
+        "metadata-display",
+        "tests/west_test_contracts/metadata_display_contract.py",
+        True,
+    ),
+    (
+        "metadata-runtime-profile",
+        "tests/west_test_contracts/metadata_runtime_profile_contract.py",
+        True,
+    ),
+    (
+        "metadata-runtime-profile-red",
+        "tests/west_test_contracts/metadata_runtime_profile_red_contract.py",
+        True,
+    ),
+    (
+        "metadata-source-profile",
+        "tests/west_test_contracts/metadata_source_profile_contract.py",
+        True,
+    ),
+    (
+        "runtime-profile-current-minus",
+        "tests/west_test_contracts/runtime_profile_current_minus_contract.py",
+        True,
+    ),
+    (
+        "runtime-evidence",
+        "tests/west_test_contracts/runtime_evidence_contract.py",
+        True,
+    ),
+    (
+        "host-trace-failure-phase",
+        "tests/west_test_contracts/host_trace_failure_phase_contract.py",
+        True,
+    ),
+    (
+        "guest-trace-failure-phase",
+        "tests/west_test_contracts/guest_trace_failure_phase_contract.py",
+        True,
+    ),
+    ("eunion-boot", "tests/west_test_contracts/eunion_boot_contract.py", True),
+    ("eunion-prereq", "tests/west_test_contracts/eunion_prereq_contract.py", True),
 )
 
 # Contracts deliberately kept out of the tier. Each entry states the reason,
 # and the census below fails the tier if a contract is in neither this mapping
 # nor CONTRACTS: an unaccounted contract silently proves nothing.
 EXCLUDED_CONTRACTS = {
-    "tests/run-ci-test-tiers-contract.sh":
-        "drives the tier runner itself; running the tier from inside the tier recurses",
+    "tests/run-west-test-metadata-contract.sh":
+        "cannot complete without the immutable mirror: its west steps materialize profiles whose "
+        "lock-first batches fetch refs/tags/patch-stack/* from the mirror, which hangs offline "
+        "(owned by the verify-hang bead). Its eleven python contracts are registered individually "
+        "in EXPLICIT_CONTRACTS so they execute; this runner is what would drive the remaining "
+        "west/patch-check steps once that fetch fails fast or the mirror is reachable",
     "tests/run-objc4-macro-contract.sh":
         "requires OBJC4_MACRO_CONTRACT_CANDIDATE, a reviewed objc4 source tree supplied by the operator",
     "tests/run-lifecycle-real-kernel-contract.sh":
@@ -216,6 +275,65 @@ def _contract_family(name: str) -> str | None:
     return None
 
 
+# Flags that turn a contract invocation into a probe: a probe prints a marker
+# and returns before the contract body runs.
+PROBE_FLAGS = (
+    "--transport-gate-probe",
+    "--self-contract-probe",
+    "--metadata-display-contract-probe",
+    "--probe",
+)
+
+
+def _is_assignment_only(line: str) -> bool:
+    """Whether a shell line assigns variables and then runs nothing.
+
+    Environment prefixes are not assignments in this sense: a line that starts
+    with ``PYTHONDONTWRITEBYTECODE=1 python3 -B ...`` runs python, while
+    ``contract="$repo/tests/run-x-contract.sh"`` only stores a path for a later
+    call somewhere else. Only the second is a naming that proves nothing.
+    """
+    rest = line.strip()
+    while True:
+        match = re.match(
+            r"(export\s+)?[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S*)\s*",
+            rest,
+        )
+        if match is None:
+            break
+        rest = rest[match.end() :]
+    return rest == "" or rest.startswith("#")
+
+
+def _invokes(text: str, name: str) -> bool:
+    """Whether text names a contract on a line that is an actual invocation.
+
+    The census credits a naming edge only when it can see an invocation of the
+    contract by path. Naming it in a variable assignment, or only on a line that
+    passes a probe flag, does not mean the contract runs: a probe returns before
+    the body. tests/run-west-job-contract.sh showed exactly that failure - it
+    assigned the metadata chain to a variable and called it only with
+    --transport-gate-probe, so the chain and the eleven contracts it drives were
+    counted as covered while nothing executed them.
+    """
+    for line in text.splitlines():
+        if name not in line:
+            continue
+        stripped = line.strip()
+        # A comment never invokes anything. Without this the census could be
+        # satisfied by writing a contract's name in a comment - which is how a
+        # comment in this very file kept the metadata chain "covered" while the
+        # tightened rule was being written.
+        if stripped.startswith("#"):
+            continue
+        if _is_assignment_only(line):
+            continue
+        if any(flag in line for flag in PROBE_FLAGS):
+            continue
+        return True
+    return False
+
+
 def unaccounted_contracts(tests_dir: Path) -> list[str]:
     """Return contract files that no entrypoint accounts for.
 
@@ -244,7 +362,14 @@ def unaccounted_contracts(tests_dir: Path) -> list[str]:
     sources = list((workspace / "ci").rglob("*.py"))
     sources += list((workspace / "ci").rglob("*.sh"))
     sources += list((workspace / ".github" / "workflows").glob("*"))
-    sources += list((workspace / "patches").glob("*/patches.yml"))
+    # Only real patch declarations count. Tests synthesize temporary profiles
+    # under patches/__* while they run; a fixture is not a declaration, and one
+    # of those leftovers was crediting the metadata chain for a while.
+    sources += [
+        path
+        for path in (workspace / "patches").glob("*/patches.yml")
+        if not path.parent.name.startswith("__")
+    ]
     sources += [workspace / contract for contract in CONTRACTS]
     sources += [workspace / path for _, path, _ in EXPLICIT_CONTRACTS]
     scanned: set[Path] = set()
@@ -264,7 +389,7 @@ def unaccounted_contracts(tests_dir: Path) -> list[str]:
         for name, path in contracts.items():
             if name in accounted:
                 continue
-            if name in text:
+            if _invokes(text, name):
                 accounted.add(name)
                 sources.append(path)
     return sorted(name for name in contracts if name not in accounted)
@@ -274,6 +399,83 @@ class HostCommand(NamedTuple):
     name: str
     argv: list[str]
     cacheable: bool
+    # How many of the tier's worker slots this command holds while it runs. A
+    # command that drives other contracts or a nested tier costs more than a
+    # single slot, because a flat pool of cpu_count workers lets several of
+    # them oversubscribe the machine at once. Load failures that come from
+    # scheduling are indistinguishable from regressions to whoever reads the
+    # result, which is why the budget is weighted rather than counted in
+    # processes.
+    weight: int = 1
+
+
+# Commands that hold more than one slot. Every entry states the measured reason,
+# because a weight nobody can check is worse than no weight at all: a command
+# that drives N other runners makes N times the process load of a leaf contract.
+#
+# Measured on this checkout by counting the runner/tier invocations in the
+# command's own file:
+#   run-west-test-metadata-contract.sh        42  (drives ~40 west steps and 11 contracts)
+#   run-ci-test-tiers-contract.sh             42  (drives the tier itself)
+#   run-west-test-testkit-contract.sh         11  (drives five sibling contracts)
+#   tests/west_test_contracts/dev_check_contract.py  34 subprocess sites, and it
+#                                                  failed in-tier at both 8 and 4 workers
+#   tests/west_test_contracts/ctest_backend_contract.py  9 subprocess sites
+#   run-west-job-contract.sh                   1  (drives a contract and supervises a job)
+# The two profile sweeps in main() each materialize a profile and run a whole
+# host metadata sweep, so they are weighted too. run-ci-test-tiers-contract.sh
+# counts 42 references to other runners in its source but is not weighted: it
+# stubs them in a mirror repository, so it costs one slot. The remaining
+# 42-invocation command, run-west-test-metadata-contract.sh, is not in this
+# table because the tier does not run it yet, and a weight keyed on a command
+# that does not exist is a declaration that silently does nothing.
+CONTRACT_WEIGHTS: dict[str, int] = {
+    "run-west-test-testkit-contract": 4,
+    "dev-check": 2,
+    "run-west-test-ctest-backend-contract": 2,
+    "run-west-job-contract": 2,
+    "homebrew-host-metadata": 3,
+    "wget-residual-host-metadata": 3,
+}
+
+
+class WeightedSlots:
+    """A slot budget whose permits are taken and returned in weighted amounts.
+
+    ``threading.Semaphore.acquire`` takes exactly one permit and only its
+    ``blocking``/``timeout`` arguments can be passed, so a command that costs N
+    slots needs its own counter: acquiring N at once is what keeps a command
+    driving other runners from being scheduled beside a peer.
+    """
+
+    def __init__(self, total: int) -> None:
+        self._condition = threading.Condition()
+        self._free = total
+
+    def acquire(self, cost: int) -> None:
+        with self._condition:
+            while self._free < cost:
+                self._condition.wait()
+            self._free -= cost
+
+    def release(self, cost: int) -> None:
+        with self._condition:
+            self._free += cost
+            self._condition.notify_all()
+
+
+def _validate_weights(commands: list[HostCommand]) -> list[str]:
+    """Return weight-table keys that name no command.
+
+    A weight keyed on a name no command has would be silently ignored, and the
+    command it was meant to slow down would keep oversubscribing the machine.
+    """
+    names = {command.name for command in commands}
+    return sorted(name for name in CONTRACT_WEIGHTS if name not in names)
+
+
+def _weight_for(name: str) -> int:
+    return CONTRACT_WEIGHTS.get(name, 1)
 
 
 def _explicit_command(name: str, path: str, cacheable: bool) -> HostCommand:
@@ -281,7 +483,7 @@ def _explicit_command(name: str, path: str, cacheable: bool) -> HostCommand:
     argv = [str(ROOT / path)]
     if path.endswith(".py"):
         argv = [sys.executable, "-B", *argv]
-    return HostCommand(name, argv, cacheable)
+    return HostCommand(name, argv, cacheable, _weight_for(name))
 
 
 def _worker_count(command_count: int) -> int:
@@ -383,6 +585,13 @@ def run_commands(
     state_lock = threading.Lock()
     output_lock = threading.Lock()
     active: set[subprocess.Popen[bytes]] = set()
+    slots = WeightedSlots(workers)
+    print(
+        "host tier slots: "
+        f"workers={workers} commands={len(commands)} "
+        f"weighted_load={sum(command.weight for command in commands)}",
+        flush=True,
+    )
 
     def signal_processes(
         processes: tuple[subprocess.Popen[bytes], ...],
@@ -418,15 +627,25 @@ def run_commands(
                     returncode = 0
                     return command, returncode
                 cache_state = "miss"
-            process = subprocess.Popen(command.argv, cwd=ROOT, start_new_session=True)
-            with state_lock:
-                active.add(process)
-                cancelled = stop.is_set()
-            if cancelled:
-                signal_processes((process,), signal.SIGTERM)
-            returncode = process.wait()
-            with state_lock:
-                active.discard(process)
+            # The slots bound process load, not concurrency: a command that
+            # drives other runners holds as many slots as it costs, so the
+            # tier cannot run several of them beside each other by accident.
+            cost = min(command.weight, workers)
+            slots.acquire(cost)
+            try:
+                if stop.is_set():
+                    return command, 0
+                process = subprocess.Popen(command.argv, cwd=ROOT, start_new_session=True)
+                with state_lock:
+                    active.add(process)
+                    cancelled = stop.is_set()
+                if cancelled:
+                    signal_processes((process,), signal.SIGTERM)
+                returncode = process.wait()
+                with state_lock:
+                    active.discard(process)
+            finally:
+                slots.release(cost)
             if returncode:
                 stop.set()
             elif marker is not None and cache_key is not None:
@@ -447,7 +666,11 @@ def run_commands(
     failure: tuple[HostCommand, int] | None = None
     try:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(execute, command) for command in commands]
+            # Light commands are submitted first: a heavy command that has to
+            # wait for slots would otherwise hold a worker thread while light
+            # commands queue behind it, which costs wall time and buys nothing.
+            ordered = sorted(commands, key=lambda command: command.weight)
+            futures = [pool.submit(execute, command) for command in ordered]
             for future in as_completed(futures):
                 command, returncode = future.result()
                 if returncode and failure is None:
@@ -472,28 +695,27 @@ def run_commands(
     return 0
 
 
-def main() -> int:
-    unaccounted = unaccounted_contracts(ROOT / "tests")
-    if unaccounted:
-        print(
-            "host tier contract census failed: these contracts are in neither CONTRACTS nor "
-            "EXCLUDED_CONTRACTS, so nothing runs them:\n  " + "\n  ".join(unaccounted),
-            file=sys.stderr,
-        )
-        return 2
+def build_commands(argv: list[str], *, prematerialized: str | None) -> list[HostCommand]:
+    """Build the host tier's command list.
+
+    Kept separate from ``main`` so a contract can check the weight table against
+    the commands the tier actually runs: a weight keyed on a name that no
+    command has would be silently ignored.
+    """
     commands = [
-        HostCommand(Path(contract).stem, [str(ROOT / contract)], True)
+        HostCommand(
+            Path(contract).stem,
+            [str(ROOT / contract)],
+            True,
+            _weight_for(Path(contract).stem),
+        )
         for contract in CONTRACTS
     ]
     commands += [
         _explicit_command(name, path, cacheable)
         for name, path, cacheable in EXPLICIT_CONTRACTS
     ]
-    profile_materialization = (
-        []
-        if os.environ.get("WEST_PREMATERIALIZED_PROFILE") == "homebrew"
-        else ["--materialize-profile"]
-    )
+    profile_materialization = [] if prematerialized == "homebrew" else ["--materialize-profile"]
     commands.append(
         HostCommand(
             "homebrew-host-metadata",
@@ -505,18 +727,17 @@ def main() -> int:
                 "--env",
                 "host",
                 *profile_materialization,
-                *sys.argv[1:],
+                *argv,
             ],
             False,
+            _weight_for("homebrew-host-metadata"),
         )
     )
     # The E-UNION host suites assert behaviour that only the wget-residual chain
     # provides, so they are declared in that profile and run here. Measured at
     # about 100 seconds end to end, most of it materialization.
     wget_materialization = (
-        []
-        if os.environ.get("WEST_PREMATERIALIZED_PROFILE") == "wget-residual"
-        else ["--materialize-profile"]
+        [] if prematerialized == "wget-residual" else ["--materialize-profile"]
     )
     commands.append(
         HostCommand(
@@ -529,11 +750,35 @@ def main() -> int:
                 "--env",
                 "host",
                 *wget_materialization,
-                *sys.argv[1:],
+                *argv,
             ],
             False,
+            _weight_for("wget-residual-host-metadata"),
         )
     )
+    return commands
+
+
+def main() -> int:
+    unaccounted = unaccounted_contracts(ROOT / "tests")
+    if unaccounted:
+        print(
+            "host tier contract census failed: these contracts are in neither CONTRACTS nor "
+            "EXCLUDED_CONTRACTS, so nothing runs them:\n  " + "\n  ".join(unaccounted),
+            file=sys.stderr,
+        )
+        return 2
+    commands = build_commands(
+        sys.argv[1:], prematerialized=os.environ.get("WEST_PREMATERIALIZED_PROFILE")
+    )
+    unknown_weights = _validate_weights(commands)
+    if unknown_weights:
+        print(
+            "host tier weight table names commands that do not exist: "
+            + ", ".join(unknown_weights),
+            file=sys.stderr,
+        )
+        return 2
     raw_cache_root = os.environ.get("WEST_HOST_CONTRACT_CACHE_DIR")
     raw_cache_key = os.environ.get("WEST_HOST_CONTRACT_CACHE_KEY")
     return run_commands(

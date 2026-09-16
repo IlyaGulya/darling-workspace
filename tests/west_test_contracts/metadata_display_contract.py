@@ -36,6 +36,43 @@ def _guarded_payload(words: list[str]) -> list[str] | None:
     return None
 
 
+def guarded_ctest_selection(display: str) -> tuple[str, str] | None:
+    """Return (build-dir, selection-args) from a guarded ctest listing line.
+
+    A metadata test backed by a CTest selection is listed as the debug runner
+    wrapping the resolved ctest command. The command may carry the declared
+    label (``-L``) or the exact index the label resolved to (``-I``), because
+    pinning the resolved test is what keeps a later catalogue change from
+    silently running a different one. Callers compare the two selections
+    instead of pinning one spelling of the command.
+    """
+    for line in display.splitlines():
+        words = _shell_words(line)
+        if words is None:
+            continue
+        payload = _guarded_payload(words)
+        if not payload or payload[0] != "ctest":
+            continue
+        build = None
+        selection: list[str] = []
+        index = 1
+        while index < len(payload):
+            word = payload[index]
+            if word == "--test-dir" and index + 1 < len(payload):
+                build = payload[index + 1]
+                index += 2
+                continue
+            if word in {"-L", "-I", "-R"} and index + 1 < len(payload):
+                selection.extend([word, payload[index + 1]])
+                index += 2
+                continue
+            index += 1
+        if build is None or not selection:
+            return None
+        return build, " ".join(selection)
+    return None
+
+
 def matches(display: str, mode: str, label: str | None = None) -> bool:
     for line in display.splitlines():
         words = _shell_words(line)
@@ -135,7 +172,19 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--match", choices=("guarded", "guarded-ctest"))
     parser.add_argument("--label")
+    parser.add_argument(
+        "--print-ctest-selection",
+        action="store_true",
+        help="print '<build-dir>\\t<selection-args>' for a guarded ctest listing",
+    )
     args = parser.parse_args()
+    if args.print_ctest_selection:
+        found = guarded_ctest_selection(sys.stdin.read())
+        if found is None:
+            print("no guarded ctest selection in the listing", file=sys.stderr)
+            return 1
+        print(f"{found[0]}\t{found[1]}")
+        return 0
     if args.match:
         return 0 if matches(sys.stdin.read(), args.match, args.label) else 1
     contract()

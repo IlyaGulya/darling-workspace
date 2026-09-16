@@ -498,6 +498,34 @@ the series itself has to change, not the test.
 `EXCLUDED_CONTRACTS` with a reason. The tier's census refuses to start when a
 contract is accounted for nowhere, because a contract that nothing runs cannot
 fail and therefore reports nothing.
+- The census credits a contract only when it can see an invocation **by path**.
+A name that appears only in a variable assignment, only on a line that passes a
+probe flag, only in a comment, or only in a test-synthesized profile under
+`patches/__*` does not mean the contract runs: a probe returns before the body
+and a fixture is not a declaration. If the census reports a contract whose only
+reference is one of those, the truthful answer is to register it, or to exclude
+it with the reason it does not run - not to restore the mention.
+- Register the contracts a chain drives, and keep the chain honest about the
+rest. `tests/run-west-test-metadata-contract.sh` cannot complete without the
+immutable mirror, so its eleven python contracts are registered individually in
+`EXPLICIT_CONTRACTS` and the chain itself is excluded with that reason. A chain
+that nothing runs is where contracts rot unseen; two of those eleven had.
+- The identity that keeps a listing honest is the selection, not its spelling.
+A metadata `ctest:` reference is pinned as the exact index the label resolved
+to, so a test that greps the listing for `-L <label>` is pinning a command the
+implementation does not produce. Compare what the two selections select.
+- A contract that drives the tier must stub it, not execute it. Running the
+host tier inside the host tier recurses, and driving its ~90 real contracts
+makes the contract slow, load-sensitive and unregisterable. Stub the registered
+contract paths in a throwaway mirror of the runner and assert the captured
+command list: `tests/run-ci-test-tiers-contract.sh` is registered and runs in
+about two seconds that way.
+- The host tier schedules by weight, not by process count. A contract that
+drives other runners holds more than one worker slot (`CONTRACT_WEIGHTS` in
+`ci/run-host-tier.py`, each entry with its measured reason), because a flat
+pool of `cpu_count` workers lets several of them oversubscribe the machine and
+a load failure is indistinguishable from a regression. Never fix that class of
+failure with a retry: a retry hides the failure this rule exists to surface.
 - `west test` treats an empty selection as fatal, including a label filter that
 matches nothing. Never narrow a selection to make a failing test disappear:
 that converts a real signal into silence.
