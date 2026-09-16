@@ -27,8 +27,9 @@ sys.modules.setdefault("west.commands", west_commands_module)
 import patch as patch_command
 from patch_git import TEMPORARY_PATCH_GIT_OPTIONS
 import patch_stack_lock_first as lock_first
-import patch_stack_profile_composition as profile_composition
 import patch_stack_lock_first_acceptance as lock_first_acceptance
+import patch_stack_materialize as materialize
+import patch_stack_profile_composition as profile_composition
 
 
 def git(repo: Path, *args: str) -> str:
@@ -1598,10 +1599,23 @@ def main() -> None:
         ], batch_id="real-eunion-hardening"), sort_keys=False))
         eunion_production = root / "eunion-production"
         git(root, "init", "-q", str(eunion_production))
-        git(eunion_production, "remote", "add", "immutable", eunion_lock["mirror"]["url"])
-        git(eunion_production, "fetch", "--no-tags", "immutable",
-            f"{eunion_lock['mirror']['base_ref']}:{eunion_lock['mirror']['base_ref']}",
-            f"{eunion_lock['mirror']['source_ref']}:{eunion_lock['mirror']['source_ref']}")
+        # The mirror is this contract's one network dependency, so it goes
+        # through the production probe and bounded transfer rather than a bare
+        # git fetch: an unreachable mirror must fail in seconds naming itself,
+        # not wait indefinitely and surface in the tier as if a contract had
+        # regressed. Same remote helper, credentials and URL rewriting the
+        # materializer uses, so this also exercises the production path.
+        eunion_mirror = eunion_lock["mirror"]["url"]
+        materialize.probe_immutable_mirror(eunion_mirror)
+        materialize.fetch_immutable(
+            eunion_production,
+            eunion_mirror,
+            [
+                f"{eunion_lock['mirror']['base_ref']}:{eunion_lock['mirror']['base_ref']}",
+                f"{eunion_lock['mirror']['source_ref']}:{eunion_lock['mirror']['source_ref']}",
+            ],
+            url=eunion_mirror,
+        )
         eunion_base = eunion_lock["upstream"]["base_commit"]
         git(eunion_production, "checkout", "-q", "--detach", eunion_lock["mirror"]["base_ref"])
         git(eunion_production, "config", "user.name", "Test")
