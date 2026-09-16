@@ -14,6 +14,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# A scratch directory is only collectable when its creator wrote the ownership
+# marker before filling it; a name-match without one is reported, never deleted.
+mark_owned() {
+	cat >"$1/.west-test-scratch.json" <<EOF
+{"schema": 1, "kind": "west-test-scratch", "key": "contract:$1"}
+EOF
+}
+
 mkdir -p \
 	"$tmp/west-red-proof-runtime-old/build" \
 	"$tmp/west-green-proof-runtime-old/build" \
@@ -28,11 +36,24 @@ printf 'artifact\n' >"$tmp/west-red-proof-source-old/build/lib.dylib"
 printf 'artifact\n' >"$tmp/west-red-proof-deploy-old/build/lib.dylib"
 printf 'artifact\n' >"$tmp/west-ctest-runtime-homebrew-old/build/lib.dylib"
 printf 'artifact\n' >"$tmp/west-runtime-homebrew-old/build/lib.dylib"
+mark_owned "$tmp/west-red-proof-runtime-old"
+mark_owned "$tmp/west-green-proof-runtime-old"
+mark_owned "$tmp/west-red-proof-source-old"
+mark_owned "$tmp/west-red-proof-deploy-old"
+mark_owned "$tmp/west-ctest-runtime-homebrew-old"
+mark_owned "$tmp/west-runtime-homebrew-old"
+
+# An unmarked name-match and a guest-runner output: neither is provably ours, so
+# both are reported with their size and survive the real run.
+mkdir -p "$tmp/west-runtime-unmarked/build"
+printf 'artifact\n' >"$tmp/west-runtime-unmarked/build/lib.dylib"
+printf 'guest output\n' >"$tmp/west-ctest-guest-c.unmarked"
 mkdir -p "$tmp/canonical-worktree"
 printf 'outside artifact\n' >"$tmp/canonical-worktree/outside"
 ln -s "$tmp/canonical-worktree" "$tmp/west-ctest-runtime-symlink"
 ln -s "$tmp/canonical-worktree/outside" "$tmp/west-red-proof-runtime-old/build/outside-link"
 git -C ../darling worktree add --quiet --detach "$source_worktree" HEAD
+mark_owned "$tmp/west-red-proof-source-worktree"
 
 # A bundle is a timestamp-named directory and nothing else. A west dev job
 # directory and another workstream's experiment root live under the same root in
@@ -135,6 +156,14 @@ test ! -e "$tmp/west-ctest-runtime-homebrew-old" ||
 	{ cat "$tmp/gc.out" >&2; exit 1; }
 test ! -e "$tmp/west-runtime-homebrew-old" ||
 	{ cat "$tmp/gc.out" >&2; exit 1; }
+test -d "$tmp/west-runtime-unmarked" ||
+	{ cat "$tmp/gc.out" >&2; echo "gc deleted unmarked scratch" >&2; exit 1; }
+test -f "$tmp/west-ctest-guest-c.unmarked" ||
+	{ cat "$tmp/gc.out" >&2; echo "gc deleted an unowned guest output" >&2; exit 1; }
+grep -q 'left alone (scratch without an ownership marker)' "$tmp/gc.out" ||
+	{ cat "$tmp/gc.out" >&2; exit 1; }
+grep -q 'left alone (guest runner output' "$tmp/gc.out" ||
+	{ cat "$tmp/gc.out" >&2; exit 1; }
 if git -C ../darling worktree list --porcelain |
 	grep -F -x -q "worktree $source_worktree"; then
 	cat "$tmp/gc.out" >&2
@@ -153,6 +182,8 @@ mkdir -p \
 	"$tmp/west-runtime-count-new/build"
 printf 'artifact\n' >"$tmp/west-red-proof-runtime-count-old/build/lib.dylib"
 printf 'artifact\n' >"$tmp/west-runtime-count-new/build/lib.dylib"
+mark_owned "$tmp/west-red-proof-runtime-count-old"
+mark_owned "$tmp/west-runtime-count-new"
 touch -d '2 hours ago' "$tmp/west-red-proof-runtime-count-old"
 
 west test --gc \

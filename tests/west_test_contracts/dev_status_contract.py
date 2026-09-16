@@ -15,6 +15,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+sys.path.insert(0, str(ROOT / "west_commands"))
+from west_commands import dev_scenarios, test_store
 from west_commands import dev_status
 
 
@@ -740,5 +742,17 @@ else:
         path.unlink()
     oversized_root.rmdir()
     assert byte_snapshot(root) == before
+
+
+# Job state lives inside the root the bundle pass scans, so it is created with
+# its ownership marker: that is what lets a pass tell a live job's state from a
+# directory that merely shares the name, and it keeps the state directory itself
+# out of reach of anything that deletes by name.
+with tempfile.TemporaryDirectory() as bundle_temp:
+    state = dev_scenarios.job_state_dir(Path(bundle_temp) / "bundles", "homebrew-prepare")
+    assert state.is_dir() and state.parent.name == "jobs", state
+    owner = test_store.scratch_owner(state)
+    assert owner is not None, "job state carries no ownership marker"
+    assert owner["kind"] == test_store.SCRATCH_KIND and owner["scenario"] == "homebrew-prepare", owner
 
 print("PASS dev-status-contract")

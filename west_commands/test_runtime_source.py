@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from source_worktree import SourceWorktreeError, prepare_source_worktree
+from test_store import owned_scratch_dir
 from patch_git import TEMPORARY_PATCH_GIT_OPTIONS
 import patch_stack_lock_first
 import patch_stack_materialize
@@ -545,7 +546,16 @@ class RuntimeSourceMaterializer:
 
         module_repo = self._host._project_path(module)
         revision = self._host._manifest_revision(module)
-        temp = tempfile.mkdtemp(prefix="west-green-proof-source-")
+        # Owned scratch: see the red-proof source root above. This prefix was not
+        # in GC's patterns, so a kept green source tree was never reclaimed.
+        temp = str(
+            owned_scratch_dir(
+                "west-green-proof-source-",
+                key=f"green-proof-source:{profile}:{patch['path']}:{module}",
+                patch=patch["path"],
+                module=module,
+            )
+        )
         target = Path(temp) / "source"
         keep_on_failure = False
         try:
@@ -716,7 +726,14 @@ class RuntimeSourceMaterializer:
         added: list[tuple[Path, Path]] = []
         owns_root = root is None
         temp = (
-            Path(tempfile.mkdtemp(prefix="west-red-proof-source-")).resolve()
+            # Owned scratch: GC collects this directory only because the marker
+            # naming its creator and task is written before anything else lands
+            # inside it. An unmarked name-match is reported, never deleted.
+            owned_scratch_dir(
+                "west-red-proof-source-",
+                key=f"red-proof-source:{patch['path']}",
+                patch=patch["path"],
+            ).resolve()
             if owns_root
             else Path(root).expanduser().resolve()
         )

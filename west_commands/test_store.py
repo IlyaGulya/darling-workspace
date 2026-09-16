@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import shutil
+import tempfile
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -161,6 +162,41 @@ def record_event(
         stats.record(event, amount)
         write_stats(root, stats, schema=schema)
     return stats
+
+
+# Ownership for disposable scratch directories. GC may only collect a
+# directory that carries this marker: the identity of the creator and the task
+# it belongs to, written before anything else is placed inside, so a pass that
+# finds a name-matching directory without one reports it instead of deleting it.
+SCRATCH_KIND = "west-test-scratch"
+SCRATCH_MARKER_NAME = ".west-test-scratch.json"
+
+
+def owned_scratch_dir(prefix: str, *, key: str, **fields: Any) -> Path:
+    """Create a marked scratch directory that GC is allowed to collect."""
+
+    entry = Path(tempfile.mkdtemp(prefix=prefix))
+    write_marker(
+        entry, kind=SCRATCH_KIND, key=key, name=SCRATCH_MARKER_NAME, **fields
+    )
+    return entry
+
+
+def scratch_owner(entry: Path) -> dict[str, Any] | None:
+    """Return who owns a marked scratch directory, or None when unproven."""
+
+    marker = marker_path(entry, name=SCRATCH_MARKER_NAME)
+    if not marker.is_file() or marker.is_symlink():
+        return None
+    try:
+        value = json.loads(marker.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict) or value.get("kind") != SCRATCH_KIND:
+        return None
+    if value.get("schema") != SCHEMA:
+        return None
+    return value
 
 
 def marker_path(entry: Path, *, name: str) -> Path:

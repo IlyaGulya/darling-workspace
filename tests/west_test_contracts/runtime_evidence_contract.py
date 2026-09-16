@@ -297,4 +297,33 @@ with tempfile.TemporaryDirectory() as temp:
     assert len(selected) == 1, selected
     assert lines == [f"pruning {selected[0].name}", f"pruned {selected[0].name}"], lines
 
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp) / "evidence"
+    store = RuntimeEvidenceStore(root)
+
+    # A published unit that carries its marker but no manifest is structurally
+    # owned and incomplete: the state an interrupted retention leaves behind. It
+    # is selected by age like any other unit, not by its name.
+    interrupted = root / "runtime-evidence-20260101T000000Z-aaaaaaaaaaaa"
+    interrupted.mkdir(parents=True)
+    (interrupted / ".unit.json").write_text(
+        json.dumps({"schema": 1, "owner": "runtime-evidence", "state": "retained"}) + "\n"
+    )
+    (interrupted / "payload").write_text("kept source tree\n")
+    assert store.unit_kind(interrupted) == "inflight", store.unit_kind(interrupted)
+    assert store.entries() == [], store.entries()
+    assert store.unowned_units() == [], store.unowned_units()
+    assert store.gc(max_age_hours=0, keep_last=0, dry_run=True) == [interrupted]
+    assert store.gc(max_age_hours=0, keep_last=0, dry_run=False) == [interrupted]
+    assert not interrupted.exists()
+
+    # And the look-alike beside it is still refused, even now that an incomplete
+    # unit is collectable: the difference is the marker, not the name.
+    lookalike = root / "runtime-evidence-20260101T000001Z-bbbbbbbbbbbb"
+    lookalike.mkdir(parents=True)
+    (lookalike / "payload").write_text("someone else's\n")
+    assert store.gc(max_age_hours=0, keep_last=0, dry_run=False) == []
+    assert lookalike.is_dir(), "an unowned incomplete name-match was deleted"
+    assert store.unowned_units() == [lookalike], store.unowned_units()
+
 print("PASS runtime-evidence-contract")
