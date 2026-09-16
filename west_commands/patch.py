@@ -186,6 +186,15 @@ class DarlingPatch(WestCommand):
                     action="store_true",
                     help="verify patch files and applicability at manifest revisions without requiring local source branches",
                 )
+                command.add_argument(
+                    "--offline",
+                    action="store_true",
+                    help=(
+                        "skip all immutable mirror contact; every patch whose "
+                        "applicability could not be checked is reported UNVERIFIED "
+                        "and the command exits non-zero"
+                    ),
+                )
             if action == "export":
                 command.add_argument(
                     "--patch",
@@ -359,6 +368,7 @@ class DarlingPatch(WestCommand):
                 profile_dir,
                 patches,
                 require_source_branches=not args.applicability_only,
+                offline=args.offline,
             )
         elif args.action == "export":
             self._export(
@@ -1989,6 +1999,7 @@ class DarlingPatch(WestCommand):
         patches,
         *,
         require_source_branches: bool = True,
+        offline: bool = False,
     ):
         manifest_repo = Path(self.manifest.repo_abspath)
         bead_ids = {
@@ -2051,7 +2062,7 @@ class DarlingPatch(WestCommand):
                 self.die(f"{patch['path']}: missing PR draft {pr_draft}")
             self.inf(f"verified {path.relative_to(manifest_repo)}")
 
-        self._verify_applicability(profile, grouped)
+        self._verify_applicability(profile, grouped, offline=offline)
         self.inf(f"verified {len(patches)} patches")
 
     def _export(
@@ -2398,7 +2409,7 @@ class DarlingPatch(WestCommand):
             self.die(f"{profile_path}: failed to update entries: {', '.join(missing_updates)}")
         profile_path.write_text("".join(lines))
 
-    def _verify_applicability(self, profile: str, grouped):
+    def _verify_applicability(self, profile: str, grouped, *, offline: bool = False):
         """Replay the complete typed profile graph in disposable worktrees.
 
         A composed profile is applicable only to the exact trees produced by
@@ -2407,6 +2418,13 @@ class DarlingPatch(WestCommand):
         would be tested without the Homebrew and Perf state it actually
         consumes.  Resolve the typed dependency graph first, then retain one
         disposable worktree per module across the ordered profile replay.
+
+        Applicability is proven against immutable locks fetched from each
+        module's mirror, so the graph is resolved fully before any replay: one
+        bounded reachability probe per distinct mirror fails a blackholed
+        mirror early instead of after the replay it would have invalidated.
+        ``offline`` skips mirror contact entirely and reports every patch whose
+        verification was therefore not performed as UNVERIFIED.
         """
         profiles: list[
             tuple[str, dict[str, list[dict]], patch_stack_lock_first.LockFirstPlan]
@@ -2474,6 +2492,46 @@ class DarlingPatch(WestCommand):
             load_profile(profile, grouped)
         except RuntimeError as error:
             self.die(str(error))
+
+        if offline:
+            # No mirror contact at all: every patch of every profile in the
+            # resolved chain keeps an unproven applicability, so each one is
+            # reported by name and the run cannot exit zero.
+            unverified = [
+                f"{current_profile} {module} {patch['path']}"
+                for current_profile, current_grouped, _plan in profiles
+                for module, module_patches in current_grouped.items()
+                for patch in module_patches
+            ]
+            for row in unverified:
+                self.inf(f"UNVERIFIED {row}")
+            self.die(
+                f"--offline: {len(unverified)} patch(es) were not verified against "
+                "their immutable mirrors; the applicability gate did not run"
+            )
+
+        # Probe each distinct mirror once, before the replay it would
+        # invalidate.  A plan entry carries the lock that declares its mirror;
+        # entries without one declare no immutable input to reach.
+        probed: set[str] = set()
+        for _current_profile, _current_grouped, current_plan in profiles:
+            for entry in current_plan:
+                lock_path = entry.get("lock_path")
+                if not lock_path:
+                    continue
+                try:
+                    mirror_url = patch_stack_materialize.lock_mirror_url(
+                        Path(lock_path)
+                    )
+                except patch_stack_materialize.MaterializeError as error:
+                    self.die(str(error))
+                if mirror_url in probed:
+                    continue
+                probed.add(mirror_url)
+                try:
+                    patch_stack_materialize.probe_immutable_mirror(mirror_url)
+                except patch_stack_materialize.MirrorUnreachableError as error:
+                    self.die(str(error))
 
         with tempfile.TemporaryDirectory(prefix="west-patch-verify-") as temp:
             temp_root = Path(temp)

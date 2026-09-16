@@ -597,7 +597,10 @@ def materialize_batch_into(
                 production_specs.append(f"{remote_ref}:{production_ref}")
                 refs.append((canonical_ref, production_ref))
                 fetched_refs.append(production_ref)
-        patch_stack_materialize._git(canonical, "fetch", "--no-tags", "immutable", *canonical_specs)
+        # Bounded, non-interactive immutable transfer: a blackholed mirror must
+        # fail here as a named unreachable-mirror error instead of waiting in
+        # pipe_read forever, because Git has no connect timeout.
+        patch_stack_materialize.fetch_immutable(canonical, "immutable", canonical_specs, url=next(iter(mirrors)))
         stats["immutable_fetch_transactions"] += 1
         validated: list[tuple[dict[str, str], dict[str, Any], dict[str, Any]]] = []
         for index, (entry, lock) in enumerate(locks):
