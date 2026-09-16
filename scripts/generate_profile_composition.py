@@ -264,6 +264,16 @@ def _render(
     ).encode()
 
 
+def _style_only(differences: list[str], checked_in: bytes, rendered: bytes) -> bool:
+    """Whether a file differs only in how it was written, not in its values.
+
+    Reissuing a receipt must not rewrite a file it did not change: formatting
+    churn in a generated registry is a tooling bug, so a style-only difference
+    is reported as a failure instead of being written over.
+    """
+    return not differences and checked_in != rendered
+
+
 def _differences(checked_in: Any, derived: Any, path: str = "") -> list[str]:
     """Return the field-level differences between two decoded documents."""
     if isinstance(checked_in, dict) and isinstance(derived, dict):
@@ -324,8 +334,7 @@ def main() -> int:
             }
             derived_files[profile] = rendered
             differences = _differences(checked_in, yaml.safe_load(rendered))
-            style_only = not differences and checked_in_bytes != rendered
-            if style_only:
+            if _style_only(differences, checked_in_bytes, rendered):
                 # Reissuing a receipt must not rewrite a file it did not change:
                 # formatting churn in a generated registry is a tooling bug, not
                 # review noise, so this refuses to write and says so.
