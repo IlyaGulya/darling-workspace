@@ -47,7 +47,7 @@ def run() -> None:
         "the plan must state the execution order, which is profile order"
     )
     assert "/evidence/root" in plan[1], (
-        "the plan must name the resolved evidence root"
+        "the plan must name the resolved diagnostic bundle root"
     )
 
     empty = metadata_selection_plan([], "/evidence/root")
