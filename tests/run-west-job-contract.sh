@@ -34,6 +34,19 @@ rm -rf "$tmp/green"
 wait_job --state-dir "$tmp/green"
 grep -F -x -q 'GREEN_RESTARTED' "$tmp/green/log"
 
+# --quiet drops the observer's own heartbeat and keeps everything else: the job
+# output, the phase markers and the final status line.
+quiet_out="$("$job" follow --quiet --state-dir "$tmp/green")"
+printf '%s\n' "$quiet_out" | grep -F -x -q 'GREEN_RESTARTED'
+printf '%s\n' "$quiet_out" | grep -F -q "completed rc=0 state=$tmp/green"
+if printf '%s\n' "$quiet_out" | grep -F -q 'log-change-age'; then
+	echo "failed: --quiet still printed the observer heartbeat" >&2
+	exit 1
+fi
+# The engine's default stays verbose, so an observer can still tell a silent
+# job from a dead one; the west dev facade is what defaults to quiet.
+"$job" follow --state-dir "$tmp/green" | grep -F -q 'log-change-age'
+
 # Never reclaim an absent-state registration whose recorded process identity
 # is still live.
 live_state="$tmp/live-registry-only"
