@@ -1,15 +1,29 @@
-"""Fail-closed schema-v2 lock materialization into a local result ref."""
+"""Fail-closed schema-v2 lock materialization into a local result ref.
+
+Every Git subprocess this module owns is non-interactive (standard input is
+``/dev/null``, terminal prompting is disabled and ssh/passphrase prompting is
+forced off) and bounded by :data:`IMMUTABLE_FETCH_TIMEOUT_SECONDS`.  Git has no
+connect timeout, so a blackholed mirror would otherwise wait in ``pipe_read``
+forever instead of failing the patch gate.  A transfer that exceeds the bound
+kills the whole process tree and raises a named unreachable-mirror error that
+names the mirror URL and the elapsed seconds; a timeout is never reported as
+success.  ``WEST_PATCH_IMMUTABLE_FETCH_TIMEOUT`` (seconds) overrides the bound
+for a slow but working mirror, and the pre-flight reachability probe uses
+``WEST_PATCH_MIRROR_PROBE_TIMEOUT``.
+"""
 from __future__ import annotations
 
 import hashlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from patch_stack_preflight import inspect, load_lock
 
@@ -18,8 +32,137 @@ class MaterializeError(RuntimeError):
     pass
 
 
-def _run(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], cwd=repo, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+class GitTimeout(MaterializeError):
+    """A bounded Git subprocess exceeded its bound and was killed."""
+
+    def __init__(self, argv: Sequence[str], timeout: float, elapsed: float):
+        self.argv = tuple(argv)
+        self.timeout = timeout
+        self.elapsed = elapsed
+        super().__init__(f"git {' '.join(self.argv[1:])} exceeded its {timeout:g}s bound after {elapsed:.1f}s")
+
+
+class MirrorUnreachableError(MaterializeError):
+    """An immutable mirror did not answer, so no verification could run."""
+
+
+# One bounded default for the immutable mirror transfer.  ``git fetch`` has no
+# connect timeout, so an unreachable or blackholed mirror waits forever; this
+# bound turns that wait into a named failure.  A slow but working mirror can
+# raise it with ``WEST_PATCH_IMMUTABLE_FETCH_TIMEOUT=<seconds>``.
+IMMUTABLE_FETCH_TIMEOUT_SECONDS = 300.0
+IMMUTABLE_FETCH_TIMEOUT_ENV = "WEST_PATCH_IMMUTABLE_FETCH_TIMEOUT"
+# Reachability probes run once per distinct mirror before any replay, so their
+# bound stays short: a blackholed mirror must fail the gate almost immediately.
+MIRROR_PROBE_TIMEOUT_SECONDS = 20.0
+MIRROR_PROBE_TIMEOUT_ENV = "WEST_PATCH_MIRROR_PROBE_TIMEOUT"
+
+
+def _bounded_seconds(env_name: str, default: float) -> float:
+    """Resolve one bounded subprocess timeout from the environment."""
+    raw = os.environ.get(env_name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        value = float("nan")
+    if not value > 0 or value == float("inf"):
+        raise MaterializeError(f"{env_name}={raw!r} must be a positive finite number of seconds")
+    return value
+
+
+def immutable_fetch_timeout() -> float:
+    """Return the bounded immutable-mirror transfer timeout in seconds."""
+    return _bounded_seconds(IMMUTABLE_FETCH_TIMEOUT_ENV, IMMUTABLE_FETCH_TIMEOUT_SECONDS)
+
+
+def mirror_probe_timeout() -> float:
+    """Return the bounded mirror-reachability probe timeout in seconds."""
+    return _bounded_seconds(MIRROR_PROBE_TIMEOUT_ENV, MIRROR_PROBE_TIMEOUT_SECONDS)
+
+
+def mirror_unreachable_message(
+    url: str,
+    *,
+    operation: str,
+    elapsed: float,
+    limit: float,
+    env_name: str,
+    detail: str = "",
+) -> str:
+    """Name the mirror, the wait it did not survive, and the consequence."""
+    observed = f" {detail}" if detail else ""
+    return (
+        f"immutable mirror {url} is unreachable: {operation}{observed} after "
+        f"{elapsed:.1f}s, within its {limit:g}s bound ({env_name}); the immutable "
+        "mirror could not be contacted, so the patch applicability gate did not run"
+    )
+
+
+def _git_environment() -> dict[str, str]:
+    """Environment that forbids every interactive Git prompt.
+
+    Standard input is ``/dev/null``, so a credential or passphrase prompt could
+    only read EOF or block a terminal this process cannot reach.  Disabling the
+    prompts makes the failure immediate and explicit instead of an open wait.
+    """
+    environment = dict(os.environ)
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    environment["SSH_ASKPASS_REQUIRE"] = "never"
+    environment["GCM_INTERACTIVE"] = "never"
+    environment.setdefault("GIT_ASKPASS", "/bin/false")
+    environment.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
+    return environment
+
+
+def _kill_process_tree(process: subprocess.Popen[str]) -> None:
+    """Kill a timed-out Git and the helpers it spawned (ssh, index-pack).
+
+    The subprocess starts its own session, so the process group covers every
+    descendant; killing only the direct child would leave helpers holding the
+    pipes and the wait would continue.
+    """
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except OSError:
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+
+def _run(repo: Path, *args: str, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    """Run one Git subprocess: non-interactive, and bounded by default.
+
+    ``timeout`` defaults to :func:`immutable_fetch_timeout`.  The immutable
+    mirror transfer is the only network operation here, so its bound covers
+    every subprocess this module owns and no call site can forget it.
+    """
+    limit = immutable_fetch_timeout() if timeout is None else timeout
+    process = subprocess.Popen(
+        ["git", *args],
+        cwd=repo,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_git_environment(),
+        start_new_session=True,
+    )
+    started = time.monotonic()
+    try:
+        stdout, stderr = process.communicate(timeout=limit)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(process)
+        try:
+            process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            # A helper outside the killed process group still holds the pipes.
+            # The bound is what matters, so stop waiting and report the timeout.
+            pass
+        raise GitTimeout(["git", *args], limit, time.monotonic() - started) from None
+    return subprocess.CompletedProcess(["git", *args], process.returncode, stdout, stderr)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -27,6 +170,80 @@ def _git(repo: Path, *args: str) -> str:
     if result.returncode:
         raise MaterializeError(f"git {' '.join(args)} failed ({result.returncode}): {result.stderr.strip()}")
     return result.stdout.strip()
+
+
+def fetch_immutable(repo: Path, remote: str, specs: Sequence[str], *, url: str | None = None) -> None:
+    """Fetch immutable refs through one bounded, non-interactive transfer.
+
+    ``remote`` is either a configured remote name (``immutable`` in the
+    disposable canonical ODB) or the mirror URL itself; ``url`` is the mirror
+    named in the error when the transfer cannot finish.  The bound and the
+    no-prompt environment come from ``_run``; a transfer that exceeds the bound
+    is reported as an unreachable mirror rather than as a bare Git failure.
+    """
+    limit = immutable_fetch_timeout()
+    try:
+        _git(repo, "fetch", "--no-tags", remote, *specs)
+    except GitTimeout as error:
+        raise MirrorUnreachableError(
+            mirror_unreachable_message(
+                url or remote,
+                operation="immutable fetch timed out",
+                elapsed=error.elapsed,
+                limit=limit,
+                env_name=IMMUTABLE_FETCH_TIMEOUT_ENV,
+            )
+        ) from error
+
+
+def probe_immutable_mirror(url: str) -> None:
+    """Prove one immutable mirror answers before a long replay begins.
+
+    One bounded, non-interactive ``git ls-remote`` per distinct mirror: the same
+    remote helper, credentials and URL rewriting the transfer will use, but a
+    single round trip instead of a full transfer.  A mirror that does not answer
+    raises the same named unreachable-mirror error the bounded fetch raises, so
+    a blackholed mirror fails the gate before any per-module replay.
+    """
+    limit = mirror_probe_timeout()
+    started = time.monotonic()
+    try:
+        result = _run(Path(tempfile.gettempdir()), "ls-remote", "--quiet", url, "HEAD", timeout=limit)
+    except GitTimeout as error:
+        raise MirrorUnreachableError(
+            mirror_unreachable_message(
+                url,
+                operation="reachability probe timed out",
+                elapsed=error.elapsed,
+                limit=limit,
+                env_name=MIRROR_PROBE_TIMEOUT_ENV,
+            )
+        ) from error
+    if result.returncode:
+        diagnostic = result.stderr.strip().splitlines()
+        raise MirrorUnreachableError(
+            mirror_unreachable_message(
+                url,
+                operation="reachability probe failed",
+                detail=f"(git ls-remote exit {result.returncode}: {diagnostic[0] if diagnostic else 'no diagnostic'})",
+                elapsed=time.monotonic() - started,
+                limit=limit,
+                env_name=MIRROR_PROBE_TIMEOUT_ENV,
+            )
+        )
+
+
+def lock_mirror_url(lock_path: Path) -> str:
+    """Return the immutable mirror URL one lock declares."""
+    try:
+        lock = load_lock(lock_path)
+    except (OSError, ValueError) as error:
+        raise MaterializeError(f"invalid immutable lock {lock_path}: {error}") from error
+    mirror = lock.get("mirror")
+    url = mirror.get("url") if isinstance(mirror, dict) else None
+    if not isinstance(url, str) or not url:
+        raise MaterializeError(f"{lock_path}: immutable lock declares no mirror URL")
+    return url
 
 
 def _common_dir(repo: Path) -> Path:
@@ -215,7 +432,10 @@ def materialize(repo: Path, lock_path: Path, result_ref: str | None = None, evid
         if not _fetchable_preflight(preflight):
             raise MaterializeError(f"pre-fetch preflight {preflight['overall_verdict']}")
         mirror = lock["mirror"]
-        _git(repo, "fetch", "--no-tags", mirror["url"], f"{mirror['base_ref']}:{base_ref}", f"{mirror['source_ref']}:{source_ref}")
+        fetch_immutable(
+            repo, mirror["url"],
+            (f"{mirror['base_ref']}:{base_ref}", f"{mirror['source_ref']}:{source_ref}"),
+        )
         validated = validate_fetched_lock(repo, lock, base_ref, source_ref)
         base, fetched = validated["base_oid"], validated["source_oid"]
         ordered, tree = validated["ordered_commits"], validated["resulting_tree"]

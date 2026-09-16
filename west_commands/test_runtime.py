@@ -869,10 +869,12 @@ def describe_runtime_deploy_plan(proof: dict[str, Any]) -> str:
 
 # A source-profile preflight resolves immutable base refs from the mirror before
 # it can decide applicability. When that fetch cannot reach the repository the
-# verifier exits non-zero with git's own transport message, and reporting it as a
-# profile defect sends the reader to rebase a profile that is fine. These markers
+# verifier exits non-zero with git's own transport message, and reporting it as
+# a profile defect sends the reader to rebase a profile that is fine. These markers
 # are git's; the first is the message observed when the mirror was momentarily
-# unreachable during a runtime preflight.
+# unreachable during a runtime preflight. The last is the verifier's own bounded
+# unreachable-mirror error, raised when the mirror does not answer within the
+# immutable fetch or reachability-probe bound.
 TRANSIENT_PREFLIGHT_MARKERS = (
     "Could not read from remote repository",
     "Could not resolve host",
@@ -882,6 +884,7 @@ TRANSIENT_PREFLIGHT_MARKERS = (
     "The remote end hung up unexpectedly",
     "unable to access",
     "early EOF",
+    "immutable mirror",
 )
 
 
