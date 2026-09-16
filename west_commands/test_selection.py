@@ -168,19 +168,22 @@ def select_metadata_tests_for_command(
 
 
 def metadata_selection_plan(
-    names: Sequence[str], evidence_root: object
+    names: Sequence[str], bundle_root: object
 ) -> list[str]:
     """Return the lines stating what a metadata selection will run, in order.
 
     A test that is selected but produces no evidence is indistinguishable from
-    one that never ran unless the run says what it selected and where the
-    evidence goes.
+    one that never ran unless the run says what it selected and where a guarded
+    or forensic diagnostic's bundle would go. The value is the debug bundle
+    root, not the runtime evidence store, and the line names it as such: two
+    roots that both called themselves the evidence root is how a scoped-looking
+    run came to collect the wrong one.
     """
 
     listed = ", ".join(names) if names else "none"
     return [
         f"metadata selection: {len(names)} test(s), in execution order: {listed}",
-        f"  evidence root for these tests: {evidence_root}",
+        f"  diagnostic bundle root for these tests: {bundle_root}",
     ]
 
 
