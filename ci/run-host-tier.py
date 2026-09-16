@@ -112,6 +112,9 @@ CONTRACTS = (
     # stale receipt is caught end to end by the profile materialization the tier
     # already runs, which is how the drift this derivation fixes was found.
     "tests/run-profile-composition-derivation-contract.sh",
+    # Proves the export says which immutable bindings a series change left
+    # behind, instead of leaving them to three gates that run much later.
+    "tests/run-patch-series-bindings-contract.sh",
     # Proves the tier's own wiring: which commands it builds, in which order,
     # and with which arguments. It stubs every registered contract in a mirror
     # repo instead of driving the real tier, so it is cheap enough to run inside

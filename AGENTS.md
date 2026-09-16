@@ -541,7 +541,12 @@ refresh the immutable lock, the migration receipt, or the profile-composition
 binding, and it cannot: the lock needs a published immutable tag, and the
 binding needs a replay. A series change is therefore complete only when all
 four agree, which is what the migration-inventory and composition contracts and
-the materialization check.
+the materialization check. The export now names the ones it left behind as soon
+as it writes the artifact: the lock with the refspec that publishes the commit,
+the receipt row with the counts it still records, and the derivation to re-run
+with the closure of profiles it moves. It reports and never rewrites them - a
+lock that cannot be published and a composition that cannot be replayed are
+exactly the values that must not be guessed.
 - Never pin a derived value in a contract. A tree the derivation computes, a
 digest of a generated file, or a boundary the replay produces will move for
 legitimate reasons, and a literal turns that into a regression report about the
