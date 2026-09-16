@@ -5,8 +5,8 @@ mirror:
   url: https://github.com/darling-next/darling.git
   base_ref: refs/tags/patch-stack/v1/bases/73a11f00a54d62504b7162325a88993dfaa6e087
   base_oid: 73a11f00a54d62504b7162325a88993dfaa6e087
-  source_ref: refs/tags/patch-stack/v1/sources/dd6b42e57eed3cd4d1f576fcca8869b9b12efc21
-  source_oid: dd6b42e57eed3cd4d1f576fcca8869b9b12efc21
-source_commit: dd6b42e57eed3cd4d1f576fcca8869b9b12efc21
-ordered_commits: [dd6b42e57eed3cd4d1f576fcca8869b9b12efc21]
-expected_tree: 7cf4111a4da803c8b92fdc6e81448f5f9fca06e2
+  source_ref: refs/tags/patch-stack/v1/sources/c0640633d073cb7500d55ada7b8e7950ba79a69f
+  source_oid: c0640633d073cb7500d55ada7b8e7950ba79a69f
+source_commit: c0640633d073cb7500d55ada7b8e7950ba79a69f
+ordered_commits: [dd6b42e57eed3cd4d1f576fcca8869b9b12efc21, c0640633d073cb7500d55ada7b8e7950ba79a69f]
+expected_tree: 77abdaa19d887ea0cfcf5e805358845f4fd588f7
