@@ -555,6 +555,31 @@ derived from, the prerequisite it must agree with - and leave the value itself
 to the gate that recomputes it: `--check` for a derived registry and
 `--materialize-profile` for a profile composition. A stale receipt is what the
 digest check catches; a literal only reports that the derivation ran.
+- Name the supported command for the situation, not the tool. Five situations
+  agents keep hand-rolling, and what to run instead:
+  - An isolated authoring checkout: `west dev start --source SRC --destination
+    DEST --base BASE --branch BRANCH --bead BEAD --module MODULE --evidence
+    PATH`. It clones every repository in the gitlink closure, so `--dry-run`
+    first if the source is large; it writes no discovery record yet, so record
+    the destination yourself and remove it with `rm -rf DEST` when done.
+  - Patch topology diagnosis - which module is out of state, which lock a patch
+    belongs to: `west patch explain`, and `west patch preflight --repo CLONE
+    --lock LOCK` for a lock's own evidence. Preflight judges the lock, its
+    objects and its tags, not the checkout you are on, so it cannot see a module
+    sitting on the wrong branch; `west patch apply` reports that, all of it.
+  - Profile replay diagnosis: `west test --profile P --env ENV
+    --materialize-profile` for the whole chain, `west patch materialize-lock
+    --repo CLONE --lock SCHEMA_V2_LOCK` for one lock in isolation.
+  - Job start and observation: `scripts/west-job.sh start --state-dir DIR -- …`
+    then `follow --state-dir DIR`, `status --state-dir DIR`, `cancel
+    --state-dir DIR`. `west dev follow DIR` is the same observer with the
+    heartbeat off and the engine's flags forwarded. Do not hand-roll
+    `follow | grep -v log-change-age | tail`; reconnect with `follow` instead.
+  - State root ownership: `west dev status --json` reports the live job
+    registry, temporary worktrees, source worktrees and the patch/doctor
+    sections; `west dev context NAME --prefix PATH` selects the prefix a run
+    uses; `<topdir>/.west-test/` holds the framework's own caches (runtime
+    build, stock stack, verdicts).
 - `west test` treats an empty selection as fatal, including a label filter that
 matches nothing. Never narrow a selection to make a failing test disappear:
 that converts a real signal into silence.
