@@ -964,10 +964,18 @@ with tempfile.TemporaryDirectory() as temp:
     test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
     test._gc_guest_runner_output(root, max_age_hours=1)
 
-    assert not old_output.exists(), old_output
+    # A file name is not ownership. The guest runner unlinks its own output on
+    # every exit path, so anything matching here is either historical or belongs
+    # to someone else: the pass reports each one with its size and deletes none
+    # of them. Reclaiming the space is an operator decision made with the path
+    # in hand, which is why this contract asserts survival rather than removal.
+    assert old_output.exists(), old_output
     assert fresh_output.exists(), fresh_output
     assert output_dir.is_dir(), output_dir
     assert unrelated.exists(), unrelated
-    assert any("guest-runner gc: pruned 1 file(s)" in message for message in messages), messages
+    assert any(
+        "left alone (guest runner output" in message for message in messages
+    ), messages
+    assert any("left alone 1 file(s)" in message for message in messages), messages
 
 print("PASS west-test-ctest-lifecycle-contract")
