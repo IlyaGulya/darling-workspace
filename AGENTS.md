@@ -560,6 +560,12 @@ matches nothing. Never narrow a selection to make a failing test disappear:
 that converts a real signal into silence.
 - The host tier sweeps both `homebrew` and `wget-residual` host metadata, so a
 host test runs where its chain satisfies it instead of being gated away.
+- The reviewed candidate audit anchors each entry to the source it was reviewed
+against, so editing any anchored source invalidates it and the inventory
+contract refuses with `candidate audit source SHA mismatch: <repo>:<path>`. Run
+`scripts/generate_namespace_writer_registry.py --check` after such an edit and
+regenerate before starting a tier: otherwise the sweep fails on the audit rather
+than on the change, which costs a whole tier run to learn.
 - The checked-in audit registries under `locks/patch-stack/` and `lifecycle/`
 have no generator script; their contracts are the only thing that can notice
 when they drift from the tree, so those contracts stay registered rather than
