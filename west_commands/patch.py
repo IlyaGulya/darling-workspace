@@ -3056,11 +3056,15 @@ class DarlingPatch(WestCommand):
         modules = list(grouped)
         if "darling" not in modules:
             modules.append("darling")
-        for module in modules:
-            try:
-                self._ensure_generated_context(module, profile)
-            except RuntimeError as error:
-                self.die(str(error))
+        # Every module that is not in the state this profile requires is reported
+        # before any mutation. Dying on the first one made an operator with
+        # several misplaced modules pay for the same diagnosis once per run -
+        # the audited session hit exactly that, with three in a row - and each
+        # run ended before anything was written, so the state had not moved
+        # between them.
+        blockers = self._module_state_blockers(modules, profile)
+        if blockers:
+            self._die_on_module_state_blockers(profile, blockers)
 
         touched = []
         lock_first_runs: list[tuple[str, str]] = []
@@ -3216,18 +3220,40 @@ class DarlingPatch(WestCommand):
         output.write_text(yaml.safe_dump(lock_data, sort_keys=False, width=1000))
         return output
 
+    def _module_state_blockers(self, modules, profile) -> list[str]:
+        """Every module that is not in the state this profile requires.
+
+        The check is read-only - it compares the current branch, HEAD and
+        worktree cleanliness against what the profile expects - so collecting
+        all of them costs no mutation and gives the complete list in one run.
+        """
+        blockers: list[str] = []
+        for module in modules:
+            try:
+                self._ensure_generated_context(module, profile)
+            except RuntimeError as error:
+                blockers.append(str(error))
+        return blockers
+
+    def _die_on_module_state_blockers(self, profile: str, blockers: list[str]) -> None:
+        header = (
+            f"{len(blockers)} module(s) are not in the state {profile} requires:"
+        )
+        self.die(header + "\n  " + "\n  ".join(blockers))
+
     def _reset(self, profile: str, grouped, force: bool):
         branch = f"integration/{profile}"
         modules = list(grouped)
         if "darling" not in modules:
             modules.append("darling")
 
-        for module in modules:
-            if not force:
-                try:
-                    self._ensure_generated_context(module, profile)
-                except RuntimeError as error:
-                    self.die(f"refusing to clean: {error}")
+        # The same complete-report rule as apply: refusing to clean is also a
+        # diagnosis, and reporting it one module per run costs the operator the
+        # same repeated round trip.
+        if not force:
+            blockers = self._module_state_blockers(modules, profile)
+            if blockers:
+                self._die_on_module_state_blockers(profile, blockers)
 
         for module in reversed(modules):
             repo = self._repo(module)

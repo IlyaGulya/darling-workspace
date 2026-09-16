@@ -112,6 +112,9 @@ CONTRACTS = (
     # stale receipt is caught end to end by the profile materialization the tier
     # already runs, which is how the drift this derivation fixes was found.
     "tests/run-profile-composition-derivation-contract.sh",
+    # Proves apply and clean name every module that is out of state in one run,
+    # and that collecting them mutates nothing.
+    "tests/run-patch-apply-module-state-contract.sh",
     # Proves the export says which immutable bindings a series change left
     # behind, instead of leaving them to three gates that run much later.
     "tests/run-patch-series-bindings-contract.sh",
