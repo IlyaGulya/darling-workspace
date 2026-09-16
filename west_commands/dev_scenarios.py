@@ -2,7 +2,13 @@
 from __future__ import annotations
 
 import os
-from test_store import SCRATCH_KIND, SCRATCH_MARKER_NAME, write_marker
+from test_store import (
+    SCRATCH_KIND,
+    SCRATCH_MARKER_NAME,
+    state_root,
+    state_subdir,
+    write_marker,
+)
 from pathlib import Path
 import re
 import shlex
@@ -59,7 +65,15 @@ def _context(host, args) -> dict[str, str]:
     if not values["prefix"]:
         raise ValueError(f"context {name!r} has no prefix; configure it with dev context {name} --prefix PATH")
     values["runtime-profile"] = values["runtime-profile"] or "homebrew-lz4-source"
-    values["bundle-root"] = values["bundle-root"] or str(Path(host.topdir).parent / "darling-debug")
+    if not values["bundle-root"]:
+        # A declared state root owns this run's output, so bundles land under it
+        # rather than beside the workspace, where every lane shares one root.
+        declared_bundles = state_subdir("bundles")
+        values["bundle-root"] = str(
+            declared_bundles
+            if declared_bundles
+            else Path(host.topdir).parent / "darling-debug"
+        )
     for key in ("prefix", "bundle-root", "executor"):
         if values[key]:
             values[key] = str(Path(values[key]).expanduser().absolute())
@@ -156,7 +170,9 @@ def run_scenario_action(host, args, west_argv: list[str]) -> None:
         prefix.mkdir(parents=True, exist_ok=True)
     elif not prefix.is_dir():
         raise ValueError(f"prefix does not exist: {prefix}; run homebrew-prepare first")
-    state = job_state_dir(values["bundle-root"], args.scenario)
+    # Job state belongs to the run that created it: under the declared root when
+    # there is one, otherwise under the bundle root it was always kept in.
+    state = job_state_dir(state_root() or values["bundle-root"], args.scenario)
     host.inf(f"JOB={state}")
     subprocess.run([str(job_tool), "start", "--state-dir", str(state), "--", *command], cwd=root, check=True)
     entry = ["mise", "-C", str(root), "run", "dw", "dev"]

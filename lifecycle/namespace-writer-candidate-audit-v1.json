@@ -3,7 +3,7 @@
   "kind": "rootless-namespace-writer-candidate-audit",
   "coverage_tier": "source",
   "count": 1612,
-  "entries_digest": "e71088177a15267492eeb03141dce55961cddb21ed6e14f71b9c24d0008625c2",
+  "entries_digest": "8540e579d298d6fc83e39bf68c348fcc725d9da496751e24899c47e2ac88ae50",
   "entries": [
     {
       "repository": "darling",
@@ -31455,7 +31455,7 @@
     {
       "repository": "darling-workspace",
       "path": "west_commands/test_store.py",
-      "sha256": "2bd42a9fcd1f23a15d7c6600f9253604f2ab4b8b530c4518f661221492cdef5b",
+      "sha256": "380e74ed4d16e2b276a53eb56b9176575692f07511d336d3b0348f280d3c7ea7",
       "classification": "workspace-task-owned-tooling",
       "reason": "west_commands/test_store.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
       "evidence": {
@@ -31466,7 +31466,7 @@
         "build_anchor": {
           "repository": "darling-workspace",
           "path": "west_commands/test_store.py",
-          "sha256": "2bd42a9fcd1f23a15d7c6600f9253604f2ab4b8b530c4518f661221492cdef5b",
+          "sha256": "380e74ed4d16e2b276a53eb56b9176575692f07511d336d3b0348f280d3c7ea7",
           "relation": "workspace-runtime-source"
         }
       }
