@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# This contract drives a whole tier and shells out to dozens of commands, so an
+# unexpected failure used to be a bare exit status with no indication of where
+# it happened - the run that failed inside the host tier printed neither a
+# census message, nor an assertion, nor a stub complaint. Name the command and
+# the line instead. The trap does not fire for a status the script tests, so
+# the deliberate failure probes below stay quiet.
+trap 'rc=$?; printf "ci-test-tiers-contract: %s failed (rc=%s) at line %s\n" "$BASH_COMMAND" "$rc" "$LINENO" >&2' ERR
+
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -15,6 +23,15 @@ if [ "$(basename "$0")" = west ] && [ -n "${ROOTLESS_TIER_REPO_CHILD_OUTPUT:-}" 
 fi
 if [ "$(basename "$0")" = west ] && [ "${1:-}" = topdir ]; then
 	exit "${CI_WEST_TOPDIR_RC:-0}"
+fi
+if [ "$(basename "$0")" = west ] && [ "${1:-}" = list ]; then
+	# ci/west-update-parallel.sh asks for the project list before it fans out.
+	# Without an answer the parallel path dies with 'west manifest has no active
+	# projects', so the stub answers it either way and the contract can assert
+	# both the single-job and the parallel command lines.
+	printf '%s\n' 'manifest|darling-workspace' 'darling|darling' \
+		'darlingserver|darling/src/external/darlingserver'
+	exit 0
 fi
 if [ "$(basename "$0")" = west ] && {
 	[[ "$*" == *"--bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal"* ]] ||
@@ -429,8 +446,21 @@ python3 -B "$repo/tests/west_test_contracts/native_artifact_contract.py"
 "$repo/tests/run-clt-provenance-contract.sh"
 
 : >"$tmp/commands"
-CI_WEST_TOPDIR_RC=1 "$repo/ci/bootstrap-west.sh"
+# The bootstrap asserts on command lines, so the ambient DARLING_WEST_UPDATE_JOBS
+# must not decide whether this contract passes: CI exports a parallel value, and
+# with it ci/west-update-parallel.sh takes the fan-out path and never records a
+# bare 'west update'. Pin the single-job path here, then drive the parallel path
+# explicitly - it is the one the CI environment actually uses.
+CI_WEST_TOPDIR_RC=1 DARLING_WEST_UPDATE_JOBS=1 "$repo/ci/bootstrap-west.sh"
 grep -F -x -q "west init -l $repo" "$tmp/commands"
 grep -F -x -q 'west update' "$tmp/commands"
+
+: >"$tmp/commands"
+DARLING_WEST_UPDATE_JOBS=4 "$repo/ci/bootstrap-west.sh"
+grep -F -x -q 'west list -f {name}|{path}' "$tmp/commands"
+grep -F -x -q 'west update darling' "$tmp/commands"
+# The worker is handed the project name from `west list`, not its path, so this
+# is the line a fan-out of the nested project records.
+grep -F -x -q 'west update darlingserver' "$tmp/commands"
 
 printf 'PASS ci-test-tiers-contract\n'
