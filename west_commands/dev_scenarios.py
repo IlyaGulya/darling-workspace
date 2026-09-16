@@ -32,6 +32,14 @@ def add_scenario_parsers(subparsers) -> None:
     for name in ("follow", "cancel"):
         action = subparsers.add_parser(name, help=f"{name} an existing managed job")
         action.add_argument("job", type=Path)
+        if name == "follow":
+            action.add_argument(
+                "--verbose",
+                action="store_true",
+                help="also print the observer heartbeat (pid, stage, log-change-age)",
+            )
+            action.add_argument("--timeout-seconds", type=int, default=0)
+            action.add_argument("--activity-log", type=Path, action="append")
 
 
 def _name(value: str) -> str:
@@ -81,7 +89,19 @@ def run_scenario_action(host, args, west_argv: list[str]) -> None:
     root = Path(host.manifest.repo_abspath)
     job_tool = root / "scripts/west-job.sh"
     if args.action in ("follow", "cancel"):
-        os.execv(str(job_tool), [str(job_tool), args.action, "--state-dir", str(args.job.expanduser().absolute())])
+        argv = [str(job_tool), args.action, "--state-dir", str(args.job.expanduser().absolute())]
+        if args.action == "follow":
+            # Default to the job's own output. The observer heartbeat is noise
+            # for a reader - every field pipeline in the audited session was
+            # written to strip it - so the facade strips it unless asked, and
+            # forwards the engine's own observation flags instead of hiding them.
+            if not args.verbose:
+                argv.append("--quiet")
+            if args.timeout_seconds:
+                argv += ["--timeout-seconds", str(args.timeout_seconds)]
+            for log in args.activity_log or []:
+                argv += ["--activity-log", str(log)]
+        os.execv(str(job_tool), argv)
     if args.action == "context":
         from west.configuration import ConfigFile
         name = _name(args.name)
@@ -124,4 +144,4 @@ def run_scenario_action(host, args, west_argv: list[str]) -> None:
     host.inf("Reconnect: " + shlex.join([*entry, "follow", str(state)]))
     host.inf("Cancel: " + shlex.join([*entry, "cancel", str(state)]))
     if not args.detach:
-        os.execv(str(job_tool), [str(job_tool), "follow", "--state-dir", str(state)])
+        os.execv(str(job_tool), [str(job_tool), "follow", "--quiet", "--state-dir", str(state)])

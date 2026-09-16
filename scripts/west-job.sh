@@ -6,7 +6,7 @@ usage() {
 usage:
   west-job.sh start --state-dir DIR [--activity-log PATH ...] -- west test ...
   west-job.sh status --state-dir DIR
-  west-job.sh follow --state-dir DIR [--timeout-seconds N] [--activity-log PATH ...]
+  west-job.sh follow --state-dir DIR [--timeout-seconds N] [--activity-log PATH ...] [--quiet]
   west-job.sh wait --state-dir DIR
   west-job.sh cancel --state-dir DIR
   west-job.sh assert-no-live-west-test [--state-root DIR]
@@ -21,6 +21,8 @@ for that observer. Children atomically publish NUL-delimited kind/path pairs in
 WEST_JOB_STATE_DIR/activity-logs.d/*.logs (file or directory, absolute host path).
 Directory registrations follow immediate regular files, not recursive trees.
 Missing logs may appear later. Silence is not a hang verdict.
+--quiet drops the observer's own heartbeat and keeps everything else: job output,
+phase markers and the final rc. `west dev follow` uses it by default.
 
 Cancel sends SIGINT to the registered command and waits for owner cleanup.
 WEST_JOB_CANCEL_GRACE_SECONDS defaults to 30; only an unresponsive owner
@@ -243,6 +245,12 @@ parse_follow() {
 				activity_logs+=("$(realpath -m -- "$2")")
 				shift 2
 				;;
+			--quiet)
+				# Default for the west dev facade; the engine keeps its
+				# documented heartbeat unless the caller asks for silence.
+				WEST_JOB_FOLLOW_HEARTBEAT=0
+				shift
+				;;
 			*) usage ;;
 		esac
 	done
@@ -444,6 +452,8 @@ status_job() {
 follow_job() {
 	# The observer stays attached. Python keeps byte cursors and partial lines in
 	# memory instead of recounting and rescanning the entire log on every tick.
+	# --quiet silences only the observer's own heartbeat; job output is unchanged.
+	export WEST_JOB_FOLLOW_HEARTBEAT="${WEST_JOB_FOLLOW_HEARTBEAT:-1}"
 	exec python3 - "$state_dir" "$follow_timeout_seconds" "${activity_logs[@]}" <<'PY'
 import os
 from pathlib import Path
@@ -456,6 +466,10 @@ import time
 state = Path(sys.argv[1])
 timeout_seconds = int(sys.argv[2])
 started = time.monotonic()
+# The observer's heartbeat is advice about liveness, not job output: a caller
+# that wants only the job's own lines sets this to 0 and still receives the
+# phase markers, the streamed log and the final rc.
+HEARTBEAT = os.environ.get("WEST_JOB_FOLLOW_HEARTBEAT", "1") != "0"
 phase = re.compile(
     rb"^\s*((?:runtime|prefix bootstrap|tier) phase (?:start|complete): .+"
     rb"|runtime profile preflight: .+|(?:STOCK_PHASE|WEST_GUEST_STAGE)=.+)\r?$"
@@ -517,6 +531,8 @@ class Log:
             return self.offset < info.st_size
 
     def progress(self, pid):
+        if not HEARTBEAT:
+            return
         age = (f"{max(0, int(time.time() - self.mtime))}s"
                if self.available else "unavailable")
         stage = self.stage if self.available else "unavailable"
