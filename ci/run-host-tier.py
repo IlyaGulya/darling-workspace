@@ -107,6 +107,11 @@ CONTRACTS = (
     # Proves the checked-in registries derive from the tree, and that a drift in
     # any of them fails naming the disagreeing field.
     "tests/run-registry-derivation-contract.sh",
+    # Proves the profile-composition derivation reports a drift against the field
+    # that disagrees and refuses to rewrite a file whose values are current. A
+    # stale receipt is caught end to end by the profile materialization the tier
+    # already runs, which is how the drift this derivation fixes was found.
+    "tests/run-profile-composition-derivation-contract.sh",
     # Proves the tier's own wiring: which commands it builds, in which order,
     # and with which arguments. It stubs every registered contract in a mirror
     # repo instead of driving the real tier, so it is cheap enough to run inside
