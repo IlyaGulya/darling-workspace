@@ -158,6 +158,12 @@ strace_mode="${RELAY_INTEGRATION_STRACE:-auto}"
 # from this count.
 strace_rpc_count="${RELAY_INTEGRATION_STRACE_RPC:-20000}"
 strace_stage_timeout="${RELAY_INTEGRATION_STRACE_STAGE_TIMEOUT:-300}"
+
+# I8 reads the server's own ring counters, which is the only way to attribute the
+# wake cost without strace and without the observer effect: strace suppresses the
+# doorbell because it slows the guest enough that the server keeps polling. The
+# tool is the one the ring-mode metadata test already uses.
+stat_tool="${RELAY_INTEGRATION_STAT_TOOL:-/home/ilyagulya/work/darling-gwn-resume/source-fixes/ring-comparison-server/tools/darling-stat}"
 case "$strace_mode" in
 auto | sudo | none) ;;
 *) refuse "RELAY_INTEGRATION_STRACE must be auto, sudo or none (got $strace_mode)" ;;
@@ -284,6 +290,20 @@ strace_class() { # file -> "syscall=count ..." for the busiest syscalls
 		head -12 |
 		awk '{ printf "%s=%s ", $1, $2 }' |
 		sed 's/[[:space:]]*$//'
+}
+
+ring_counter() { # snapshot key -> integer or empty
+	[ -s "${1:-}" ] || return 0
+	jq -r --arg k "$2" '(.[$k] // empty) | tostring' "$1" 2>/dev/null || true
+}
+
+ring_per_call() { # snapshot call -> integer or empty
+	[ -s "${1:-}" ] || return 0
+	jq -r --arg k "$2" '(.per_call[$k].count // empty) | tostring' "$1" 2>/dev/null || true
+}
+
+ring_snapshot() { # prefix outfile -> rc
+	python3 "$stat_tool" "$1" >"$2" 2>"$2.err"
 }
 
 now_s() { date +%s; }
@@ -848,6 +868,7 @@ run_leg() { # label prefix
 	local server_pid=""
 	local attach_argv=()
 	local counters_pre="" counters_post=""
+	local snap_pre="$work/$label-stat-pre.json" snap_post="$work/$label-stat-post.json"
 	local vol="" nonvol="" utime="" stime="" syscr="" syscw=""
 	local dvol="" dnonvol="" dutime="" dstime="" dsyscr="" dsyscw=""
 
@@ -863,6 +884,7 @@ run_leg() { # label prefix
 				# task on every syscall, so a traced window cannot measure time.
 				# The counts come from the separate traced window below.
 				counters_pre="$(proc_counters "$pid")"
+				ring_snapshot "$prefix" "$snap_pre" || true
 			fi
 		fi
 	else
@@ -872,6 +894,7 @@ run_leg() { # label prefix
 		if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
 			counters_post="$(proc_counters "$pid")"
 		fi
+		ring_snapshot "$prefix" "$snap_post" || true
 	else
 		I7_VERDICT[$label]="UNPROVEN: guest never reached its action barrier"
 	fi
@@ -912,6 +935,53 @@ run_leg() { # label prefix
 			"$label" "$rpc_count"
 	else
 		printf 'I7 %s prefix=%s rpc=%s\n' "${I7_VERDICT[$label]}" "$label" "$rpc_count"
+	fi
+
+	# --- I8 wake attribution from the server's own counters --------------
+	# Same untraced window as the I7 timing line above, so the attribution
+	# belongs to exactly those numbers. No privilege and no strace: strace slows
+	# the guest enough that the server keeps polling, which suppresses the very
+	# doorbell this claim is about, while these counters live in the server.
+	local s_spin s_door s_wiss s_wsk p_spin p_door p_wiss p_wsk s_served p_served
+	local d_spin d_door d_wiss d_wsk d_served rpcs
+	s_spin="$(ring_counter "$snap_pre" ring_serviced_spin)"
+	s_door="$(ring_counter "$snap_pre" ring_serviced_doorbell)"
+	s_wiss="$(ring_counter "$snap_pre" ring_wakes_issued)"
+	s_wsk="$(ring_counter "$snap_pre" ring_wakes_skipped)"
+	p_spin="$(ring_counter "$snap_post" ring_serviced_spin)"
+	p_door="$(ring_counter "$snap_post" ring_serviced_doorbell)"
+	p_wiss="$(ring_counter "$snap_post" ring_wakes_issued)"
+	p_wsk="$(ring_counter "$snap_post" ring_wakes_skipped)"
+	s_served="$(ring_counter "$snap_pre" ring_serviced)"
+	p_served="$(ring_counter "$snap_post" ring_serviced)"
+	rpcs="$(ring_per_call "$snap_post" dserver_callnum_host_self_trap)"
+	[ -n "$rpcs" ] || rpcs="$(ring_per_call "$snap_pre" dserver_callnum_host_self_trap)"
+
+	if is_int "$s_spin" && is_int "$p_spin" && is_int "$s_door" && is_int "$p_door"; then
+		d_spin="$(( p_spin - s_spin ))"
+		d_door="$(( p_door - s_door ))"
+		d_wiss="$(( p_wiss - s_wiss ))"
+		d_wsk="$(( p_wsk - s_wsk ))"
+		d_served="?"
+		if is_int "$s_served" && is_int "$p_served"; then
+			d_served="$(( p_served - s_served ))"
+		fi
+		printf 'I8 MEASURED prefix=%s ring_serviced_delta=%s spin=%s doorbell=%s doorbell_share=%s wakes_issued=%s wakes_skipped=%s rpcs_this_window=%s doorbell_per_request=%s wakes_issued_per_request=%s ctxt_vol_per_request=%s syscw_per_request=%s\n' \
+			"$label" "$d_served" "$d_spin" "$d_door" \
+			"$(awk -v d="$d_door" -v s="$d_spin" 'BEGIN { t = d + s; printf "%.4f", (t > 0 ? d / t : 0) }')" \
+			"$d_wiss" "$d_wsk" "${rpcs:-?}" \
+			"$(per_request "$d_door" "${rpcs:-0}")" \
+			"$(per_request "$d_wiss" "${rpcs:-0}")" \
+			"$(per_request "${I7_VOL[$label]:-0}" "$rpc_count")" \
+			"$(per_request "${I7_SYSCW[$label]:-0}" "$rpc_count")"
+		printf 'I8 NOTE prefix=%s the doorbell share is the fraction of ring services that took the doorbell path rather than the poll path in this untraced window; compare doorbell_per_request with the write syscalls per request reported on the I7 line, and wakes_issued_per_request with the voluntary context switches per request, since a doorbell is what makes the guest block\n' \
+			"$label"
+	elif [ -s "$snap_pre" ]; then
+		printf 'I8 MEASURED prefix=%s ring_counters=absent_in_this_build rpcs_this_window=%s note=this build exposes no ring counters, so the wake path has nothing to attribute here and the absence is expected rather than a failure\n' \
+			"$label" "${rpcs:-?}"
+	else
+		printf 'I8 UNPROVEN prefix=%s the stat socket could not be read: %s\n' "$label" \
+			"$(tr -d '\n' <"$snap_pre.err" 2>/dev/null | head -c 160)"
 	fi
 
 	# --- I7 transport classification under trace (counts only) ----------
