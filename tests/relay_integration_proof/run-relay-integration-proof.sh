@@ -88,6 +88,20 @@
 #                                 (default 6000)
 #   RELAY_INTEGRATION_STAGE_TIMEOUT  guest stage timeout, seconds (default 120;
 #                                 the close-range stage is bounded to 90)
+#   RELAY_INTEGRATION_STRACE      how I7 attaches its syscall counters:
+#                                 auto (default) unprivileged strace on the host
+#                                 and in the container; sudo uses passwordless
+#                                 sudo for the host leg, which is the only way to
+#                                 attach at all when
+#                                 kernel.yama.ptrace_scope is 1 and the guest is
+#                                 a child of the prefix daemon rather than of
+#                                 this script; none skips the attach.
+#                                 The container leg is never privileged: the
+#                                 architecture must hold without capabilities, so
+#                                 that leg reports UNPROVEN there instead.
+#                                 Counts under strace are sound evidence; the
+#                                 timings in the same window are not, because
+#                                 strace stops the traced task on every syscall.
 #
 # Every guest stage is bounded, every stage's launcher runs with a timeout, and
 # an interrupted leg shuts its prefix down through the EXIT trap after removing
@@ -137,6 +151,38 @@ rpc_pre_ms="${RELAY_INTEGRATION_RPC_PRE_MS:-6000}"
 stage_timeout="${RELAY_INTEGRATION_STAGE_TIMEOUT:-120}"
 [ "$threads" -le 64 ] || threads=64
 
+strace_mode="${RELAY_INTEGRATION_STRACE:-auto}"
+# The traced window runs fewer requests than the timing window: strace stops the
+# traced task on every syscall, so the same 200000-call workload does not finish
+# inside any sensible bound.  Counts scale, and the per-request figure is derived
+# from this count.
+strace_rpc_count="${RELAY_INTEGRATION_STRACE_RPC:-20000}"
+strace_stage_timeout="${RELAY_INTEGRATION_STRACE_STAGE_TIMEOUT:-300}"
+case "$strace_mode" in
+auto | sudo | none) ;;
+*) refuse "RELAY_INTEGRATION_STRACE must be auto, sudo or none (got $strace_mode)" ;;
+esac
+strace_argv=()
+strace_kill_argv=()
+strace_unavailable="strace is not installed on the host"
+if [ "$strace_mode" != "none" ]; then
+	if ! command -v strace >/dev/null 2>&1; then
+		:
+	elif [ "$strace_mode" = "sudo" ]; then
+		if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+			strace_argv=(sudo -n strace)
+			strace_kill_argv=(sudo -n kill)
+			strace_unavailable=""
+		else
+			strace_unavailable="RELAY_INTEGRATION_STRACE=sudo was requested but passwordless sudo is unavailable"
+		fi
+	else
+		strace_argv=(strace)
+		strace_kill_argv=(kill)
+		strace_unavailable=""
+	fi
+fi
+
 export DARLING_ROOTLESS=1
 export DARLING_NOOVERLAYFS=1
 export DARLING_EUNION=1
@@ -182,6 +228,7 @@ declare -A I4_PRE I4_POST I4_DELTA I4_KINDS I4_VERDICT
 declare -A I5_DELTA I5_VERDICT
 declare -A I6_LOST I6_VERDICT
 declare -A I7_VOL I7_NONVOL I7_UTIME I7_STIME I7_SYSCR I7_SYSCW I7_STRACE I7_VERDICT I7_WALL
+declare -A I7_CLASS_GUEST I7_CLASS_SERVER I7_TOTAL_GUEST I7_TOTAL_SERVER
 
 note() { printf '%s\n' "$*"; }
 
@@ -214,6 +261,29 @@ field_of() { # file line_pattern key
 
 guest_lines() { # log pattern
 	grep -E -- "$2" "$1" 2>/dev/null | sed 's/^/guest /' || true
+}
+
+# strace -c summaries: the trailing columns are
+#   %time seconds usecs/call calls [errors] syscall
+# so read the column index of "calls" from the header instead of counting from
+# the end, which would pick up the errors column on the lines that carry one.
+strace_total() { # file
+	awk '
+		NR == 1 { for (i = 1; i <= NF; ++i) if ($i == "calls") col = i; next }
+		$NF == "total" { if (col > 0 && $col ~ /^[0-9]+$/) { print $col; exit } }
+	' "$1" 2>/dev/null
+}
+
+strace_class() { # file -> "syscall=count ..." for the busiest syscalls
+	awk '
+		NR == 1 { for (i = 1; i <= NF; ++i) if ($i == "calls") col = i; next }
+		$NF == "total" { next }
+		col > 0 && $col ~ /^[0-9]+$/ && $NF ~ /^[a-z_][a-z_0-9]*$/ { print $NF, $col }
+	' "$1" 2>/dev/null |
+		sort -k2 -nr |
+		head -12 |
+		awk '{ printf "%s=%s ", $1, $2 }' |
+		sed 's/[[:space:]]*$//'
 }
 
 now_s() { date +%s; }
@@ -772,6 +842,11 @@ run_leg() { # label prefix
 	local strace_pid=""
 	local strace_out="$work/$label-strace.txt"
 	local strace_err="$work/$label-strace.err"
+	local server_strace_pid=""
+	local server_strace_out="$work/$label-server-strace.txt"
+	local server_strace_err="$work/$label-server-strace.err"
+	local server_pid=""
+	local attach_argv=()
 	local counters_pre="" counters_post=""
 	local vol="" nonvol="" utime="" stime="" syscr="" syscw=""
 	local dvol="" dnonvol="" dutime="" dstime="" dsyscr="" dsyscw=""
@@ -784,16 +859,9 @@ run_leg() { # label prefix
 			if [ -z "$pid" ] || [ ! -d "/proc/$pid" ]; then
 				I7_VERDICT[$label]="UNPROVEN: no guest pid in the stage log"
 			else
-				# Attach first, so the attach itself cannot pollute the
-				# counters the workload is measured against.
-				if command -v strace >/dev/null 2>&1; then
-					: >"$strace_err"
-					strace -f -c -o "$strace_out" -p "$pid" >"$strace_err" 2>&1 &
-					strace_pid=$!
-					sleep 1
-				else
-					I7_STRACE[$label]="UNPROVEN: strace is not installed on the host"
-				fi
+				# This window is deliberately untraced: strace stops the traced
+				# task on every syscall, so a traced window cannot measure time.
+				# The counts come from the separate traced window below.
 				counters_pre="$(proc_counters "$pid")"
 			fi
 		fi
@@ -806,17 +874,6 @@ run_leg() { # label prefix
 		fi
 	else
 		I7_VERDICT[$label]="UNPROVEN: guest never reached its action barrier"
-	fi
-	if [ -n "$strace_pid" ]; then
-		set +e
-		kill -INT "$strace_pid" 2>/dev/null
-		wait "$strace_pid" 2>/dev/null
-		set -e
-		if [ ! -s "$strace_out" ]; then
-			I7_STRACE[$label]="UNPROVEN: strace -f -c -p could not attach: $(tr -d '\n' <"$strace_err" | head -c 200)"
-		else
-			I7_STRACE[$label]="$(awk '$NF == "total" {print $(NF-1); exit}' "$strace_out")"
-		fi
 	fi
 	finish_stage
 	guest_lines "$STAGE_LOG" '^I7 '
@@ -843,20 +900,110 @@ run_leg() { # label prefix
 		I7_SYSCR[$label]="$dsyscr"
 		I7_SYSCW[$label]="$dsyscw"
 		I7_WALL[$label]="$(field_of "$STAGE_LOG" '^I7 workload ' us_per_call)"
-		printf 'I7 %s prefix=%s rpc=%s guest_us_per_call=%s ctxt_vol_delta=%s ctxt_nonvol_delta=%s ctxt_vol_per_request=%s ctxt_nonvol_per_request=%s utime_ticks_per_request=%s stime_ticks_per_request=%s syscr_delta=%s syscw_delta=%s syscw_per_request=%s strace_syscalls=%s\n' \
+		printf 'I7 %s prefix=%s rpc=%s guest_us_per_call=%s ctxt_vol_delta=%s ctxt_nonvol_delta=%s ctxt_vol_per_request=%s ctxt_nonvol_per_request=%s utime_ticks_per_request=%s stime_ticks_per_request=%s syscr_delta=%s syscw_delta=%s syscw_per_request=%s\n' \
 			"${I7_VERDICT[$label]}" "$label" "$rpc_count" \
 			"$(num "${I7_WALL[$label]:-}")" "$dvol" "$dnonvol" \
 			"$(per_request "$dvol" "$rpc_count")" \
 			"$(per_request "$dnonvol" "$rpc_count")" \
 			"$(per_request "$dutime" "$rpc_count")" \
 			"$(per_request "$dstime" "$rpc_count")" "$dsyscr" "$dsyscw" \
-			"$(per_request "$dsyscw" "$rpc_count")" \
-			"${I7_STRACE[$label]:-UNPROVEN: not attempted}"
+			"$(per_request "$dsyscw" "$rpc_count")"
 		printf 'I7 NOTE prefix=%s the workload starts cold: on a ring build the first mach traps of the %s calls attach the transport (see the I4 warm-up), so the attach cost is amortised inside this window, not excluded from it\n' \
 			"$label" "$rpc_count"
 	else
-		printf 'I7 %s prefix=%s rpc=%s strace_syscalls=%s\n' "${I7_VERDICT[$label]}" \
-			"$label" "$rpc_count" "${I7_STRACE[$label]:-UNPROVEN: no host counters}"
+		printf 'I7 %s prefix=%s rpc=%s\n' "${I7_VERDICT[$label]}" "$label" "$rpc_count"
+	fi
+
+	# --- I7 transport classification under trace (counts only) ----------
+	# A separate, smaller window: strace stops the traced task on every syscall,
+	# so the timing window above must stay untraced and this one must stay small.
+	local strace_pid="" strace_out="$work/$label-strace.txt"
+	local strace_err="$work/$label-strace.err"
+	local server_strace_pid="" server_strace_out="$work/$label-server-strace.txt"
+	local server_strace_err="$work/$label-server-strace.err"
+	local trace_attach=()
+
+	if [ "$strace_mode" = "none" ]; then
+		I7_STRACE[$label]="UNPROVEN: RELAY_INTEGRATION_STRACE=none"
+	elif [ "${#strace_argv[@]}" -gt 0 ]; then
+		trace_attach=("${strace_argv[@]}")
+	else
+		I7_STRACE[$label]="UNPROVEN: $strace_unavailable"
+	fi
+
+	if [ "${#trace_attach[@]}" -gt 0 ]; then
+		start_stage "$label-rpc-traced" "$strace_stage_timeout" \
+			"'$guest_bin' rpc $strace_rpc_count $rpc_pre_ms $post_ms"
+		if wait_marker '^RI_BARRIER pre$' 90; then
+			pid="$(guest_pid "$STAGE_LOG")"
+			if [ -z "$pid" ] || [ ! -d "/proc/$pid" ]; then
+				I7_STRACE[$label]="UNPROVEN: no guest pid in the traced stage log"
+			elif ! window_open '^RI_BARRIER action-done$'; then
+				I7_STRACE[$label]="UNPROVEN: traced window closed before the attach"
+			else
+				: >"$strace_err"
+				"${trace_attach[@]}" -f -c -o "$strace_out" -p "$pid" >"$strace_err" 2>&1 &
+				strace_pid=$!
+				# The server is the other half of the same round trip.
+				server_pid="$(pgrep -f "darlingserver .*$(basename "$prefix")( |$)" 2>/dev/null |
+					head -1 || true)"
+				if [ -n "$server_pid" ] && [ -d "/proc/$server_pid" ]; then
+					: >"$server_strace_err"
+					"${trace_attach[@]}" -f -c -o "$server_strace_out" \
+						-p "$server_pid" >"$server_strace_err" 2>&1 &
+					server_strace_pid=$!
+				fi
+				sleep 1
+			fi
+		else
+			I7_STRACE[$label]="UNPROVEN: guest never reached its pre barrier in the traced window"
+		fi
+		if ! wait_marker '^RI_BARRIER action-done$' "$strace_stage_timeout"; then
+			I7_STRACE[$label]="UNPROVEN: the traced workload did not finish within ${strace_stage_timeout}s; lower RELAY_INTEGRATION_STRACE_RPC (now $strace_rpc_count)"
+		fi
+		if [ -n "$strace_pid" ]; then
+			set +e
+			"${strace_kill_argv[@]:-kill}" -INT "$strace_pid" 2>/dev/null
+			wait "$strace_pid" 2>/dev/null
+			if [ -n "$server_strace_pid" ]; then
+				"${strace_kill_argv[@]:-kill}" -INT "$server_strace_pid" 2>/dev/null
+				wait "$server_strace_pid" 2>/dev/null
+			fi
+			set -e
+		fi
+		if [ -s "$strace_out" ]; then
+			I7_TOTAL_GUEST[$label]="$(strace_total "$strace_out")"
+			I7_CLASS_GUEST[$label]="$(strace_class "$strace_out")"
+		elif [ -z "${I7_STRACE[$label]:-}" ]; then
+			I7_STRACE[$label]="UNPROVEN: strace -f -c -p could not attach: $(tr -d '\n' <"$strace_err" | head -c 200)"
+		fi
+		if [ -s "$server_strace_out" ]; then
+			I7_TOTAL_SERVER[$label]="$(strace_total "$server_strace_out")"
+			I7_CLASS_SERVER[$label]="$(strace_class "$server_strace_out")"
+		elif [ -n "$server_strace_pid" ]; then
+			I7_CLASS_SERVER[$label]="UNPROVEN: server attach produced nothing: $(tr -d '\n' <"$server_strace_err" | head -c 160)"
+		fi
+		finish_stage
+		if [ -n "${I7_TOTAL_GUEST[$label]:-}" ] || [ -n "${I7_TOTAL_SERVER[$label]:-}" ]; then
+			printf 'I7 TRACED prefix=%s rpc=%s role=guest syscalls_total=%s syscalls_per_request=%s [%s]\n' \
+				"$label" "$strace_rpc_count" "${I7_TOTAL_GUEST[$label]:-UNPROVEN}" \
+				"$(per_request "${I7_TOTAL_GUEST[$label]:-0}" "$strace_rpc_count")" \
+				"${I7_CLASS_GUEST[$label]:-UNPROVEN}"
+			if [ -n "${I7_TOTAL_SERVER[$label]:-}" ]; then
+				printf 'I7 TRACED prefix=%s rpc=%s role=server syscalls_total=%s syscalls_per_request=%s [%s]\n' \
+					"$label" "$strace_rpc_count" "${I7_TOTAL_SERVER[$label]:-UNPROVEN}" \
+					"$(per_request "${I7_TOTAL_SERVER[$label]:-0}" "$strace_rpc_count")" \
+					"${I7_CLASS_SERVER[$label]:-UNPROVEN}"
+			else
+				printf 'I7 TRACED prefix=%s rpc=%s role=server syscalls_total=UNPROVEN [%s]\n' \
+					"$label" "$strace_rpc_count" "${I7_CLASS_SERVER[$label]:-not attached}"
+			fi
+			printf 'I7 TRACED-CAVEAT prefix=%s this window is smaller and traced, so its wall time is not comparable with the untraced timing line above; the counts and the per-request figure derived from them are the evidence, and the class list names the syscalls that carry the transport\n' \
+				"$label"
+		else
+			printf 'I7 TRACED prefix=%s rpc=%s syscalls_total=UNPROVEN: %s\n' \
+				"$label" "$strace_rpc_count" "${I7_STRACE[$label]:-not attached}"
+		fi
 	fi
 	printf 'STAGE %s-rpc elapsed_s=%s\n' "$label" "$(stage_elapsed)"
 
@@ -957,7 +1104,7 @@ printf 'I5 COMPARE on=%s on_host_fd_delta=%s off=%s off_host_fd_delta=%s\n' \
 printf 'I6 COMPARE on_lost=%s on=%s off_lost=%s off=%s\n' \
 	"$(num "${I6_LOST[on]:-}")" "${I6_VERDICT[on]:-}" \
 	"$(num "${I6_LOST[off]:-}")" "${I6_VERDICT[off]:-}"
-printf 'I7 COMPARE rpc=%s on_us_per_call=%s on_ctxt_vol=%s on_ctxt_nonvol=%s on_ctxt_vol_per_request=%s on_syscw_per_request=%s on_utime_ticks_per_request=%s off_us_per_call=%s off_ctxt_vol=%s off_ctxt_nonvol=%s off_ctxt_vol_per_request=%s off_syscw_per_request=%s off_utime_ticks_per_request=%s on_strace=%s off_strace=%s\n' \
+printf 'I7 COMPARE rpc=%s on_us_per_call=%s on_ctxt_vol=%s on_ctxt_nonvol=%s on_ctxt_vol_per_request=%s on_syscw_per_request=%s on_utime_ticks_per_request=%s off_us_per_call=%s off_ctxt_vol=%s off_ctxt_nonvol=%s off_ctxt_vol_per_request=%s off_syscw_per_request=%s off_utime_ticks_per_request=%s on_traced_guest_syscalls=%s off_traced_guest_syscalls=%s\n' \
 	"$rpc_count" "$(num "${I7_WALL[on]:-}")" "$(num "${I7_VOL[on]:-}")" \
 	"$(num "${I7_NONVOL[on]:-}")" "$(per_request "${I7_VOL[on]:-0}" "$rpc_count")" \
 	"$(per_request "${I7_SYSCW[on]:-0}" "$rpc_count")" \
@@ -966,8 +1113,8 @@ printf 'I7 COMPARE rpc=%s on_us_per_call=%s on_ctxt_vol=%s on_ctxt_nonvol=%s on_
 	"$(num "${I7_NONVOL[off]:-}")" "$(per_request "${I7_VOL[off]:-0}" "$rpc_count")" \
 	"$(per_request "${I7_SYSCW[off]:-0}" "$rpc_count")" \
 	"$(per_request "${I7_UTIME[off]:-0}" "$rpc_count")" \
-	"${I7_STRACE[on]:-UNPROVEN: not attempted}" \
-	"${I7_STRACE[off]:-UNPROVEN: not attempted}"
+	"${I7_TOTAL_GUEST[on]:-UNPROVEN}" \
+	"${I7_TOTAL_GUEST[off]:-UNPROVEN}"
 
 if is_int "${I7_VOL[on]:-}"; then
 	if [ "${I7_VOL[on]}" -eq 0 ] && [ "${I7_NONVOL[on]:-0}" -eq 0 ] &&
