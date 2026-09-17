@@ -58,6 +58,60 @@
  *   A6 caller-local execution  server->client command runs in the requesting
  *                              guest thread
  *   A7 scaling/no starvation   128 lanes, 32 threads, fd set still unchanged
+ *
+ * SUSTAINED-LOAD MODE (sustain N COLD_PERMILLE)
+ * ---------------------------------------------
+ * `sustain N COLD_PERMILLE` runs N request/reply exchanges through the same
+ * lanes and the same single-eventfd coalescing path, but drives the server
+ * through deliberate phases: for every 1000 exchanges it parks the server in
+ * epoll_wait for COLD_PERMILLE of them (cold: they can only be served after a
+ * relay wake) and leaves it polling every lane for the rest (hot: no relay
+ * involvement at all).  COLD_PERMILLE=225 reproduces the doorbell share the
+ * real product measured (44967/200000 = 0.2248), so the two designs' per
+ * exchange costs can be read side by side at an equal cold fraction.
+ *
+ * Cold exchanges are published in bursts whose size cycles 1,2,4,...,128
+ * lanes, every lane is marked pending before the single nudge, and the relay
+ * turns that into at most ONE eventfd write for the whole burst.  The ladder
+ * starts at one lane on purpose: a lone cold exchange costs exactly one
+ * eventfd write and (relay park + server epoll_wait) two voluntary context
+ * switches, which is the product's measured per-doorbell cost, and the larger
+ * bursts show what coalescing buys at the same cold fraction.
+ *
+ * The harness counts the exchanges by the path that served them (polled by the
+ * server vs woken through the eventfd) and reports eventfd writes, nudges,
+ * futex parks/wakeups, waiters woken, guard-timeout recoveries and lost wakes
+ * from its own shared counters.  Nothing inside the measured window reads
+ * /proc or issues a read or write syscall: the guest waits by pure spin, so it
+ * accumulates no voluntary context switch of its own (measured: zero) and the
+ * window's context switches belong to the relay and the server.
+ *
+ * The external supervisor (tests/.../run-relay-topology-proof.sh builds it
+ * into its temporary directory; never committed) opens and closes the window
+ * around exactly the exchanges, reading /proc/<pid>/status and
+ * /proc/<pid>/io for the guest, the relay and the server, and prints the
+ * per-role figures plus the S claims below.
+ *
+ * CLAIMS (the harness prints S1..S4 itself and exits non-zero if any fails)
+ *   S1 MUST PASS  N exchanges at COLD_PERMILLE complete with every result
+ *      verified, zero lost wakes (no exchange timed out and the relay never
+ *      recovered through its guard timeout) and the guest's descriptor set
+ *      byte-identical before and after.  It must pass because every cost
+ *      figure below is only meaningful if all N exchanges really travelled the
+ *      path this mode intends: a lost wake means the cold path was not
+ *      exercised as measured, and a changed guest descriptor set means the
+ *      relay's own objects leaked into the table under test.
+ *   S2 MEASUREMENT  the design's doorbell-equivalent rate and cost per
+ *      exchange: eventfd writes per exchange, nudges (futex wakes) per
+ *      exchange, relay futex parks/wakeups per exchange and the cold share.
+ *   S3 MEASUREMENT  the coalescing factor achieved: exchanges woken per
+ *      eventfd write, the mean burst, and the nudges that needed no write.
+ *   S4 MEASUREMENT  the share of exchanges completed with no relay involvement
+ *      at all.
+ * S2..S4 are measurements, not verdicts: PASS means the numbers were produced
+ * and the counters agree (services == exchanges, writes <= nudges), never that
+ * the design is good.  They fail when the measurement is incomplete or
+ * inconsistent, and they say nothing about A1..A7 or about the product.
  */
 
 #define _GNU_SOURCE
@@ -100,8 +154,13 @@
 #define LEDGER_MAX       512
 
 #define SCMD_PARK 0u
-#define SCMD_SPIN 1u
+#define SCMD_SPIN 1u           /* poll HOT_LANE only (A3's hot phase)      */
 #define SCMD_EXIT 2u
+#define SCMD_POLL_ALL 3u       /* poll every lane (sustain mode's hot phase) */
+
+/* which path served a completion, for the sustained-load accounting */
+#define SVC_HOT  0             /* server was polling: no relay involvement */
+#define SVC_COLD 1             /* server was woken through the relay eventfd */
 
 #define SST_BOOT     0u
 #define SST_PARKED   1u
@@ -205,6 +264,14 @@ struct shm {
 	uint32_t caller_maps_ok[2];
 	uint32_t caller_cookie_ok[2];
 	uint32_t caller_arrived[2];
+
+	/* ---- sustained-load mode (S1..S4) ---- */
+	uint64_t sus_services[2];      /* completions by path: SVC_HOT/SVC_COLD */
+	uint64_t sus_cold_requests;    /* guest: cold exchanges published        */
+	uint64_t sus_nudges;           /* guest: cold_nudge() calls              */
+	uint64_t sus_burst_nudges;     /* guest: nudges that carried a burst     */
+	uint64_t sus_transition_nudges;/* guest: nudges that moved the server    */
+	uint64_t sus_waiters_woken;    /* guest: sum of FUTEX_WAKE return values */
 
 	/* ---- lanes ---- */
 	struct lane lanes[LANE_COUNT];
@@ -514,10 +581,15 @@ static int pending_empty(void)
  */
 static void cold_nudge(void)
 {
+	long woken;
+
 	__atomic_fetch_add(&SHM->notify_seq, 1, __ATOMIC_RELEASE);
 	__atomic_fetch_add(&SHM->wake_epoch, 1, __ATOMIC_RELEASE);
-	syscall(SYS_futex, (void *)&SHM->wake_epoch,
-		FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1, NULL, NULL, 0);
+	woken = syscall(SYS_futex, (void *)&SHM->wake_epoch,
+			FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1, NULL, NULL, 0);
+	SHM->sus_nudges++;
+	if (woken > 0)
+		SHM->sus_waiters_woken += (uint64_t)woken;
 }
 
 static void lane_publish(int li, int arm, uint64_t seq, uint64_t payload)
@@ -599,7 +671,7 @@ static void ledger_record(uint64_t gen, uint64_t seq)
 	st_rel(&SHM->ledger_n, n + 1);
 }
 
-static void service_lane(struct lane *l)
+static void service_lane(struct lane *l, int kind)
 {
 	uint64_t h = ld_acq(&l->prod);
 
@@ -621,6 +693,7 @@ static void service_lane(struct lane *l)
 		st32_rel(&e->state, EST_DONE);
 		l->cons++;
 		l->serviced++;
+		SHM->sus_services[kind]++;
 		__atomic_fetch_add(&SHM->completions, 1, __ATOMIC_RELAXED);
 	}
 }
@@ -632,7 +705,7 @@ static void service_lane(struct lane *l)
  * with the drain is never stranded and the relay performs at most ONE eventfd
  * write per burst.
  */
-static void server_drain(void)
+static void server_drain(int kind)
 {
 	for (;;) {
 		int w, b;
@@ -641,7 +714,7 @@ static void server_drain(void)
 							    __ATOMIC_ACQ_REL);
 			for (b = 0; b < 64; b++)
 				if (mask & (1ULL << b))
-					service_lane(&SHM->lanes[w * 64 + b]);
+					service_lane(&SHM->lanes[w * 64 + b], kind);
 		}
 		st_rel(&SHM->notify_acked, ld_acq(&SHM->notify_seq));
 		st_rel(&SHM->notified, 0);
@@ -711,9 +784,27 @@ static void server_main(int sock)
 		if (cmd == SCMD_SPIN) {
 			st32_rel(&s->server_state, SST_SPINNING);
 			while (ld32_acq(&s->server_cmd) == SCMD_SPIN) {
-				service_lane(&SHM->lanes[HOT_LANE]);
+				service_lane(&SHM->lanes[HOT_LANE], SVC_HOT);
 				if (!pending_empty())
-					server_drain();
+					server_drain(SVC_HOT);
+			}
+			st32_rel(&s->server_state, SST_BOOT);
+			continue;
+		}
+		/*
+		 * SCMD_POLL_ALL: the same hot path, but polling every lane, which
+		 * is what the sustained-load mode's hot phase needs.  Nothing here
+		 * involves the relay: no lane is marked pending, so the eventfd
+		 * stays quiet and the relay stays parked.
+		 */
+		if (cmd == SCMD_POLL_ALL) {
+			int li;
+			st32_rel(&s->server_state, SST_SPINNING);
+			while (ld32_acq(&s->server_cmd) == SCMD_POLL_ALL) {
+				for (li = 0; li < LANE_COUNT; li++)
+					service_lane(&SHM->lanes[li], SVC_HOT);
+				if (!pending_empty())
+					server_drain(SVC_HOT);
 			}
 			st32_rel(&s->server_state, SST_BOOT);
 			continue;
@@ -743,7 +834,7 @@ static void server_main(int sock)
 				}
 			}
 		}
-		server_drain();
+		server_drain(SVC_COLD);
 		s->server_acks++;
 	}
 }
@@ -1627,6 +1718,440 @@ static void phase_a7(const char *snap_before)
 }
 
 /* ------------------------------------------------------------------ */
+/* sustained-load mode (sustain N COLD_PERMILLE)                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * COLD_PERMILLE per 1000 exchanges are served from a server parked in
+ * epoll_wait; the rest are served while the server polls every lane.  A cold
+ * exchange therefore costs a relay wake (the doorbell analogue) and a hot
+ * exchange costs nothing outside shared memory.
+ *
+ * Cold exchanges are published in bursts whose size cycles 1,2,4,...,LANE_COUNT
+ * lanes; the whole burst is marked pending before the single nudge, so one
+ * nudge is at most one eventfd write that serves the burst.  The ladder starts
+ * at one lane so the run always contains lone cold exchanges, which cost
+ * exactly what the product pays per doorbell, and ends at a full lane set.
+ */
+#define SUS_BURST_DEADLINE_MS 2000u
+#define SUS_HS_LIMIT_MS      30000u
+
+struct sus_result {
+	uint64_t cold;          /* cold exchanges completed                 */
+	uint64_t hot;           /* hot exchanges completed                  */
+	uint64_t bursts;        /* cold bursts (one nudge each)             */
+	uint64_t burst_lanes;   /* lanes carried by those bursts            */
+	uint64_t burst_hist[8]; /* bursts by size bucket (log2)             */
+	uint64_t lost;          /* exchanges not served before the deadline */
+	uint64_t writes;        /* relay eventfd writes, delta              */
+	uint64_t skipped;       /* nudges that needed no write, delta       */
+	uint64_t parks;         /* relay futex parks, delta                 */
+	uint64_t wakeups;       /* relay futex returns with a real nudge    */
+	uint64_t guard;         /* relay guard-timeout recoveries, delta    */
+	uint64_t nudges;        /* guest nudges, delta                      */
+	uint64_t burst_nudges;  /* ... of which carried a burst             */
+	uint64_t transition_nudges; /* ... of which moved the server phase  */
+	uint64_t waiters_woken; /* FUTEX_WAKE waiters woken, delta          */
+	uint64_t cold_svc;      /* completions served after an eventfd wake */
+	uint64_t hot_svc;       /* completions served by the polling server */
+	uint64_t ms;            /* wall time of the load                    */
+	int aborted;
+};
+
+static const char *g_hs_dir;
+
+static void hs_path(char *buf, size_t cap, const char *name)
+{
+	snprintf(buf, cap, "%s/%s", g_hs_dir, name);
+}
+
+/*
+ * creat(2), not open(2)+write(2): the window the supervisor measures is
+ * /proc/<pid>/io's syscr/syscw, and creat is neither a read nor a write.
+ */
+static void hs_touch(const char *name)
+{
+	char p[512];
+	int fd;
+
+	if (!g_hs_dir)
+		return;
+	hs_path(p, sizeof p, name);
+	fd = creat(p, 0600);
+	if (fd >= 0)
+		close(fd);
+}
+
+static int hs_wait(const char *name)
+{
+	char p[512];
+	uint64_t t0 = now_ms();
+
+	if (!g_hs_dir)
+		return 0;
+	hs_path(p, sizeof p, name);
+	for (;;) {
+		if (access(p, F_OK) == 0)
+			return 0;
+		if (now_ms() - t0 > SUS_HS_LIMIT_MS)
+			return -1;
+	}
+}
+
+static unsigned int sus_bucket(unsigned int lanes)
+{
+	unsigned int b = 0;
+
+	while (lanes > 1) {
+		lanes >>= 1;
+		b++;
+	}
+	return b;
+}
+
+/*
+ * The guest waits by pure spin with a vDSO deadline: sched_yield() or futex()
+ * here would add the guest's own voluntary context switches to a window whose
+ * whole purpose is to attribute the wake cost to the relay and the server.
+ */
+static int sus_await_done(int li, uint64_t deadline)
+{
+	struct ring_entry *e = &SHM->lanes[li].ring[g_cons[li] % RING_SLOTS];
+
+	while (ld32_acq(&e->state) != EST_DONE) {
+		if (now_ms() > deadline)
+			return -1;
+	}
+	return 0;
+}
+
+/*
+ * Publish `lanes` exchanges on lanes 0..lanes-1, wait for all of them, verify
+ * every result and consume them.  With arm != 0 the whole burst is marked
+ * pending before the single nudge; the runner's "cold phase skips the pending
+ * mark" mutation removes exactly the marked statement below.
+ */
+static int sus_batch(unsigned int lanes, int arm, uint64_t deadline,
+		     uint64_t *bad_out)
+{
+	unsigned int k;
+	uint64_t bad = 0;
+	uint64_t expect;
+
+	for (k = 0; k < lanes; k++)
+		lane_publish((int)k, 0, g_seq++,
+			     ((uint64_t)CMD_ECHO << 32) | (uint64_t)k);
+	if (arm) {
+		for (k = 0; k < lanes; k++)
+			mark_pending((int)k);   /*MUT3-MARK*/
+		SHM->sus_burst_nudges++;
+		cold_nudge();
+	}
+	for (k = 0; k < lanes; k++) {
+		if (sus_await_done((int)k, deadline) != 0) {
+			*bad_out = bad + (uint64_t)(lanes - k);
+			return -1;
+		}
+	}
+	for (k = 0; k < lanes; k++) {
+		struct ring_entry *e = &SHM->lanes[k].ring[g_cons[k] % RING_SLOTS];
+		expect = server_result_for(((uint64_t)CMD_ECHO << 32) | (uint64_t)k);
+		if (ld_acq(&e->gen) != g_my_gen || ld_acq(&e->result) != expect)
+			bad++;
+		st32_rel(&e->state, EST_FREE);
+		g_cons[k]++;
+	}
+	*bad_out = bad;
+	return bad ? 1 : 0;
+}
+
+static int sus_park(void)
+{
+	uint64_t t0 = now_ms();
+
+	st32_rel(&SHM->server_cmd, SCMD_PARK);
+	while (ld32_acq(&SHM->server_state) != SST_PARKED) {
+		if (now_ms() - t0 > SUS_BURST_DEADLINE_MS)
+			return -1;
+	}
+	return 0;
+}
+
+static int sus_poll(void)
+{
+	uint64_t t0 = now_ms();
+
+	st32_rel(&SHM->server_cmd, SCMD_POLL_ALL);
+	/* a server parked in epoll_wait can only learn about the command
+	 * through a wake, so this transition costs one relay write; it is
+	 * counted separately from the burst nudges */
+	SHM->sus_transition_nudges++;
+	cold_nudge();
+	while (ld32_acq(&SHM->server_state) != SST_SPINNING) {
+		if (now_ms() - t0 > SUS_BURST_DEADLINE_MS)
+			return -1;
+	}
+	return 0;
+}
+
+static int sus_cycle(unsigned int cold, unsigned int hot, struct sus_result *r)
+{
+	unsigned int done, lanes;
+	unsigned int burst = 1;
+	uint64_t bad = 0;
+
+	/* ---- cold phase: the server is parked in epoll_wait ---- */
+	if (sus_park() != 0)
+		return -1;
+	for (done = 0; done < cold;) {
+		lanes = cold - done;
+		if (lanes > burst)
+			lanes = burst;
+		if (lanes > LANE_COUNT)
+			lanes = LANE_COUNT;
+		if (sus_batch(lanes, 1, now_ms() + SUS_BURST_DEADLINE_MS, &bad) != 0) {
+			r->lost += bad;
+			r->aborted = 1;
+			return -1;
+		}
+		r->cold += lanes;
+		r->bursts++;
+		r->burst_lanes += lanes;
+		r->burst_hist[sus_bucket(lanes)]++;
+		done += lanes;
+		burst = (burst > LANE_COUNT / 2) ? 1 : burst * 2;
+	}
+
+	/* ---- hot phase: the server polls every lane, no relay at all ---- */
+	if (sus_poll() != 0)
+		return -1;
+	for (done = 0; done < hot;) {
+		lanes = hot - done;
+		if (lanes > LANE_COUNT)
+			lanes = LANE_COUNT;
+		if (sus_batch(lanes, 0, now_ms() + SUS_BURST_DEADLINE_MS, &bad) != 0) {
+			r->lost += bad;
+			r->aborted = 1;
+			return -1;
+		}
+		r->hot += lanes;
+		done += lanes;
+	}
+	return 0;
+}
+
+static int mode_sustain(unsigned long n, unsigned int cold_permille)
+{
+	char snap0[8192], snap1[8192];
+	struct sus_result r;
+	unsigned long cycles, rem, i;
+	int c0, c1, leak0 = 0, leak1 = 0;
+	int hs_ok = 1;
+	int ok1, ok2, ok3, ok4;
+	uint64_t w0, p0, wk0, g0, sh0, sc0, n0, bn0, tn0, ww0, t0;
+	unsigned long long per_mille, burst_mille, hot_mille, skip_mille;
+
+	memset(&r, 0, sizeof r);
+	g_hs_dir = getenv("RELAY_PROOF_HS_DIR");
+	if (cold_permille > 1000)
+		cold_permille = 1000;
+	if (n == 0)
+		n = 1;
+
+	setup_architecture(0);
+	c0 = fd_snapshot(snap0, sizeof snap0, &leak0);
+
+	printf("SUSTAIN PIDS guest=%ld relay=%u server=%ld n=%lu cold_permille=%u\n",
+	       (long)getpid(), SHM->relay_tid, (long)g_server_pid, n,
+	       cold_permille);
+	fflush(stdout);
+	if (g_hs_dir) {
+		char p[512];
+		FILE *f;
+		hs_path(p, sizeof p, "pids");
+		f = fopen(p, "w");
+		if (f) {
+			fprintf(f, "guest=%ld\nrelay=%u\nserver=%ld\nn=%lu\ncold_permille=%u\n",
+				(long)getpid(), SHM->relay_tid,
+				(long)g_server_pid, n, cold_permille);
+			fclose(f);
+		}
+		hs_touch("ready");
+		if (hs_wait("before") != 0) {
+			fprintf(stderr,
+				"harness: the supervisor never opened the window\n");
+			hs_ok = 0;
+		}
+	}
+
+	/* ---- the measured window: these exchanges and nothing else ---- */
+	w0 = ld_acq(&SHM->relay_writes);
+	p0 = ld_acq(&SHM->relay_parks);
+	wk0 = ld_acq(&SHM->relay_wakeups);
+	g0 = ld_acq(&SHM->relay_guard_ticks);
+	sh0 = ld_acq(&SHM->sus_services[SVC_HOT]);
+	sc0 = ld_acq(&SHM->sus_services[SVC_COLD]);
+	n0 = ld_acq(&SHM->sus_nudges);
+	bn0 = ld_acq(&SHM->sus_burst_nudges);
+	tn0 = ld_acq(&SHM->sus_transition_nudges);
+	ww0 = ld_acq(&SHM->sus_waiters_woken);
+
+	t0 = now_ms();
+	if (hs_ok) {
+		cycles = n / 1000;
+		rem = n % 1000;
+		for (i = 0; i < cycles && !r.aborted; i++)
+			sus_cycle(cold_permille, 1000u - cold_permille, &r);
+		if (!r.aborted && rem) {
+			unsigned int c = (unsigned int)((rem * cold_permille) / 1000u);
+			if (c > rem)
+				c = (unsigned int)rem;
+			sus_cycle(c, (unsigned int)rem - c, &r);
+		}
+		(void)sus_park();
+	}
+	r.ms = now_ms() - t0;
+
+	r.writes = ld_acq(&SHM->relay_writes) - w0;
+	r.parks = ld_acq(&SHM->relay_parks) - p0;
+	r.wakeups = ld_acq(&SHM->relay_wakeups) - wk0;
+	r.guard = ld_acq(&SHM->relay_guard_ticks) - g0;
+	r.hot_svc = ld_acq(&SHM->sus_services[SVC_HOT]) - sh0;
+	r.cold_svc = ld_acq(&SHM->sus_services[SVC_COLD]) - sc0;
+	r.nudges = ld_acq(&SHM->sus_nudges) - n0;
+	r.burst_nudges = ld_acq(&SHM->sus_burst_nudges) - bn0;
+	r.transition_nudges = ld_acq(&SHM->sus_transition_nudges) - tn0;
+	r.waiters_woken = ld_acq(&SHM->sus_waiters_woken) - ww0;
+	/* a nudge whose write was suppressed: the notification it wanted was
+	 * already outstanding, so it cost no syscall at all */
+	r.skipped = r.nudges > r.writes ? r.nudges - r.writes : 0;
+
+	hs_touch("load_done");
+	if (g_hs_dir && hs_wait("after") != 0) {
+		fprintf(stderr,
+			"harness: the supervisor never closed the window\n");
+		hs_ok = 0;
+	}
+
+	c1 = fd_snapshot(snap1, sizeof snap1, &leak1);
+
+	/* ---- claims ---- */
+	ok1 = hs_ok && !r.aborted && r.lost == 0 &&
+	      r.cold + r.hot == (uint64_t)n &&
+	      r.cold_svc == r.cold && r.hot_svc == r.hot &&
+	      r.guard == 0 &&
+	      c0 == c1 && strcmp(snap0, snap1) == 0 &&
+	      !leak0 && !leak1;
+	ok2 = r.nudges == r.burst_nudges + r.transition_nudges &&
+	      r.writes <= r.nudges && r.cold > 0;
+	ok3 = r.bursts > 0 && r.writes > 0 && r.cold > 0;
+	ok4 = r.cold_svc + r.hot_svc == (uint64_t)n && r.hot_svc == r.hot;
+
+	per_mille = r.cold * 1000ULL / (uint64_t)n;
+	hot_mille = r.hot * 1000ULL / (uint64_t)n;
+	burst_mille = r.writes > 0 ? r.cold * 1000ULL / r.writes : 0;
+	skip_mille = r.nudges > 0 ? r.skipped * 1000ULL / r.nudges : 0;
+
+	printf("S1 %s sustained: %llu/%lu exchanges at cold_permille=%u (cold=%llu "
+	       "hot=%llu), every result verified, lost wakes=%llu, relay "
+	       "guard-timeout recoveries=%llu, aborted=%d, window=%llums; guest "
+	       "descriptor set %d -> %d byte-identical=%s, relay objects in guest "
+	       "table=%s\n",
+	       ok1 ? "PASS" : "FAIL",
+	       (unsigned long long)(r.cold + r.hot), n, cold_permille,
+	       (unsigned long long)r.cold, (unsigned long long)r.hot,
+	       (unsigned long long)r.lost,
+	       (unsigned long long)r.guard, r.aborted,
+	       (unsigned long long)r.ms, c0, c1,
+	       (c0 == c1 && strcmp(snap0, snap1) == 0) ? "yes" : "NO",
+	       (leak0 || leak1) ? "YES" : "no");
+
+	printf("S2 %s cost per request (harness counters, N=%lu): relay eventfd "
+	       "writes=%llu (%.5f/req), guest futex wakes (nudges)=%llu (%.5f/req: "
+	       "burst=%llu transitions=%llu), waiters woken=%llu, relay futex "
+	       "waits (parks)=%llu (%.5f/req), relay futex wakeups=%llu, nudges "
+	       "whose write was suppressed=%llu (%.2f%% of nudges); the guest takes "
+	       "no futex wait in this window (it spins), so every futex wait below "
+	       "is the relay's; cold share=%llu/1000 "
+	       "(%.5f/req) = the product's doorbell share; the supervisor adds the "
+	       "/proc syscw and context-switch figures for this window\n",
+	       ok2 ? "PASS" : "FAIL", n,
+	       (unsigned long long)r.writes, (double)r.writes / (double)n,
+	       (unsigned long long)r.nudges, (double)r.nudges / (double)n,
+	       (unsigned long long)r.burst_nudges,
+	       (unsigned long long)r.transition_nudges,
+	       (unsigned long long)r.waiters_woken,
+	       (unsigned long long)r.parks, (double)r.parks / (double)n,
+	       (unsigned long long)r.wakeups, (unsigned long long)r.skipped,
+	       (double)skip_mille / 10.0,
+	       (unsigned long long)per_mille, (double)per_mille / 1000.0);
+
+	printf("S3 %s coalescing (N=%lu): %llu cold exchanges woke through %llu "
+	       "eventfd writes = %.2f requests/write (cold/burst=%llu/%llu = %.2f "
+	       "lanes per burst, burst lane-sum=%llu); nudges whose write was "
+	       "suppressed=%llu/%llu (%.2f%%); burst-size buckets[1,2,4,8,16,32,64,"
+	       "128]=%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
+	       ok3 ? "PASS" : "FAIL", n,
+	       (unsigned long long)r.cold, (unsigned long long)r.writes,
+	       r.writes ? (double)r.cold / (double)r.writes : 0.0,
+	       (unsigned long long)r.cold, (unsigned long long)r.bursts,
+	       r.bursts ? (double)r.cold / (double)r.bursts : 0.0,
+	       (unsigned long long)r.burst_lanes,
+	       (unsigned long long)r.skipped, (unsigned long long)r.nudges,
+	       (double)skip_mille / 10.0,
+	       (unsigned long long)r.burst_hist[0], (unsigned long long)r.burst_hist[1],
+	       (unsigned long long)r.burst_hist[2], (unsigned long long)r.burst_hist[3],
+	       (unsigned long long)r.burst_hist[4], (unsigned long long)r.burst_hist[5],
+	       (unsigned long long)r.burst_hist[6], (unsigned long long)r.burst_hist[7]);
+
+	printf("S4 %s hot share (N=%lu): %llu/%llu exchanges (%.2f%%) completed with "
+	       "no relay involvement at all (server polled every lane); %llu "
+	       "(%.2f%%) required a relay wake (server services: %llu polled / %llu "
+	       "woken)\n",
+	       ok4 ? "PASS" : "FAIL", n,
+	       (unsigned long long)r.hot, (unsigned long long)n,
+	       (double)r.hot * 100.0 / (double)n,
+	       (unsigned long long)r.cold,
+	       (double)r.cold * 100.0 / (double)n,
+	       (unsigned long long)r.hot_svc, (unsigned long long)r.cold_svc);
+
+	printf("SUSTAIN METRIC n=%lu cold_permille=%u exchanges=%llu cold=%llu "
+	       "hot=%llu bursts=%llu burst_lanes=%llu nudge_bursts=%llu "
+	       "nudge_transitions=%llu nudges=%llu relay_eventfd_writes=%llu "
+	       "relay_writes_suppressed=%llu relay_parks=%llu relay_wakeups=%llu "
+	       "relay_guard_ticks=%llu futex_waiters_woken=%llu "
+	       "server_cold_services=%llu server_hot_services=%llu lost=%llu "
+	       "aborted=%d guest_fds_before=%d guest_fds_after=%d "
+	       "guest_fds_identical=%d guest_transport_leak=%d window_ms=%llu\n",
+	       n, cold_permille,
+	       (unsigned long long)(r.cold + r.hot),
+	       (unsigned long long)r.cold, (unsigned long long)r.hot,
+	       (unsigned long long)r.bursts, (unsigned long long)r.burst_lanes,
+	       (unsigned long long)r.burst_nudges,
+	       (unsigned long long)r.transition_nudges,
+	       (unsigned long long)r.nudges, (unsigned long long)r.writes,
+	       (unsigned long long)r.skipped, (unsigned long long)r.parks,
+	       (unsigned long long)r.wakeups, (unsigned long long)r.guard,
+	       (unsigned long long)r.waiters_woken,
+	       (unsigned long long)r.cold_svc, (unsigned long long)r.hot_svc,
+	       (unsigned long long)r.lost, r.aborted, c0, c1,
+	       (c0 == c1 && strcmp(snap0, snap1) == 0) ? 1 : 0,
+	       (leak0 || leak1) ? 1 : 0, (unsigned long long)r.ms);
+	printf("SUSTAIN RATIOS hot_per_mille=%llu cold_per_mille=%llu "
+	       "requests_per_eventfd_write_milli=%llu\n",
+	       hot_mille, per_mille, burst_mille);
+	printf("SUSTAIN BURSTS hist=%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
+	       (unsigned long long)r.burst_hist[0], (unsigned long long)r.burst_hist[1],
+	       (unsigned long long)r.burst_hist[2], (unsigned long long)r.burst_hist[3],
+	       (unsigned long long)r.burst_hist[4], (unsigned long long)r.burst_hist[5],
+	       (unsigned long long)r.burst_hist[6], (unsigned long long)r.burst_hist[7]);
+	fflush(stdout);
+
+	teardown(0);
+	return (ok1 && ok2 && ok3 && ok4) ? 0 : 1;
+}
+
+/* ------------------------------------------------------------------ */
 /* modes                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -1725,6 +2250,10 @@ int main(int argc, char **argv)
 		return mode_hot(argc > 2 ? strtoul(argv[2], NULL, 10) : 0);
 	if (strcmp(mode, "all") == 0)
 		return mode_all();
-	fprintf(stderr, "usage: %s [all|hot ITERS]\n", argv[0]);
+	if (strcmp(mode, "sustain") == 0)
+		return mode_sustain(argc > 2 ? strtoul(argv[2], NULL, 10) : 0,
+				    argc > 3 ? (unsigned int)strtoul(argv[3], NULL, 10) : 0);
+	fprintf(stderr, "usage: %s [all|hot ITERS|sustain N COLD_PERMILLE]\n",
+		argv[0]);
 	return 2;
 }
