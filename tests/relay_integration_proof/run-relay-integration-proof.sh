@@ -59,14 +59,32 @@
 #       prefix daemon, not of this harness), the syscall count is reported as
 #       UNPROVEN with the captured ptrace error and the kernel-side read/write
 #       syscall counters, context switches and CPU ticks stand in for it.
+#   I9  doorbell clustering under concurrency: the same nominal request total run
+#       twice on each prefix, once as one guest thread doing all of it and once
+#       as many guest threads each doing a slice, with the server's own ring
+#       counters read before and after each untraced window.  It reports, per
+#       configuration, the nominal requests, the server's own count of the traps
+#       it served (per_call.dserver_callnum_host_self_trap delta), the ring
+#       service split (spin and doorbell), the doorbell notifications the server
+#       actually received, the wake attempts issued and skipped, the doorbell
+#       share, doorbells per request, and the decisive ratio: doorbell-served
+#       requests per received doorbell notification (ring_serviced_doorbell /
+#       ring_doorbells_received).  At or near 1 that ratio says one server wake
+#       served exactly one request, so a coalescing relay has nothing to batch in
+#       this regime; above 1 several requests rode one wake.  Measurement: it
+#       prints UNPROVEN with the exact key its snapshot is missing (and lists the
+#       ring_* keys that are present) rather than substituting a proxy, and it
+#       never prints PASS.  On a prefix whose build has no ring transport at all
+#       it reports the counters as absent by design against the same nominal
+#       denominator.
 #
 # Why I1 and I5 are the only must-pass claims: both are contracts the product
 # already exhibits today and that the relay architecture must not break, so a
 # violation means a regression or a mis-measurement and has to stop the run.
-# I2, I3, I4, I6 and I7 measure premises whose numbers may legitimately differ
-# from the architectural prediction on a given build, so they are reported with
-# their values; each one prints UNPROVEN with the reason when the product or
-# the host cannot exhibit it.
+# I2, I3, I4, I6, I7 and I9 measure premises whose numbers may legitimately
+# differ from the architectural prediction on a given build, so they are
+# reported with their values; each one prints UNPROVEN with the reason when the
+# product or the host cannot exhibit it.
 #
 # Exit status
 #   0  every must-pass claim passed (measurements may be UNPROVEN; each states
@@ -86,6 +104,14 @@
 #   RELAY_INTEGRATION_POST_MS     hold after the action (default 2000)
 #   RELAY_INTEGRATION_RPC_PRE_MS  I7 pre hold, must cover the strace attach
 #                                 (default 6000)
+#   RELAY_INTEGRATION_I9_THREADS  I9 concurrent guest-thread count (default 32,
+#                                 max 64; the single-threaded row uses 1)
+#   RELAY_INTEGRATION_I9_REQUESTS I9 nominal request total, split across the
+#                                 I9 threads for one row and run whole by the
+#                                 other (default = RELAY_INTEGRATION_RPC, so
+#                                 32 x 6250 and 1 x 200000 out of the box)
+#   RELAY_INTEGRATION_I9_PRE_MS   I9 pre hold (default = RELAY_INTEGRATION_PRE_MS)
+#   RELAY_INTEGRATION_I9_POST_MS  I9 post hold (default = RELAY_INTEGRATION_POST_MS)
 #   RELAY_INTEGRATION_STAGE_TIMEOUT  guest stage timeout, seconds (default 120;
 #                                 the close-range stage is bounded to 90)
 #   RELAY_INTEGRATION_STRACE      how I7 attaches its syscall counters:
@@ -158,6 +184,20 @@ strace_mode="${RELAY_INTEGRATION_STRACE:-auto}"
 # from this count.
 strace_rpc_count="${RELAY_INTEGRATION_STRACE_RPC:-20000}"
 strace_stage_timeout="${RELAY_INTEGRATION_STRACE_STAGE_TIMEOUT:-300}"
+
+# I9 splits the same nominal request total two ways: many guest threads each
+# running a slice, and one thread running the whole thing.  The concurrent
+# configuration is the one the product is actually asked about; the
+# single-threaded one is the control it is compared against.
+i9_threads="${RELAY_INTEGRATION_I9_THREADS:-32}"
+i9_total="${RELAY_INTEGRATION_I9_REQUESTS:-$rpc_count}"
+i9_pre_ms="${RELAY_INTEGRATION_I9_PRE_MS:-$pre_ms}"
+i9_post_ms="${RELAY_INTEGRATION_I9_POST_MS:-$post_ms}"
+i9_stage_timeout="$stage_timeout"
+[ "$i9_threads" -le 64 ] || i9_threads=64
+[ "$i9_threads" -ge 1 ] || i9_threads=1
+i9_requests_per_thread=$(( i9_total / i9_threads ))
+i9_single_total=$(( i9_threads * i9_requests_per_thread ))
 
 # I8 reads the server's own ring counters, which is the only way to attribute the
 # wake cost without strace and without the observer effect: strace suppresses the
@@ -251,6 +291,14 @@ per_request() { # delta count
 	awk -v d="${1:-0}" -v n="${2:-0}" 'BEGIN { printf "%.5f", d / (n > 0 ? n : 1) }'
 }
 
+per_request_num() { # delta count -> per-request figure, or absent when the delta is unknown
+	if is_int "${1:-}"; then
+		per_request "$1" "$2"
+	else
+		printf 'absent'
+	fi
+}
+
 # ---------------------------------------------------------------- helpers
 
 field_of() { # file line_pattern key
@@ -306,7 +354,14 @@ ring_snapshot() { # prefix outfile -> rc
 	python3 "$stat_tool" "$1" >"$2" 2>"$2.err"
 }
 
+ring_keys_present() { # snapshot -> comma-separated "ring_*" keys (empty when none)
+	[ -s "${1:-}" ] || return 0
+	jq -r '[keys[] | select(startswith("ring_"))] | join(",")' "$1" 2>/dev/null || true
+}
+
 now_s() { date +%s; }
+
+now_ms() { date +%s%3N; }
 
 start_stage() { # name timeout script
 	local name="$1"
@@ -494,6 +549,233 @@ shutdown_prefix() { # label prefix
 		printf 'SHUTDOWN prefix=%s SURVIVORS prefix-owned process(es) remain: daemon=[%s] children=[%s]\n' \
 			"$label" "$daemon_pids" "$guests"
 	fi
+}
+
+# ---------------------------------------------------------------- I9
+
+# The clustering question, in the product's own terms. The numerator is the
+# requests the server drained inside its wake eventfd's Monitor callback
+# (ring_serviced_doorbell: call.cpp increments it by the count ringServiceThread
+# drains, i.e. every request published on that ring since the last wake). The
+# denominator is how many such callbacks actually ran (ring_doorbells_received,
+# metrics.cpp:76, incremented once per callback immediately before that drain).
+# A ratio of exactly 1 means one server wake served exactly one request, so
+# there is nothing for a batching layer to coalesce; above 1 means several
+# requests rode one wake. The windows are untraced, because strace slows the
+# guest enough that the server keeps polling and the doorbell disappears.
+declare -A I9_RATIO I9_NOMINAL I9_VERDICT I9_KEYS I9_CMP I9_SHARE I9_DBFR I9_WPR
+
+run_i9_window() { # label config threads requests_per_thread
+	local label="$1"
+	local config="$2"
+	local win_threads="$3"
+	local per_thread="$4"
+	local nominal=$(( win_threads * per_thread ))
+	local ratio_key="$label/$config"
+	local snap_pre="$work/$label-i9-$config-pre.json"
+	local snap_post="$work/$label-i9-$config-post.json"
+	local pid="" reason="" start_ms="" host_window_ms="?" pre_stat_rc=0 post_stat_rc=0
+	local missing="" missing_key="" missing_at="" clustering=""
+	local share="" doorbells_per_request="" wakes_per_request=""
+	local s_spin p_spin s_door p_door s_all p_all s_recv p_recv
+	local s_wiss p_wiss s_wsk p_wsk s_served p_served
+	local d_spin d_door d_all d_recv d_wiss d_wsk d_hostself
+
+	I9_NOMINAL[$ratio_key]="$nominal"
+	I9_VERDICT[$ratio_key]="UNPROVEN"
+	I9_RATIO[$ratio_key]=""
+	I9_KEYS[$label]=""
+	: >"$snap_pre"
+	: >"$snap_post"
+
+	start_stage "$label-i9-$config" "$i9_stage_timeout" \
+		"'$guest_bin' concurrent $win_threads $per_thread $i9_pre_ms $i9_post_ms"
+	if wait_marker '^RI_BARRIER pre$' 90; then
+		if ! window_open '^RI_BARRIER action-done$'; then
+			reason="the pre sample window closed before the host read it"
+		else
+			pid="$(guest_pid "$STAGE_LOG")"
+			if [ -z "$pid" ] || [ ! -d "/proc/$pid" ]; then
+				reason="no guest pid in the stage log"
+			else
+				start_ms="$(now_ms)"
+				ring_snapshot "$prefix" "$snap_pre" || pre_stat_rc=$?
+			fi
+		fi
+	else
+		reason="the guest never reached its pre barrier"
+	fi
+	if wait_marker '^RI_BARRIER action-done$' "$i9_stage_timeout"; then
+		if [ -n "$start_ms" ]; then
+			host_window_ms="$(( $(now_ms) - start_ms ))"
+		fi
+		ring_snapshot "$prefix" "$snap_post" || post_stat_rc=$?
+	elif [ -z "$reason" ]; then
+		reason="the workload did not reach its action barrier within ${i9_stage_timeout}s"
+	fi
+	finish_stage
+	guest_lines "$STAGE_LOG" '^I9 '
+
+	s_spin="$(ring_counter "$snap_pre" ring_serviced_spin)"
+	p_spin="$(ring_counter "$snap_post" ring_serviced_spin)"
+	s_door="$(ring_counter "$snap_pre" ring_serviced_doorbell)"
+	p_door="$(ring_counter "$snap_post" ring_serviced_doorbell)"
+	s_all="$(ring_counter "$snap_pre" ring_serviced)"
+	p_all="$(ring_counter "$snap_post" ring_serviced)"
+	s_recv="$(ring_counter "$snap_pre" ring_doorbells_received)"
+	p_recv="$(ring_counter "$snap_post" ring_doorbells_received)"
+	s_wiss="$(ring_counter "$snap_pre" ring_wakes_issued)"
+	p_wiss="$(ring_counter "$snap_post" ring_wakes_issued)"
+	s_wsk="$(ring_counter "$snap_pre" ring_wakes_skipped)"
+	p_wsk="$(ring_counter "$snap_post" ring_wakes_skipped)"
+	s_served="$(ring_per_call "$snap_pre" dserver_callnum_host_self_trap)"
+	p_served="$(ring_per_call "$snap_post" dserver_callnum_host_self_trap)"
+	I9_KEYS[$label]="$(ring_keys_present "$snap_post")"
+
+	if [ -z "$reason" ]; then
+		# Name the exact key the snapshot is missing, and list the ring_* keys
+		# that ARE present, so a build without the ring transport is told apart
+		# from a build that has one but lost the counter, and a pre-window read
+		# failure is told apart from a counter that never existed.
+		for missing_key in ring_doorbells_received ring_serviced_doorbell \
+			ring_serviced_spin ring_serviced; do
+			if ! is_int "$(ring_counter "$snap_post" "$missing_key")"; then
+				missing="$missing_key"
+				missing_at=post
+				break
+			fi
+			if ! is_int "$(ring_counter "$snap_pre" "$missing_key")"; then
+				missing="$missing_key"
+				missing_at=pre
+				break
+			fi
+		done
+		if [ -n "$missing" ] && [ "$missing_at" = "post" ] &&
+			[ -z "${I9_KEYS[$label]}" ]; then
+			reason="this build's snapshot carries no ring_* counters at all, so it was built without the ring transport: no doorbell is ever written and the ratio has neither numerator nor denominator (expected here, not a failure)"
+		elif [ -n "$missing" ] && [ "$missing_at" = "post" ]; then
+			reason="the snapshot key $missing is absent from this build (stat rc=$post_stat_rc), so the ratio cannot be formed without substituting a proxy"
+		elif [ -n "$missing" ]; then
+			reason="the pre-window snapshot did not carry $missing (stat rc=$pre_stat_rc: $(tr -d '\n' <"$snap_pre.err" 2>/dev/null | head -c 120))"
+		fi
+	fi
+
+	if [ -z "$reason" ]; then
+		d_spin=$(( p_spin - s_spin ))
+		d_door=$(( p_door - s_door ))
+		d_all="absent"
+		if is_int "${s_all:-}" && is_int "${p_all:-}"; then
+			d_all=$(( p_all - s_all ))
+		fi
+		d_recv=$(( p_recv - s_recv ))
+		d_wiss="absent"
+		if is_int "${s_wiss:-}" && is_int "${p_wiss:-}"; then
+			d_wiss=$(( p_wiss - s_wiss ))
+		fi
+		d_wsk="absent"
+		if is_int "${s_wsk:-}" && is_int "${p_wsk:-}"; then
+			d_wsk=$(( p_wsk - s_wsk ))
+		fi
+		d_hostself="absent"
+		if is_int "${s_served:-}" && is_int "${p_served:-}"; then
+			d_hostself=$(( p_served - s_served ))
+		fi
+
+		if [ "$d_recv" -gt 0 ]; then
+			clustering="$(awk -v n="$d_door" -v d="$d_recv" 'BEGIN { printf "%.5f", n / d }')"
+		fi
+
+		# The row is the measurement; it is printed even when the decisive ratio
+		# cannot be formed, and it never claims PASS.
+		share="$(awk -v d="$d_door" -v s="$d_spin" 'BEGIN { t = d + s; printf "%.4f", (t > 0 ? d / t : 0) }')"
+		doorbells_per_request="$(per_request "$d_recv" "$nominal")"
+		wakes_per_request="$(per_request_num "$d_wiss" "$nominal")"
+		I9_SHARE[$ratio_key]="$share"
+		I9_DBFR[$ratio_key]="$doorbells_per_request"
+		I9_WPR[$ratio_key]="$wakes_per_request"
+		printf 'I9 MEASURED prefix=%s config=%s threads=%s requests_per_thread=%s nominal_requests=%s server_host_self_delta=%s ring_serviced_delta=%s ring_serviced_spin_delta=%s ring_serviced_doorbell_delta=%s ring_doorbells_received_delta=%s ring_wakes_issued_delta=%s ring_wakes_skipped_delta=%s doorbell_share=%s doorbells_per_request=%s ring_serviced_per_request=%s clustering_ratio=%s host_window_ms=%s stage_rc=%s\n' \
+			"$label" "$config" "$win_threads" "$per_thread" "$nominal" \
+			"$d_hostself" "$d_all" "$d_spin" "$d_door" "$d_recv" "$d_wiss" \
+			"$d_wsk" "$share" "$doorbells_per_request" \
+			"$(per_request_num "$d_all" "$nominal")" \
+			"${clustering:-UNPROVEN}" "$host_window_ms" "$STAGE_RC"
+		printf 'I9 MEASURED2 prefix=%s config=%s ring_wakes_issued_per_request=%s ring_serviced_spin_fraction_of_requests=%s guest_us_per_call=%s guest_elapsed_ms=%s\n' \
+			"$label" "$config" "$wakes_per_request" \
+			"$(per_request_num "$d_spin" "$nominal")" \
+			"$(num "$(field_of "$STAGE_LOG" '^I9 workload ' us_per_call)")" \
+			"$(num "$(field_of "$STAGE_LOG" '^I9 workload ' elapsed_ms)")"
+		if [ -n "$clustering" ]; then
+			I9_RATIO[$ratio_key]="$clustering"
+			I9_VERDICT[$ratio_key]=MEASURED
+		else
+			I9_VERDICT[$ratio_key]="UNPROVEN: the server received no doorbell notification in this window (ring_doorbells_received_delta=$d_recv), so requests per received doorbell is undefined here"
+		fi
+	else
+		printf 'I9 UNPROVEN prefix=%s config=%s threads=%s requests_per_thread=%s nominal_requests=%s threads_created=%s guest_ok=%s reason=%s missing_key=%s present_ring_keys=[%s] host_window_ms=%s stage_rc=%s\n' \
+			"$label" "$config" "$win_threads" "$per_thread" "$nominal" \
+			"$(num "$(field_of "$STAGE_LOG" '^I9 workload ' threads_created)")" \
+			"$(num "$(field_of "$STAGE_LOG" '^I9 workload ' rpc_ok)")" \
+			"$reason" "${missing:-none}" "${I9_KEYS[$label]}" "$host_window_ms" \
+			"$STAGE_RC"
+		I9_VERDICT[$ratio_key]="UNPROVEN: $reason"
+	fi
+	printf 'I9 NOTE prefix=%s config=%s clustering_ratio=ring_serviced_doorbell_delta_div_ring_doorbells_received_delta: requests the server drained inside one wake callback divided by the number of wake callbacks it received; 1.0 means one server wake per request (nothing to coalesce) and above 1 means several requests rode one wake. ring_doorbells_received is the number of server wake events consumed from the ring eventfd, which is exactly the notification count this claim needs, so no proxy is used. The guest doorbells conditionally (it writes the eventfd only while it reads the server as not actively polling) and one write is one doorbell, and this window also contains the first-call ring attach of each thread.\n' \
+		"$label" "$config"
+	printf 'STAGE %s-i9-%s elapsed_s=%s\n' "$label" "$config" "$(stage_elapsed)"
+}
+
+i9_compare() { # label
+	local label="$1"
+	local k_single="$label/single"
+	local k_conc="$label/concurrent"
+	local single="${I9_RATIO[$k_single]:-}"
+	local conc="${I9_RATIO[$k_conc]:-}"
+	local verdict=""
+
+	if [ -n "$single" ] && [ -n "$conc" ]; then
+		verdict="$(awk -v s="$single" -v c="$conc" 'BEGIN {
+			if (c > s * 1.10 && c > 1.05) print "CLUSTERING_ROSE_WITH_CONCURRENCY";
+			else if (s >= 0.90 && s <= 1.10 && c >= 0.90 && c <= 1.10) print "CLUSTERING_FLAT_AT_ONE";
+			else print "CLUSTERING_DID_NOT_RISE";
+		}')"
+	elif [ -z "${I9_KEYS[$label]:-}" ]; then
+		verdict="NOT_APPLICABLE_BY_DESIGN"
+	fi
+	[ -n "$verdict" ] || verdict=UNPROVEN
+	I9_CMP[$label]="$verdict"
+
+	printf 'I9 COMPARE prefix=%s single_clustering_ratio=%s concurrent_clustering_ratio=%s single_doorbell_share=%s concurrent_doorbell_share=%s single_doorbells_per_request=%s concurrent_doorbells_per_request=%s single_wakes_issued_per_request=%s concurrent_wakes_issued_per_request=%s single_nominal_requests=%s concurrent_nominal_requests=%s verdict=%s\n' \
+		"$label" "${single:-UNPROVEN}" "${conc:-UNPROVEN}" \
+		"${I9_SHARE[$k_single]:-absent}" "${I9_SHARE[$k_conc]:-absent}" \
+		"${I9_DBFR[$k_single]:-absent}" "${I9_DBFR[$k_conc]:-absent}" \
+		"${I9_WPR[$k_single]:-absent}" "${I9_WPR[$k_conc]:-absent}" \
+		"$(num "${I9_NOMINAL[$k_single]:-}")" \
+		"$(num "${I9_NOMINAL[$k_conc]:-}")" "$verdict"
+	case "$verdict" in
+	CLUSTERING_ROSE_WITH_CONCURRENCY)
+		printf 'I9 NOTE prefix=%s the clustering ratio ROSE with concurrency: %s requests per received doorbell single-threaded versus %s with many threads, so in the product one server wake can carry several requests and a batching layer would have something to batch here\n' \
+			"$label" "$single" "$conc"
+		;;
+	CLUSTERING_FLAT_AT_ONE)
+		printf 'I9 NOTE prefix=%s the clustering ratio stayed at about 1 (%s single-threaded, %s concurrent): each received doorbell served about one request in both regimes, so on this workload the product gives a coalescing relay nothing to batch on the wake path and its only gain here would be descriptor-table hygiene\n' \
+			"$label" "$single" "$conc"
+		;;
+	CLUSTERING_DID_NOT_RISE)
+		printf 'I9 NOTE prefix=%s the clustering ratio did NOT rise with concurrency (%s single-threaded versus %s concurrent): the doorbell path itself shrank (doorbell share %s -> %s, doorbells per request %s -> %s), so concurrency moved the wake cost rather than amortising one doorbell over several requests, and there is no batching for a relay to exploit on this workload\n' \
+			"$label" "$single" "$conc" "${I9_SHARE[$k_single]:-absent}" \
+			"${I9_SHARE[$k_conc]:-absent}" "${I9_DBFR[$k_single]:-absent}" \
+			"${I9_DBFR[$k_conc]:-absent}"
+		;;
+	NOT_APPLICABLE_BY_DESIGN)
+		printf 'I9 NOTE prefix=%s this prefix exposes no ring counters at all, so no doorbell notification is ever received and the question is not applicable to it; the nominal denominator is still printed so the row is comparable, and the absence is expected rather than a failure\n' \
+			"$label"
+		;;
+	*)
+		printf 'I9 NOTE prefix=%s the clustering ratio could NOT be established because a counter it needs is absent or the window did not close: single=%s concurrent=%s [%s]\n' \
+			"$label" "${single:-none}" "${conc:-none}" \
+			"${I9_VERDICT[$k_single]:-}; ${I9_VERDICT[$k_conc]:-}"
+		;;
+	esac
 }
 
 # ---------------------------------------------------------------- one leg
@@ -984,6 +1266,18 @@ run_leg() { # label prefix
 			"$(tr -d '\n' <"$snap_pre.err" 2>/dev/null | head -c 160)"
 	fi
 
+	# --- I9 doorbell clustering under concurrency (measurement) ----------
+	# The same nominal request total in two shapes: one thread running all of it,
+	# and as many guest threads as the product is asked to carry, each running a
+	# slice. Both windows are untraced and the numbers come from the server's own
+	# counters, so the decisive ratio -- requests the server drained per doorbell
+	# notification it actually received -- is read off the product instead of
+	# inferred from it. I9 never prints PASS: it prints a ratio, or UNPROVEN with
+	# the exact key its snapshot is missing.
+	run_i9_window "$label" single 1 "$i9_single_total"
+	run_i9_window "$label" concurrent "$i9_threads" "$i9_requests_per_thread"
+	i9_compare "$label"
+
 	# --- I7 transport classification under trace (counts only) ----------
 	# A separate, smaller window: strace stops the traced task on every syscall,
 	# so the timing window above must stay untraced and this one must stay small.
@@ -1185,6 +1479,14 @@ printf 'I7 COMPARE rpc=%s on_us_per_call=%s on_ctxt_vol=%s on_ctxt_nonvol=%s on_
 	"$(per_request "${I7_UTIME[off]:-0}" "$rpc_count")" \
 	"${I7_TOTAL_GUEST[on]:-UNPROVEN}" \
 	"${I7_TOTAL_GUEST[off]:-UNPROVEN}"
+
+printf 'I9 COMPARE on_verdict=%s on_single_ratio=%s on_concurrent_ratio=%s on_nominal_requests=%s off_verdict=%s off_single_ratio=%s off_concurrent_ratio=%s off_nominal_requests=%s\n' \
+	"${I9_CMP[on]:-UNPROVEN}" "$(num "${I9_RATIO[on/single]:-}")" \
+	"$(num "${I9_RATIO[on/concurrent]:-}")" "$(num "${I9_NOMINAL[on/single]:-}")" \
+	"${I9_CMP[off]:-UNPROVEN}" "$(num "${I9_RATIO[off/single]:-}")" \
+	"$(num "${I9_RATIO[off/concurrent]:-}")" "$(num "${I9_NOMINAL[off/single]:-}")"
+printf 'I9 RING-KEYS on_present=[%s] off_present=[%s]\n' \
+	"${I9_KEYS[on]:-}" "${I9_KEYS[off]:-}"
 
 if is_int "${I7_VOL[on]:-}"; then
 	if [ "${I7_VOL[on]}" -eq 0 ] && [ "${I7_NONVOL[on]:-0}" -eq 0 ] &&
