@@ -32,6 +32,13 @@
  *                              descriptor set that is about to be closed.
  *   rpc N        PRE POST      I7: N mach_host_self() RPCs of pure transport
  *                              workload.
+ *   concurrent T R PRE POST    I9: T threads, each performing R mach_host_self()
+ *                              RPCs in a loop, released from a start gate
+ *                              together and joined, so the host can ask the
+ *                              server's own counters how many requests one
+ *                              server wake drained (T x R is the nominal
+ *                              request total the host divides by).  PRE and
+ *                              POST are optional here and default to 0.
  *
  * PRE and POST are millisecond hold windows.  The protocol is one-directional
  * and needs no host-to-guest channel (defect prints no barrier at all, and
@@ -730,6 +737,125 @@ static int mode_rpc(int count, long pre_ms, long post_ms)
 	return 0;
 }
 
+/* ---------------------------------------------------------------- I9 */
+
+/* Concurrency workload: THREADS threads, each running REQUESTS mach traps in a
+ * loop.  Unlike I3 (one call per thread, held open) this is a stream, which is
+ * what a wake path has to coalesce: the question the host answers from the
+ * server's counters is how many requests one server wake drains.  The threads
+ * are released from a start gate together so the window contains the maximum
+ * overlap of the threads' requests, and each thread uses its own ring lane
+ * (the guest attaches one lane per thread), so nothing here shares a lane. */
+struct conc_ctx {
+	pthread_mutex_t lock;
+	pthread_cond_t cond;
+	int requests;
+	int started;
+	int release;
+	int rpc_ok;
+	int rpc_failed;
+};
+
+static void *conc_thr_main(void *arg)
+{
+	struct conc_ctx *ctx = arg;
+	int ok = 0;
+	int failed = 0;
+	int i;
+
+	pthread_mutex_lock(&ctx->lock);
+	++ctx->started;
+	pthread_cond_broadcast(&ctx->cond);
+	while (!ctx->release) {
+		pthread_cond_wait(&ctx->cond, &ctx->lock);
+	}
+	pthread_mutex_unlock(&ctx->lock);
+
+	for (i = 0; i < ctx->requests; ++i) {
+		if (mach_host_self() != MACH_PORT_NULL) {
+			++ok;
+		} else {
+			++failed;
+		}
+	}
+
+	pthread_mutex_lock(&ctx->lock);
+	ctx->rpc_ok += ok;
+	ctx->rpc_failed += failed;
+	pthread_mutex_unlock(&ctx->lock);
+	return NULL;
+}
+
+static int mode_concurrent(int requested, int per_thread, long pre_ms, long post_ms)
+{
+	pthread_t threads[RI_MAX_THREADS];
+	struct conc_ctx ctx;
+	int nominal;
+	int actual;
+	int created = 0;
+	int i;
+	double t0;
+	double t1;
+
+	if (requested < 0) {
+		requested = 0;
+	}
+	if (requested > RI_MAX_THREADS) {
+		requested = RI_MAX_THREADS;
+	}
+	if (per_thread < 0) {
+		per_thread = 0;
+	}
+	nominal = requested * per_thread;
+
+	memset(&ctx, 0, sizeof(ctx));
+	pthread_mutex_init(&ctx.lock, NULL);
+	pthread_cond_init(&ctx.cond, NULL);
+	ctx.requests = per_thread;
+
+	emit("I9 pid=%d\n", (int)getpid());
+	barrier("pre");
+	nap_ms(pre_ms);
+
+	t0 = mono_ms();
+	for (i = 0; i < requested; ++i) {
+		if (pthread_create(&threads[i], NULL, conc_thr_main, &ctx) != 0) {
+			break;
+		}
+		++created;
+	}
+
+	/* Release the gate only once every created thread is standing in it, so
+	 * every thread's first request lands in the same neighbourhood. */
+	pthread_mutex_lock(&ctx.lock);
+	while (ctx.started < created) {
+		pthread_cond_wait(&ctx.cond, &ctx.lock);
+	}
+	ctx.release = 1;
+	pthread_cond_broadcast(&ctx.cond);
+	pthread_mutex_unlock(&ctx.lock);
+
+	for (i = 0; i < created; ++i) {
+		pthread_join(threads[i], NULL);
+	}
+	t1 = mono_ms();
+	actual = created * per_thread;
+
+	emit("I9 workload threads_requested=%d threads_created=%d "
+	    "requests_per_thread=%d nominal_requests=%d actual_requests=%d rpc_ok=%d "
+	    "rpc_failed=%d start_gate=simultaneous elapsed_ms=%.1f us_per_call=%.3f\n",
+	    requested, created, per_thread, nominal, actual, ctx.rpc_ok,
+	    ctx.rpc_failed, t1 - t0,
+	    actual > 0 ? (t1 - t0) * 1000.0 / (double)actual : 0.0);
+
+	barrier("action-done");
+	nap_ms(post_ms);
+	pthread_cond_destroy(&ctx.cond);
+	pthread_mutex_destroy(&ctx.lock);
+	barrier("done");
+	return 0;
+}
+
 /* ------------------------------------------------------------------ */
 
 static int usage(void)
@@ -741,11 +867,12 @@ static int usage(void)
 	    "       %s ring WARMUP PRE_MS POST_MS\n"
 	    "       %s scm PRE_MS POST_MS\n"
 	    "       %s close-range PRE_MS POST_MS\n"
-	    "       %s rpc N PRE_MS POST_MS\n",
+	    "       %s rpc N PRE_MS POST_MS\n"
+	    "       %s concurrent THREADS REQUESTS_PER_THREAD PRE_MS POST_MS\n",
 	    "relay_integration_fixture", "relay_integration_fixture",
 	    "relay_integration_fixture", "relay_integration_fixture",
 	    "relay_integration_fixture", "relay_integration_fixture",
-	    "relay_integration_fixture");
+	    "relay_integration_fixture", "relay_integration_fixture");
 	return 2;
 }
 
@@ -779,6 +906,10 @@ int main(int argc, char **argv)
 	}
 	if (strcmp(mode, "rpc") == 0 && argc == 5) {
 		return mode_rpc(atoi(argv[2]), atol(argv[3]), atol(argv[4]));
+	}
+	if (strcmp(mode, "concurrent") == 0 && argc >= 4 && argc <= 6) {
+		return mode_concurrent(atoi(argv[2]), atoi(argv[3]),
+		    argc > 4 ? atol(argv[4]) : 0, argc > 5 ? atol(argv[5]) : 0);
 	}
 	return usage();
 }
