@@ -731,7 +731,20 @@ delivery scheme that needs no reader (server writes into the lane and futex-wake
 with the socket used only when a descriptor must move); or something else. The fixture tests
 the first two rather than listing them.
 
-### Result: `tests/demux_fixture/` (host and ordinary Docker, rc=0, marker `DEMUX_FIXTURE_OK`, ten mutations red)
+### Evidence tiers (vocabulary used from here on)
+
+| Tier | Meaning | What may be called |
+|---|---|---|
+| MODEL | A proof harness that runs its own state machine over product-shaped data; no product code executes. | "model proof" |
+| INTEGRATION FIXTURE | A harness compiled against the product's **real headers/generated ABI** whose data structures are the product's byte-for-byte, but which does not change or run the Darling runtime. | "integration fixture" |
+| PRODUCT | The Darling runtime, client or server path is **modified and executed** in a real prefix. | "PRODUCT PASS" |
+
+`tests/demux_fixture/` and `tests/generation_aba_proof/` are **integration fixture** and **model**
+respectively. Neither is a PRODUCT result, and no line below may be read as one. Their value is
+undiminished: they establish the mechanism and pin the identity requirements; they do not
+establish that Darling's own runtime can carry it.
+
+### Result: `tests/demux_fixture/` — INTEGRATION FIXTURE (host and ordinary Docker, rc=0, marker `DEMUX_FIXTURE_OK`, ten mutations red)
 
 It is an integration fixture, not a product prototype, built from the **product's real
 structures**: 28 struct sizes/offsets, the enum width and the four callnums are **identical**
@@ -759,9 +772,15 @@ pre-exec one; the holder serving only itself.
 
 - **V2 (reader token, no permanent thread) survives the cost comparison**: no extra thread at any
   count (33/65 vs 34/66), no 8 MiB stack reservation (VmSize 525 808 vs 534 004 kB at 64 workers),
-  nothing to re-create on fork or exec, and a strictly cheaper dispatch path
-  (`copies_per_completion` 0.785–0.860 vs 1.000, because the holder parses its own datagram in
-  place, so 14–21 % of completions avoid a copy, a slot write and a futex wake).
+  and a strictly cheaper dispatch path (`copies_per_completion` 0.785–0.860 vs 1.000, because the
+  holder parses its own datagram in place, so 14–21 % of completions avoid a copy, a slot write
+  and a futex wake).
+  **Scope of "nothing to re-create": that claim is about the permanent helper thread only.** V2
+  still has to do all of the transport-state work at fork and exec: advance the process
+  generation, rebind and re-register the child's identity with the server, rebuild the lane
+  mapping after exec, and ensure the child cannot consume or answer any logical state of its
+  parent's endpoint. The fixture's D7/D8 are exactly that work; V2 merely does not add a thread to
+  it.
 - **V1 (permanent demux thread) also survives**, and is the shape required where a background
   reader must exist for a thread that is *not* inside an RPC. It pays one permanent thread, 8 MiB
   of reserved address space, a signal mask it must own, a bounded blocking `recvmsg` so it can be
@@ -826,6 +845,77 @@ must be releasable and reusable, `GR_MAX_LANES` must become a directory that is 
 128-entry array, and the identity tuple `{slot, generation, owner_tid, request_id}` must exist on
 both sides — the ABA proof shows each of those is load-bearing, and the census shows thread
 number 129 currently has no ring path at all.
+
+## 8.10 PRODUCT attempt (dar-gwn.7.7.5): what was built, measured, and what remains
+
+### The feature flag and the exact diff surface
+
+Flag: `DSERVER_PROCESS_CONTROL` (a CMake option, default OFF, declared beside the existing
+`DSERVER_RING_TRANSPORT`; the same macro reaches the guest targets and gates a shared wire
+structure, so it is deliberately one macro rather than a `DARLING_`/`DSERVER_` pair).
+
+| Layer | File | Change |
+|---|---|---|
+| generator | `darlingserver/scripts/generate-rpc-wrappers.py` | one table entry, `process_control_register`, **appended last** so that no existing call number moves |
+| shared wire | `darlingserver/include/darlingserver/rpc-supplement.h` | `dserver_s2c_callhdr_t` gains `uint32_t target_tid` under the flag |
+| server | `darlingserver/src/call.cpp` | the registration call must not overwrite the caller thread's reply address; new `ProcessControlRegister::processCall()` stores the datagram source on the Process |
+| server | `darlingserver/src/process.cpp` / `internal-include/.../process.hpp` | `_controlAddress` plus `setControlAddress` / `controlAddress` |
+| server | `darlingserver/src/thread.cpp` / `internal-include/.../thread.hpp` | `_s2cPerform` names the target TID and, when the process has registered an endpoint, addresses the call there and lets the guest's demultiplexer raise the signal instead of raising it itself |
+| guest | `startup/mldr/procctl.c` + `procctl.h` (new) | one process-level endpoint, a per-thread single-producer/single-consumer mailbox, one small receiver thread, and `tgkill(SIGRTMIN+1)` for the named target |
+| guest | `startup/mldr/mldr.c`, `elfcalls/elfcalls.{c,h}` | idempotent init right after the main-thread checkin; two bridge entries so the dylib can read its mailbox |
+| guest | `xnu/.../linux_premigration/resources/dserver-rpc-defs.h` | the receive hook takes a mailboxed upcall before touching any socket |
+| build | three `CMakeLists.txt` | the option and its compile definitions |
+
+The receiver never executes the guest operation. It moves the datagram to the mailbox of the
+thread named by `target_tid` and signals that thread; the target executes the memory operation in
+its own context, exactly as it does on the per-thread path. That is the V1 shape, and it is the
+shape this prototype implements.
+
+### PRODUCT result: the server half is behaviour-preserving; the guest half does not complete
+
+| Configuration | Result |
+|---|---|
+| flag OFF, stock runtime | boots, `rc=0` |
+| flag ON **server**, flag OFF guest (guest init disabled) | **boots, `rc=0`** — the appended call number, the S2C target field and the control-address branch do not disturb the product |
+| flag ON **server**, flag ON guest, registration active | **stalls** right after `process-control: receiver running (socket 1048574)`; no crash, no error, no abort; the launcher's 30 s shellspawn readiness timeout is what ends it |
+| flag ON server, flag ON guest, **receiver deliberately not started** | also stalls — so the extra thread is *not* the blocker; the registration (and everything the server then routes to that endpoint) is |
+
+Measured in the guest: the endpoint is created and registered (`fd 1048574`, the loader's hidden
+socket number), the receiver starts on a **128 KiB** stack, and `setup_space` runs twice per
+process so the init had to be made idempotent. No crash, no `BAD SEND`, no `BAD RECEIVE`.
+
+### What remains, precisely
+
+Once a process registers an endpoint, the server addresses every S2C to it and stops signalling
+the target itself, so the whole chain — server → control socket → receiver → mailbox →
+`tgkill` → the target's handler → mailbox pop → execute → reply — must work before the guest can
+make progress past its first S2C. The stall says it does not, and the four configurations above
+localise the failure to that chain rather than to the server's own logic or to the receiver
+thread's existence.
+
+The next three experiments, in order: (1) read the endpoint's queue while the guest is stalled to
+see whether the S2C datagram ever arrived, which separates "the server did not send to the right
+address" from "the guest did not consume it"; (2) instrument the receiver to report every datagram
+it takes and every signal it raises; (3) instrument the guest's mailbox pop.
+
+**Evidence tier: this section is PRODUCT** — the Darling runtime, client and server paths were
+modified, built and executed in a real prefix. It is not a PASS: the prototype establishes that
+the server half is safe and that the guest half is incomplete.
+
+### Round verdict: still UNKNOWN
+
+Unchanged from §8.9, and now for a better reason: the remaining gap is a localised, reproducible,
+one-chain defect rather than a question of principle, but it is not resolved. Candidate B is not
+falsified and relay is not indicated. No product test from the M1–M5 / S1–S4 matrix was run,
+because the runtime does not boot far enough with the feature active; fork, exec, the lane
+redesign, the process eventfd, the truthful `RLIMIT_NOFILE` model, `close_internal` hardening and
+the performance comparison are all untouched downstream of that.
+
+Two tooling defects found by the attempt were filed rather than worked around: `dar-481m` (a
+failed rootless launch leaves the prefix's `darlingserver` and guest loaders running with no
+supported reaper) and `dar-fyvw` (the deploy step does not verify that the `darlingserver` being
+copied was built for the target prefix, which cost an hour of bisecting a build that was in fact
+consistent).
 
 ## 9. Decision matrix
 
