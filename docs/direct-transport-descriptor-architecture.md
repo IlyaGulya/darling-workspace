@@ -871,6 +871,59 @@ thread named by `target_tid` and signals that thread; the target executes the me
 its own context, exactly as it does on the per-thread path. That is the V1 shape, and it is the
 shape this prototype implements.
 
+### The protocol-order bug, the fix, and what the fix exposed
+
+The prototype's first ordering was wrong and is now corrected. The old code resolved the control
+address into a **member** (`_usingControlAddress`) at the top of the critical section and then
+used that member again at the send site, and — for the control path — waited on
+`_s2cInterruptEnterSemaphore` **before** publishing the datagram. That is a protocol deadlock:
+the green light can only come from a target whose handler was entered, the handler is entered
+only because the receiver signalled it, and the receiver can only signal what it has received,
+which had not been sent yet. The member also let one S2C invocation's state decide the next
+one's signal/wait behaviour.
+
+The corrected state machine resolves the destination and the target TID into **locals** and, on
+the control path, publishes the call *before* the wait. The server never signals on the control
+path; the receiver owns that signal because only the receiver knows the payload has reached the
+mailbox. The legacy path is unchanged: with no control address the resolution yields false, the
+branch falls through to the stock signal-then-wait-then-send sequence, and the address is
+`_address` exactly as before.
+
+Ordering is now PROVEN in PRODUCT, from one boot with `DSERVER_S2C_TRACE=1` (all three actors
+print `CLOCK_MONOTONIC`, so their lines are directly comparable):
+
+```
+server   S2C_CONTROL_PREPARE   tid=1940492 s2c=2 munmap
+server   S2C_CONTROL_SENT                              t=…879255706
+server   S2C_CONTROL_WAIT_ENTER                        t=…879263851
+receiver PC_RECV               target_tid=1940492 fd=-1 t=…879337239
+receiver PC_MAILBOX_PUBLISHED                          t=…879347108
+receiver PC_TGKILL             rc=0                    t=…879359200
+target   PC_SIGNAL_ENTERED     signum=35
+target   PC_POP                hit=1 s2c=2 fd=-1       t=…879400268
+target   PC_REPLY_SENT         s2c=2 send_rc=28        t=…879477833
+server   S2C_CONTROL_REPLY_IN  tid=1940492 pending=0   t=…879956544
+```
+
+`SENT < RECV < MAILBOX_PUBLISHED < TGKILL < SIGNAL_ENTERED < POP < REPLY_SENT < REPLY_IN`, the
+target executed the operation in its own context, and its reply reached the server with no
+pending reply. The control path is no longer deadlocked.
+
+**What the fix exposed, and the next blocker.** `S2C_CONTROL_ENTERED` and `S2C_CONTROL_REPLY`
+never appear for either of the two S2C calls in that boot, so `_s2cPerform` does not resume from
+its interrupt-enter wait; and the trace shows why. The mailbox pop sits at the top of **every**
+`receive_message`, so the first receive that runs after publication takes the datagram — here
+that is the receive inside the guest's `interrupt_enter` RPC, not the receive inside
+`s2c_perform`. The operation therefore executes in the wrong logical phase: `PC_POP hit=1` and
+`PC_REPLY_SENT` precede `PC_INTERRUPT_ENTER`, the handler's own `s2c_perform` then finds an empty
+mailbox, and the server's `S2CPerform::processCall` — the only place that ups
+`_s2cInterruptEnterSemaphore` (`call.cpp:1406`) — never gets the green light it is waiting to
+give. The pop must be scoped to the S2C phase rather than to every receive.
+
+This is a real defect with a named mechanism and a named anchor, not a mystery: the next change
+is to make the mailbox pop conditional on the caller being the S2C path, and to re-run the four
+boot gates before any further measurement.
+
 ### PRODUCT result: the server half is behaviour-preserving; the guest half does not complete
 
 | Configuration | Result |
