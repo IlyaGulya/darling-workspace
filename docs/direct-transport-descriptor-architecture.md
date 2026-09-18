@@ -63,8 +63,15 @@ justification is withdrawn, and its remaining claim (descriptor ownership) has a
 same-process alternative whose only open question is the demultiplexer. Relay stays a
 fallback for a requirement not yet found.
 
-**Truthful NOFILE (Candidate A) is independent, required, and its patch is planned but not
-applied** (section 6). It does not solve O(threads) hidden descriptors, and it never claimed to.
+**Truthful NOFILE (Candidate A) is independent, required, and its drafted implementation is
+FALSIFIED** (section 8.6). Its patch is planned but not applied, and must be re-derived: the
+draft's reserved band above the published limit forces a recurring, process-wide raise of the
+real soft limit, during which any guest thread can obtain a descriptor above its advertised
+limit and inside the reserved band, while the guard protects neither. The deployed loader has
+no such window today — it contains no `setrlimit` at all — so the draft would trade a static
+defect for a dynamic one. Section 8.6 also records the source-backed repair options; the
+principled one deletes the raise by making the internal FD set O(1) with anchors created
+before guest execution, which is the same work as Gate B.
 
 ## 2. Source map
 
@@ -351,6 +358,11 @@ the lock-held window shows the hot path is independent - and the real server has
 
 ### 8.5 Truthful NOFILE: the patch plan (PLANNED, NOT APPLIED)
 
+**Superseded in part by section 8.6**: the plan below is the *reporting* half (which query paths
+must route through the loader) and remains valid, but its dynamic-allocation half — a reserved
+band above the published limit with the limit raised around each private allocation — is
+falsified and must be replaced by one of the A4 options. Read 8.6 before acting on this section.
+
 A runtime source change needs explicit approval; none was granted for this investigation, so
 nothing below has been applied.
 
@@ -409,12 +421,92 @@ Cost of Candidate A, stated plainly: the guest loses `reserve` numbers of capaci
 (~2047 threads at 2 loader fds per thread). Candidate A therefore **does not** remove
 O(threads) hidden descriptors; it makes the advertised range honest.
 
+## 8.6 HARD GATE A: the truthful-NOFILE draft is FALSIFIED on a process-wide race
+
+Verdict: **the drafted Candidate-A design is falsified as written.** It does not merely make the
+advertised range honest — it introduces a process-wide `RLIMIT_NOFILE` race that the *deployed*
+loader does not have today (the deployed loader contains **no `setrlimit`/`prlimit` call at
+all**, so it has no window).
+
+Mechanism, from the draft (`source-fixes/ring-fd-ownership`, uncommitted):
+
+- `private_fd_allocation_begin` (`mldr.c:637-665`) clamps the *saved* soft limit down to
+  `public_fd_hard_limit(rlim_max)`, publishes that value, and then **raises the real
+  process-wide soft limit to the hard limit** (`mldr.c:652-654`). `private_fd_allocation_end`
+  (`:667-676`) restores the **clamped** value — so after the first window the process soft limit
+  is permanently the public value and **every subsequent private allocation re-opens the
+  window**.
+- `socket_bitmap.mutex` is held across the window, but it is a *loader* mutex: no guest
+  fd-producing syscall takes it.
+- `__mldr_fd_is_internal` (`mldr.c:826-839`) is **bitmap membership only**: a free number inside
+  the reserved band is *not* internal, so `guard_table_check` does not protect the band.
+- Four begin/end sites (`:799`, `:870`, `:918`, `:1029`); **three of them run after a
+  multithreaded guest is executing**: per-thread RPC socket creation (`elfcalls/threads.c:241`,
+  refresh at `:430`), ring attach (`dserver-ring.c:323` → `adopt_ring_fd`), and lifetime-pipe
+  refresh (`elfcalls/elfcalls.c:83`). Each is a fresh window.
+- Loader fd-producing paths that bypass the registry mutex entirely: `elfcalls.c:95` `dlopen`,
+  `:119` `sem_open`, `:122` `shm_open`, all guest-invoked at runtime.
+- The query side is sound: `__mldr_get_nofile_limits`/`__mldr_set_nofile_limits` take the same
+  mutex and therefore cannot observe the raised state, and `__mldr_user_fd_limit` is a lock-free
+  atomic of the published value. The enforcement side is not.
+
+Deterministic proof, `tests/limit_window_race_proof/` (host and ordinary Docker, rc=0, marker
+`LIMIT_WINDOW_RACE_OK`, 12/12 claims, four mutation legs each exiting 1, and it is 3.7 s because
+the window is opened by barriers rather than by racing):
+
+| Claim | Result |
+|---|---|
+| R1 window exists | PASS — inside it the raw soft equals the hard limit while the published value stays low |
+| R2 `dup2` to a free high target | PASS — **succeeds inside the window** (`rc=6144`, in the reserved band) and fails `EBADF` outside; a free non-band target above the limit also fails outside |
+| R3 `F_DUPFD_CLOEXEC` with an explicit min | PASS — `fd=6145` inside, `EINVAL` outside |
+| R4 lowest-free vectors do not escalate | PASS — `open`/`socket`/`pipe`/`dup` return low numbers in *both* windows, so the exposure is exactly the explicit-target calls |
+| R5 the guard does not protect the band | PASS — guest-obtained 8191/6144 report `is_internal=0`; the loader took 8190 while the guest held 8191 and only took 8191 after the guest closed it |
+| R6 the raise is observable | PASS — an unrelated thread reads the raw soft at the hard value while the published value stays low; the loader-routed query blocks on the mutex instead |
+| S1–S6 lowered-limit semantics | PASS — a descriptor above a lowered soft limit stays fully usable; new lowest-free allocation stays below it; explicit targets at or above it are refused (`EBADF`, `EINVAL`); a loader-style private allocation above the guest limit still succeeds **because the real soft differs from the published one**; raise-to-hard succeeds and above-hard fails with `EPERM`; lowering does not disturb loader descriptors |
+
+The harness states its own limits: it models the draft's sequence line by line and executes the
+syscalls for real (`setrlimit`, `dup2`, `fcntl`, `open`, `socket`, `pipe2`, `getrlimit`), but it
+does not run mldr, and it normalizes the regime (hard 8192, published 4096, band
+`[4096,8192)`) while printing the original host and container values.
+
+### A4: source-backed options (decision matrix, not implemented)
+
+Completeness baseline for every option: the deployed product has **no single choke point** for
+fd creation. Only `close`, `dup`, `dup2`, `fcntl` and the `posix_spawn` CLOEXEC scan consult the
+guard; `open`/`openat`/`guarded_open_np`, `socket`, `socketpair`, `pipe`/`pipe2`, `accept`,
+`recvmsg` (`SCM_RIGHTS` installs), `kqueue`→`epoll_create`, every Linux-ext wrapper
+(`epoll`/`eventfd`/`inotify`/`signalfd`/`timerfd`/`fanotify`), `shm_open`, the `vchroot` helper
+opens and `_dup_4libkqueue` allocate **with no guard at all**, and `dup2`, `F_DUPFD*`,
+`posix_spawn` `PSFA_DUP2`/`PSFA_OPEN` take a **caller-chosen target number**.
+
+| Option | What it takes | Where it lands | Verdict |
+|---|---|---|---|
+| A4.1 serialize all guest FD creation | a shared lock held **across the syscall** in ~20 entry points, plus signal masking around each (the guard already shows why the check cannot be split from the act) | every program's fd-creation path, not the I/O path; no single enforcement point; each new wrapper re-opens the hole unless added to the list | possible, but the most invasive: it buys the same completeness obligation as A4.2 and additionally changes `EINTR`/restart semantics for the guest |
+| A4.2 virtual guest soft NOFILE | never raise; keep the real soft at hard and enforce the published value in code: explicit-target creators refuse `target >= published`; kernel-chosen creators post-check the returned number and close it with `EMFILE` (lowest-free never returns a high number unless the low space is exhausted, so this matches native `EMFILE` semantics rather than re-opening the old pre-filter `O_TRUNC` problem) | same completeness obligation as A4.1, **but no lock across the syscall and no signal-masking change** | strictly cheaper than A4.1 for the same burden; correctness depends on proving the creator list complete, which the audit above makes checkable but not free |
+| A4.3 stop-the-world barrier | guarantee that no guest thread is inside an fd-producing syscall while the limit is raised | nothing in the tree provides it: `prefork_prepare` and the server's quiesce machinery are cooperative points in Darling's own code, a thread already inside `open` cannot be pulled back, and suspending threads does not un-raise a process-wide attribute | **not available**; a signal-based design is not in the tree and must not be invented |
+| A4.4 remove the need for the raise | make the internal FD set O(1) with anchors created before guest execution (or at a controlled exec bootstrap), then set the native soft limit to the honest published value **once** and never raise | removes the race by construction instead of adding enforcement to ~20 syscall paths | the principled option; it *requires* the per-thread private FDs to disappear, i.e. it is the same work as Gate B. If they must stay, the honest variant is a static partition (publish `native - reserve`, allocate in the band only during bootstrap, and treat later needs as a clean hard failure rather than a race) |
+
+Recommendation: **A4.4 first**, because it is the only option that deletes the race rather than
+policing it, and its prerequisite is already the target of the transport work. If dynamic
+per-thread private FDs must persist, **A4.2** is the fallback — not A4.1, which pays the same
+completeness cost plus a signal-semantics change — and A4.3 is not a candidate until a mechanism
+exists.
+
+Not executed in this round: an **integration** race against the real draft (`A3`). The blocker
+is fidelity, not effort: the draft's parent commit `9ef131b2` is **not an ancestor** of either
+the darling HEAD or the deployed composition commit `73498c5a`, so applying it requires a
+disposable isolated checkout whose runtime is then *not* the deployed composition. A faithful
+integration would need an isolated west checkout, a runtime build with a test-only pause hook in
+the window, and a bootstrapped prefix — and it would confirm a window that the source audit and
+the deterministic proof already establish. Recorded as available-on-request with that cost.
+
 ## 9. Decision matrix
 
 | | A: truthful clamp | B: constant anchors, no relay | C: relay |
 |---|---|---|---|
-| Public FD range correct | **yes**, by construction (plan in §8.3) | yes | yes |
+| Public FD range correct | **yes**, but only if the raise is removed (drafted implementation falsified, §8.6) | yes | yes |
 | Hidden FDs | **O(threads)** | O(1) *if* the demultiplexer is built; O(threads) otherwise | O(1) in guest, O(threads) in companion |
+| New race introduced | **yes as drafted**: process-wide soft-limit raise, guest can exceed the published limit and enter the reserved band | none (no process-wide attribute is touched) | none beyond the companion's lifetime |
 | Constant anchors | n/a (unchanged) | 1 wake eventfd + 1 control UDS + checkout pipe + optional pre-5.3 lifetime pipe | 1 control UDS + checkout pipe |
 | Hot request path | unchanged (shared-memory lane) | unchanged | unchanged |
 | Cold wake cost | unchanged (product-measured: doorbell share 0.2248 single-threaded, collapsing to ~0 under load) | one eventfd write per cold wake, same mechanism as today but process-wide | relay hop on the cold path only |
