@@ -1200,6 +1200,137 @@ Only the first step is safe to do now; every later step is gated on evidence and
 4. **Relay remains a fallback** for a requirement not yet found; it must not be adopted on
    coalescing, cleanliness, or "zero guest transport FDs".
 
+## 13. Ring transport audit and the duplex lane (goal restated)
+
+**Target statement.** Ring is the default Darling RPC transport. Per-thread Unix-domain sockets are a
+migration artifact and are not part of the target architecture. Server-to-client operations are
+carried by a duplex per-thread Ring lane, both for active caller-S2C and idle asynchronous S2C.
+Unix-domain sockets may remain only as a process-wide SCM_RIGHTS courier for operations that transfer
+real Linux file descriptors; they do not carry ordinary RPC requests or replies.
+
+**Русский эквивалент.** Ring — штатный транспорт RPC. Per-thread UDS должен исчезнуть. UDS допустим
+только как один process-level courier для SCM_RIGHTS, но не как RPC fallback конечной архитектуры.
+
+### 13.1 Existing ABI map
+
+All of it is in `src/external/darlingserver/include/darlingserver/rpc-supplement.h`, behind
+`DSERVER_RING_TRANSPORT`.
+
+| Item | Anchor | Content |
+| --- | --- | --- |
+| ABI version | `rpc-supplement.h:183` | `5u` |
+| Mapping cap | `:260` | `DSERVER_RING_MAX_TOTAL_SIZE` 16 MiB |
+| Ring header | `:277-289` | `dserver_ring_t` `head`/`tail`, each on its own 64-byte line; producer owns `tail`, consumer owns `head` |
+| Slot | `:292-300` | `dserver_ring_slot_t {length, arena_off, arena_len, seq, callnum, flags}` |
+| Reply payload | `:686-688` | `dserver_ring_reply_hdr_t {int32 code}`, then the reply body verbatim |
+| Slot flags | `:371` | `DSERVER_RING_FLAG_REPLY_ERROR 0x1u` |
+| Control block | `:665-728` | magic, abi_version, slot_size/count, arena_off/size, c2s_ring_off, s2c_ring_off, total_size, guest_tid, `c2s_opcode_hash`, `c2s_futex`, `s2c_futex`, `server_state`, `s2c_waiters`, then the duplex mailbox |
+| Duplex mailbox | `:708-727` | `duplex_caps`, `duplex_upcall_ready/op/parent/id/arg/addr/len`, `duplex_reply_ready/parent/id/status/arg/errno` |
+| Wake predicates | `:744`, `:755` | `dserver_ring_guest_should_doorbell`, `dserver_ring_server_should_wake` |
+| Duplex helpers | `:770-850` | publish/observe/correlate/consume, pure functions shared by guest, server and host gates |
+| Caps | `:189-214` | `SELFTEST 0x1`, `DEALLOCATE 0x2`, `VM_DEALLOCATE 0x4`, `MUNMAP_PUMP = DEALLOCATE|VM_DEALLOCATE` |
+| Upcall shapes | `:225-231` | `ECHO 0x1`, `MUNMAP 0x2` |
+| C2S opcodes | `:457-488` | `task_self_trap`, `thread_self_trap`, `host_self_trap`, `mach_reply_port`, `mach_port_allocate`, `mach_port_insert_right`, `uidgid`, `set_thread_handles`, `started_suspended`, `get_tracer`, `task_is_64_bit`, `mldr_path`, `vchroot_path` |
+| Lane taxonomy | `:499-520` | Lane 0 UDS, Lane 1 simple ring, Lane 2 duplex ring, plus `dserver_ring_op_class()` and the canon-check |
+
+Server owner: `internal-include/darlingserver/ring.hpp` (`RingBuffer`: `_map`, `_size`, `FD _eventfd`,
+a validated copy of the control block; `publishReply`, `wakeGuest`, `liveControlBlock`,
+`duplexCapable`) and `src/ring.cpp` (`attach` fstats, maps RO, copies and validates the control block,
+maps RW, creates the eventfd, at `:67`/`:83`). Service loop: `ringServiceThread`
+(`src/call.cpp:1657-1952`), driven hot from the main-loop pre-epoll spin (`src/server.cpp:1191-1228`)
+and cold from the attach Monitor. Reply publication: `_publishReplyToRingLocked`
+(`src/thread.cpp:1979`), `pushCallReply` (`:2015`), `beginRingReply` (`:2233`).
+
+### 13.2 Lane and wake topology as built
+
+- **One lane per guest thread**, not per process: `gr_attach_lane(tid)` builds a memfd
+  (`dserver-ring.c:234`, `memfd_create("dring", MFD_CLOEXEC)` at `:259`) and negotiates it with
+  `ring_attach`. The lane table is `g_lanes[GR_MAX_LANES]` with `GR_MAX_LANES = 128`
+  (`dserver-ring.c:80`, `:103`), probed from a Knuth-multiplicative hash of the tid (`:135`).
+- Each lane is `[control block][c2s ring][s2c ring]` in one memfd.
+- **Per attached thread the guest holds exactly one transport fd**: the wake eventfd the server hands
+  back. The memfd is closed right after attach. The per-thread AF_UNIX RPC socket is independent of
+  the ring.
+- **Server side per lane**: one `dup` of the ring fd (`ring.cpp:67`) plus one eventfd
+  (`ring.cpp:83`) — so the server's transport fd count is O(threads) on both halves.
+- Wakes: guest→server is the per-lane eventfd (the c2s futex word is declared and **never written**);
+  server→guest is an `s2c_futex` bump plus a conditional `FUTEX_WAKE` gated by `s2c_waiters`.
+- **The arena is declared and bound-checked but not implemented.** Both sides hard-code
+  `arena_off = 0` / `arena_size = 0`, and an oversized body is rejected rather than arena-routed.
+
+### 13.3 Duplex lane: built, wired, and test-gated
+
+`_s2cPerform` (`src/thread.cpp:1143`) has three layers: the active-call/interrupt guard
+(`_activeCall`), the ring duplex branch (`_ringDuplexParentActive && expectedReplyNumber ==
+dserver_s2c_msgnum_munmap`), and the UDS fallback. The duplex machinery is complete —
+`_s2cTryDuplexLocked` (`:1347`), `_s2cTryDuplexMunmapLocked` (`:1634`), `_drainDuplexReply` (`:1407`),
+`setRingDuplexParentActive` (`:1686`), the fiber resume through `_s2cReplySempahore` — and the guest
+pump `gr_duplex_pump_once` (`dserver-ring.c:905`) handles both ECHO and MUNMAP, with the parked
+caller waiting in `gr_duplex_wait_reply` (`:961`). Host gates exist and are RED→GREEN:
+`ring_duplex_wake_gate_test.c`, `ring_duplex_dealloc_gate_test.c`,
+`ring_duplex_vm_dealloc_gate_test.c`, `run-duplex-real-selftest.sh`.
+
+**The decisive audit answer: no S2C operation travels on any ring today.** Every real S2C still goes
+over the Unix socket (`Server::sendMessage` → `_outbox.push` `server.cpp:1332-1334` →
+`sendMany(_listenerSocket)` `:868`), with the duplex mailbox the single gated exception: it is
+reachable only for the synthetic SELFTEST ECHO and for a real munmap under the deallocate /
+vm_deallocate proof harness. There is also **no guest consumer of an unsolicited S2C from the s2c
+ring** — the s2c ring is only ever read as the correlated reply to a request that same thread
+published.
+
+### 13.4 `callnum 38` identity and the caller-S2C measured in PRODUCT
+
+`dserver_callnum_mach_msg_overwrite = 38U` (generated header
+`<build>/src/external/darlingserver/include/darlingserver/rpc.h:76`). So the caller-S2C that failed in
+the process-control prototype was raised while the server was servicing a **blocking
+`mach_msg_overwrite`**, on a target that was also the caller (`active_call_present=1`,
+`current_thread_is_target=1`). `mach_msg_overwrite` is **not** in `DSERVER_RING_C2S_OPCODES`.
+
+**This couples R2 to R5 by measurement, not by preference.** The duplex lane for caller-S2C is
+already built; what is missing for the case that actually occurs in PRODUCT is that its *parent*
+cannot ride the ring at all. Demonstrating "active caller-S2C over the duplex Ring with zero UDS"
+therefore requires the blocking-RPC ring transport first, because the ring has no reverse-direction
+consumer for an unsolicited S2C and the mailbox only covers one shape.
+
+### 13.5 Minimal duplex extension proposed (design, not built)
+
+Keep the existing mailbox protocol and correlation discipline; do not add a second mechanism. The
+minimal durable extension is to make the **s2c ring itself** able to carry an S2C operation, which the
+slot already permits:
+
+- New `DSERVER_RING_FLAG_S2C_OP 0x2u` on `dserver_ring_slot_t.flags` (bit 0 is already taken by
+  `REPLY_ERROR`). A slot so flagged is a server-initiated operation, not a reply.
+- Its payload is a fixed `{uint32 parent_seq; uint32 s2c_seq; uint32 op; uint32 reserved; uint64 arg0;
+  uint64 arg1}` — enough for munmap/mprotect/msync and extensible to mmap with an `fd_token` instead
+  of a descriptor.
+- The guest's wait loop becomes a single consumer that branches on the flag: `S2C_OP` → execute
+  locally, publish completion on the c2s ring, continue waiting; otherwise → the correlated reply for
+  the thread's own request.
+- Completion returns on the c2s ring as a new flagged item type carrying `{parent_seq, s2c_seq,
+  status, errno}`, consumed by the ring service loop and matched against the deferred parent.
+- Correlation is `(parent_seq, s2c_seq, lane_generation, process_generation)`; `lane_generation` and
+  `process_generation` do not exist in the control block yet and are required for the reuse and
+  fork/exec rules in §19.
+- The single-outstanding invariant stays as the *first* implementation (the mailbox already proves
+  it); queuing is what the ring slot buys and is a later step.
+
+`parent_seq` is the missing correlation field today: the mailbox uses a monotonic `_duplexNextId` that
+is not tied to the request that triggered the upcall, which is acceptable for one outstanding upcall
+but not for a lane that also carries replies.
+
+### 13.6 Roadmap correction
+
+The restated goal does not change R1–R12's order, but it changes what R2 can mean:
+
+- **R2a, doable now**: un-gate the existing duplex lane for real `mach_port_deallocate` /
+  `vm_deallocate` parents and prove a PRODUCT transaction — request, S2C, completion and reply all on
+  the ring, zero UDS for that transaction — with the `ring_*` counters. This is W3 for a parent that
+  qualifies today.
+- **R2b, the measured case**: blocked behind R5. `mach_msg_overwrite` must first ride the ring with a
+  futex park and a reverse-direction consumer; that consumer is the same missing piece R2b needs, so
+  R5 delivers R2b rather than the reverse.
+- No part of the process-control UDS prototype is on this path. It stays as a semantics oracle.
+
 ## 12. Repository state
 
 - Product source: **untouched**. No commit, no branch, no push.
