@@ -9,8 +9,8 @@
 # limit around every private allocation, publishes a clamped LOW value to the
 # guest, and its guard predicate tests bitmap membership only.
 #
-# It prints one line per claim (R1..R6, S1..S6) in each environment; this runner
-# prints LIMIT_WINDOW_RACE_OK.  Any failure exits non-zero.
+# It prints one line per claim (R1..R6, S1..S6, T1..T5) in each environment; this
+# runner prints LIMIT_WINDOW_RACE_OK.  Any failure exits non-zero.
 #
 #   R1 MUST PASS  the window exists: thread B's open() during the window
 #                 returns a descriptor, the soft limit B reads is the HARD
@@ -30,14 +30,33 @@
 #                 inside the window while the published value stays low.
 #   S1..S6 MUST PASS  the lowered-soft-limit semantics a truthful-limit design
 #                 must preserve (see the harness header).
+#   T1..T5 MUST PASS  the corrected scope of the exposure.  R4 shows that the
+#                 lowest-free vectors stay low, but it measures a FREE low
+#                 range; T1..T5 repeat exactly those four vectors (open,
+#                 socket, pipe2, dup; none names a target) with EVERY descriptor
+#                 number below the published limit occupied:
+#                 T1 the low range is saturated by the harness itself (count
+#                    reported, full occupancy enumerated, a further lowest-free
+#                    allocation fails EMFILE);
+#                 T2 the draft's setrlimit window really opens over it (raw soft
+#                    read back at the hard limit, published value unchanged);
+#                 T3 all four kernel-chosen vectors escalate into
+#                    [published, hard) -- R4's vectors, exhausted low range;
+#                 T4 after the restore the same four calls fail EMFILE/ENFILE
+#                    while the low range stays saturated;
+#                 T5 the corrected general statement: any kernel-chosen
+#                    allocation can enter the reserved band once the low range is
+#                    exhausted, so the exposure belongs to the whole allocation
+#                    surface, not to caller-chosen targets.
 #
 # The harness must be able to FAIL: after the clean runs this runner builds four
 # deliberate mutations of the model (only in its temporary directory, never in
 # the repository) and requires the named claims to go red:
 #   M1 the temporary raise is removed, the private allocation happens at the
-#      published limit as the deployed loader does  -> R2, R3 and R6 red
-#      (this is the negative control the design's claim rests on; it runs in
-#      both environments)
+#      published limit as the deployed loader does  -> R2, R3 and R6 red, and
+#      with them the saturated-low-range legs T2, T3 and T5 (this is the
+#      negative control the design's claim rests on; it runs in both
+#      environments)
 #   M2 the guard protects the reserved band          -> R5 red
 #   M3 the window never closes (no restore)          -> R2, R3 red
 #   M4 the guest-visible query follows the raw limit -> R1, R6 red
@@ -127,7 +146,7 @@ run_leg() {
 	cat "$log"
 
 	[ "$rc" = "0" ] || fail "$label: harness exited $rc"
-	for i in R1 R2 R3 R4 R5 R6 S1 S2 S3 S4 S5 S6; do
+	for i in R1 R2 R3 R4 R5 R6 S1 S2 S3 S4 S5 S6 T1 T2 T3 T4 T5; do
 		if ! grep -qE "^$i PASS " "$log"; then
 			fail "$label: claim $i did not pass"
 		fi
@@ -143,7 +162,17 @@ run_leg() {
 		fail "$label: R5 did not measure the number crossing ownership domains"
 	grep -qE '^S4 PASS .*REQUIRES the real soft to differ' "$log" ||
 		fail "$label: S4 did not state the condition the private allocation needs"
-	note "$label: R1..R6, S1..S6 all PASS"
+	# the saturated-low-range leg: every number below the published limit is
+	# occupied, so the lowest free number IS the published limit and the four
+	# kernel-chosen vectors must take 4096..4100 in order (they cannot land
+	# anywhere else once the low range is full)
+	grep -qE '^T1 PASS .*4096/4096 numbers below the published limit open \(no free slot\)' "$log" ||
+		fail "$label: T1 did not leave the low range with no free slot"
+	grep -qE '^INFO saturated window: begin_rc=0; raw soft 4096 -> 8192 \(hard=8192\) while published 4096 -> 4096; lowest-free vectors inside the window: open=4096 socket=4097 pipe=4098,4099 dup=4100$' "$log" ||
+		fail "$label: the kernel-chosen vectors did not all escalate from the published limit"
+	grep -qE '^T5 PASS .*property of the whole allocation surface, not of caller-chosen targets' "$log" ||
+		fail "$label: T5 did not state the corrected general statement"
+	note "$label: R1..R6, S1..S6, T1..T5 all PASS"
 }
 
 run_leg host env LWR_ENV=host "$bin" all
@@ -236,9 +265,13 @@ expect_failure() {  # $1 = label, $2 = comma-separated claims, $3.. = command
 	note "$label: $want failed as designed"
 }
 
-# (a) the mutation the design's claim rests on, in both environments
-expect_failure host-raise-removed R2,R3,R6 env LWR_ENV=host "$work/mut_raise-removed" all
-expect_failure docker-raise-removed R2,R3,R6 docker "${docker_args[@]}" "$image" \
+# (a) the mutation the design's claim rests on, in both environments: without the
+# temporary raise the private allocation happens at the published limit, and the
+# saturated-low-range leg loses its escalation as well (T2 never opens the
+# window, T3's kernel-chosen vectors stay refused, and T5 - whose statement is
+# exactly what T3 measures - cannot hold)
+expect_failure host-raise-removed R2,R3,R6,T2,T3,T5 env LWR_ENV=host "$work/mut_raise-removed" all
+expect_failure docker-raise-removed R2,R3,R6,T2,T3,T5 docker "${docker_args[@]}" "$image" \
 	env LWR_ENV=docker /proof/mut_raise-removed all
 
 # (b) the other three premises, host only

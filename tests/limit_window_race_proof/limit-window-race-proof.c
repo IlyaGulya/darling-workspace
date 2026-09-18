@@ -74,9 +74,44 @@
  *                 limit that is not the published one (the loader's own routed
  *                 query would block on socket_bitmap.mutex instead).
  *
+ * T1..T5 correct the scope of that finding.  R2/R3/R5 escalate through calls
+ * that NAME a target (dup2, F_DUPFD_CLOEXEC with an explicit min) and R4 shows
+ * that the vectors which take the lowest free number stay below the published
+ * limit -- but R4 measures a NON-saturated low range, where the lowest free
+ * number is simply a low one.  The escalation is therefore not a property of a
+ * caller that chose a target; it is a property of the low range being exhausted:
+ *
+ *   T1 MUST PASS  with the published soft limit at 4096, EVERY free descriptor
+ *                 number below it is occupied by the harness itself (the number
+ *                 taken and the resulting full occupancy are reported by fstat
+ *                 enumeration: published/published numbers below the limit are
+ *                 open, no free slot), and a further lowest-free allocation
+ *                 then fails natively with EMFILE.
+ *   T2 MUST PASS  over that saturated low range the draft's window opens
+ *                 exactly as drafted: begin() really raises the process-wide
+ *                 soft limit to the hard limit (read back with getrlimit) while
+ *                 the published value stays at the low one; end() restores it.
+ *   T3 MUST PASS  INSIDE that window exactly the same four vectors R4 uses --
+ *                 open, socket, pipe2 and dup, NONE of which names a target --
+ *                 all escalate: every descriptor they obtain lands in
+ *                 [published, hard), the band the loader reserved for itself.
+ *                 Each number is printed.  R4 and T3 are the same measurement
+ *                 over a free and over an exhausted low range, and together
+ *                 they are the correction.
+ *   T4 MUST PASS  after the restore the same four calls fail with the native
+ *                 failure (EMFILE/ENFILE, errno printed for each) while the low
+ *                 range stays saturated -- so it is the window, not the
+ *                 saturation, that let T3 through.
+ *   T5 MUST PASS  the corrected general statement (carried in the claim text):
+ *                 ANY kernel-chosen allocation enters the reserved band once
+ *                 the low range is exhausted and the window is open, so the
+ *                 exposure belongs to the whole allocation surface, not to
+ *                 caller-chosen targets.  T3 and T4 are its evidence, and the
+ *                 claim is green only when their measurements are green.
+ *
  * Part 2 (the runner) mutates a copy of this model in its temporary directory
  * and requires the named claims to go red; the load-bearing mutation removes
- * the temporary raise and requires R2, R3 and R6 to fail.
+ * the temporary raise and requires R2, R3, R6 -- and T2, T3, T5 -- to fail.
  *
  * Part 3 pins the semantics a truthful-limit design must preserve, using the
  * same model's loader-mediated setter (__mldr_set_nofile_limits, mldr.c:701-736)
@@ -149,7 +184,7 @@
 /* claim bookkeeping                                                   */
 /* ------------------------------------------------------------------ */
 
-#define NCLAIMS 12
+#define NCLAIMS 17
 #define DET_MAX 768
 
 static int g_ok[NCLAIMS + 1];
@@ -171,6 +206,11 @@ static const char *claim_label(int i)
 	case 10: return "S4";
 	case 11: return "S5";
 	case 12: return "S6";
+	case 13: return "T1";
+	case 14: return "T2";
+	case 15: return "T3";
+	case 16: return "T4";
+	case 17: return "T5";
 	default: return "?";
 	}
 }
@@ -190,6 +230,11 @@ static const char *claim_name(int i)
 	case 10: return "private allocation above the guest limit";
 	case 11: return "soft-limit raise contract";
 	case 12: return "lowering does not disturb loader descriptors";
+	case 13: return "saturated low range: every number below the published limit is occupied";
+	case 14: return "the draft's window really opens over the saturated low range";
+	case 15: return "kernel-chosen allocations escalate inside the window";
+	case 16: return "after the restore the same calls fail natively while still saturated";
+	case 17: return "the exposure belongs to the whole allocation surface, not to caller-chosen targets";
 	default: return "?";
 	}
 }
@@ -1117,6 +1162,311 @@ static void phase_band_consequence(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Part 1b: the SAME window over a SATURATED low range (T1..T5)        */
+/*                                                                     */
+/* R2/R3/R5 escalate through calls that name a target, and R4 shows     */
+/* that the lowest-free vectors stay low -- but R4 measures a FREE low  */
+/* range.  This phase occupies every descriptor number below the        */
+/* published limit, opens the same window, and repeats exactly R4's     */
+/* four vectors (open, socket, pipe2, dup; none names a target).        */
+/* ------------------------------------------------------------------ */
+
+#define SAT_MAX 8192
+
+static int g_sat_fds[SAT_MAX];
+
+typedef struct sat_state {
+	rlim_t published;
+	rlim_t hard;
+
+	/* T1 */
+	size_t open_before;      /* occupied numbers below published, before */
+	size_t taken;            /* descriptors the fill loop obtained */
+	int fill_errno;
+	size_t open_after_fill;
+	int further_open;        /* a further lowest-free allocation */
+	int further_errno;
+
+	/* T2 */
+	int begin_rc;
+	int begin_errno;
+	rlim_t raw_before;
+	rlim_t raw_in;
+	rlim_t raw_after;
+	uint64_t published_in;
+
+	/* T3: the lowest-free vectors, inside the window */
+	int win_open;
+	int win_socket;
+	int win_pipe[2];
+	int win_dup;
+
+	/* T4: the same vectors, after the restore */
+	int out_open;
+	int out_open_errno;
+	int out_socket;
+	int out_socket_errno;
+	int out_pipe[2];
+	int out_pipe_errno;
+	int out_dup;
+	int out_dup_errno;
+	size_t open_after_restore;
+
+	/* cleanup */
+	size_t open_after_cleanup;
+} sat_state_t;
+
+static sat_state_t S;
+
+/* Occupancy measured from the harness itself: fstat reports every open
+ * descriptor, whatever its type. */
+static size_t occupied_below(rlim_t limit)
+{
+	size_t count = 0;
+	struct stat st;
+
+	for (int fd = 0; (rlim_t)fd < limit; fd++)
+		if (fstat(fd, &st) == 0)
+			count++;
+	return count;
+}
+
+static int sat_in_band(const sat_state_t *s, int fd)
+{
+	return fd >= 0 && (rlim_t)fd >= s->published && (rlim_t)fd < s->hard;
+}
+
+static void phase_saturated_low_range(void)
+{
+	private_fd_allocation_t allocation;
+	size_t i;
+
+	S.published = W.low;
+	S.hard = W.hard;
+
+	printf("INFO saturated regime: published=%lu hard=%lu (the regime "
+	       "phase 1 normalized; the harness holds no descriptor at or above "
+	       "the published limit)\n",
+	       (unsigned long)S.published, (unsigned long)S.hard);
+	fflush(stdout);
+
+	/* ---------------- T1: occupy every free number below the limit ---- */
+	S.open_before = occupied_below(S.published);
+	for (;;) {
+		/* F_DUPFD_CLOEXEC from 0 always takes the LOWEST free number */
+		int fd = fcntl(g_guest_source, F_DUPFD_CLOEXEC, 0);
+
+		if (fd < 0) {
+			S.fill_errno = errno;
+			break;
+		}
+		if (S.taken >= SAT_MAX)
+			die("saturation ledger overflow");
+		g_sat_fds[S.taken++] = fd;
+	}
+	S.open_after_fill = occupied_below(S.published);
+	errno = 0;
+	S.further_open = open("/dev/null", O_RDONLY | O_CLOEXEC);
+	S.further_errno = errno;
+
+	verdict(13, S.fill_errno == EMFILE &&
+		S.open_before + S.taken == (size_t)S.published &&
+		S.open_after_fill == (size_t)S.published &&
+		S.further_open < 0 && S.further_errno == EMFILE,
+		"published=%lu hard=%lu: %lu of the %lu numbers below the "
+		"published limit were already open, the fill loop took %lu more "
+		"with F_DUPFD_CLOEXEC from 0 and stopped with %s(%d); fstat "
+		"enumeration now finds %lu/%lu numbers below the published limit "
+		"open (no free slot) and a further lowest-free open() -> %d "
+		"(%s)",
+		(unsigned long)S.published, (unsigned long)S.hard,
+		(unsigned long)S.open_before, (unsigned long)S.published,
+		(unsigned long)S.taken, strerror(S.fill_errno), S.fill_errno,
+		(unsigned long)S.open_after_fill, (unsigned long)S.published,
+		S.further_open, strerror(S.further_errno));
+
+	/* ---------------- T2/T3: the draft's window over that range ------ */
+	S.win_open = -1;
+	S.win_socket = -1;
+	S.win_pipe[0] = -1;
+	S.win_pipe[1] = -1;
+	S.win_dup = -1;
+	S.raw_before = read_raw_soft_limit();
+	S.begin_rc = model_private_fd_allocation_begin(&allocation);
+	S.begin_errno = errno;
+	S.raw_in = read_raw_soft_limit();
+	S.published_in = model_user_fd_limit();
+	if (S.begin_rc == 0) {
+		/* R4's four vectors, unchanged: nothing here names a target */
+		S.win_open = open("/dev/null", O_RDONLY | O_CLOEXEC);
+		S.win_socket = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+		S.win_pipe[0] = -1;
+		S.win_pipe[1] = -1;
+		if (pipe2(S.win_pipe, O_CLOEXEC) < 0) {
+			S.win_pipe[0] = -1;
+			S.win_pipe[1] = -1;
+		}
+		S.win_dup = dup(g_guest_source);
+	}
+
+	printf("INFO saturated window: begin_rc=%d; raw soft %lu -> %lu "
+	       "(hard=%lu) while published %lu -> %lu; lowest-free vectors "
+	       "inside the window: open=%d socket=%d pipe=%d,%d dup=%d\n",
+	       S.begin_rc, (unsigned long)S.raw_before, (unsigned long)S.raw_in,
+	       (unsigned long)S.hard, (unsigned long)S.published,
+	       (unsigned long)S.published_in, S.win_open, S.win_socket,
+	       S.win_pipe[0], S.win_pipe[1], S.win_dup);
+	fflush(stdout);
+
+	verdict(14, S.begin_rc == 0 && S.raw_before == S.published &&
+		S.raw_in == S.hard && S.published_in == (uint64_t)S.published,
+		"with the low range saturated: real soft limit before=%lu; "
+		"inside the draft's window real soft=%lu (hard=%lu) while the "
+		"published value stayed %lu; the requirement is that the draft's "
+		"setrlimit(RLIMIT_NOFILE, soft=hard) window is really open over the "
+		"exhausted low range",
+		(unsigned long)S.raw_before, (unsigned long)S.raw_in,
+		(unsigned long)S.hard, (unsigned long)S.published_in);
+
+	verdict(15, sat_in_band(&S, S.win_open) &&
+		sat_in_band(&S, S.win_socket) &&
+		sat_in_band(&S, S.win_pipe[0]) &&
+		sat_in_band(&S, S.win_pipe[1]) &&
+		sat_in_band(&S, S.win_dup),
+		"window open over the saturated low range (published=%lu "
+		"hard=%lu): the kernel-chosen vectors that name NO target "
+		"allocated open=%d socket=%d pipe2=%d,%d dup=%d -- the requirement "
+		"is that every one lands in [%lu,%lu), the band the loader reserved "
+		"for itself (R4 measures the same vectors over a FREE low range and "
+		"they stay below the published limit)",
+		(unsigned long)S.published, (unsigned long)S.hard, S.win_open,
+		S.win_socket, S.win_pipe[0], S.win_pipe[1], S.win_dup,
+		(unsigned long)S.published, (unsigned long)S.hard);
+
+	/* the guest releases what it obtained; the loader's registry never
+	 * knew these numbers (that is R5), so nothing is put back there */
+	if (S.win_open >= 0)
+		close(S.win_open);
+	if (S.win_socket >= 0)
+		close(S.win_socket);
+	if (S.win_pipe[0] >= 0)
+		close(S.win_pipe[0]);
+	if (S.win_pipe[1] >= 0)
+		close(S.win_pipe[1]);
+	if (S.win_dup >= 0)
+		close(S.win_dup);
+	if (S.begin_rc == 0)
+		model_private_fd_allocation_end(&allocation);
+	S.raw_after = read_raw_soft_limit();
+
+	/* ---------------- T4: the same vectors, window closed ------------ */
+	S.open_after_restore = occupied_below(S.published);
+	errno = 0;
+	S.out_open = open("/dev/null", O_RDONLY | O_CLOEXEC);
+	S.out_open_errno = errno;
+	errno = 0;
+	S.out_socket = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	S.out_socket_errno = errno;
+	S.out_pipe[0] = -1;
+	S.out_pipe[1] = -1;
+	errno = 0;
+	if (pipe2(S.out_pipe, O_CLOEXEC) < 0) {
+		S.out_pipe[0] = -1;
+		S.out_pipe[1] = -1;
+		S.out_pipe_errno = errno;
+	}
+	errno = 0;
+	S.out_dup = dup(g_guest_source);
+	S.out_dup_errno = errno;
+
+	printf("INFO saturated after restore: raw soft=%lu; open=%d %s(%d) "
+	       "socket=%d %s(%d) pipe2=%d,%d %s(%d) dup=%d %s(%d); numbers below "
+	       "the published limit open=%lu/%lu\n",
+	       (unsigned long)S.raw_after, S.out_open,
+	       strerror(S.out_open_errno), S.out_open_errno, S.out_socket,
+	       strerror(S.out_socket_errno), S.out_socket_errno, S.out_pipe[0],
+	       S.out_pipe[1], strerror(S.out_pipe_errno), S.out_pipe_errno,
+	       S.out_dup, strerror(S.out_dup_errno), S.out_dup_errno,
+	       (unsigned long)S.open_after_restore, (unsigned long)S.published);
+	fflush(stdout);
+
+	verdict(16, S.raw_after == S.published &&
+		S.open_after_restore == (size_t)S.published &&
+		S.out_open < 0 &&
+		(S.out_open_errno == EMFILE || S.out_open_errno == ENFILE) &&
+		S.out_socket < 0 &&
+		(S.out_socket_errno == EMFILE || S.out_socket_errno == ENFILE) &&
+		S.out_pipe[0] < 0 && S.out_pipe[1] < 0 &&
+		(S.out_pipe_errno == EMFILE || S.out_pipe_errno == ENFILE) &&
+		S.out_dup < 0 &&
+		(S.out_dup_errno == EMFILE || S.out_dup_errno == ENFILE),
+		"after the restore (real soft back to %lu): open -> %d %s(%d); "
+		"socket -> %d %s(%d); pipe2 -> %d,%d %s(%d); dup -> %d %s(%d) -- "
+		"the native per-process failure, with the low range still "
+		"saturated (%lu/%lu numbers below the published limit open)",
+		(unsigned long)S.raw_after, S.out_open,
+		strerror(S.out_open_errno), S.out_open_errno, S.out_socket,
+		strerror(S.out_socket_errno), S.out_socket_errno, S.out_pipe[0],
+		S.out_pipe[1], strerror(S.out_pipe_errno), S.out_pipe_errno,
+		S.out_dup, strerror(S.out_dup_errno), S.out_dup_errno,
+		(unsigned long)S.open_after_restore, (unsigned long)S.published);
+
+	/* ---------------- T5: the corrected general statement ------------ */
+	{
+		int escalated_in_window =
+			sat_in_band(&S, S.win_open) &&
+			sat_in_band(&S, S.win_socket) &&
+			sat_in_band(&S, S.win_pipe[0]) &&
+			sat_in_band(&S, S.win_pipe[1]) &&
+			sat_in_band(&S, S.win_dup);
+		int refused_outside =
+			S.out_open < 0 &&
+			(S.out_open_errno == EMFILE ||
+			 S.out_open_errno == ENFILE) &&
+			S.out_socket < 0 &&
+			(S.out_socket_errno == EMFILE ||
+			 S.out_socket_errno == ENFILE) &&
+			S.out_pipe[0] < 0 && S.out_pipe[1] < 0 &&
+			(S.out_pipe_errno == EMFILE ||
+			 S.out_pipe_errno == ENFILE) &&
+			S.out_dup < 0 &&
+			(S.out_dup_errno == EMFILE || S.out_dup_errno == ENFILE);
+
+		verdict(17, escalated_in_window && refused_outside &&
+			S.raw_in == S.hard && S.raw_after == S.published &&
+			S.open_after_restore == (size_t)S.published,
+			"GENERAL STATEMENT (corrected): ANY kernel-chosen allocation "
+			"(open, socket, pipe2, dup -- none of them naming a target) "
+			"enters the reserved band [%lu,%lu) once the low range below "
+			"the published limit is exhausted and the loader's window is "
+			"open: here open=%d socket=%d pipe2=%d,%d dup=%d inside the "
+			"window, while after the restore the same four calls fail %s"
+			"(%d) each with %lu/%lu numbers below the published limit still "
+			"open -- the window, not the saturation, lets them through, and "
+			"the exposure is a property of the whole allocation surface, "
+			"not of caller-chosen targets; dup2 and F_DUPFD_CLOEXEC merely "
+			"demonstrate it WITHOUT exhausting the low range",
+			(unsigned long)S.published, (unsigned long)S.hard, S.win_open,
+			S.win_socket, S.win_pipe[0], S.win_pipe[1], S.win_dup,
+			strerror(S.out_open_errno), S.out_open_errno,
+			(unsigned long)S.open_after_restore,
+			(unsigned long)S.published);
+	}
+
+	/* ---------------- return the low range to the later phases ------- */
+	for (i = 0; i < S.taken; i++)
+		close(g_sat_fds[i]);
+	S.taken = 0;
+	S.open_after_cleanup = occupied_below(S.published);
+	printf("INFO saturated cleanup: closed every saturation descriptor; "
+	       "numbers below the published limit open=%lu/%lu (the low range is "
+	       "free again and the reserved band is untouched)\n",
+	       (unsigned long)S.open_after_cleanup,
+	       (unsigned long)S.published);
+	fflush(stdout);
+}
+
+/* ------------------------------------------------------------------ */
 /* Part 3: lowered soft-limit semantics                                */
 /* ------------------------------------------------------------------ */
 
@@ -1441,6 +1791,7 @@ int main(int argc, char **argv)
 	fflush(stdout);
 
 	phase_window();
+	phase_saturated_low_range();
 	phase_lowered_limit();
 
 	print_claims();
