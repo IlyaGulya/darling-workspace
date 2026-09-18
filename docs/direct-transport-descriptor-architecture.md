@@ -469,6 +469,22 @@ syscalls for real (`setrlimit`, `dup2`, `fcntl`, `open`, `socket`, `pipe2`, `get
 does not run mldr, and it normalizes the regime (hard 8192, published 4096, band
 `[4096,8192)`) while printing the original host and container values.
 
+**Correction to the R4 wording (T1–T5).** R4 showed that the lowest-free vectors *do not*
+escalate while free numbers exist below the published limit — but that is a property of a free
+low range, not of the vectors. With the low range saturated (all 4096 numbers below the
+published limit occupied), inside the same window the kernel-chosen vectors escalate exactly
+like the explicit-target ones:
+
+```
+T3 window open, low range saturated: open=4096 socket=4097 pipe2=4098,4099 dup=4100
+   (every one inside the loader's reserved band [4096,8192))
+T4 after the restore, still saturated:  open/socket/pipe2/dup all -1 EMFILE
+```
+
+So the exposure belongs to the **whole allocation surface**, not to caller-chosen targets;
+caller-chosen targets merely demonstrate it without needing the low range filled first. Any
+statement of this defect must be phrased in that general form.
+
 ### A4: source-backed options (decision matrix, not implemented)
 
 Completeness baseline for every option: the deployed product has **no single choke point** for
@@ -482,15 +498,43 @@ opens and `_dup_4libkqueue` allocate **with no guard at all**, and `dup2`, `F_DU
 | Option | What it takes | Where it lands | Verdict |
 |---|---|---|---|
 | A4.1 serialize all guest FD creation | a shared lock held **across the syscall** in ~20 entry points, plus signal masking around each (the guard already shows why the check cannot be split from the act) | every program's fd-creation path, not the I/O path; no single enforcement point; each new wrapper re-opens the hole unless added to the list | possible, but the most invasive: it buys the same completeness obligation as A4.2 and additionally changes `EINTR`/restart semantics for the guest |
-| A4.2 virtual guest soft NOFILE | never raise; keep the real soft at hard and enforce the published value in code: explicit-target creators refuse `target >= published`; kernel-chosen creators post-check the returned number and close it with `EMFILE` (lowest-free never returns a high number unless the low space is exhausted, so this matches native `EMFILE` semantics rather than re-opening the old pre-filter `O_TRUNC` problem) | same completeness obligation as A4.1, **but no lock across the syscall and no signal-masking change** | strictly cheaper than A4.1 for the same burden; correctness depends on proving the creator list complete, which the audit above makes checkable but not free |
+| A4.2 virtual guest soft NOFILE | never raise; keep the real soft at hard and enforce the published value in code: explicit-target creators refuse `target >= published`, kernel-chosen creators would have to post-check the returned number and close it with `EMFILE` | same completeness obligation as A4.1; the post-check is **not semantics-preserving** (see below), so each creator needs a real interception scheme or must be excluded | **not a ready fallback.** Measured on this host: native `EMFILE` stops the operation *before* the file side effect, so a post-filter leaves behind exactly what native behaviour prevents. Correctness would additionally depend on proving the creator list complete |
 | A4.3 stop-the-world barrier | guarantee that no guest thread is inside an fd-producing syscall while the limit is raised | nothing in the tree provides it: `prefork_prepare` and the server's quiesce machinery are cooperative points in Darling's own code, a thread already inside `open` cannot be pulled back, and suspending threads does not un-raise a process-wide attribute | **not available**; a signal-based design is not in the tree and must not be invented |
 | A4.4 remove the need for the raise | make the internal FD set O(1) with anchors created before guest execution (or at a controlled exec bootstrap), then set the native soft limit to the honest published value **once** and never raise | removes the race by construction instead of adding enforcement to ~20 syscall paths | the principled option; it *requires* the per-thread private FDs to disappear, i.e. it is the same work as Gate B. If they must stay, the honest variant is a static partition (publish `native - reserve`, allocate in the band only during bootstrap, and treat later needs as a clean hard failure rather than a race) |
 
+**A4.2 is not a ready fallback — measured, not argued.** On this host (kernel 6.8.0-138),
+with the low descriptor range genuinely exhausted (`RLIMIT_NOFILE` soft 64, all numbers below
+it occupied), the native failure happens *before* the file side effect:
+
+```
+CASE trunc  open(path, O_WRONLY|O_TRUNC)      rc=-1 errno=24 EMFILE  size_after=10   (unchanged)
+CASE creat  open(path, O_CREAT|O_WRONLY)      rc=-1 errno=24 EMFILE  FILE_CREATED=0
+CASE excl   open(path, O_CREAT|O_EXCL|O_WRONLY) rc=-1 errno=24 EMFILE  FILE_CREATED=0
+CASE socket socket(AF_INET, SOCK_STREAM)      rc=-1 errno=24 EMFILE
+CASE pipe   pipe()                            rc=-1 errno=24 EMFILE
+```
+
+The kernel reserves the descriptor number before the path is opened, so `O_TRUNC` does not
+truncate and `O_CREAT` does not create. A userspace post-filter that performs the syscall and
+then closes the result would therefore leave a **created or truncated file** where native
+behaviour leaves none — the opposite of the earlier claim in this document, which is hereby
+corrected. The same ordering question must be answered per creator before any post-filter is
+acceptable; `<creator, side effect, ordering evidence>` is recorded with the review of the
+remaining classes (accept/accept4, `recvmsg` + `SCM_RIGHTS`, `socketpair`, and the
+kernel-observable wrappers).
+
+Consequence for the options: with the post-filter ruled out, A4.2 needs a real
+semantics-preserving interception scheme per creator, i.e. it inherits A4.1's completeness
+burden *and* must prevent the side effect, which for `open` means intercepting before the
+syscall — the very thing A4.1's lock does. A4.2 is therefore **not** the cheap fallback the
+previous revision called it.
+
 Recommendation: **A4.4 first**, because it is the only option that deletes the race rather than
 policing it, and its prerequisite is already the target of the transport work. If dynamic
-per-thread private FDs must persist, **A4.2** is the fallback — not A4.1, which pays the same
-completeness cost plus a signal-semantics change — and A4.3 is not a candidate until a mechanism
-exists.
+per-thread private FDs must persist, the remaining honest options are A4.1 (a shared lock across
+the syscall in every creator, accepting the signal-semantics change) or a static partition as
+described under A4.4; A4.2 is marked unacceptable-until-designed, and A4.3 is not a candidate
+until a mechanism exists.
 
 Not executed in this round: an **integration** race against the real draft (`A3`). The blocker
 is fidelity, not effort: the draft's parent commit `9ef131b2` is **not an ancestor** of either
