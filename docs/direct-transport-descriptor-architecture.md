@@ -1331,6 +1331,121 @@ The restated goal does not change R1–R12's order, but it changes what R2 can m
   R5 delivers R2b rather than the reverse.
 - No part of the process-control UDS prototype is on this path. It stays as a semantics oracle.
 
+### 13.7 R2a attempt: the existing duplex harness does not yet produce the transaction
+
+The round's target was one PRODUCT transaction with parent request, caller-S2C, completion and final
+reply all on the shared lane and zero per-thread UDS activity. The audit found an existing,
+purpose-built harness for exactly this shape — the D5 boot-scoped `mach_vm_deallocate`-as-duplex-parent
+proof (`src/call.cpp:1699-1910`, armed only by `DARLING_SERVER_D5_VMDEALLOC_PROOF=<budget>` on the
+server process) — so the attempt used it rather than writing new code.
+
+**Result: it does not produce the transaction.** With the budget armed at 1, the guest aborts
+(launcher `rc=134`, no `PROBE_OK`), the server logs no `[D5PROOF]` line, and every transaction counter
+is zero:
+
+```
+ring_duplex_parent = 0            ring_duplex_vmdealloc_parent  = 0
+ring_duplex_decline = 0           ring_duplex_vmdealloc_decline = 0
+ring_duplex_s2c = 0               ring_duplex_vmdealloc_s2c     = 0
+ring_duplex_vmdealloc_final = 0   ring_duplex_vmdealloc_timeout = 0
+```
+
+The ring itself was healthy in the same run — `ring_serviced = 154` (84 from the pre-epoll spin, 70
+from doorbells), `ring_doorbells_received = 72`, `ring_wakes_issued = 125`, `ring_wakes_skipped = 29`,
+`residual_total_ring_threads_registered = 7` — and the guest reported
+`[dring-lane-stats] acquired=2 exhausted=0 held_now=1 max=128`. So the abort is not "the ring did not
+work"; it is specific to the armed duplex path. Unexplained as of this round, and the reason no
+counter, trace or mutation result can be reported against the transaction: the fixture must first be
+made to run.
+
+### 13.8 Mailbox audit: fields, semantics, and the correlation question
+
+Fields (`include/darlingserver/rpc-supplement.h:708-727`), all in the per-lane control block:
+
+| Field | Width | Producer | Consumer | Ordering |
+| --- | --- | --- | --- | --- |
+| `duplex_caps` | u32 | guest (at attach) | server | plain, written once before attach |
+| `duplex_upcall_ready` | u32 | server | guest | **release store last**, after the body; guest acquires |
+| `duplex_upcall_op` | u32 | server | guest | plain, ordered by `ready` |
+| `duplex_upcall_parent` | u32 | server | guest | plain, ordered by `ready` |
+| `duplex_upcall_id` | u32 | server | guest | plain, ordered by `ready` |
+| `duplex_upcall_arg` | u32 | server | guest | plain (ECHO shape) |
+| `duplex_upcall_addr` / `_len` | u64 each | server | guest | plain (MUNMAP shape) |
+| `duplex_reply_ready` | u32 | guest | server | **release store last**; server acquires |
+| `duplex_reply_parent` / `_id` | u32 each | guest | server | plain, ordered by `ready` |
+| `duplex_reply_status` | i32 | guest | server | plain (MUNMAP return value) |
+| `duplex_reply_arg` | u32 | guest | server | plain (ECHO result) |
+| `duplex_reply_errno` | i32 | guest | server | plain |
+
+Consume rule (`:800-847`): the guest publishes its reply body, then consumes the upcall slot
+(`upcall_ready = 0`) **before** advertising `reply_ready = 1`, so the server can never observe a reply
+while an upcall is still marked pending. The server accepts a reply only when `reply_ready` is set AND
+both `parent` and `id` match the in-flight upcall; a ready-but-mis-correlated reply is flagged as a
+protocol error and does not resume the parent (`dserver_ring_duplex_reply_ready` with `out_mismatch`).
+
+**`duplex_upcall_parent` is NOT the ring request `seq`.** It is the first of two consecutive draws from
+a per-thread monotonic `_duplexNextId` (`src/thread.cpp:1767-1770`), and `duplex_upcall_id` is the
+second; the same pair is what the server checks on completion (`_s2cTryDuplexMunmapLocked`,
+`src/thread.cpp:1741`). It is an internal identity, not the transport's. That is sufficient for the
+one-outstanding contract — the mailbox is clean before each upcall, so a stale pair cannot be accepted
+— but it is not sufficient for a lane that also carries replies concurrently, which is exactly the
+`parent_seq` the ring-slot design would have to add.
+
+### 13.9 Mailbox versus tagged ring slots: verdict
+
+**Keep the mailbox as the lane's S2C sideband; do not move caller-S2C into tagged s2c-ring slots.**
+
+- The serialization contract already guarantees at most one outstanding caller-S2C per lane: the
+  server declines unless the mailbox is clean and no upcall is in flight (`thread.cpp:1756-1765`), and
+  a caller-S2C is by construction raised while the lane's own thread is the caller. There is no queue
+  to justify.
+- The mailbox costs four cache lines in the control block and touches no ring index, so an S2C adds
+  **zero** head/tail traffic to the reply stream and cannot perturb reply ordering.
+- Correlation is already exact and already validated on both sides.
+- Encoding all four S2C operations needs one more `op` value plus payload words only for the shapes
+  that carry arguments: munmap/mprotect/msync are `{addr, len}`(+`prot`) and fit the existing typed
+  slot; mmap additionally needs an fd token, which is a courier concern and not a mailbox shape
+  problem.
+- What the ring slot would buy is queueability and a single uniform stream. Neither is required by
+  the measured workload, and both would put S2C parsing on the reply-consumption path, where a
+  mis-flagged slot would be indistinguishable from a reply in a way the mailbox's dedicated `op` is
+  not.
+- Revisit only if a real workload needs multiple concurrent S2C per lane, or if the mailbox's fixed
+  shape set becomes the binding constraint for mmap.
+
+### 13.10 `mach_msg_overwrite` wire shape: the "exceeds a slot" claim is wrong
+
+Measured from the generated header and the C layout (host `sizeof`, `x86_64`):
+
+```
+dserver_rpc_callhdr_t              16
+dserver_call_mach_msg_overwrite_t  40   { msg u64(8-aligned), option i32, send_size u32,
+                                          rcv_size u32, rcv_name u32, timeout u32,
+                                          priority u32, rcv_msg u64(8-aligned) }
+request total                      56
+dserver_rpc_replyhdr_t              8   (header only: no reply body at all)
+```
+
+**The Mach message bytes are referenced by guest address, not copied into the RPC body** — `msg` and
+`rcv_msg` are `uint64_t` pointers and the server reaches them through the existing
+`readMemory`/`writeMemory` (process_vm_readv/writev) machinery. A slot is 128 bytes with a 24-byte slot
+header, leaving 104 bytes of inline payload, so the request body fits with 48 bytes to spare.
+
+Consequences: a restricted `mach_msg_overwrite` shape **does** fit the current slot, the earlier claim
+that its payload exceeds a slot is corrected, and **no arena is required for the measured shape**. The
+arena remains unimplemented in both directions (`arena_off = 0`, `arena_size = 0`, oversized bodies
+rejected), and on this evidence it should stay that way until a body must carry bulk bytes rather than
+reference them.
+
+### 13.11 R2b-min prerequisites, from the above
+
+R2b-min is smaller than the roadmap assumed. It needs: (1) the transport counters and the explicit
+parent/S2C/completion/reply trace that this round could not obtain; (2) a Ring request path for one
+restricted `mach_msg_overwrite` shape (56-byte request, header-only reply, by-reference payload — no
+arena); (3) a blocking wait on the lane with the mailbox pumped while parked, which the duplex pump
+already implements (`gr_duplex_wait_reply`, `dserver-ring.c:961`); (4) zero UDS on that path. It does
+not need a general Mach message transport, and it does not need the arena.
+
 ## 12. Repository state
 
 - Product source: **untouched**. No commit, no branch, no push.
