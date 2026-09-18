@@ -925,6 +925,67 @@ is to make the mailbox pop conditional on the caller being the S2C path, and to 
 boot gates before any further measurement.
 
 
+
+### Exact-send instrumentation: the server ingests s2c_perform; the semaphore handshake breaks
+
+The next round instrumented the real `sendmsg` site in the generated wrapper (via the generator,
+for `interrupt_enter` and `s2c_perform` only), the raw server ingress in
+`MessageQueue::receiveMany`, the decode/thread-resolution path in `Call::callFromMessage`, and the
+semaphore handshake on both sides. Fields printed on the guest: call number, socket fd, tid, header
+pid/tid/architecture, destination namelen and leading bytes, iov length, and the returned status.
+On the server: raw size, source address, call number, pid/tid/architecture, process/thread
+resolution, and the up/abort of the S2C semaphores.
+
+**A previous conclusion is corrected.** `S2C_PERFORM_RECEIVED` *does* fire: the server receives and
+dispatches the `s2c_perform` call from the guest's per-thread socket, with the process and thread
+resolved (`proc=1`, `thread=1`) and the correct tid. The earlier "the server never ingests
+s2c_perform" reading came from a run whose log was truncated to 28 lines; the full run has over a
+thousand. Classification is therefore **T4**, not T3, and the wire ABI is confirmed numerically
+equal on both sides through the generated headers the build actually used:
+
+```
+SERVER_ABI interrupt_enter=14 s2c_perform=24 s2c=86821393 process_control_register=82
+           callhdr_size=16 hdr_off_number=0 hdr_off_pid=4 hdr_off_tid=8 hdr_off_arch=12
+           call_s2c_perform_size=16
+```
+
+One ordered trace, idle target, control path:
+
+```
+server   S2C_CONTROL_PREPARE            t=…879420363
+server   S2C_CONTROL_SENT               t=…879444399
+server   S2C_CONTROL_WAIT_ENTER         t=…879448446
+receiver PC_RECV → PC_MAILBOX_PUBLISHED → PC_TGKILL
+target   PC_SIGNAL_ENTERED → PC_INTERRUPT_ENTER_SEND
+server   SERVER_RX interrupt_enter      t=…879674692
+server   S2C_CONTROL_ENTER_INTERRUPTED  t=…879716371   <-- 42us later
+target   PC_INTERRUPT_ENTER_REPLY status=0
+target   PC_S2C_PERFORM_SEND → PC_S2C_PERFORM_POP hit=1 → PC_S2C_EXECUTE s2c=2
+server   SERVER_RX s2c_perform          t=…879921998
+server   S2C_PERFORM_DECODED proc=1 thread=1
+server   S2C_PERFORM_DISPATCH
+server   S2C_PERFORM_RECEIVED           t=…880030903
+server   S2C_PERFORM_UP_ENTER / UP_ENTER_DONE
+server   S2C_CONTROL_REPLY_IN           t=…880043717
+server   S2C_PERFORM_DOWN_EXIT_DONE     t=…265964085577  (+30 s)
+```
+
+**Root cause.** `dtape_semaphore_down_simple` returns false only for `KERN_ABORTED` — the XNU
+semaphore wait was aborted by a thread interrupt (`duct-tape/src/semaphore.c:69`). In the control
+path the green-light wait is aborted by the processing of the guest's `interrupt_enter`, 42 us after
+the server receives it. `_s2cPerform` therefore takes the "got interrupted while waiting" branch and
+returns `std::nullopt` **before** the site that ups `_s2cInterruptExitSemaphore`. That up is what
+stock uses to release `Call::S2CPerform::processCall` (`thread.cpp:1317`); the guest's
+`interrupt_exit` is not what releases it. With the up lost, `S2CPerform::processCall` parks on the
+exit semaphore, so the guest's `s2c_perform` never returns, so the guest never reaches
+`interrupt_exit` — a circular wait that only ends at the 30 s dtape timeout, and the boot fails
+(`rc=1`, no `PROBE_OK`). The server remains healthy throughout and services other calls, which is
+why the failure looks like a stall rather than a crash.
+
+The stock path does not lose the up; which difference in ordering removes the abort is exactly what
+a flag-OFF differential run with these same tracepoints answers, and that run is the next action.
+The instrumentation is inert with the flag off, so one binary covers both arms.
+
 ### Receive-context scoping: the mailbox belongs to the S2C phase
 
 The next defect after the ordering fix was that the mailbox pop sat in the shared
