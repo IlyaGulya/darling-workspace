@@ -77,11 +77,40 @@
 #       never prints PASS.  On a prefix whose build has no ring transport at all
 #       it reports the counters as absent by design against the same nominal
 #       denominator.
+#   I10 doorbell sweep: the same decisive ratio asked of a bounded sweep that
+#       varies the workload along two axes beyond the thread count, so a wake
+#       that can batch has somewhere to show it.  Start discipline: the
+#       simultaneous gate I9 uses, and a staggered release in which the threads
+#       are let go i*STAGGER_US apart so their requests do not align (the
+#       achieved release spread is printed next to the requested spacing, so a
+#       reader can see how far apart the threads actually started).  Request
+#       class: mach_host_self (the Mach trap I9 already used) and a BSD syscall,
+#       setuid(getuid()), whose Darling emulation issues exactly one dserver
+#       uidgid RPC per call on the same per-thread transport and the same ring
+#       lane as the trap, and which is not cached by libc (only the get
+#       direction is), so the two classes differ in request class rather than in
+#       path.  Every row keeps the same nominal request total (rounded to a
+#       multiple of 64, one thread count per row) and prints its raw counter
+#       deltas -- ring_serviced, ring_serviced_spin, ring_serviced_doorbell,
+#       ring_doorbells_received, ring_wakes_issued, ring_wakes_skipped -- plus
+#       the doorbell share, doorbells per request, the clustering ratio, ring
+#       wakes issued per request, the nominal and the server-observed request
+#       counts, and both the sampling window and that configuration's whole wall
+#       clock.  It then states, over the sweep, the maximum ratio, the
+#       configuration that produced it, whether it materially exceeds one
+#       (threshold RELAY_INTEGRATION_I10_MATERIAL, default 1.10) and what the
+#       sweep does not cover.  A row whose counters are missing, whose window
+#       did not close or in which the server received no doorbell is printed as
+#       UNPROVEN with the exact key and the ring_* keys the build does carry,
+#       never skipped silently; on the ring-less prefix every row is UNPROVEN
+#       with its missing key while the nominal denominator is still printed.
+#       Bounded to about three minutes per leg by the row count and
+#       RELAY_INTEGRATION_I10_STAGE_TIMEOUT.  Measurement; it never prints PASS.
 #
 # Why I1 and I5 are the only must-pass claims: both are contracts the product
 # already exhibits today and that the relay architecture must not break, so a
 # violation means a regression or a mis-measurement and has to stop the run.
-# I2, I3, I4, I6, I7 and I9 measure premises whose numbers may legitimately
+# I2, I3, I4, I6, I7, I9 and I10 measure premises whose numbers may legitimately
 # differ from the architectural prediction on a given build, so they are
 # reported with their values; each one prints UNPROVEN with the reason when the
 # product or the host cannot exhibit it.
@@ -112,6 +141,17 @@
 #                                 32 x 6250 and 1 x 200000 out of the box)
 #   RELAY_INTEGRATION_I9_PRE_MS   I9 pre hold (default = RELAY_INTEGRATION_PRE_MS)
 #   RELAY_INTEGRATION_I9_POST_MS  I9 post hold (default = RELAY_INTEGRATION_POST_MS)
+#   RELAY_INTEGRATION_I10_REQUESTS  I10 nominal request total per row, rounded
+#                                 down to a multiple of 64 so every thread count
+#                                 divides it exactly (default 32768)
+#   RELAY_INTEGRATION_I10_PRE_MS  I10 pre hold in ms (default 1500)
+#   RELAY_INTEGRATION_I10_POST_MS  I10 post hold (default 1000)
+#   RELAY_INTEGRATION_I10_STAGGER_US  requested release spacing of the staggered
+#                                 I10 row, microseconds (default 250)
+#   RELAY_INTEGRATION_I10_STAGE_TIMEOUT  per-configuration stage timeout (default
+#                                 90; the sweep is bounded by seven rows of it)
+#   RELAY_INTEGRATION_I10_MATERIAL  ratio above which one wake draining several
+#                                 requests counts as material (default 1.10)
 #   RELAY_INTEGRATION_STAGE_TIMEOUT  guest stage timeout, seconds (default 120;
 #                                 the close-range stage is bounded to 90)
 #   RELAY_INTEGRATION_STRACE      how I7 attaches its syscall counters:
@@ -198,6 +238,31 @@ i9_stage_timeout="$stage_timeout"
 [ "$i9_threads" -ge 1 ] || i9_threads=1
 i9_requests_per_thread=$(( i9_total / i9_threads ))
 i9_single_total=$(( i9_threads * i9_requests_per_thread ))
+
+# I10 sweeps the same nominal request total across thread counts, start
+# disciplines and request classes.  The total is held constant (and, unlike the
+# row count, made divisible by the largest thread count) so every row is read
+# against every other one, and the per-configuration wall clock is printed so
+# the cost of the sweep stays visible.  RELAY_INTEGRATION_I10_REQUESTS is
+# rounded down to a multiple of 64; RELAY_INTEGRATION_I10_STAGGER_US is the
+# requested spacing of the staggered release train.
+i10_requests="${RELAY_INTEGRATION_I10_REQUESTS:-32768}"
+i10_pre_ms="${RELAY_INTEGRATION_I10_PRE_MS:-1500}"
+i10_post_ms="${RELAY_INTEGRATION_I10_POST_MS:-1000}"
+i10_stagger_us="${RELAY_INTEGRATION_I10_STAGGER_US:-250}"
+i10_stage_timeout="${RELAY_INTEGRATION_I10_STAGE_TIMEOUT:-90}"
+i10_material="${RELAY_INTEGRATION_I10_MATERIAL:-1.10}"
+i10_requests=$(( (i10_requests / 64) * 64 ))
+[ "$i10_requests" -ge 64 ] || i10_requests=64
+i10_configs=(
+	"mach-sim-1:mach:simultaneous:1"
+	"mach-sim-8:mach:simultaneous:8"
+	"mach-sim-32:mach:simultaneous:32"
+	"mach-sim-64:mach:simultaneous:64"
+	"mach-stag-32:mach:staggered:32"
+	"bsd-sim-1:bsd:simultaneous:1"
+	"bsd-sim-32:bsd:simultaneous:32"
+)
 
 # I8 reads the server's own ring counters, which is the only way to attribute the
 # wake cost without strace and without the observer effect: strace suppresses the
@@ -778,6 +843,334 @@ i9_compare() { # label
 	esac
 }
 
+# ---------------------------------------------------------------- I10
+
+# The sweep: the same nominal request total across thread counts, start
+# disciplines and request classes, asking the decisive quantity of I9 --
+# requests the server drained per doorbell notification it received
+# (ring_serviced_doorbell / ring_doorbells_received) -- with the workload varied
+# along the two axes beyond the count, so that a wake able to batch has
+# somewhere to show it:
+#
+#   kind        mach  mach_host_self(), the Mach trap I9 already used
+#               bsd   setuid(getuid()), a BSD syscall whose Darling emulation
+#                     issues exactly one dserver uidgid RPC per call, on the
+#                     same per-thread transport and over the same ring lane as
+#                     the trap (the fixture comment states why it is fair)
+#   discipline  simultaneous  every thread released from one start gate
+#               staggered     threads released stagger_us apart, so their
+#                             requests do not align
+#
+# Every row prints the raw counter deltas and both request counts (the nominal
+# one and the count the server itself recorded for that class's callnum), so
+# any judgement can be re-derived from the row.  A row whose counters are
+# missing, whose window did not close or in which the server received no
+# doorbell at all is printed as UNPROVEN with the exact key and the ring_* keys
+# the build does carry, never skipped silently.  I10 never prints PASS.
+declare -A I10_NOMINAL I10_RATIO I10_SHARE I10_DBFR I10_WPR I10_KEYS I10_VERDICT \
+	I10_SERVER I10_MISSING I10_GUESTOK I10_WALL I10_SPINFRAC
+i10_best_ratio=""
+i10_best_config=""
+i10_on_best_ratio=""
+i10_on_best_config=""
+i10_off_best_ratio=""
+i10_off_best_config=""
+i10_measured_rows=0
+i10_total_rows=0
+
+run_i10_window() { # label config kind discipline threads
+	local label="$1"
+	local config="$2"
+	local kind="$3"
+	local discipline="$4"
+	local win_threads="$5"
+	local per_thread=$(( i10_requests / win_threads ))
+	local nominal=$(( win_threads * per_thread ))
+	local key="$label/$config"
+	local snap_pre="$work/$label-i10-$config-pre.json"
+	local snap_post="$work/$label-i10-$config-post.json"
+	local pid="" reason="" start_ms="" host_window_ms="?" pre_stat_rc=0 post_stat_rc=0
+	local missing="" missing_key="" missing_at="" clustering=""
+	local share="" doorbells_per_request="" wakes_per_request="" spin_fraction=""
+	local callnum="dserver_callnum_host_self_trap"
+	local s_spin p_spin s_door p_door s_all p_all s_recv p_recv s_wiss p_wiss s_wsk p_wsk s_served p_served
+	local d_spin d_door d_all d_recv d_wiss d_wsk d_served
+	local guest_ok guest_failed release_spread
+
+	if [ "$kind" = "bsd" ]; then
+		callnum="dserver_callnum_uidgid"
+	fi
+
+	I10_NOMINAL[$key]="$nominal"
+	I10_VERDICT[$key]="UNPROVEN"
+	I10_RATIO[$key]=""
+	I10_SERVER[$key]=""
+	I10_MISSING[$key]=""
+	I10_GUESTOK[$key]=""
+	I10_WALL[$key]=""
+	I10_SPINFRAC[$key]=""
+	: >"$snap_pre"
+	: >"$snap_post"
+
+	start_stage "$label-i10-$config" "$i10_stage_timeout" \
+		"'$guest_bin' concurrent $win_threads $per_thread $i10_pre_ms $i10_post_ms $kind $discipline $i10_stagger_us"
+	if wait_marker '^RI_BARRIER pre$' 90; then
+		if ! window_open '^RI_BARRIER action-done$'; then
+			reason="the pre sample window closed before the host read it"
+		else
+			pid="$(guest_pid "$STAGE_LOG")"
+			if [ -z "$pid" ] || [ ! -d "/proc/$pid" ]; then
+				reason="no guest pid in the stage log"
+			else
+				start_ms="$(now_ms)"
+				ring_snapshot "$prefix" "$snap_pre" || pre_stat_rc=$?
+			fi
+		fi
+	else
+		reason="the guest never reached its pre barrier"
+	fi
+	if wait_marker '^RI_BARRIER action-done$' "$i10_stage_timeout"; then
+		if [ -n "$start_ms" ]; then
+			host_window_ms="$(( $(now_ms) - start_ms ))"
+		fi
+		ring_snapshot "$prefix" "$snap_post" || post_stat_rc=$?
+	elif [ -z "$reason" ]; then
+		reason="the workload did not reach its action barrier within ${i10_stage_timeout}s"
+	fi
+	finish_stage
+	guest_lines "$STAGE_LOG" '^I9 '
+
+	s_spin="$(ring_counter "$snap_pre" ring_serviced_spin)"
+	p_spin="$(ring_counter "$snap_post" ring_serviced_spin)"
+	s_door="$(ring_counter "$snap_pre" ring_serviced_doorbell)"
+	p_door="$(ring_counter "$snap_post" ring_serviced_doorbell)"
+	s_all="$(ring_counter "$snap_pre" ring_serviced)"
+	p_all="$(ring_counter "$snap_post" ring_serviced)"
+	s_recv="$(ring_counter "$snap_pre" ring_doorbells_received)"
+	p_recv="$(ring_counter "$snap_post" ring_doorbells_received)"
+	s_wiss="$(ring_counter "$snap_pre" ring_wakes_issued)"
+	p_wiss="$(ring_counter "$snap_post" ring_wakes_issued)"
+	s_wsk="$(ring_counter "$snap_pre" ring_wakes_skipped)"
+	p_wsk="$(ring_counter "$snap_post" ring_wakes_skipped)"
+	s_served="$(ring_per_call "$snap_pre" "$callnum")"
+	p_served="$(ring_per_call "$snap_post" "$callnum")"
+	I10_KEYS[$label]="$(ring_keys_present "$snap_post")"
+
+	guest_ok="$(num "$(field_of "$STAGE_LOG" '^I9 workload ' rpc_ok)")"
+	guest_failed="$(num "$(field_of "$STAGE_LOG" '^I9 workload ' rpc_failed)")"
+	release_spread="$(num "$(field_of "$STAGE_LOG" '^I9 workload ' release_spread_ms)")"
+	I10_GUESTOK[$key]="$guest_ok"
+
+	# The server-observed count for this class is available even on a build
+	# without the ring transport, so it is computed before the ring keys are
+	# judged and printed in both the measured and the UNPROVEN row.
+	d_served="absent"
+	if is_int "${s_served:-}" && is_int "${p_served:-}"; then
+		d_served=$(( p_served - s_served ))
+		I10_SERVER[$key]="$d_served"
+	fi
+	d_spin="absent"
+	if is_int "${s_spin:-}" && is_int "${p_spin:-}"; then
+		d_spin=$(( p_spin - s_spin ))
+	fi
+	d_door="absent"
+	if is_int "${s_door:-}" && is_int "${p_door:-}"; then
+		d_door=$(( p_door - s_door ))
+	fi
+	d_all="absent"
+	if is_int "${s_all:-}" && is_int "${p_all:-}"; then
+		d_all=$(( p_all - s_all ))
+	fi
+	d_recv="absent"
+	if is_int "${s_recv:-}" && is_int "${p_recv:-}"; then
+		d_recv=$(( p_recv - s_recv ))
+	fi
+	d_wiss="absent"
+	if is_int "${s_wiss:-}" && is_int "${p_wiss:-}"; then
+		d_wiss=$(( p_wiss - s_wiss ))
+	fi
+	d_wsk="absent"
+	if is_int "${s_wsk:-}" && is_int "${p_wsk:-}"; then
+		d_wsk=$(( p_wsk - s_wsk ))
+	fi
+
+	if [ -z "$reason" ]; then
+		# Name the exact key this build or this window is missing, and list
+		# the ring_* keys that ARE present, so a build without the ring
+		# transport is told apart from one that has it but lost a counter,
+		# and a failed pre read is told apart from a counter that never
+		# existed.
+		for missing_key in ring_doorbells_received ring_serviced_doorbell \
+			ring_serviced_spin ring_serviced; do
+			if ! is_int "$(ring_counter "$snap_post" "$missing_key")"; then
+				missing="$missing_key"
+				missing_at=post
+				break
+			fi
+			if ! is_int "$(ring_counter "$snap_pre" "$missing_key")"; then
+				missing="$missing_key"
+				missing_at=pre
+				break
+			fi
+		done
+		I10_MISSING[$key]="${missing:-none}"
+		if [ -n "$missing" ] && [ "$missing_at" = "post" ] &&
+			[ -z "${I10_KEYS[$label]}" ]; then
+			reason="this build's snapshot carries no ring_* counters at all, so it was built without the ring transport: no doorbell is ever written and the ratio has neither numerator nor denominator (expected here, not a failure)"
+		elif [ -n "$missing" ] && [ "$missing_at" = "post" ]; then
+			reason="the snapshot key $missing is absent from this build (stat rc=$post_stat_rc), so the ratio cannot be formed without substituting a proxy"
+		elif [ -n "$missing" ]; then
+			reason="the pre-window snapshot did not carry $missing (stat rc=$pre_stat_rc: $(tr -d '\n' <"$snap_pre.err" 2>/dev/null | head -c 120))"
+		elif [ "$d_recv" -eq 0 ]; then
+			reason="the server received no doorbell notification in this window (ring_doorbells_received_delta=0), so requests per received doorbell is undefined for this configuration"
+		fi
+	fi
+
+	I10_WALL[$key]="$(stage_elapsed)"
+	if [ -z "$reason" ]; then
+		if [ "$d_recv" -gt 0 ]; then
+			clustering="$(awk -v n="$d_door" -v d="$d_recv" 'BEGIN { printf "%.5f", n / d }')"
+		fi
+		share="$(awk -v d="$d_door" -v s="$d_spin" 'BEGIN { t = d + s; printf "%.4f", (t > 0 ? d / t : 0) }')"
+		spin_fraction="$(per_request_num "$d_spin" "$nominal")"
+		doorbells_per_request="$(per_request "$d_recv" "$nominal")"
+		wakes_per_request="$(per_request_num "$d_wiss" "$nominal")"
+		I10_SHARE[$key]="$share"
+		I10_DBFR[$key]="$doorbells_per_request"
+		I10_WPR[$key]="$wakes_per_request"
+		I10_SPINFRAC[$key]="$spin_fraction"
+		printf 'I10 ROW prefix=%s config=%s kind=%s start_gate=%s stagger_us=%s threads=%s requests_per_thread=%s nominal_requests=%s server_call=%s server_call_delta=%s guest_rpc_ok=%s guest_rpc_failed=%s guest_release_spread_ms=%s ring_serviced_delta=%s ring_serviced_spin_delta=%s ring_serviced_doorbell_delta=%s ring_doorbells_received_delta=%s ring_wakes_issued_delta=%s ring_wakes_skipped_delta=%s doorbell_share=%s doorbells_per_request=%s ring_serviced_per_request=%s ring_serviced_spin_fraction_of_requests=%s clustering_ratio=%s ring_wakes_issued_per_request=%s host_window_ms=%s stage_wall_s=%s stage_rc=%s\n' \
+			"$label" "$config" "$kind" "$discipline" "$i10_stagger_us" \
+			"$win_threads" "$per_thread" "$nominal" "$callnum" "$d_served" \
+			"$guest_ok" "$guest_failed" "$release_spread" "$d_all" "$d_spin" \
+			"$d_door" "$d_recv" "$d_wiss" "$d_wsk" "$share" \
+			"$doorbells_per_request" "$(per_request_num "$d_all" "$nominal")" \
+			"$spin_fraction" "${clustering:-UNPROVEN}" "$wakes_per_request" \
+			"$host_window_ms" "${I10_WALL[$key]}" "$STAGE_RC"
+		if [ -n "$clustering" ]; then
+			I10_RATIO[$key]="$clustering"
+			I10_VERDICT[$key]=MEASURED
+		else
+			I10_VERDICT[$key]="UNPROVEN: the server received no doorbell notification in this window (ring_doorbells_received_delta=$d_recv), so requests per received doorbell is undefined here"
+		fi
+	else
+		printf 'I10 UNPROVEN prefix=%s config=%s kind=%s start_gate=%s stagger_us=%s threads=%s requests_per_thread=%s nominal_requests=%s server_call=%s server_call_delta=%s guest_rpc_ok=%s guest_rpc_failed=%s missing_key=%s present_ring_keys=[%s] reason=%s host_window_ms=%s stage_wall_s=%s stage_rc=%s\n' \
+			"$label" "$config" "$kind" "$discipline" "$i10_stagger_us" \
+			"$win_threads" "$per_thread" "$nominal" "$callnum" "$d_served" \
+			"$guest_ok" "$guest_failed" "${missing:-none}" \
+			"${I10_KEYS[$label]}" "$reason" "$host_window_ms" \
+			"${I10_WALL[$key]}" "$STAGE_RC"
+		I10_VERDICT[$key]="UNPROVEN: $reason"
+	fi
+}
+
+run_i10_sweep() { # label
+	local label="$1"
+	local row config kind discipline win_threads
+	local before=$i10_measured_rows
+	local leg_measured
+	local sweep_start
+
+	sweep_start="$(now_s)"
+	printf 'I10 NOTE prefix=%s configs=%s nominal_requests_per_row=%s pre_ms=%s post_ms=%s stagger_us=%s materiality_threshold=%s semantics=clustering_ratio_is_ring_serviced_doorbell_delta_div_ring_doorbells_received_delta: requests the server drained inside one wake callback divided by the wake callbacks it received, so 1.0 means one server wake per request and above 1 means several requests rode one wake. Every row keeps the same nominal total, and the kind=bsd rows reach the server through the same uidgid callnum the trap does not use, so a difference between the classes is a difference of request class on one wake path, not of path. The counters are prefix-wide aggregates, so each row also carries whatever else the prefix did inside its window, and the kind=bsd loop also passes through the guest-side process-wide lock Darling takes around the uidgid set path, which serialises those threads in userspace before they reach the server.\n' \
+		"$label" "${#i10_configs[@]}" "$i10_requests" "$i10_pre_ms" \
+		"$i10_post_ms" "$i10_stagger_us" "$i10_material"
+	for row in "${i10_configs[@]}"; do
+		IFS=: read -r config kind discipline win_threads <<<"$row"
+		run_i10_window "$label" "$config" "$kind" "$discipline" "$win_threads"
+		printf 'STAGE %s-i10-%s elapsed_s=%s\n' "$label" "$config" \
+			"${I10_WALL[$label/$config]:-?}"
+	done
+	i10_verdict "$label"
+	leg_measured=$(( i10_measured_rows - before ))
+	printf 'I10 SWEEP prefix=%s rows=%s measured_rows=%s unproven_rows=%s sweep_wall_clock_s=%s\n' \
+		"$label" "${#i10_configs[@]}" "$leg_measured" \
+		"$(( ${#i10_configs[@]} - leg_measured ))" \
+		"$(( $(now_s) - sweep_start ))"
+}
+
+i10_verdict() { # label
+	local label="$1"
+	local key ratio best_key="" best_ratio="" best_config="" measured=0 total=0
+
+	for key in $(printf '%s\n' "${!I10_NOMINAL[@]}" | LC_ALL=C sort); do
+		case "$key" in
+		"$label"/*) ;;
+		*) continue ;;
+		esac
+		total=$(( total + 1 ))
+		ratio="${I10_RATIO[$key]:-}"
+		[ -n "$ratio" ] || continue
+		measured=$(( measured + 1 ))
+		if [ -z "$best_ratio" ] ||
+			awk -v a="$ratio" -v b="$best_ratio" 'BEGIN { exit !(a > b) }'; then
+			best_ratio="$ratio"
+			best_key="$key"
+		fi
+	done
+	i10_measured_rows=$(( i10_measured_rows + measured ))
+	i10_total_rows=$(( i10_total_rows + total ))
+	best_config="${best_key#"$label"/}"
+
+	if [ -n "$best_ratio" ]; then
+		if [ -z "$i10_best_ratio" ] ||
+			awk -v a="$best_ratio" -v b="$i10_best_ratio" 'BEGIN { exit !(a > b) }'; then
+			i10_best_ratio="$best_ratio"
+			i10_best_config="$label/$best_config"
+		fi
+		case "$label" in
+		on)
+			i10_on_best_ratio="$best_ratio"
+			i10_on_best_config="$best_config"
+			;;
+		off)
+			i10_off_best_ratio="$best_ratio"
+			i10_off_best_config="$best_config"
+			;;
+		esac
+		printf 'I10 VERDICT prefix=%s max_clustering_ratio=%s max_config=%s measured_rows=%s total_rows=%s materiality_threshold=%s exceeds_one_materially=%s\n' \
+			"$label" "$best_ratio" "$best_config" "$measured" "$total" \
+			"$i10_material" \
+			"$(awk -v r="$best_ratio" -v t="$i10_material" 'BEGIN { print (r > t) ? 1 : 0 }')"
+		if awk -v r="$best_ratio" -v t="$i10_material" 'BEGIN { exit !(r > t) }'; then
+			printf 'I10 VERDICT-NOTE prefix=%s the configuration %s exceeded %s requests per received doorbell (%s), so on this prefix at least one server wake drained materially more than one request and a batching layer would have something to coalesce there; the row above carries the raw deltas this conclusion rests on\n' \
+				"$label" "$best_config" "$i10_material" "$best_ratio"
+		else
+			printf 'I10 VERDICT-NOTE prefix=%s NO configuration in this sweep materially exceeded one request per received doorbell: the maximum was %s at %s against the materiality threshold %s, while the sweep single-threaded control rows measured %s (mach-sim-1) and %s (bsd-sim-1) in the same run, so the ratios sit in the band the controls and the around-the-window counter sampling themselves produce rather than above it. This is consistent with the product structure the sweep is probing: each guest thread owns its own ring and its own eventfd, and the guest RPC is one-outstanding, so a thread cannot have a second request published for the server to pick up inside the same wake. The sweep does not cover the callnums it did not run (only host_self_trap and uidgid are exercised here), workloads other than a tight loop of one class at a time, request rates below the single-threaded control, or anything about per-request latency and descriptor cost, which I2/I3/I4/I7 measure separately\n' \
+				"$label" "$best_ratio" "$best_config" "$i10_material" \
+				"${I10_RATIO[$label/mach-sim-1]:-absent}" \
+				"${I10_RATIO[$label/bsd-sim-1]:-absent}"
+		fi
+	elif [ "$total" -gt 0 ]; then
+		printf 'I10 VERDICT prefix=%s max_clustering_ratio=UNPROVEN max_config=none measured_rows=0 total_rows=%s materiality_threshold=%s exceeds_one_materially=UNPROVEN\n' \
+			"$label" "$total" "$i10_material"
+		printf 'I10 VERDICT-NOTE prefix=%s no row of this sweep could form the ratio, so this prefix establishes only the nominal denominator, and every row above names the key it is missing (%s); this is expected of a build with no ring transport and is not a failure\n' \
+			"$label" \
+			"$(for key in $(printf '%s\n' "${!I10_NOMINAL[@]}" | LC_ALL=C sort); do case "$key" in "$label"/*) printf '%s missing_key=%s; ' "${key#"$label"/}" "${I10_MISSING[$key]:-none}";; esac; done)"
+	fi
+}
+
+i10_overall_verdict() {
+	if [ -z "$i10_best_ratio" ]; then
+		printf 'I10 VERDICT overall max_clustering_ratio=UNPROVEN configuration=none measured_rows=%s total_rows=%s materiality_threshold=%s exceeds_one_materially=UNPROVEN\n' \
+			"$i10_measured_rows" "$i10_total_rows" "$i10_material"
+		printf 'I10 VERDICT-NOTE overall no configuration on either prefix produced a ratio, so the sweep establishes the nominal denominator and the absence of ring counters where they are absent, and nothing about batching\n'
+		return
+	fi
+	printf 'I10 VERDICT overall max_clustering_ratio=%s configuration=%s measured_rows=%s total_rows=%s materiality_threshold=%s exceeds_one_materially=%s\n' \
+		"$i10_best_ratio" "$i10_best_config" "$i10_measured_rows" \
+		"$i10_total_rows" "$i10_material" \
+		"$(awk -v r="$i10_best_ratio" -v t="$i10_material" 'BEGIN { print (r > t) ? 1 : 0 }')"
+	if awk -v r="$i10_best_ratio" -v t="$i10_material" 'BEGIN { exit !(r > t) }'; then
+		printf 'I10 VERDICT-NOTE overall the sweep found %s requests per received doorbell at %s, materially above one: one server wake drained more than one request there, and the row for that configuration carries the deltas\n' \
+			"$i10_best_ratio" "$i10_best_config"
+	else
+		printf 'I10 VERDICT-NOTE overall across %s measured rows on both prefixes the largest ratio was %s (at %s), which does not materially exceed one (threshold %s): no configuration of this sweep made a single server wake drain materially more than one request, and the sweep cannot show one that it did not run -- it covers two callnums, one wake-path shape (tight single-class loops) and one nominal request total, and it measures counts, not reasons\n' \
+			"$i10_measured_rows" "$i10_best_ratio" "$i10_best_config" \
+			"$i10_material"
+	fi
+}
+
 # ---------------------------------------------------------------- one leg
 
 run_leg() { # label prefix
@@ -1278,6 +1671,13 @@ run_leg() { # label prefix
 	run_i9_window "$label" concurrent "$i9_threads" "$i9_requests_per_thread"
 	i9_compare "$label"
 
+	# --- I10 doorbell sweep across counts, disciplines and classes -------
+	# I9 varies the thread count only.  I10 asks the same question of a bounded
+	# sweep that also varies the start discipline (so the requests of the
+	# threads stop aligning) and the request class (a BSD syscall next to the
+	# mach trap), so the answer does not rest on one workload shape.
+	run_i10_sweep "$label"
+
 	# --- I7 transport classification under trace (counts only) ----------
 	# A separate, smaller window: strace stops the traced task on every syscall,
 	# so the timing window above must stay untraced and this one must stay small.
@@ -1418,7 +1818,7 @@ stage_fixture() { # prefix label
 	return 0
 }
 
-note "RELAY_INTEGRATION_PROOF on=$prefix_on off=$prefix_off threads=$threads warmup=$warmup rpc=$rpc_count pre_ms=$pre_ms post_ms=$post_ms"
+note "RELAY_INTEGRATION_PROOF on=$prefix_on off=$prefix_off threads=$threads warmup=$warmup rpc=$rpc_count pre_ms=$pre_ms post_ms=$post_ms i10_requests=$i10_requests i10_stagger_us=$i10_stagger_us i10_material=$i10_material"
 
 [ -r "$fixture_source" ] || {
 	printf 'RELAY_INTEGRATION_HARNESS_FAIL missing fixture source %s\n' "$fixture_source" >&2
@@ -1487,6 +1887,12 @@ printf 'I9 COMPARE on_verdict=%s on_single_ratio=%s on_concurrent_ratio=%s on_no
 	"$(num "${I9_RATIO[off/concurrent]:-}")" "$(num "${I9_NOMINAL[off/single]:-}")"
 printf 'I9 RING-KEYS on_present=[%s] off_present=[%s]\n' \
 	"${I9_KEYS[on]:-}" "${I9_KEYS[off]:-}"
+
+printf 'I10 COMPARE on_max_clustering_ratio=%s on_max_config=%s off_max_clustering_ratio=%s off_max_config=%s on_ring_keys=[%s] off_ring_keys=[%s]\n' \
+	"$(num "$i10_on_best_ratio")" "$(num "$i10_on_best_config")" \
+	"$(num "$i10_off_best_ratio")" "$(num "$i10_off_best_config")" \
+	"${I10_KEYS[on]:-}" "${I10_KEYS[off]:-}"
+i10_overall_verdict
 
 if is_int "${I7_VOL[on]:-}"; then
 	if [ "${I7_VOL[on]}" -eq 0 ] && [ "${I7_NONVOL[on]:-0}" -eq 0 ] &&
