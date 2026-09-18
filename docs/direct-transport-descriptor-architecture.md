@@ -1620,6 +1620,82 @@ guest binaries → fails; my `mldr` alone → boots; my `dyld` alone → boots; 
 alone → fails; the same dylib built fresh → boots. Any future work must build from the fresh tree, not
 `procctl-build`.
 
+### 13.17 Correction of the previous round's diagnostics
+
+Two claims from section 13.15 are corrected, and neither survives as written.
+
+**The pairing analysis was a type bug.** The script keyed the server side by `(tid, seq)` and the guest
+side by bare `seq`, then compared a tuple against a string, so every server-consumed request looked like
+one whose guest never saw a reply. Re-keying both sides by `(tid, seq)` gives: 35 publishes (30 distinct),
+42 consumes (36 distinct), 40 replies (34 distinct), 32 reply-consumes (24 distinct), 2
+published-but-never-consumed, 2 consumed-but-never-replied. The figure of 36 requests that reached no
+guest reply was an artifact and is withdrawn; it was never a measurement of lost replies.
+
+Duplicate `(tid, seq)` publishes do survive the correction — six of them, all on a single tid. `seq` is
+`L->seq++` on a lane keyed by a hash of the tid, and a **re-attached lane restarts `seq`**, so a
+`(tid, seq)` key cannot distinguish "the same op published twice" from "the same tid+seq on a different
+lane incarnation". No claim about duplicates, lost requests or wrong replies can be made until the trace
+carries a lane incarnation id; the identity to add is
+`(process_nsid, thread_nsid, lane_incarnation, seq, callnum)`, with `lane_incarnation` taken from the
+shared mapping (the memfd `st_ino` via `fstat`) or from a server-assigned `RingBuffer` id logged at
+attach.
+
+**The abort is in the GUEST's dyld, not in the server.** The previous round attributed the failure to a
+server-side `std::terminate`. Running the same configuration with the server under gdb shows the guest
+side failing instead, immediately after a ring publish:
+
+```
+RING_TRACE guest RING_MACHMSG_PUBLISH seq=7 tid=2362590
+dyld: dyld std::__terminate()
+abort_with_payload: reason: dyld std::__terminate()
+; code: 9
+```
+
+So the "Resource deadlock avoided" string belongs to this guest-side terminate path, and the server was
+never the terminator. The exact throw site is still not obtained: under gdb the server is slow enough
+that the guest's bounded duplex wait expires first, so the failure mode changes from the terminate to a
+timeout before the stack can be captured. Getting the stack needs either a core from the un-slowed run
+(`ulimit -c unlimited` plus a `core_pattern` that keeps it) or a temporary `std::set_terminate` handler
+in dyld that prints a backtrace - which, on this evidence, is where to instrument, not the server.
+
+### 13.18 Reply context: Design B (Call-owned) is the right fix, and why
+
+`Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Message&& reply)` already receives the Call, so
+the transport destination can be read from the Call that is actually completing. That is the decisive
+argument for Design B over a keyed Thread-global sink:
+
+- The current one-shot sink (`beginRingReply` sets `_ringReplyPending`/`_ringReplySeq`; `pushCallReply`
+  consumes them) is transport metadata that follows the **lexical dispatch**, not the Call. A blocking
+  `mach_msg_overwrite` suspends inside the dispatch with the sink armed, so the next reply to arrive -
+  from another Call, or from a resume - can consume a sink that belongs to a different request. That is
+  exactly the failure the trace shows.
+- A `map<(Thread, seq), sink>` only moves the same problem: it still needs lane incarnation in the key,
+  still needs stale-entry cleanup, and still leaves the marker's lifetime decoupled from the Call.
+- With a Call-owned context, `pushCallReply` becomes `if (expectedCall->ringContext) publish to that
+  ring/seq else UDS`, and the same change carries §10's duplex marker: duplex eligibility becomes a
+  property of the active Call (`_activeCall->ringContext.duplexCapable`) instead of a mutable Thread bool
+  set around `doWork()`. That removes the `setRingDuplexParentActive(true/false)` pair around the
+  dispatch, which today is wrong for a blocking op precisely because `doWork()` returns at suspension
+  while the parent is still logically active.
+- The mechanism should not stay mach_msg-specific: once the context exists, the existing ring reply
+  paths move onto it, which deletes special cases rather than adding one.
+
+Consequently: implement the Call-owned reply context, move BOTH the reply destination and the duplex
+eligibility onto it, and drop the Thread-global `_ringReplyPending`/`_ringReplySeq` and
+`setRingDuplexParentActive` pair from the dispatch. That is the next implementation step, and it is the
+prerequisite for a green hatch-on boot, for the deterministic caller-S2C workload, for M1-M6/R1-R3 and
+for the benchmark.
+
+### 13.19 State of the implementation
+
+The feature is implemented and hatched (`DARLING_GUEST_RING_MACH_MSG=1`): real `mach_msg_overwrite`
+requests and their final replies ride the caller's ring lane with zero UDS for the transaction (captured
+and balanced, section 13.15), and the hatch-off boot is green with the same binaries. The hatch-on boot
+is not yet green. The clean source-only patch is `/home/ilyagulya/work/ring-machmsg-src.patch` (10 source
+files, 28511 bytes, sha256 `0d6745be409a8d6d6e4d9c6260b354402d84b49c8065b2c1fea26bc1f427be6b`); the
+earlier `/home/ilyagulya/work/ring-machmsg.patch` is superseded because a raw `diff -ruN` also captured
+generated SDK header copies.
+
 ## 12. Repository state
 
 - Product source: **untouched**. No commit, no branch, no push.
