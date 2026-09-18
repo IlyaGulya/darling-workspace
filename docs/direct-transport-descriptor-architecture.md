@@ -1446,6 +1446,80 @@ arena); (3) a blocking wait on the lane with the mailbox pumped while parked, wh
 already implements (`gr_duplex_wait_reply`, `dserver-ring.c:961`); (4) zero UDS on that path. It does
 not need a general Mach message transport, and it does not need the arena.
 
+### 13.12 mach_msg_overwrite source map and the measured shape
+
+**Guest.** Trap entry is `mach_msg_overwrite_trap_impl` (`mach_traps.c:97`), reached from
+`__mach_syscall_table[32]` (`mach_syscall_table.c:27`) through `__darling_mach_syscall`
+(`mach_syscall.S:7`) and the `kernel_trap` macro (`syscall_sw.h:147-151`), trap number -32. The
+generated wrapper `dserver_rpc_explicit_mach_msg_overwrite` (`<build>/src/rpc.c:4668`) builds the
+40-byte body and does a blocking send/receive. **No Mach message bytes are copied into the body**:
+`msg` and `rcv_msg` travel as raw guest virtual addresses and the server copyins them itself
+(`ipc_kmsg_get` → `copyinmsg`). Blocking lives in `dserver_rpc_hooks_receive_message`
+(`dserver-rpc-defs.h:128`) — blocking recvmsg with the bounded recv-spin — and that function is also
+where the legacy path services an S2C inline and `goto retry`s (`:328`), with the interrupt status
+`-LINUX_EINTR` (`:354`).
+
+Reusable ring primitives on the guest side: `gr_wake_server` (`dserver-ring.c:435`),
+`gr_wait_reply` (`:454`), `gr_duplex_pump_once` (`:905`), `gr_duplex_wait_reply` (`:961`),
+`gr_lane_for_this_thread` (`:351`) — all currently `static`, reachable only inside `dserver-ring.c`.
+There is no ring path for this op at all: no `__dserver_ring_mach_msg_overwrite`, not in
+`DSERVER_RING_C2S_OPCODES`, not in the op-class table.
+
+**Server.** The Call class is generated and `processCall()` is a one-line tail call into
+`dtape_mach_msg_overwrite` → `mach_msg_overwrite_trap` (`duct-tape/xnu/osfmk/ipc/mach_msg.c:513`).
+Blocking is the unbounded `ipc_mqueue_receive` park (`ipc_mqueue.c`). The reply is a header-only
+datagram via `pushCallReply` → `Server::sendMessage` → `_outbox` → `sendmmsg`, i.e. the UDS listener.
+
+**The caller-S2C chain**, which is what a Ring migration has to keep working:
+
+```
+mach_msg_overwrite body → OOL descriptor machinery → duct-tape vm_map shim
+  → task_free_pages hook → Process::freePages → Thread::freePages
+  → Thread::_munmap → Thread::_s2cPerform
+```
+
+So the upcall is driven by the OOL/copyout path freeing pages, not by an explicit request, and it
+arrives while the caller is parked in `ipc_mqueue_receive` — which is exactly the stock
+`_activeCall != nullptr && currentThread() == this` state, and therefore exactly the duplex mailbox's
+target case.
+
+**Measured shape** (`DARLING_SERVER_MSG_CENSUS=1`, product prefix, boot plus ten `ls`, 101 calls):
+
+```
+msg_total                     101      msg_blocking_receive      84   (83%)
+msg_send_receive               66      msg_rcv_size_nonzero      84
+msg_receive_only               18      msg_rcv_msg               84
+msg_send_only                  17      msg_send_msg              83
+msg_send_only_simple           13      msg_census_hdr_read_fail   0
+msg_send_only_complex           4
+msg_send_only_ool               2
+msg_send_only_port_descriptors  2
+```
+
+The dominant shape is confirmed by measurement rather than by summary: a **blocking receive**, with
+send+receive the majority and receive-only at 18. `msg_census_hdr_read_fail = 0` means every one of
+the 101 was classified from a readable header.
+
+### 13.13 Blocker: the product prefix no longer boots, and the previous round's attribution was wrong
+
+**Correction.** The previous round reported that arming `DARLING_SERVER_D5_VMDEALLOC_PROOF` caused the
+guest abort (`rc=134`) and inferred a defect in the duplex proof harness. That inference is
+confounded and is withdrawn: the baseline boot on the same prefix now aborts identically with no
+special environment at all — `darling --rootless shell /bin/echo DIAG_OK` and a bare
+`/bin/bash -c 'echo ...'` both end `rc=134` with no marker and a server log containing only the ring
+NOTICE. The same prefix booted clean immediately after the restore earlier in this session, so the
+regression is in the prefix's runtime state or in the restored artifact set, not in the D5 harness.
+
+What the runs do establish: the server starts and works (`ring_serviced = 154`,
+`residual_total_ring_threads_registered = 7`, guest `[dring-lane-stats] acquired=2 exhausted=0
+held_now=1 max=128`), so this is a guest-side abort after startup, not a server failure. The prefix is
+clean of leftover mounts and of `darlingserver` processes.
+
+Consequence for this round: the measurement surface itself is broken, so the feature flag, the Ring
+prototype, the transaction trace, the transaction counters, M1-M6 and the UDS-vs-Ring benchmark were
+not attempted. Diagnosing and repairing the prefix boot is the prerequisite for all of them and is the
+next action; it is not the D5 harness work the round told us to skip.
+
 ## 12. Repository state
 
 - Product source: **untouched**. No commit, no branch, no push.
