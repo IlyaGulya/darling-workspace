@@ -924,6 +924,58 @@ This is a real defect with a named mechanism and a named anchor, not a mystery: 
 is to make the mailbox pop conditional on the caller being the S2C path, and to re-run the four
 boot gates before any further measurement.
 
+
+### Receive-context scoping: the mailbox belongs to the S2C phase
+
+The next defect after the ordering fix was that the mailbox pop sat in the shared
+`receive_message` hook, so the first receive to run after publication took the upcall —
+which is the receive inside the guest's `interrupt_enter` RPC, not the one inside
+`s2c_perform`. The operation then executed before the interrupt handshake, and the server's
+`S2CPerform::processCall` — the only up site for `_s2cInterruptEnterSemaphore`
+(`call.cpp:1406`) — never gave the green light the S2C wait blocks on.
+
+Fixed by scoping the pop explicitly. A thread-local-in-effect receive context
+(`dserver-receive-context.h`) distinguishes `DSERVER_RECEIVE_NORMAL`,
+`DSERVER_RECEIVE_INTERRUPT_ENTER` and `DSERVER_RECEIVE_S2C_PERFORM`; the signal handler sets
+it around each of its two RPCs and the hook pops only in the S2C phase. No process-wide flag,
+and the context cannot leak between calls because it is set immediately around each one. Note
+that the pop necessarily happens after the `s2c_perform` request has been sent, because the
+hook only runs in that call's receive phase.
+
+The storage is a tid-keyed table rather than `__thread`: a real thread-local needs
+`__tlv_bootstrap`, which the 32-bit dyld link does not define, and the build must stay whole.
+
+PRODUCT trace of one idle-target control upcall, all three actors on CLOCK_MONOTONIC:
+
+```
+receiver PC_MAILBOX_PUBLISHED                      t=…465298201
+receiver PC_TGKILL rc=0                            t=…465345350
+target   PC_INTERRUPT_ENTER_SEND
+target   PC_INTERRUPT_ENTER_REPLY status=0
+target   PC_S2C_PERFORM_SEND
+target   PC_S2C_PERFORM_POP hit=1                  t=…465698144
+target   PC_S2C_EXECUTE s2c=2 (munmap)
+target   PC_REPLY_SENT send_rc=28                  t=…465762706
+server   S2C_CONTROL_REPLY_IN tid=1980581          t=…465781953
+```
+
+The requested causality holds exactly: `MAILBOX_PUBLISHED < TGKILL < INTERRUPT_ENTER_SEND <
+INTERRUPT_ENTER_REPLY < S2C_PERFORM_SEND < S2C_PERFORM_MAILBOX_POP < S2C_EXECUTE <
+S2C_REPLY_SENT < S2C_REPLY_IN`. The interrupt handshake completes and the operation executes
+in the right phase. The boot still does **not** finish.
+
+**The remaining blocker, named from the trace.** `S2C_PERFORM_RECEIVED` — the server-side
+trace inside `Call::S2CPerform::processCall` — never appears, although the guest sent the
+`s2c_perform` request and its receive then consumed the mailboxed upcall. The server therefore
+never ingests that call, never ups `_s2cInterruptEnterSemaphore`, and `S2C_CONTROL_ENTERED`
+and `S2C_CONTROL_REPLY` stay absent: `_s2cPerform` is still parked on the interrupt-enter wait
+even though the S2C itself completed and its reply arrived (`extra=0`, no pending reply). The
+next step is to trace the guest's `s2c_perform` send path (own vs shared socket, and the socket
+value the signal handler sees) rather than to touch the mailbox or the ordering again, both of
+which are now proven.
+
+**Evidence tier: PRODUCT.** The runtime was modified, built and executed in a real prefix.
+
 ### PRODUCT result: the server half is behaviour-preserving; the guest half does not complete
 
 | Configuration | Result |
