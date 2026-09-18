@@ -926,6 +926,64 @@ boot gates before any further measurement.
 
 
 
+
+### H1 confirmed: the control path was hijacking an ACTIVE caller-S2C
+
+The failing S2C is not an idle target. With the branch state printed before selection:
+
+```
+S2C_BRANCH_STATE target_tid=2099243 active_call_present=1 active_call_number=38
+                 current_thread_is_target=1 using_control_address=1
+                 selected_branch=CONTROL_INTERRUPT
+```
+
+The target had an active call, and the server-side fiber performing the S2C *was* that target
+(caller-S2C). Stock's branch logic is:
+
+```cpp
+if (!_activeCall) { sendSignal; down(_s2cInterruptEnterSemaphore); }
+else if (currentThread().get() != this) { _deferReplyForS2C = true; }
+```
+
+so in exactly this state stock does **neither**: no signal, no enter wait, no deferral. The datagram
+goes to the thread's own address and the guest's in-flight receive picks it up inline. The control
+path keyed only on "the process registered an endpoint", so it ran an interrupt handshake stock
+never runs — and that handshake is what aborts the wait:
+
+```
+WAIT_ENTER_BEGIN target_tid=2099243 path=control
+INTERRUPT_ENTER_PROCESS_BEGIN tid=2099243
+WAIT_ENTER_RETURN target_tid=2099243 path=control result=KERN_ABORTED   (8us later)
+S2C_CONTROL_ENTER_INTERRUPTED
+```
+
+Causal anchor: `Call::InterruptEnter::processCall` → `Thread::_handleInterruptEnterForCurrentThread`
+→ `dtape_thread_sigexc_enter` → `clear_wait_internal(&thread->xnu_thread, THREAD_INTERRUPTED)`
+(`duct-tape/src/thread.c:530`). That tears down the wait of that same XNU thread, and because the
+waiter *is* the target here, the wait returns `KERN_ABORTED`.
+
+H2 is false: `Thread::sendSignal` is `isDead()` then `syscall(SYS_tgkill, …)` and nothing else —
+no dtape or XNU state change, no pending interrupt, no lock, no scheduling effect
+(`darlingserver/src/thread.cpp:2183-2195`). So the difference is the branch, not the signal source.
+
+**Minimal PRODUCT fix.** One predicate decides delivery: `deliverViaControl = usingControlAddress &&
+(_activeCall == nullptr)`, evaluated under the same `_rwlock` that stock uses, and used for the
+destination address, the publish-and-wait block and the reply trace. An active target now falls
+through to the unchanged stock path.
+
+PRODUCT result with the fix: the same workload selects `CALLER_CURRENT` and the boot completes,
+`rc=0`, `PROBE_OK`, no leftovers. Gate B (server ON, guest registration off) is also green.
+
+**Two limits of this result, stated plainly.** (1) The control path is not exercised by a plain
+boot any more: every S2C in the measured workload is a caller-S2C, so `deliverViaControl` is false
+throughout and gate D (receiver suppressed) is green for the trivial reason that the receiver has
+nothing to do — it is not a receiver mutation for this workload, and the four-configuration matrix
+cannot prove receiver necessity without a workload that produces a genuinely idle-target S2C.
+(2) The earlier published control-path trace remains valid as proof of delivery and ordering, and
+under the fixed predicate the control branch is taken only when `_activeCall == nullptr`, but that
+trace did not record `_activeCall` at the time, so its previous "idle target" label was an
+assumption and is corrected here.
+
 ### Exact-send instrumentation: the server ingests s2c_perform; the semaphore handshake breaks
 
 The next round instrumented the real `sendmsg` site in the generated wrapper (via the generator,
