@@ -518,16 +518,28 @@ The kernel reserves the descriptor number before the path is opened, so `O_TRUNC
 truncate and `O_CREAT` does not create. A userspace post-filter that performs the syscall and
 then closes the result would therefore leave a **created or truncated file** where native
 behaviour leaves none — the opposite of the earlier claim in this document, which is hereby
-corrected. The same ordering question must be answered per creator before any post-filter is
-acceptable; `<creator, side effect, ordering evidence>` is recorded with the review of the
-remaining classes (accept/accept4, `recvmsg` + `SCM_RIGHTS`, `socketpair`, and the
-kernel-observable wrappers).
+corrected.
 
-Consequence for the options: with the post-filter ruled out, A4.2 needs a real
-semantics-preserving interception scheme per creator, i.e. it inherits A4.1's completeness
-burden *and* must prevent the side effect, which for `open` means intercepting before the
-syscall — the very thing A4.1's lock does. A4.2 is therefore **not** the cheap fallback the
-previous revision called it.
+`tests/fd_semantics_proof/` now carries the per-creator resolution (host and Docker, `S1` +
+`C1`–`C18`, three mutations, marker `FD_SEMANTICS_PROOF_OK`), comparing native behaviour with a
+post-filter wrapper for each class:
+
+| Creator | Post-filter semantics-preserving? | Why, with the ordering |
+|---|---|---|
+| `open`/`openat` `O_CREAT`, `O_CREAT｜O_EXCL`, `O_TRUNC` | **no** | the kernel reserves first (`fs/open.c:1402` `get_unused_fd_flags()` before `:1404` `do_filp_open()`), so native leaves the filesystem untouched while the wrapper leaves a created file or a truncated-to-zero file (irreversible) |
+| `accept`/`accept4` | **no** | the number is reserved (`net/socket.c:1965`) before `do_accept()` (`:1969`) dequeues; the wrapper accepts and immediately closes the pending connection, so the peer sees EOF/RST and the queue is empty, while native leaves the connection queued |
+| `recvmsg` + `SCM_RIGHTS` | **no, and worse** | native is not an `EMFILE` case at all: `scm_detach_fds()` (`net/core/scm.c:328` → `receive_fd()`) drops the descriptors, sets `MSG_CTRUNC` (`:350`) and returns **success with the payload delivered and zero descriptors**; the wrapper returns `EMFILE` after the payload was already copied and the message consumed, so the guest both loses a message and sees an error it can never see natively |
+| `pipe`/`pipe2`, `socket`, `socketpair`, `eventfd`, `epoll_create`, `inotify_init`, `signalfd`, `timerfd_create` | equivalent | the kernel's own failure path already destroys the object (`fput`/`sock_release`/`ep_clear_and_put`), and the only residue is a number above the virtual limit that the guest cannot name (a co-thread could still observe it transiently through `/proc/self/fd`, which is **not measured**) |
+
+A pre-check instead of a post-check does not repair this: `C17`/`C18` execute the interleaving
+deterministically — the pre-check sees a free slot, releases it, another thread takes it, and
+the act then runs with the below-limit range full, leaking the truncation and the consumed
+connection while returning `EMFILE`.
+
+Consequence for the options: with both post-filter and pre-check ruled out for the
+side-effecting classes, A4.2 would need a real semantics-preserving interception scheme per
+creator — i.e. interference *before* the syscall, which is A4.1's lock. A4.2 is therefore
+**not** a fallback; it is an undeveloped variant with a proven-hard core.
 
 Recommendation: **A4.4 first**, because it is the only option that deletes the race rather than
 policing it, and its prerequisite is already the target of the transport work. If dynamic
@@ -543,6 +555,277 @@ disposable isolated checkout whose runtime is then *not* the deployed compositio
 integration would need an isolated west checkout, a runtime build with a test-only pause hook in
 the window, and a bootstrapped prefix — and it would confirm a window that the source audit and
 the deterministic proof already establish. Recorded as available-on-request with that cost.
+
+## 8.7 HARD GATES B/C/D/E: transport, lifecycle, boundaries
+
+### B1/B2 — how the real blocking RPC actually works
+
+The blocking Mach RPC is a **synchronous RPC whose reply is demultiplexed by the socket**:
+the guest thread blocks in `recvmsg` on its own autobound per-thread datagram socket
+(`mach_traps.c:97-134`, one `dserver_rpc_mach_msg_overwrite` at `:111`, EINTR retry loop
+`:110-130`), while the **server** blocks a cooperative microthread in the duct-taped XNU waitq
+(`duct-tape/xnu/osfmk/ipc/ipc_mqueue.c:1014-1042`, `receive_on_thread:1086-1245`,
+`thread_block_parameter` in `duct-tape/src/thread.c:625-684`). The reply is matched by
+**call number plus sender address only** — there are **no request ids** anywhere on this path
+(generated client: send `generate-rpc-wrappers.py:1408-1465`, recv+match `1565-1665`;
+`replyhdr` is `{number, code}` at `:847-850`). Every blocking RPC blocks on **both** sides
+(`mach_msg_overwrite`, `semaphore_wait*`, `psynch_cvwait`/`mutexwait`/`rw_*`, `fork_wait_for_child`).
+
+That is the load-bearing constraint for Candidate B: removing the per-thread socket does not
+merely change a transport, it changes **reply addressing for every RPC**, so the demultiplexer
+must carry `(request id, tid, lane generation)` for all replies, not just for slow ones.
+
+Measured frequency, with the intended counter proven to have moved
+(`tests/lane_lifecycle_census/`, ON and OFF):
+
+| Workload | Counter | Result |
+|---|---|---|
+| 256 blocking `mach_msg` receives, receive pending before each send | `msg_blocking_receive_delta` | **256 on both prefixes**, guest `recv_ok=256`; blocking share of `mach_msg` calls 0.500 |
+| 36 threads × 72 000 contended pthread mutex ops + condvar phase | any `psynch_*`/`semaphore_*` callnum | **UNPROVEN — no psynch callnum moved at all** |
+| the same workload, what did move | `pthread_canceled` | **8241** (0.0858 per mutex op): `_pthread_mutex_lock` defaults to the ulock path, so contention parks **in-guest** on `__ulock_wait` and the only server-side RPCs are the cancellation-point calls bracketing each park |
+
+So the "pthread sync goes to psynch RPCs" assumption is **wrong in this build**, and the
+psynch question is recorded as UNPROVEN rather than answered. `per_call` carries no
+`mach_msg_overwrite` row at all in this build (lifetime count 0), so the blocking-receive number
+rests on the `msg_*` counter family alone and is marked uncrosscheckable.
+
+### B3 — S2C and caller-local delivery
+
+The server keeps, per guest thread, the **autobind abstract address** learned from that
+thread's datagrams (`call.cpp:230/245/317`) and sends S2C with `sendmmsg` on **one shared
+listener socket**, stamping each message with the target's address
+(`message.cpp:440-505`, `server.cpp:1332-1334`). Addressing is therefore *by sender identity*,
+not by an id: the S2C op set is exactly **four ops — mmap, munmap, mprotect, msync**
+(`rpc-supplement.h:1091-1160`) — and only `mmap` carries a descriptor (SCM_RIGHTS, dup'ed by the
+server at `thread.cpp:1745-1752`, closed by the guest at `dserver-rpc-defs.h:186-205`).
+
+Caller-local delivery already has two mechanisms: `Process::_pickS2CThread` (`process.cpp:742-766`)
+returns the calling thread when the server fiber belongs to that process, and when the target is
+**not** parked the server forces it in with `tgkill(SIGRTMIN+1)` (`thread.cpp:2115-2128`), so the
+guest's signal handler runs `interrupt_enter`/`s2c_perform` (`sigexc.c:163-200`). The
+register-capture class (SIGEXC/SIGRTMIN) is the operation that physically cannot be executed by
+another thread.
+
+Two facts matter for B: the server already targets a **specific TID**, so a demultiplexer does
+not weaken S2C addressing; and **UDS S2C completion is matched by arrival only** — there is no
+correlation id, one-in-flight per thread is enforced by a semaphore (`thread.h:96-110`). The
+perf#18 duplex ring lane is the only S2C path with real ids.
+
+### C1 — lane lifecycle and descriptor ownership, resolved
+
+`GR_MAX_LANES = 128` in the guest dylib, enforced in five loops in `dserver-ring.c`; overflow
+falls back to the per-thread UDS. Ownership, traced to the close path:
+
+| Object | Owner | Closed on thread exit? |
+|---|---|---|
+| per-thread RPC datagram socket | guest thread (`__thread t_server_socket`) | **yes** — `__darling_thread_terminate` → `__mldr_close_rpc_socket` (`elfcalls/threads.c:359-405`) |
+| per-lane wake eventfd (guest duplicate of the server's) | guest, held **twice**: `gr_lane_t.wake_fd` and the loader's `ring_fds[]` | **no** — no close path on thread exit and none before process exit; the only close is `__mldr_postfork_child` (`mldr.c:846-853`) |
+| lane slot in `g_lanes[128]` | guest image | **never released** — the only bulk release is `__dserver_ring_postfork_reset` |
+| ring memfd | both sides close it after mmap | mapping unmapped only on fork-child |
+| server `RingBuffer` (mmap + eventfd) | server `Thread` | yes — `Thread::notifyDead` (`thread.cpp:2137-2190`) |
+
+This is the mechanism behind the previously observed retention, and it is an omission, not a
+leak guard: nothing closes the guest's adopted wake fd before process exit.
+
+### C2/C3 — measured churn and cap behaviour (`tests/lane_lifecycle_census/`, ON and OFF)
+
+512 simultaneous threads are achievable (18 s, no creation failures, no failed trap). The lane
+cap is observed four independent ways (guest `acquired` freezing at 128 while `exhausted`
+climbs; server attach counters freezing; a residual bucket climbing 1:1; the ring-served trap
+count freezing):
+
+| Threads ever created | host fds | of which eventfds | guest-visible | lanes held | exhausted | threads on UDS |
+|---|---|---|---|---|---|---|
+| 0 | 17 | 2 | 14 | 0 | 0 | — |
+| 64 | 81 | 66 | 14 | 128 (cap) | 0 | 0 |
+| 128 | 144 | 129 | 14 | 128 | 61 | 1 |
+| 192 … 1024 | **144 (flat, `fd_delta=+0`)** | 129 | 14 | 128 | 2691 at the end | 897 by the end |
+
+| Simultaneous | threads without a lane | live sockets | host fds live | fds after join |
+|---|---|---|---|---|
+| 129 | 1 | 130 | 273 | 76 |
+| 256 | 128 | 239 | 382 | 83 |
+| 512 | 384 | 387 | 530 | 93 |
+
+**Answers.** The descriptor count grows with the number of threads **ever created** (exactly one
+eventfd per thread, `host_fd_per_extra_thread = 1.000`), and it is **bounded by the lane cap**,
+not by concurrency: from 192 to 1024 threads the count does not move at all while 896 further
+threads are created and joined. Beyond the cap, traffic moves but descriptors do not — every
+later thread takes the per-thread UDS path permanently (`fb_no_ring_proc_has` 3 → 2691). The
+guest's own scan stays flat at 14 throughout, so a guest-side observer sees nothing.
+
+After the churn the lane eventfds **drain asynchronously** (129 → 79 in this run; 31/50/73/36
+across four runs — timing-dependent), while the guest still reports `held_now=128`, i.e. at that
+instant ~30–72 lane slots refer to a descriptor that is no longer open. That last statement is
+an inference from two measured numbers; no doorbell write on such a slot was observed in either
+direction, and the trigger for the release is **not** attributed.
+
+On the OFF build the count is flat at 15 throughout (its dylib has no lane table at all).
+
+Consequence for the design: with per-thread UDS removed, **thread number 129 in a process would
+have no transport at all**. Lane lifecycle (release on thread exit, reuse, and a directory that
+is not a fixed 128-entry array) is therefore not a refinement of Candidate B — it is a
+prerequisite, and the ABA/generation work in the next section is what makes reuse safe.
+
+### C4 — generation/ABA, proven with mutations (`tests/generation_aba_proof/`)
+
+Five claims green on host and ordinary Docker, four mutations red on exactly the named claim,
+marker `GENERATION_ABA_OK`, rc=0. Reuse is constructed deterministically (a real thread A claims
+slot 3, exits; a real thread B re-claims the same slot **with A's recycled tid value**; only then
+is A's completion delivered):
+
+| Claim | Identity tuple compared |
+|---|---|
+| G1 ring reply | `{slot, generation, owner_tid, seq, callnum}` |
+| G2 S2C upcall | `{slot, generation, owner_tid, parent_id}` — the upcall must not execute in the new occupant |
+| G3 blocking control completion | `{request_id, slot, generation, owner_tid, token}` — matched by id, never by arrival order |
+| G4 SCM_RIGHTS descriptor | `{descriptor token == request_id, slot, generation, owner_tid}` — rejected descriptors are closed, not leaked |
+| G5 ≥1000 delayed reuses | 2228 acquisitions over 1264 delayed deliveries, zero wrong consumptions |
+
+Mutations: dropping the generation → G1/G5 red; dropping `owner_tid` → G2/G5 red; matching by
+arrival order → G3 red; installing a descriptor without the request identity → G4 red.
+
+Note this is a **model** of the identity scheme, not the product: the product compares
+`active`/`owner_tid` only and never reads `generation` at runtime, and has no process epoch.
+
+### D1 — anchor inventory and bootstrap timing
+
+| Anchor | Created | Pre-guest possible | Replaced at runtime today |
+|---|---|---|---|
+| process control UDS endpoint | mldr bootstrap (`setup_space`) | **yes, already** | no |
+| pre-5.3 lifetime pipe | mldr bootstrap, kernel < 5.3 only | **yes, already** | refreshed at runtime (`elfcalls.c:83`) |
+| exec checkout anchor | `execve.c:240` (`pipe2(O_CLOEXEC)`) | per-exec, inherently | yes, once per exec, in the single-threaded exec bootstrap |
+| process wake eventfd | — (today: per lane, at ring attach) | **yes**, if created at bootstrap | today created lazily **per thread/per attach** |
+| shared-memory backing fd | — (today: `memfd_create` per lane, `dserver-ring.c:253`) | **yes**, if one static backing is chosen | today per attach |
+
+So two of the five are already pre-guest, the exec anchor is inherently per-exec, and the two
+that must change are exactly the objects Candidate B consolidates: **one** process eventfd and
+**one** backing, both created at bootstrap, with lanes becoming pure directory entries rather
+than per-thread descriptors. D2/D3 (fork and exec state machines) are written up in section 8.8.
+
+### E — close_range / hostile raw-Linux boundary
+
+The product **does not emulate `close_range`**; the forest-wide search for
+`close_range`/`SYS_close_range`/`__NR_close_range` is empty. No Darwin-visible API routes to it
+either: `closefrom` is not implemented anywhere (libc, syscall table and SDK headers all lack
+it), `posix_spawn_file_actions_addclosefrom_np` does not exist, `POSIX_SPAWN_CLOEXEC_DEFAULT`
+only sets `FD_CLOEXEC` (`posix_spawn.c:145-148`), `daemon()` only redirects 0/1/2
+(`libc/gen/FreeBSD/daemon.c`), and `F_CLOSEM` is unimplemented (`fcntl.c` command map has no
+entry). There is no `SYS_closefrom` in the Darwin syscall numbers
+(`xnu/gen/syscall.h`). **Only a deliberate raw Linux syscall reaches host `close_range`**, so
+under the current threat model this is not a correctness blocker for the anchors.
+
+One real gap inside the supported surface, recorded rather than inflated: `close_internal` is
+**not** guarded (only `close`/`close_nocancel`/`dup`/`dup2`/`fcntl`/the CLOEXEC scan consult the
+guard), and it is guest-reachable through the supported `posix_spawn` file action
+`XNU_PSFA_CLOSE` (`posix_spawn.c:240-243`). A program would have to name a number it does not
+legitimately own to disturb an anchor, so it is a hardening item, not a boundary failure.
+
+## 8.8 HARD GATE B (B4/B5): the demultiplexer, and whether it needs a permanent thread
+
+### The architecture question
+
+If one process-level UDS carries every reply, someone must call `recvmsg` on it. The options
+are: a permanent demultiplexer thread; one of the waiting threads holding a reader token; a
+delivery scheme that needs no reader (server writes into the lane and futex-wakes the target,
+with the socket used only when a descriptor must move); or something else. The fixture tests
+the first two rather than listing them.
+
+### Result: `tests/demux_fixture/` (host and ordinary Docker, rc=0, marker `DEMUX_FIXTURE_OK`, ten mutations red)
+
+It is an integration fixture, not a product prototype, built from the **product's real
+structures**: 28 struct sizes/offsets, the enum width and the four callnums are **identical**
+(0 differences) between the fixture's copies and a probe that includes the real headers plus an
+ABI regenerated by the product's own `generate-rpc-wrappers.py`.
+
+| Claim | Result |
+|---|---|
+| D1 32 concurrent blocking receives | PASS — 32/32, wrong_thread=0 |
+| D2 replies deliberately out of order | PASS — 32/32 landed on their own thread |
+| D3 one waiter times out | PASS — the late reply for the abandoned lane is rejected **by the lane generation** (same request id, same payload shape: the generation is the only discriminator) |
+| D4 one waiter interrupted | PASS — 31/31 others complete; the stale reply is rejected by generation/lane |
+| D5 SCM_RIGHTS binding | PASS — the token is read out of the descriptor itself; 1 rejected descriptor closed; no fd leak (9 → 9) |
+| D6 no head-of-line blocking | PASS — 31/31 others complete in 2.2–6.3 ms while the slow waiter is still parked |
+| D7 fork generation | PASS — the single-threaded child rejects the parent's queued completion and completes its own; V2 re-creates nothing, V1 re-creates its thread with a libc-free raw clone on a 64 KiB pre-allocated stack (pthread_create also works, but can deadlock on a libc lock held at fork) |
+| D8 exec generation | PASS — the pre-exec completion is queued and confirmed before the exec, and the new image rejects it |
+| D9 caller-local on the target | PASS — 4/4 routed and executed by the addressed tid, 0 by the dispatcher, and the server keyed each reply off the executing tid 4/4 |
+
+Mutations (each `exit=1`, each reddening its claim): arrival-order matching; dropping the lane
+generation; dispatching a caller-local op from the dispatcher; not releasing the token on
+interrupt; the child accepting the parent's completion; the post-exec image accepting the
+pre-exec one; the holder serving only itself.
+
+### Which shape survives, and the price
+
+- **V2 (reader token, no permanent thread) survives the cost comparison**: no extra thread at any
+  count (33/65 vs 34/66), no 8 MiB stack reservation (VmSize 525 808 vs 534 004 kB at 64 workers),
+  nothing to re-create on fork or exec, and a strictly cheaper dispatch path
+  (`copies_per_completion` 0.785–0.860 vs 1.000, because the holder parses its own datagram in
+  place, so 14–21 % of completions avoid a copy, a slot write and a futex wake).
+- **V1 (permanent demux thread) also survives**, and is the shape required where a background
+  reader must exist for a thread that is *not* inside an RPC. It pays one permanent thread, 8 MiB
+  of reserved address space, a signal mask it must own, a bounded blocking `recvmsg` so it can be
+  told to stop (37–67 µs idle CPU per 300 ms), and re-creation in **every** fork child and
+  post-exec image.
+- **Identity fields are not optional**: without the lane generation a re-used lane is satisfied by
+  the abandoned incarnation's reply (M2 → D3 red, "completed with a reply from lane 1 of 2"),
+  without the process generation a fork child or post-exec image consumes its predecessor's
+  completion (M5/M6 → D7/D8 red), and executing rather than routing a caller-local op
+  misattributes the S2C reply and strands the caller (M3 → D9 red: 4/4 misattributed, 0 routed —
+  exactly the product's failure mode, since `call.cpp:266-278` stores the S2C reply on the thread
+  named by `header.tid` and ups **that** thread's semaphore, so the real caller's `_s2cPerform`
+  never returns).
+- **The residual constraint, stated plainly**: V2's shape works while S2C targets are guaranteed
+  to be inside a call, and falls back to the product's existing mechanism otherwise — the server
+  already `tgkill`s a non-parked target (`thread.cpp:2115-2128`), which puts *that thread* into
+  the receive path. Whether that covers every S2C case in the real product is the main open item.
+
+### Fidelity gap (what this fixture is not)
+
+It runs no mldr, no darlingserver, no Mach and no XNU code. The request id, process generation,
+target tid and lane generation live in the fixture's own envelope because **the product has none
+of those fields on the wire**; every payload byte is a product struct, but the envelope is the
+proposal's. The fixture does not model the product's bounded recvspin, its signal-blocking
+around begin/end, the `push_reply` path, the fork/exec checkin RPCs or the lifetime pipe, and
+its latency/CPU numbers are its own, not the product's. The claims that still need product
+evidence are listed in section 8.9.
+
+## 8.9 Verdict for this round: **UNKNOWN** (not B, not C)
+
+**Not C.** Nothing found in this round requires a companion process with its own descriptor
+table. The two properties that would have forced it — per-thread control ownership that cannot be
+demultiplexed in the guest, and a lifecycle/security semantic that only a separate descriptor
+table preserves — were both tested and did not hold: the demultiplexer reaches the right thread
+in every claim including caller-local WAL, S2C and cancellation, and the server's S2C addressing
+is already per-TID rather than per-socket.
+
+**Not a clean B either**, because B's own bar is product evidence: the demultiplexer inside the
+real generated RPC client and server, at real scale, with the real timeout/interrupt paths, the
+twelve descriptor-bearing sites and the real fork/exec checkin flow. The fixture is exactly the
+"integration fixture from real request/reply structures" the round permits when a product
+prototype is too large, and its fidelity gap is recorded rather than papered over.
+
+**Remaining experiments for a B verdict** (each names what would falsify B):
+
+1. Port the envelope into the generated RPC client/server as a feature flag and run the
+   product's own blocking `mach_msg` workload with 32/64 threads (falsified if any reply is
+   consumed by the wrong thread or any waiter wedges).
+2. Exercise the product's real timeout and interrupt paths (`ALLOW_INTERRUPTIONS` retry,
+   `semaphore_timedwait` `-111`, `pthread_markcancel`) instead of a signal-interrupted
+   `recvmsg`/futex.
+3. Walk the twelve descriptor-bearing RPC sites plus the `ring_attach` memfd handshake through
+   the single endpoint (the fixture used an eventfd token).
+4. Cover every S2C case for a **non-waiting** target and decide whether the `tgkill` path is
+   sufficient or whether V1's permanent reader is required for a subset.
+5. Remove the per-thread sockets in a feature-flagged build and re-run the matched acceptance,
+   the 1024-thread churn and the 512-simultaneous window, requiring O(1) hidden descriptors.
+6. Prove the `close_internal` hardening item (section 8.7, gate E) or record it as accepted risk.
+
+**What is already established for the migration order** (independent of the above): lane slots
+must be releasable and reusable, `GR_MAX_LANES` must become a directory that is not a fixed
+128-entry array, and the identity tuple `{slot, generation, owner_tid, request_id}` must exist on
+both sides — the ABA proof shows each of those is load-bearing, and the census shows thread
+number 129 currently has no ring path at all.
 
 ## 9. Decision matrix
 
@@ -566,7 +849,8 @@ the deterministic proof already establish. Recorded as available-on-request with
 | Migration risk | low | high | highest |
 | Compatible with current server epoll design | yes | yes (one doorbell) | yes |
 | Proof coverage now | oracle exists (reproducer), fix unapplied | model proof D1–D9 and control proof C1–C10, both green on host and Docker with every mutation red | topology proof A1–A7 + integration I1–I10 |
-| Not yet proven | the fix itself | the demultiplexer under the real blocking `mach_msg` class; async-signal-safe child rebootstrap; the exec ownership token in the product | any requirement that needs it |
+| Not yet proven | the fix itself | product-level: the envelope in the generated RPC client/server, real timeout/interrupt paths, the twelve descriptor sites, every S2C case for a non-waiting target, and a feature-flagged run with the per-thread sockets removed (§8.9) | any requirement that needs it |
+| Round verdict | falsified as drafted (§8.6) | **UNKNOWN** — no hard requirement against it was found; the remaining items are product evidence, not open questions of principle | **not indicated**: nothing found requires a separate descriptor table |
 
 ## 10. Remaining unknowns
 
