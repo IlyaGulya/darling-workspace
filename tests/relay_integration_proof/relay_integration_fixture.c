@@ -32,13 +32,25 @@
  *                              descriptor set that is about to be closed.
  *   rpc N        PRE POST      I7: N mach_host_self() RPCs of pure transport
  *                              workload.
- *   concurrent T R PRE POST    I9: T threads, each performing R mach_host_self()
- *                              RPCs in a loop, released from a start gate
- *                              together and joined, so the host can ask the
- *                              server's own counters how many requests one
- *                              server wake drained (T x R is the nominal
- *                              request total the host divides by).  PRE and
- *                              POST are optional here and default to 0.
+ *   concurrent T R [PRE POST [KIND [DISCIPLINE [STAGGER_US]]]]
+ *                              I9/I10: T threads, each performing R requests in
+ *                              a loop, released from a start gate and joined,
+ *                              so the host can ask the server's own counters
+ *                              how many requests one server wake drained (T x R
+ *                              is the nominal request total the host divides
+ *                              by).  PRE and POST are optional here and default
+ *                              to 0.  KIND picks the request class: `mach` (the
+ *                              default) is mach_host_self(), `bsd` is
+ *                              setuid(getuid()), a BSD syscall whose Darling
+ *                              emulation issues one dserver uidgid RPC per
+ *                              call.  DISCIPLINE is `simultaneous` (the
+ *                              default, one gate release for every thread) or
+ *                              `staggered`, which releases the threads
+ *                              STAGGER_US microseconds apart (default 250) so
+ *                              their requests do not align.  The workload line
+ *                              prints the chosen kind and discipline, the
+ *                              requested spacing and the achieved release
+ *                              spread.
  *
  * PRE and POST are millisecond hold windows.  The protocol is one-directional
  * and needs no host-to-guest channel (defect prints no barrier at all, and
@@ -737,42 +749,97 @@ static int mode_rpc(int count, long pre_ms, long post_ms)
 	return 0;
 }
 
-/* ---------------------------------------------------------------- I9 */
+/* ---------------------------------------------------------------- I9 / I10 */
 
-/* Concurrency workload: THREADS threads, each running REQUESTS mach traps in a
- * loop.  Unlike I3 (one call per thread, held open) this is a stream, which is
- * what a wake path has to coalesce: the question the host answers from the
- * server's counters is how many requests one server wake drains.  The threads
- * are released from a start gate together so the window contains the maximum
- * overlap of the threads' requests, and each thread uses its own ring lane
- * (the guest attaches one lane per thread), so nothing here shares a lane. */
+/* Concurrency workload: THREADS threads, each running REQUESTS requests in a
+ * loop.  Two dimensions beyond the count are selectable:
+ *
+ *   kind        `mach` is mach_host_self(), a Mach trap (the class I9 already
+ *               used).  `bsd` is setuid(getuid()), a BSD syscall: Darling's
+ *               emulation (sys_setuid -> __setuidgid) issues one dserver
+ *               uidgid RPC per invocation, on the same per-thread transport
+ *               and against the same darlingserver as the trap.  Only the get
+ *               direction is cached by the guest (getuid/getgid/getgroups read
+ *               a cached value after the first call), so the target uid is
+ *               read once here, outside the timed window, and the loop only
+ *               ever sets it back -- a privilege no-op that the server serves
+ *               from its task lock with no I/O, no allocation and no host
+ *               syscall.
+ *   discipline  `simultaneous` releases every thread from one gate;
+ *               `staggered` releases them STAGGER_US apart so their requests
+ *               do not align.
+ *
+ * The threads are released only once every created thread is standing in the
+ * gate, so the discipline measures release spacing and not thread-creation
+ * cost.  Each thread uses its own ring lane (the guest attaches one lane per
+ * thread), so nothing here shares a lane.  This mode measures and prints; it
+ * never decides a verdict.
+ */
+
+enum {
+	RI_KIND_MACH = 0,
+	RI_KIND_BSD = 1,
+};
+
+static int usage(void);
+
 struct conc_ctx {
 	pthread_mutex_t lock;
-	pthread_cond_t cond;
+	pthread_cond_t gate;
+	/* Staggered release: one flag per thread, written by the releasing
+	 * thread and spun on by the released one.  A condition variable would
+	 * cost a kernel round trip per release in this guest, which is larger
+	 * than the spacing being asked for; the simultaneous discipline keeps
+	 * the single shared gate broadcast, which is the shape I9 was measured
+	 * with. */
+	volatile int released[RI_MAX_THREADS];
 	int requests;
 	int started;
-	int release;
+	int gate_open;
 	int rpc_ok;
 	int rpc_failed;
+	int kind;
+	int staggered;
+	uid_t bsd_uid;
+};
+
+struct conc_thread {
+	struct conc_ctx *ctx;
+	int index;
 };
 
 static void *conc_thr_main(void *arg)
 {
-	struct conc_ctx *ctx = arg;
+	struct conc_thread *self = arg;
+	struct conc_ctx *ctx = self->ctx;
 	int ok = 0;
 	int failed = 0;
 	int i;
 
 	pthread_mutex_lock(&ctx->lock);
 	++ctx->started;
-	pthread_cond_broadcast(&ctx->cond);
-	while (!ctx->release) {
-		pthread_cond_wait(&ctx->cond, &ctx->lock);
+	pthread_cond_broadcast(&ctx->gate);
+	if (ctx->staggered) {
+		pthread_mutex_unlock(&ctx->lock);
+		while (!ctx->released[self->index]) {
+		}
+	} else {
+		while (!ctx->gate_open) {
+			pthread_cond_wait(&ctx->gate, &ctx->lock);
+		}
+		pthread_mutex_unlock(&ctx->lock);
 	}
-	pthread_mutex_unlock(&ctx->lock);
 
 	for (i = 0; i < ctx->requests; ++i) {
-		if (mach_host_self() != MACH_PORT_NULL) {
+		int ok_this;
+
+		if (ctx->kind == RI_KIND_BSD) {
+			/* One uidgid RPC on the server side, every call. */
+			ok_this = setuid(ctx->bsd_uid) == 0;
+		} else {
+			ok_this = mach_host_self() != MACH_PORT_NULL;
+		}
+		if (ok_this) {
 			++ok;
 		} else {
 			++failed;
@@ -786,16 +853,49 @@ static void *conc_thr_main(void *arg)
 	return NULL;
 }
 
-static int mode_concurrent(int requested, int per_thread, long pre_ms, long post_ms)
+static int mode_concurrent(int requested, int per_thread, long pre_ms,
+    long post_ms, const char *kind_name, const char *discipline_name,
+    long stagger_us)
 {
 	pthread_t threads[RI_MAX_THREADS];
+	struct conc_thread args[RI_MAX_THREADS];
 	struct conc_ctx ctx;
+	const char *kind;
+	int kind_id;
+	int staggered;
 	int nominal;
 	int actual;
 	int created = 0;
 	int i;
 	double t0;
 	double t1;
+	double release_first = 0.0;
+	double release_last = 0.0;
+	char detail[80] = "";
+
+	if (strcmp(kind_name, "mach") == 0) {
+		kind = "mach";
+		kind_id = RI_KIND_MACH;
+	} else if (strcmp(kind_name, "bsd") == 0) {
+		kind = "bsd";
+		kind_id = RI_KIND_BSD;
+	} else {
+		fprintf(stderr, "unknown kind '%s' (want mach or bsd)\n",
+		    kind_name);
+		return usage();
+	}
+	if (strcmp(discipline_name, "simultaneous") == 0) {
+		staggered = 0;
+	} else if (strcmp(discipline_name, "staggered") == 0) {
+		staggered = 1;
+	} else {
+		fprintf(stderr, "unknown discipline '%s' (want simultaneous "
+		    "or staggered)\n", discipline_name);
+		return usage();
+	}
+	if (stagger_us < 0) {
+		stagger_us = 0;
+	}
 
 	if (requested < 0) {
 		requested = 0;
@@ -810,8 +910,15 @@ static int mode_concurrent(int requested, int per_thread, long pre_ms, long post
 
 	memset(&ctx, 0, sizeof(ctx));
 	pthread_mutex_init(&ctx.lock, NULL);
-	pthread_cond_init(&ctx.cond, NULL);
+	pthread_cond_init(&ctx.gate, NULL);
 	ctx.requests = per_thread;
+	ctx.kind = kind_id;
+	ctx.staggered = staggered;
+	ctx.bsd_uid = getuid();
+	if (kind_id == RI_KIND_BSD) {
+		snprintf(detail, sizeof(detail), " bsd_target_uid=%u",
+		    (unsigned)ctx.bsd_uid);
+	}
 
 	emit("I9 pid=%d\n", (int)getpid());
 	barrier("pre");
@@ -819,21 +926,53 @@ static int mode_concurrent(int requested, int per_thread, long pre_ms, long post
 
 	t0 = mono_ms();
 	for (i = 0; i < requested; ++i) {
-		if (pthread_create(&threads[i], NULL, conc_thr_main, &ctx) != 0) {
+		args[i].ctx = &ctx;
+		args[i].index = i;
+		if (pthread_create(&threads[i], NULL, conc_thr_main,
+		    &args[i]) != 0) {
 			break;
 		}
 		++created;
 	}
 
-	/* Release the gate only once every created thread is standing in it, so
-	 * every thread's first request lands in the same neighbourhood. */
+	/* Release the gate only once every created thread is standing in it,
+	 * so the release spacing below is not mixed with thread creation. */
 	pthread_mutex_lock(&ctx.lock);
 	while (ctx.started < created) {
-		pthread_cond_wait(&ctx.cond, &ctx.lock);
+		pthread_cond_wait(&ctx.gate, &ctx.lock);
 	}
-	ctx.release = 1;
-	pthread_cond_broadcast(&ctx.cond);
-	pthread_mutex_unlock(&ctx.lock);
+	if (staggered && created > 1) {
+		/* The release train is timed against the guest's monotonic clock
+		 * and spins, because a sleep is far coarser than the requested
+		 * spacing on this runtime; the achieved spread is printed so the
+		 * caller can see what spacing actually happened. */
+		double base;
+
+		pthread_mutex_unlock(&ctx.lock);
+		base = mono_ms();
+		for (i = 0; i < created; ++i) {
+			double deadline;
+
+			if (i > 0) {
+				deadline = base +
+				    (double)i * (double)stagger_us / 1000.0;
+				while (mono_ms() < deadline) {
+				}
+			}
+			ctx.released[i] = 1;
+			if (i == 0) {
+				release_first = mono_ms();
+			}
+			release_last = mono_ms();
+		}
+	} else {
+		ctx.gate_open = 1;
+		pthread_cond_broadcast(&ctx.gate);
+		if (created > 0) {
+			release_first = release_last = mono_ms();
+		}
+		pthread_mutex_unlock(&ctx.lock);
+	}
 
 	for (i = 0; i < created; ++i) {
 		pthread_join(threads[i], NULL);
@@ -843,14 +982,16 @@ static int mode_concurrent(int requested, int per_thread, long pre_ms, long post
 
 	emit("I9 workload threads_requested=%d threads_created=%d "
 	    "requests_per_thread=%d nominal_requests=%d actual_requests=%d rpc_ok=%d "
-	    "rpc_failed=%d start_gate=simultaneous elapsed_ms=%.1f us_per_call=%.3f\n",
+	    "rpc_failed=%d kind=%s start_gate=%s stagger_us=%ld "
+	    "release_spread_ms=%.3f elapsed_ms=%.1f us_per_call=%.3f%s\n",
 	    requested, created, per_thread, nominal, actual, ctx.rpc_ok,
-	    ctx.rpc_failed, t1 - t0,
-	    actual > 0 ? (t1 - t0) * 1000.0 / (double)actual : 0.0);
+	    ctx.rpc_failed, kind, staggered ? "staggered" : "simultaneous",
+	    stagger_us, release_last - release_first, t1 - t0,
+	    actual > 0 ? (t1 - t0) * 1000.0 / (double)actual : 0.0, detail);
 
 	barrier("action-done");
 	nap_ms(post_ms);
-	pthread_cond_destroy(&ctx.cond);
+	pthread_cond_destroy(&ctx.gate);
 	pthread_mutex_destroy(&ctx.lock);
 	barrier("done");
 	return 0;
@@ -868,7 +1009,9 @@ static int usage(void)
 	    "       %s scm PRE_MS POST_MS\n"
 	    "       %s close-range PRE_MS POST_MS\n"
 	    "       %s rpc N PRE_MS POST_MS\n"
-	    "       %s concurrent THREADS REQUESTS_PER_THREAD PRE_MS POST_MS\n",
+	    "       %s concurrent THREADS REQUESTS_PER_THREAD PRE_MS POST_MS\n"
+	    "          [KIND [DISCIPLINE [STAGGER_US]]]\n"
+	    "          KIND=mach|bsd DISCIPLINE=simultaneous|staggered\n",
 	    "relay_integration_fixture", "relay_integration_fixture",
 	    "relay_integration_fixture", "relay_integration_fixture",
 	    "relay_integration_fixture", "relay_integration_fixture",
@@ -907,9 +1050,12 @@ int main(int argc, char **argv)
 	if (strcmp(mode, "rpc") == 0 && argc == 5) {
 		return mode_rpc(atoi(argv[2]), atol(argv[3]), atol(argv[4]));
 	}
-	if (strcmp(mode, "concurrent") == 0 && argc >= 4 && argc <= 6) {
+	if (strcmp(mode, "concurrent") == 0 && argc >= 4 && argc <= 9) {
 		return mode_concurrent(atoi(argv[2]), atoi(argv[3]),
-		    argc > 4 ? atol(argv[4]) : 0, argc > 5 ? atol(argv[5]) : 0);
+		    argc > 4 ? atol(argv[4]) : 0, argc > 5 ? atol(argv[5]) : 0,
+		    argc > 6 ? argv[6] : "mach",
+		    argc > 7 ? argv[7] : "simultaneous",
+		    argc > 8 ? atol(argv[8]) : 250);
 	}
 	return usage();
 }
