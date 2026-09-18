@@ -1696,6 +1696,87 @@ files, 28511 bytes, sha256 `0d6745be409a8d6d6e4d9c6260b354402d84b49c8065b2c1fea2
 earlier `/home/ilyagulya/work/ring-machmsg.patch` is superseded because a raw `diff -ruN` also captured
 generated SDK header copies.
 
+### 13.20 This round: production wait semantics + Call-owned transport context + first full duplex transaction
+
+**Production wait semantics (the 3-second proof deadline is gone from the real path).** The old
+`gr_duplex_wait_reply` bounded its parked wait at 50ms x 60 rounds (~3s) and then returned
+committed-unknown, which is right for a regression proof whose liveness must never wedge boot and wrong
+as the semantics of a real blocking receive: it turns a slow server into a fabricated `KERN_FAILURE` on an
+op stock would simply have kept waiting on. The ring mach_msg path now uses a separate production wait,
+`gr_machmsg_wait_reply`: no transport deadline at all (the loop exits only when the reply slot appears),
+the duplex mailbox pumped on every iteration, and a 100ms timed `FUTEX_WAIT` that bounds only the PUMP
+latency, never the total wait. The Mach timeout itself is not implemented in the guest: the server runs
+the real trap with the guest's own option/timeout fields, so the server decides `MACH_RCV_TIMED_OUT` and
+publishes the final reply; the transport must out-wait the reply, never race it. `EAGAIN`/`EINTR`/spurious
+wakes all just re-pump and re-check, so an interrupt cannot become an observable Mach result. The bounded
+helper stays for the selftest (W0b's split is therefore structural, not a flag).
+
+**Lane-aware identity.** `RingBuffer` now carries a monotonic process-local `debugLaneId()` assigned at
+construction and logged as `LANE_ATTACH tid=... lane=...`; the guest's publish/reply lines carry
+`lane=<index> gen=<generation>` from the existing lane table. This shows that the "duplicate (tid, seq)"
+seen last round is a **re-attach**: for one tid the server assigns a new lane id on each attach while the
+guest's slot index stays the same and its `seq` restarts. A `(tid, seq)` key therefore names nothing
+across an image switch, and the earlier duplicate claim is explained without any duplicated request.
+
+**The reply destination and the duplex marker now belong to the Call.** `RingCallContext`
+(`ring-call-context.hpp`) carries the lane (as a `shared_ptr`, which is the lifetime rule: the RingBuffer
+object lives until every Call that referenced it is destroyed, so a lane retire or re-attach can never
+make a stale Call publish into a new or freed mapping), the request `seq`, the `callnum`, and
+`duplexCapable`. `Call::attachRingContext()` is called by the ring drain right after the Call is built
+and before `doWork()`. `Thread::pushCallReply` routes by `expectedCall->ringContext()`; a deferred reply
+carries its context to the later flush in `_s2cPerform`; and duplex eligibility in `_s2cPerform` is read
+from the ACTIVE CALL (`_activeCall->ringContext()->duplexCapable`).
+
+That last point is the bug this round was about. `Thread::doWork()` RETURNS when the fiber suspends, so
+the dispatch-scoped `setRingDuplexParentActive(true) ... doWork() ... setRingDuplexParentActive(false)`
+pair cleared the marker while the call was still blocked -- exactly when its caller-S2C arrives. That is
+why the boot failed: a real caller-S2C munmap arrived while the caller was parked in the ring wait, the
+server found no duplex parent, took the UDS S2C path, and a ring-parked caller can never service it, so
+the op hung until the 30s shellspawn timeout. `_ringReplyPending`, `_ringReplySeq`, `beginRingReply`,
+`setRingDuplexParentActive` and `_ringDuplexParentActive` are all deleted; there is now one reply-routing
+mechanism instead of two.
+
+**First complete real caller-S2C duplex transaction on the Ring lane (PRODUCT).** With the context in
+place, verified on the real prefix:
+
+```
+guest  RING_MACHMSG_PUBLISH        lane=28 seq=39 tid=2589404
+server RING_MACHMSG_CONSUME        lane=4  seq=39 tid=2589404
+server DUPLEX_MUNMAP_PUBLISH       parent=1 upcall=2 addr=... len=20971520 target_tid=2589404
+server DUPLEX_COMPLETION_CONSUME   parent=1 upcall=2 status=0 errno=0
+server RING_MACHMSG_REPLY          lane=4  seq=39 tid=2589404
+guest  RING_MACHMSG_REPLY_CONSUME  lane=28 seq=39 code=0
+```
+
+The caller-local munmap was executed by the target thread itself; the guest serviced it from inside
+`gr_machmsg_wait_reply` and the parent then completed. Hatch OFF boots green with the same binaries
+(`rc=0`, marker printed).
+
+### 13.21 Remaining blocker, narrowed
+
+Hatch ON still fails, and it is now one thing: a **second** thread's mach_msg parent records
+`RING_MACHMSG_S2C_UDS_FALLBACK target_tid=2589408` while the first thread's transaction completes on the
+lane. That parent has an active mach_msg Call, so the routing decision itself is not the missing context;
+the plausible causes left are a mailbox that is not clean at that moment (a stale unhandled upcall or an
+unconsumed reply) or an S2C whose target is not the caller. Distinguishing them needs one more
+diagnostic: print the duplex guard's decline reason at the decline site (no-context / not-capable /
+mailbox-busy). Until that thread's S2C rides the mailbox, a ring-parked caller still wedges for 30s and
+the hatch-on boot cannot be green.
+
+### 13.22 Two environment corrections that cost most of this round
+
+- **A stale server makes every measurement meaningless.** Killing only `pgrep -x darlingserver` misses two
+  classes: `darlingserver.real` (a 16-character name `pgrep -x` cannot match at all) and `darlingserver`
+  processes whose argv carries the prefix *basename* rather than the full path, which is what a
+  path-matching kill loop tests against. Both left a server owning the prefix while new runs joined it and
+  read another run's configuration. Match on `/proc/<pid>/cmdline` containing the prefix basename, wait
+  for it to disappear, and settle before launching.
+- **`/bin/bash -c` aborts in this prefix and `/bin/sh -c` does not**, and this reproduces on the pristine
+  product baseline, so it is a property of the prefix, not of any Ring change: `bash -c true` exits 134
+  (SIGABRT) while `sh -c true`, `bash --version`, `bash --noprofile --norc -c true`, `/bin/ls` and
+  `/bin/echo` all succeed. Guest test commands for this prefix must therefore use `/bin/sh -c`; every
+  boot failure measured with `/bin/bash -c` before this was discovered was measuring that abort.
+
 ## 12. Repository state
 
 - Product source: **untouched**. No commit, no branch, no push.
