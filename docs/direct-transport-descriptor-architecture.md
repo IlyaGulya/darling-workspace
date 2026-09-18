@@ -1548,6 +1548,78 @@ Consequences to carry forward:
 - Any future prefix work must re-verify `pgrep -x darlingserver` = 0 before launching, and must not
   trust `darling shutdown` to have reaped a stale server.
 
+### 13.15 Implemented: mach_msg_overwrite on the Ring (feature-hatched), first PRODUCT transactions
+
+The migration was implemented, not just designed. Source changes, server: `include/darlingserver/rpc-supplement.h`
+(new `DSERVER_RING_DUPLEX_CAP_MACH_MSG 0x8u`), `internal-include/darlingserver/thread.hpp`
+(`duplexMachMsgCapable()`, `_s2cUdsFallbackThisCall`), `src/{thread.cpp,call.cpp,server.cpp,metrics.cpp}`,
+`internal-include/darlingserver/metrics.hpp` (eight transaction counters). Guest:
+`.../resources/dserver-ring.c` (`__dserver_ring_mach_msg_overwrite`, counters, env hatch),
+`.../resources/dserver-ring.h`, `.../xnu_syscall/mach/impl/mach_traps.c` (trap routing).
+
+Design as built, and it needs no new wire mechanism: the 40-byte body is published on the caller's
+existing C2S ring slot; the server dispatches it through the **same generated `Call` path** as UDS, with
+`_ringDuplexParentActive` set for the whole dispatch so a caller-local munmap S2C raised inside takes the
+existing duplex mailbox instead of the UDS send; the guest waits with `gr_duplex_wait_reply` (which pumps
+that mailbox) rather than `gr_wait_reply`. Agreement between the two sides is bilateral through the cap
+bit, so a build skew degrades to UDS instead of stranding a published request. The approved subset is
+"both interrupt-observing options clear"; every other shape falls back pre-publish with a named counter
+(`..._fallback_interrupt`, `_no_lane`, `_shape`, `_declined`).
+
+**PRODUCT result, feature hatched ON.** Ring `mach_msg_overwrite` traffic is real and substantial in a
+real boot: over one run, guest `RING_MACHMSG_PUBLISH` 35, server `RING_MACHMSG_CONSUME` 42, server
+`RING_MACHMSG_REPLY` 71, guest `RING_MACHMSG_REPLY_CONSUME` 32. In an earlier, quieter run a single
+transaction was captured end to end and balanced exactly:
+
+```
+guest  RING_MACHMSG_PUBLISH        seq=7 tid=2257510
+server RING_MACHMSG_CONSUME        seq=7 tid=2257510
+server RING_MACHMSG_REPLY          seq=7 tid=2257510
+guest  RING_MACHMSG_REPLY_CONSUME  seq=7 code=0
+ring_machmsg_parent = 1   ring_machmsg_final = 1
+uds_machmsg_request = 0   uds_machmsg_reply = 0   uds_machmsg_s2c = 0
+```
+
+That is the request **and** the final reply on the shared lane with zero per-thread UDS activity for the
+transaction, for a real `mach_msg_overwrite` (callnum 38, 56-byte request, 8-byte reply, no arena).
+
+**Feature hatched OFF: no regression** — the same binaries boot to `rc=0` with the marker printed.
+
+**Blocker, with the evidence that localizes it.** With the hatch ON the boot does not complete, and two
+independent signals say the reply sink is not safe for a *suspending* op:
+
+1. Per-lane `seq` pairing breaks: the same `(seq, tid)` is published more than once (e.g.
+   `('7','2303577')` twice), 36 requests are consumed by the server whose guest never saw a reply, and
+   2 publishes are never consumed. The guest's own validity check is `rep->seq == seq && rep->callnum
+   == ...`, which cannot distinguish a duplicate `(seq, tid)` — so a reply can be paired with the wrong
+   request.
+2. The server dies with `std::system_error: what(): Resource deadlock avoided` (EDEADLK from a
+   `std::shared_mutex` acquired recursively, which `std::terminate`s the whole server), and the boot
+   then fails at shellspawn readiness.
+
+The one-shot ring reply sink (`beginRingReply` → `_ringReplyPending`/`_ringReplySeq`) was designed for a
+closed request→single-reply op. `mach_msg_overwrite` blocks, so the dispatch suspends with the sink
+armed, and a second op on the same lane can reuse both the sink and the `seq`. The fix direction is a
+reply sink keyed by the request (thread + seq) rather than a one-shot flag, plus removing the recursive
+`_rwlock` acquisition on the dispatch path.
+
+**Caller-S2C was not reached.** `DUPLEX_MUNMAP_PUBLISH = 0` in these runs: the workload (boot plus `ls`)
+does not provoke a caller-local munmap inside a ring-originated `mach_msg_overwrite`. The duplex
+machinery itself was therefore not exercised on the lane, and M1-M6 and the UDS-vs-Ring benchmark were
+not run — they need a run whose reply sink is correct first.
+
+### 13.16 Build-environment lesson (cost two hours, now fixed)
+
+`/home/ilyagulya/work/procctl-build` — the tree used for the earlier process-control rounds — builds a
+`libsystem_kernel.dylib` that **does not boot in this prefix even with every local source edit
+reverted**, while a `darlingserver` built from the same tree boots fine, and the product dylib from the
+prefix backup boots fine. The tree was corrupted by the manual `rm` of the generated RPC artefacts plus
+repeated reconfigures. A fresh configure and build into `/home/ilyagulya/work/ringmm-build` with the
+Review defines produces a dylib that boots. Bisection that established this: my server alone → boots; my
+guest binaries → fails; my `mldr` alone → boots; my `dyld` alone → boots; my `libsystem_kernel.dylib`
+alone → fails; the same dylib built fresh → boots. Any future work must build from the fresh tree, not
+`procctl-build`.
+
 ## 12. Repository state
 
 - Product source: **untouched**. No commit, no branch, no push.
