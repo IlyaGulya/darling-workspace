@@ -1520,6 +1520,34 @@ prototype, the transaction trace, the transaction counters, M1-M6 and the UDS-vs
 not attempted. Diagnosing and repairing the prefix boot is the prerequisite for all of them and is the
 next action; it is not the D5 harness work the round told us to skip.
 
+### 13.14 Withdrawal: there is no product prefix regression; the failures were harness artifacts
+
+The previous section reported that the product prefix `/tmp/dr-on-matched` no longer boots
+(`rc=134`) and treated that as a blocker. **That is withdrawn.** The prefix is healthy.
+
+Working recipe, verified three times back to back on the product prefix with no environment beyond
+the launcher defaults: kill any stale server, wait, then launch — `pkill -x darlingserver; sleep 3;
+darling --rootless shell /bin/bash -c '<cmd>'` — gives `rc=0` with the expected marker for
+`echo`, a five-iteration `ls` loop, and `sleep`. An immediate relaunch straight after
+`darling --rootless shutdown` also gives `rc=0`.
+
+What actually failed was my own test harness: it called `darling --rootless shutdown` and launched
+two seconds later while a server from an earlier, killed run was still alive. `darling shutdown` does
+not reliably reap a server it did not start on its own readiness path (this is exactly `dar-481m`),
+and a live stale server makes the next launch abort. Every `rc=134` in the previous two rounds is
+explained by that, and no product defect should be inferred from it.
+
+Consequences to carry forward:
+
+- The previous round's D5 conclusion stays withdrawn for a second, independent reason: with a clean
+  pre-launch state there is no abort to attribute in the first place, and the armed-D5 behaviour has
+  not been re-measured on a clean surface.
+- The `msg_*` census numbers recorded earlier remain usable, because they are **server-side** counters
+  and the server demonstrably ran (`ring_serviced = 154`) even in the runs whose launcher exited
+  nonzero at the end.
+- Any future prefix work must re-verify `pgrep -x darlingserver` = 0 before launching, and must not
+  trust `darling shutdown` to have reaped a stale server.
+
 ## 12. Repository state
 
 - Product source: **untouched**. No commit, no branch, no push.
