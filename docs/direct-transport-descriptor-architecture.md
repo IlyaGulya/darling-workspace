@@ -1901,6 +1901,69 @@ first thing to check, with `DARLING_GUEST_LANE_STATS=1` for `g_stat_lanes_exhaus
 census, followed by the D6 fail-closed deadline (which should have broken a stuck duplex wait in 5s and did
 not visibly fire). Stress is therefore reported RED, not as an unrun gate.
 
+### 13.29 Stress harness: fixed, split, and instrumented
+
+The old harness had a data race (`int failures` incremented by 32 threads) and mixed two independent
+questions, so a hang could not be attributed. It now has an atomic failure counter, a per-worker
+`(phase, op, tid, last-progress)` tuple that a monitor thread watches, and three distinct workloads:
+
+- `stress_pool <receivers> <iters>` (S1): N persistent receiver threads and N persistent senders, thread
+  count fixed for the whole run, so a failure is a concurrency/wake/lane-lifecycle bug.
+- `stress_churn <iters>` (S2): ONE persistent receiver and a new sender thread per operation, so a failure
+  is a lane allocation/release/TID-reuse bug.
+- `stress_mixed <workers> <iters>`: the old combination, kept because the old hang has to be explained
+  rather than avoided.
+
+The monitor emits `WATCHDOG worker=.. op=.. phase=.. tid=.. age=..` for every live worker and exits 3.
+Its first version watched untouched slots (`last_ns == 0`, age "since boot"), which fired instantly; it now
+watches only the slots a run registers.
+
+### 13.30 S1: Green at every level, including 32
+
+```
+stress_pool 1  20  rc=0 pass=1 failures=0  2.311s ... (N=32: 1366 publishes, 0 fallbacks)
+S1 N=1/2/4/8/16/32 all rc=0 pass=1 failures=0, ring_parent_s2c_uds_fallback=0
+```
+
+32 concurrent blocking Ring receivers, 640 transactions, no failure and no UDS S2C fallback: Ring mach_msg
+concurrency itself is correct.
+
+### 13.31 S2: Green to 1024, and the lane table never releases
+
+```
+stress_churn 128/256/512/1024  all rc=0 pass=1 failures=0
+[dring-lane-stats] pid=... acquired=128 exhausted=2694 reclaimed=0 held_now=128 max=128
+```
+
+`acquired=128` is exactly `GR_MAX_LANES`; `reclaimed=0` says **no lane is ever released**, so the table
+stays full forever and `exhausted=2694` threads fall back to UDS for their mach_msg. That is the current
+design's real limitation, measured rather than inferred, and the numbers belong in the dynamic-lane phase.
+Thread churn is nevertheless GREEN because the fallback path is safe: a lane-less thread uses UDS, and
+that is correct.
+
+### 13.32 The old hang reproduces, intermittently, and here is its signature
+
+`stress_mixed 32 8` passed 3 of 4 runs (0.29-0.30s) and hung once; `stress_mixed 64 12` hung on its first
+run. A killed run leaves this signature:
+
+```
+... guest RING_MACHMSG_PUBLISH lane=10 seq=63 tid=3525930
+... guest RING_MACHMSG_REPLY_CONSUME lane=108 seq=10 code=0
+[dring-lane-stats] pid=3525954 acquired=2 exhausted=0 reclaimed=0 held_now=1 max=128
+```
+
+300 publishes against 272 reply-consumes, so about 28 operations are outstanding; the guest's own summary
+line never prints; and **the watchdog thread never fired**, even though it only sleeps and reads memory.
+That last fact is the interesting one: a stall that silences a thread which only calls `usleep` is wider
+than one blocked receiver -- it is consistent with the guest process being unable to complete any
+darlingserver-mediated syscall, i.e. the server side stopped serving this process rather than one lane
+being stuck. It is not yet localized further, and it is not claimed as understood.
+
+Two things are ruled out by measurement: it is not mailbox misuse (the passing and hanging runs both show
+zero `ring_parent_s2c_uds_fallback`, zero fd-shape refusals, and no duplex rejections), and it is not the
+D6 deadline failing to fire, because production `gr_machmsg_wait_reply` deliberately has no transport
+deadline -- B3 proves that by design, and an external watchdog is the correct detector.
+
 ## 12. Repository state
 
 - Product source: **untouched**. No commit, no branch, no push.
