@@ -2225,6 +2225,99 @@ a shared-mailbox mmap/munmap). The simple path wins on the product configuration
 in the multi-worker one -- where the mean is dominated by tail events (p99 374k vs 145k) while p50 still
 favours the Ring by 39%. The two configurations are never mixed in one claim.
 
+### 13.40 64-bit mmap address, and mmap failure equivalence
+
+**#8 address width.** The duplex mmap reply carries the mapping address in a 64-bit field, and the trace is
+what proves the UPPER HALF survives. `ool 30` produced 30 mmap upcalls, all distinct, all with
+`upper32=32214`:
+
+```
+DUPLEX_MMAP_RESULT addr=0x7DD63A147000 len=65536 upper32=32214
+```
+
+So every result is far above 4 GiB and the guest then used each mapping (the workload's OOL payload checks
+fail otherwise), which is the three-part acceptance: `upper32 != 0`, the returned address is the actual
+mapping, and the guest can access it.
+
+**#9 failure equivalence.** A new `mmap_fail` mode asks for 2^62 anonymous bytes, which the kernel must
+refuse, through the same emulated path every guest mmap takes (server allocatePages -> caller-S2C):
+
+```
+hatch ON : ret=0xffffffffffffffff errno=12
+hatch OFF: ret=0xffffffffffffffff errno=12
+```
+
+Identical observable failure semantics on both transports -- the duplex mailbox returns the same
+(status, errno) pair the UDS S2C path returns, rather than a transport-specific error.
+
+### 13.41 ABI v5/v6 mixed attach, both directions
+
+The Ring control block carries `abi_version`, and the server's validator rejects any mismatch with
+`dserver_ring_reject_abi` BEFORE it would read a field that moved. Real image pairs were built (a v5 guest
+pair, a v5 server) and run against each other:
+
+```
+v6 guest + v6 server (control)  pass=1  lanes acquired=21  machmsg_ring=44  machmsg_uds=0
+v5 guest + v6 server            pass=1  lanes acquired=0   machmsg_ring=0   machmsg_uds=44
+v6 guest + v5 server            pass=1  lanes acquired=0   machmsg_ring=0   machmsg_uds=44
+restored v6 + v6                pass=1  lanes acquired=21  machmsg_ring=44  machmsg_uds=0
+```
+
+Both skew directions reject the attach outright (`acquired=0`: no lane was ever adopted, so no request was
+ever published on a partially-understood control block) and every op rides the legacy transport, with the
+guest work fully correct. This is the "degrade cleanly to all-UDS" contract, verified with real mismatched
+binaries rather than argued from the validator.
+
+### 13.42 F1: the fd-shaped S2C refusal was NOT fail-closed -- a 31-second stall, now a defined failure
+
+The refusal itself existed (the server refuses any mmap S2C with `fd >= 0 || offset != 0`, counts
+`ring_duplex_fd_s2c_unsupported`, and does not move the mailbox), but it is UNREACHABLE from the current
+ring op set: the only S2C mmap a Ring parent can raise is `allocatePages()`'s anonymous one (fd < 0,
+offset 0), while a file-backed map is raised by a guest mmap RPC, which is not a ring call. An unreachable
+refusal is not evidence that it refuses, so a mutation (`DSERVER_DUPLEX_FORCE_FD_SHAPE=1`) forces the
+fd-shaped branch on the anonymous shape.
+
+The first RED arm found a real defect: the refusal fell through to the "unchanged UDS S2C path", and a
+ring-origin parent's caller is parked on its LANE, so it can never service a UDS S2C. The server waited out
+its bounded deadline -- **31 seconds** -- and the parent op failed anyway. The fallback was not a fallback.
+
+Fixed: a ring-origin parent whose mailbox was not taken now fails IMMEDIATELY with a defined error
+(`std::nullopt` for the parent op) instead of attempting an S2C its caller cannot service. Measured:
+
+```
+                                  GREEN (no mutation)   RED (forced fd shape)
+test                              pass=1                pass=0  (defined failure)
+DUPLEX_MMAP_PUBLISH (mailbox)     22                    0
+DUPLEX_FD_S2C_UNSUPPORTED         0                     22
+RING_PARENT_S2C_FAIL_FAST         0                     22
+RING_PARENT_S2C_UDS_FALLBACK      0                     0
+counter ring_duplex_fd_s2c_unsupported  0               22
+counter ring_parent_s2c_uds_fallback    0               0
+counter ring_duplex_reject        0                     0
+duration                          1s                    1s   (was 31s)
+```
+
+Every F1 acceptance item: the named counter increments, the failure is defined and immediate, the
+fallback counter stays ZERO (we do not fall back at all), there is no 30s hang, and no descriptor is
+leaked because the mailbox never had to carry one.
+
+### 13.43 FD inventory: O(1) in historical threads (achieved), O(live lanes) still to fix
+
+```
+live lanes (lane_hold)   guest fds   server fds
+        8                    29           54
+       24                    61           86
+       40                    93          118
+```
+
+Both sides scale at **2 fds per LIVE lane** (32 more fds per 16 more lanes, on each side), and neither
+scales with history: `stress_churn 1024` leaves the server's fd count at its baseline (40 before, peak 40,
+31 after) while the guest process exits. So the reclamation work closed the historical-thread half of the
+scaling violation -- the half that made the 129th thread fall back to UDS -- and the remaining per-live-lane
+cost is exactly the §25-§27 target: one process-wide backing object and ONE process doorbell eventfd,
+instead of a mapping and a wake fd per thread. That is the next phase, and it now has a measured slope to
+improve rather than an estimate.
+
 ## 12. Repository state
 
 - Product source: **untouched**. No commit, no branch, no push.
