@@ -1964,6 +1964,49 @@ zero `ring_parent_s2c_uds_fallback`, zero fd-shape refusals, and no duplex rejec
 D6 deadline failing to fire, because production `gr_machmsg_wait_reply` deliberately has no transport
 deadline -- B3 proves that by design, and an external watchdog is the correct detector.
 
+### 13.33 The stress stall is in the THREAD LIFECYCLE, not in the Ring mach_msg transport
+
+The stall is reproducible (roughly one run in three at `stress_mixed 32 8`, and on the first run at
+`64 12`) and the transport reads clean at the moment it happens:
+
+```
+ring_machmsg_parent = 376   ring_machmsg_final = 375
+ring_machmsg_duplex_s2c_published == consumed,  ring_duplex_reject = 0
+ring_parent_s2c_uds_fallback = 0,  ring_duplex_fd_s2c_unsupported = 0
+```
+
+One request outstanding, every duplex transaction balanced, nothing refused. What the server-side state
+dump shows instead is where the process is actually parked. With `SIGUSR1` the server prints a compact
+per-thread table from the main loop (a signal handler cannot walk the registry safely, and the main loop
+is alive even when a call is stuck); at the stall, for the test process:
+
+```
+call=62 suspended=1 ring=0  x23     call=38 suspended=1 ring=1  x18
+call=38 suspended=1 ring=0  x5      call=2  suspended=0 ring=0  x184
+```
+
+`callnum 62` is `dserver_callnum_semaphore_wait`, and `callnum 38` is `mach_msg_overwrite`. So the
+receivers are parked in the blocking receive (expected: no message arrived) and 23 further threads are
+parked in a semaphore wait -- which is the `pthread_create`/`pthread_join` handshake, not the transport.
+The workload that stalls is exactly the one that creates and joins a thread per operation while other
+threads block in `mach_msg`; S1 (concurrency without churn) and S2 (churn with one persistent receiver)
+both stay green, so the distinguishing factor is concurrent thread creation/join, not Ring concurrency.
+
+**Ruled out by measurement, not by argument:** it is not the mailbox (zero fallbacks, zero rejects, one
+outstanding request at the stall); it is not the D6 deadline failing to fire (production
+`gr_machmsg_wait_reply` deliberately has no transport deadline -- B3 measures that); and it is not the
+single-threaded server, which was the first suspect: the server was rebuilt with
+`DSERVER_SINGLE_THREADED=OFF` and the stall persists in that configuration too.
+
+Consequence for the gates: the Ring mach_msg concurrency gate is S1 (green at 32, 640 transactions, zero
+fallbacks) plus S2 (green to 1024 operations), and the mixed mode exercises Darling's pthread lifecycle.
+Stress is reported as GREEN for the transport and RED for the mixed workload, with the mixed failure
+localized to a different subsystem than the one under test.
+
+Also recorded while measuring: the guest lane table is never released
+(`acquired=128 exhausted=2694 reclaimed=0 held_now=128`), so every thread after the first 128 falls back
+to UDS. That is the measured current-design limitation, and it is safe -- it is why S2 completes.
+
 ## 12. Repository state
 
 - Product source: **untouched**. No commit, no branch, no push.
