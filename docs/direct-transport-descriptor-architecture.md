@@ -1777,6 +1777,66 @@ the hatch-on boot cannot be green.
   `/bin/echo` all succeed. Guest test commands for this prefix must therefore use `/bin/sh -c`; every
   boot failure measured with `/bin/bash -c` before this was discovered was measuring that abort.
 
+### 13.23 Residual fallback classified exactly, and the fix: the mailbox must carry the anonymous mmap
+
+The one diagnostic event §1 asked for settled this in a single run. `S2C_DUPLEX_DECISION` prints every
+condition the guard evaluates together with the decision, and it reports the decline reason from the same
+predicate chain the guard uses -- not reconstructed afterwards from other lines:
+
+```
+S2C_DUPLEX_DECISION target_nsid=2931654 exec_tid=2931654 exec_nsid=2931654 current_is_target=1
+  active_callnum=38 ring_context=1 lane=10 seq=17 duplex_capable=1 mb_upcall_ready=0 mb_reply_ready=0
+  s2c_op=0x1 decision=DECLINE reason=UNSUPPORTED_S2C_OP
+```
+
+`s2c_op=0x1` is `dserver_s2c_msgnum_mmap`, so the residual fallback was **an mmap S2C, not a munmap** --
+the mailbox only implemented the munmap shape. The guest side of that is worse than a counter: the caller
+is parked in the lane, so the UDS S2C is never serviced and the op hangs for the 30s shellspawn timeout.
+
+Which mmap it is matters, and it is the benign one. `Thread::allocatePages()` issues
+`_mmap(..., /*fd*/ -1, ...)` with `MAP_ANONYMOUS`: no descriptor, offset 0. Only `mapFile()` passes an fd,
+and an fd needs SCM_RIGHTS, which is the fd-courier milestone. So the fix is to let the mailbox carry the
+anonymous shape and to refuse the fd shape explicitly rather than silently dropping a descriptor:
+
+- ABI v6: `DSERVER_RING_ABI_VERSION` 5 -> 6 (a mixed pair rejects at attach and runs all-UDS, which is the
+  intended clean degradation), new op `DSERVER_RING_DUPLEX_UPCALL_MMAP 0x3`, a `duplex_upcall_flags` field,
+  and a 64-bit `duplex_reply_value` for the mapped address -- mmap returns an address, not an int, so
+  reusing the 32-bit munmap result field would have truncated it. `offset` is always 0 and `fd` always -1
+  for this shape, so neither needs a field.
+- `_s2cTryDuplexMmapLocked()` is the structural sibling of `_s2cTryDuplexMunmapLocked()` (same guard, same
+  parking, same deadline); the drain synthesizes a byte-identical `dserver_s2c_reply_mmap_t` so
+  `_s2cPerform`'s extraction and validation are unchanged from UDS; the guest pump runs the same `mmap(2)`
+  the UDS path runs, on the caller thread.
+- The publisher refuses `fd >= 0 || offset != 0` and counts it as `ring_duplex_fd_s2c_unsupported`.
+- The event also splits what was one misleading counter: a UDS-origin parent taking the UDS S2C path is
+  NORMAL (its caller is parked in `recvmsg` and can service it) and is now `uds_parent_s2c_normal`; only a
+  RING-origin parent taking it is `ring_parent_s2c_uds_fallback`.
+
+### 13.24 Hatch ON boot is GREEN
+
+With the mmap upcall in place, on the real prefix, with the full build deployed:
+
+```
+hatch OFF: rc=0  BOOTOK=1
+hatch ON : rc=0  BOOTOK=1   shellspawn failure: none
+decisions: {('ATTEMPT','NONE'): 4}          # no decline at all
+DUPLEX_MMAP_PUBLISH=2  DUPLEX_MUNMAP_PUBLISH=2  DUPLEX_COMPLETION_CONSUME=4
+RING_PARENT_S2C_UDS_FALLBACK=0  UDS_PARENT_S2C_NORMAL=0  DUPLEX_FD_S2C_UNSUPPORTED=0
+```
+
+Both caller-local S2C shapes a boot provokes -- the anonymous mmap and the munmap -- now ride the duplex
+mailbox, every decision attempts, and no ring parent falls back to UDS. The 30s stall is gone.
+
+### 13.25 What the deterministic test needs, and the prerequisite it is missing
+
+The deterministic Mach workload (B1-B4 and the >3s wait of W0a) needs a guest compiler: a test program that
+allocates a receive right, parks in a blocking `mach_msg` and receives from a delayed sender. **This prefix
+has no compiler** -- `cc: command not found` inside the guest -- so the test cannot be built in-guest until
+the guest CommandLineTools are provisioned (`west darling-prefix-repair --prefix <prefix>` resolves missing
+CLT links, but the packages themselves come from the bootstrap/guest-toolchain provisioning path). That is
+an environment prerequisite, not a design blocker: the fix it would measure (the unbounded production wait)
+is already in the tree, and the boot workload exercises the same path.
+
 ## 12. Repository state
 
 - Product source: **untouched**. No commit, no branch, no push.
