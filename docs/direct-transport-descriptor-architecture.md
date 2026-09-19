@@ -2044,6 +2044,187 @@ a reply on the lane plus a shared-mailbox mmap/munmap.
 Note on configuration: the server was rebuilt with `DSERVER_SINGLE_THREADED=OFF` during the stall
 investigation and stays that way; these numbers are from that configuration.
 
+### 13.35 Lane lifecycle: the fixed 128-lane table becomes a reclaiming, growable catalog
+
+Measured problem, before any change:
+
+```
+stress_churn 1024   lanes_acquired=128  lanes_exhausted=2694  lanes_reclaimed=0   held_now=128
+```
+
+The guest never released a lane, so a HISTORICAL thread count decided whether non-fd RPC got a Ring path:
+the 129th thread onwards fell back to UDS even when a handful of threads were live, and more than 128
+SIMULTANEOUS eligible-op threads could not be served by the Ring at all. Both contradict "Ring is the
+default RPC transport".
+
+**Release lifecycle (`__dserver_ring_release_current_lane`, guest).** Thread exit returns the slot, in a
+deliberate order: take the lane OUT OF SERVICE (CAS `active` 1 -> 3 "releasing", so a concurrent finder
+stops seeing it as usable and a claimant cannot take it as free); unpublish the guest half and BUMP THE
+GENERATION, so the next claimant of that slot is a new epoch and a stale `(tid, seq)` can never match;
+release the resources (unmap OUR mapping -- the server holds its own -- and hand the wake descriptor back
+to the loader); then publish FREE (3 -> 0) LAST. The hook is `bsdthread_terminate` before its point of no
+return, and the same release runs when `gr_lane_for_this_thread` finds its lane RETIRED (another image
+owns the server-side lane), which used to leak a slot per image switch.
+
+The wake descriptor is loader-owned, so the loader must FORGET it, not merely close it: `ring_fds[]` is
+consulted by `__mldr_postfork_child`, and a stale number there would make a later fork close a descriptor
+the application had since reused. `dserver_release_ring_fd` was added to the elfcalls interface and
+APPENDED AT THE END -- inserting it in the middle shifted `dserver_fd_is_internal` and the prefork hooks,
+which broke the dyld image's guard calls and the boot (a real failure, immediately visible as an mmap
+EBADF during libSystem load).
+
+**Growable catalog.** `gr_lane_t g_lanes[128]` became a singly-linked list of 128-lane pages, allocated
+lazily from the same anonymous mmap the ring mapping already uses (no guest malloc this low in libSystem).
+Pages never move, so a lane's address is stable for its lifetime -- which is what lets an old Call keep a
+`shared_ptr` to its OLD server-side RingBuffer incarnation while the slot is recycled underneath it.
+Growth is the only place a new page appears, and it happens ONLY when the whole catalog is busy: a
+released slot is always preferred to a new page.
+
+The growth itself is deliberately NOT under the splice lock. The guest's `mmap` is an emulated syscall
+that can require an S2C upcall back into the calling thread, so growing under a spinlock let every other
+attaching thread spin for a whole round trip; the page INDEX is reserved with one CAS, the mapping happens
+with no lock, and the lock covers only the pointer splice (pure stores, cannot block).
+
+**Results (product build, `DARLING_GUEST_RING_MACH_MSG=1`, `DARLING_GUEST_LANE_STATS=1`):**
+
+```
+stress_churn 1024   acquired=1026 released=1024 exhausted=0 reclaimed=898  held_now=2 pages=1 capacity=128
+stress_churn 4096   acquired=4098 released=4096 exhausted=0 reclaimed=3970 held_now=2 pages=1 capacity=128
+```
+
+One page serves 4098 HISTORICAL threads with 3970 slot reuses and zero exhaustion. The control arm tells
+the same story from the other side -- with the release disabled (`DARLING_GUEST_LANE_RELEASE=0`) the same
+1024-thread run reads `released=0 exhausted=0 reclaimed=0 held_now=1026 pages=9 capacity=1152`: the
+catalog had to GROW to hold history instead of tracking peak concurrency. That control arm is also the
+evidence that the growth path works end to end (9 pages, 1152 lanes, all ops on the Ring), and it is the
+only arm in which growth is exercised by a real workload.
+
+### 13.36 The >128 SIMULTANEOUS lane gate is blocked by the pthread lifecycle, not by the catalog
+
+`stress_pool 129/192/256` cannot run: with ~50 or more LIVE guest threads, `pthread_create` BLOCKS and
+never returns. The state dump at the stall is unambiguous -- every thread of the test process is in
+`call=62` (`dserver_callnum_semaphore_wait`) with no ring call in flight, i.e. parked in the pthread
+create/start handshake -- and it is not a Ring bug: the same stall reproduces with the Ring hatch OFF on
+the pristine UDS path (`stress_pool 32`, hatch off: 3/3 timeouts). It is not stack VA either (256 KiB
+stacks change nothing) and it is not a creation failure (`pthread_create` never returns an error; it does
+not return). Above ~50 live threads it is probabilistic; below it, runs are green.
+
+Consequence for the gates: the transport gates are S1 (`stress_pool`, stable levels 8 and 16: pass=1,
+failures=0, `exhausted=0`) and S2 (`stress_churn` 1024/4096, above). A dedicated capacity mode
+(`lane_hold N`) was added -- SEQUENTIAL creation, so each worker is up before the next is created, which
+is the capacity claim ("N simultaneous lanes") without racing pthread_create -- and it did measure 64
+simultaneous lanes from the SERVER's own view before the lifecycle stall ended the run:
+
+```
+guest:  LANE_HOLD_READY n=64 ready=64 phase1_pass=1
+server: STATE_DUMP_ALL ... ring=1   -> 66 ring threads in the test process
+```
+
+The >128 arm stays BLOCKED on the pthread stall, which is tracked separately (see the linked issue) and
+deliberately not fixed here. Everything the lane layer owed that arm -- lazy growth beyond 128 lanes,
+reclamation, generation-stamped slots -- is measured green in 13.35.
+
+### 13.37 Process-scoped transport accounting, and the TID assertion
+
+The server's counters are process-GLOBAL, which cannot decide "did THIS process use any UDS for mach_msg?"
+-- bootstrap traffic and every other client are mixed in. A single opt-in event now carries both
+identities and the transport:
+
+```
+MACHMSG_TRANSPORT process=<pid> image=kernel|dyld host_tid=<tid> lane=<slot> seq=<n> direction=request|reply transport=RING|UDS callnum=38
+```
+
+`image=` matters because dyld and libsystem_kernel keep SEPARATE guest lane tables and separate copies of
+the counters; without it a pre-attach dyld op looks like kernel-image UDS traffic.
+
+For an isolated run of the deterministic test process (`ool 20`):
+
+```
+process=27062   request/RING = 57   reply/RING = 57   request/UDS = 1
+kernel-image dump: machmsg_ring=44 machmsg_uds=0 tid_mismatch=0
+```
+
+Requests and replies balance exactly on the Ring, and the kernel image records ZERO UDS mach_msg ops. The
+single UDS line is `image=dyld` -- the process's first mach_msg, executed before any lane can exist, which
+is why the claim is stated per image and post-attach rather than as an absolute zero.
+
+**TID assertion.** A lane is strictly SPSC, so the thread that published a request is the only thread that
+may execute its caller-S2C upcall. The publisher's `gettid()` is now stored in the lane and checked in the
+pump. An assertion that has never failed is not evidence it checks anything, so it has a mutation arm:
+
+```
+GREEN (default)                      tid_mismatch=0
+RED   (DARLING_GUEST_TID_MUTATE=1)   tid_mismatch=10, 12x RING_TID_MISMATCH lane=.. publisher=.. executor=..
+```
+
+### 13.38 The spin budget: swept, tuned to the Pareto point, and the state-aware policy rejected
+
+The budget is now a tunable (`DARLING_GUEST_MACHMSG_SPIN`), so six values were measured without six
+rebuilds. `bench_simple`, 20000 ops per arm, latency from the harness and guest/server CPU per op from
+`/proc/<pid>/task/*` on the host (guest threads are host processes, so this is a real measurement, not a
+guest estimate):
+
+```
+spin      ns/op      p50       p95     guest CPU/op  server CPU/op
+512      102153    100051    161652        5000          106500
+2000      50027     12605    192893        5500           55500
+10000     23426     12334     65984        3500           30500
+20000     24405     12172     79139        2000           31500
+40000     26225     12223     95059        3000           35000
+```
+
+Below the knee the reply frequently misses the spin and the round trip pays a park plus a wake, which the
+SERVER pays for (106.5k ns/op of server CPU at 512). Above it the spin is pure waste (40k proves it: same
+p50, worse p95, more CPU). **10000 is the chosen Pareto point** -- as fast as 20000 on ns/op and p50,
+BETTER on p95 (66.0k vs 79.1k) and on server CPU (30.5k vs 31.5k); 20000 is only better on guest CPU
+(2.0k vs 3.5k).
+
+The state-aware policy (`DARLING_GUEST_MACHMSG_SPIN_POLICY=state`: full budget while the server publishes
+ACTIVE_POLLING, a short budget otherwise) was implemented, measured, and **REJECTED**: it was worse on
+every axis (31.8k ns/op, p50 16.7k, p95 106.4k), so the measured hypothesis "a parked server makes a long
+spin pointless" does not hold at this scale -- the round trip is dominated by the server's own work, not
+by the wake.
+
+Also fixed here: the per-op `RING_TRACE` lines were UNCONDITIONAL, i.e. a guest write syscall through the
+whole stack, ~4.4 lines per operation. Every latency number taken before this round includes that cost.
+They are now opt-in (`DARLING_GUEST_RING_TRACE=1`), and the wait path counts spin hits, parks, futex waits
+and EAGAINs.
+
+**One regression was introduced and fixed in this round, and it is worth recording because of how it
+failed.** Rewriting the production wait dropped its duplex mailbox pump. The failure was not a slow path:
+the server's bounded wait for the guest pump expired and the parent op FAILED
+(`[D6] duplex S2C upcall TIMED OUT (no guest pump by deadline)`), which broke the BOOT for any process
+using a Ring mach_msg. The pump is not bookkeeping -- for an op whose guest-memory effect only the caller
+can perform, the server cannot produce the reply until the thread services the mailbox. The restored loop
+pumps before every reply check in both the spin and the park loop, and its single timed 100ms futex sleep
+bounds only the pump latency: there is still no transport deadline, which B3 re-verifies (a 5s blocking
+receive succeeds).
+
+### 13.39 Official P1/P2, separated by server configuration
+
+The product default for the server is `DSERVER_SINGLE_THREADED=ON` (one thread per workqueue). The earlier
+round's numbers were taken with `=OFF`, so both configurations were measured, with the final spin budget:
+
+```
+PRODUCT default (DSERVER_SINGLE_THREADED=ON), 3 runs each
+  bench_simple  Ring  31988 ns/op  p50  16671  p95  84179  p99 333217
+  bench_simple  UDS   36996 ns/op  p50  26941  p95  76324  p99 209564   Ring 15.7% faster (p50 -38%)
+  bench_ool     Ring 219416 ns/op  p50 174910  p95 510485  p99 624705
+  bench_ool     UDS  428958 ns/op  p50 416250  p95 644400  p99 939023   Ring 95.5% faster
+
+DIAGNOSTIC multi-worker (DSERVER_SINGLE_THREADED=OFF), 3 runs each
+  bench_simple  Ring  40339 ns/op  p50  16961
+  bench_simple  UDS   38501 ns/op  p50  27732                          mean -4.6%, p50 -39%
+  bench_ool     Ring 244200 ns/op  p50 214554
+  bench_ool     UDS  397925 ns/op  p50 411605                          Ring 63.0% faster
+```
+
+Honest reading: the caller-S2C path wins big in BOTH configurations (the legacy path pays a request
+socket, an inline S2C socket and a reply socket; the Ring path pays a request and a reply on the lane plus
+a shared-mailbox mmap/munmap). The simple path wins on the product configuration and is a wash on the mean
+in the multi-worker one -- where the mean is dominated by tail events (p99 374k vs 145k) while p50 still
+favours the Ring by 39%. The two configurations are never mixed in one claim.
+
 ## 12. Repository state
 
 - Product source: **untouched**. No commit, no branch, no push.
