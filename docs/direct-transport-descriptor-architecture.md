@@ -1837,6 +1837,70 @@ CLT links, but the packages themselves come from the bootstrap/guest-toolchain p
 an environment prerequisite, not a design blocker: the fix it would measure (the unbounded production wait)
 is already in the tree, and the boot workload exercises the same path.
 
+### 13.26 The host-side Mach-O test path (no compiler needed inside the prefix)
+
+Guest binaries are built by the ordinary Darling cross build -- host clang plus Darling's SDK and `ld64`
+wrapper -- so a guest test does NOT need a compiler in the prefix; it needs a CMake target. The new
+durable workload is `src/tools/ring_mach_msg_test.c`, registered with `add_darling_executable` in
+`src/tools/CMakeLists.txt` exactly like `sw_vers`/`spctl` and installed to `libexec/darling/usr/bin`.
+Ninja builds it as a Mach-O 64-bit x86_64 executable, and the guest runs
+`/usr/bin/ring_mach_msg_test <mode>`. Modes: `basic`, `delay <ms>`, `timeout <ms>`, `ool`, `stress`, each
+printing one machine-readable `RING_MACH_TEST mode=... pass=1 ...` line and exiting non-zero on failure.
+
+The first version of the test measured elapsed time with `clock_gettime(CLOCK_MONOTONIC)`, and that made
+`timeout 200` fail with `elapsed=-0.800` while the Mach result was correct: this prefix's guest
+CLOCK_MONOTONIC is coarse enough to quantise by about a second, so a 200ms timeout measured negative and a
+5s wait measured 5.001. The test now uses `mach_absolute_time()`. That was a defect in the measuring
+instrument, not in the transport -- but it is worth recording because a coarse guest clock will silently
+turn any timing assertion into noise.
+
+### 13.27 Deterministic results (PRODUCT, hatch ON)
+
+```
+B1 basic 100      rc=0 pass=1  min_elapsed=0.000125  max_elapsed=0.000566     (0.135s total)
+B2 delay 100 20   rc=0 pass=1  min_elapsed=0.100557  max_elapsed=0.101662
+B3 delay 5000 3   rc=0 pass=1  min_elapsed=5.000703  max_elapsed=5.001079     (15.0s total)
+B4 timeout 300 5  rc=0 pass=1  min_elapsed=0.300273  max_elapsed=0.300591
+OOL ool 20        rc=0 pass=1
+```
+
+B3 is the W0a proof: a blocking receive with **no** `MACH_RCV_TIMEOUT` waited 5.0007s and returned success,
+so the old 50ms x 60 (~3s) proof watchdog no longer bounds production semantics -- that is now a
+measurement, not an inference. B4 shows the Mach timeout is the authority: 300ms requested, 0.3003-0.3006
+observed, so the transport adds no independent deadline of its own. B2 shows a real park-and-wake (the
+receiver was parked before the sender ran), not a spin-only reply. OOL passed 20/20 with the descriptor
+address readable end to end, which is also the check a truncated 32-bit mmap return would fail.
+
+Isolated OOL run (30 iterations), server counters:
+
+```
+ring_machmsg_parent = 159   ring_machmsg_final = 158   ring_machmsg_decline = 0
+ring_machmsg_duplex_s2c_published = 34   ..._consumed = 34
+ring_duplex_s2c = 34   ring_duplex_reject = 0
+ring_parent_s2c_uds_fallback = 0   uds_parent_s2c_normal = 0
+ring_duplex_fd_s2c_unsupported = 0   uds_machmsg_s2c = 0
+uds_machmsg_request = 7   uds_machmsg_reply = 7
+```
+
+Every ring-origin parent completed on the lane: 34 duplex S2C publications, 34 consumptions, no fallback,
+no rejection, and `uds_machmsg_s2c = 0`. Two caveats: `ring_machmsg_final` is one short of
+`ring_machmsg_parent`, and the 7 UDS requests/replies are **server-wide** counters that include bootstrap
+traffic -- §12 asks for counters scoped to the target process, which these are not yet. Both are
+accounting gaps, not transport failures, and neither is claimed as a pass.
+
+### 13.28 Stress 32 is RED, and it is the next target
+
+`stress 32 8` (32 concurrent receivers, 8 iterations each) did NOT complete: it was killed at the 600s
+harness deadline after 253 publishes, 266 server consumes, 220 guest reply-consumes, 8 mmap and 2 munmap
+duplex publications with 10 completions -- and **zero** fallbacks, zero unsupported, zero rejects
+(`reason=NONE` on all 10 duplex decisions). So the stall is not a mailbox protocol violation and not an
+fd-shape rejection. The run had reached 141 distinct lane identities, which puts the guest's lane table
+(GR_MAX_LANES = 128) in the picture: the workload creates a sender thread per iteration on top of the 32
+receivers, so threads can exhaust the table, and a thread that has no lane falls back to UDS. That is the
+first thing to check, with `DARLING_GUEST_LANE_STATS=1` for `g_stat_lanes_exhausted` and a per-thread lane
+census, followed by the D6 fail-closed deadline (which should have broken a stuck duplex wait in 5s and did
+not visibly fire). Stress is therefore reported RED, not as an unrun gate.
+
 ## 12. Repository state
 
 - Product source: **untouched**. No commit, no branch, no push.
