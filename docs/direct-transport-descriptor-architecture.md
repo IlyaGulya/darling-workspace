@@ -2007,6 +2007,43 @@ Also recorded while measuring: the guest lane table is never released
 (`acquired=128 exhausted=2694 reclaimed=0 held_now=128`), so every thread after the first 128 falls back
 to UDS. That is the measured current-design limitation, and it is safe -- it is why S2 completes.
 
+### 13.34 Performance P1/P2, and the one constant that was costing 2.2x
+
+The benchmark modes were first measured with the stress sender's randomized delay still in place, which
+made them measure the delay rather than the transport; `run_pool` now takes an explicit `random_delay`
+flag (on for stress, off for benchmarks). With traces off, five alternating runs each, persistent
+threads and ports and setup outside the timer:
+
+```
+bench_simple (plain blocking mach_msg, 400 ops)
+  UDS  ns/op med 40102  p50 med 27842   p95 med 78727   p99 med 204670
+  Ring ns/op med 17922  p50 med 12103   p95 med 35106   p99 med 124343   -> 2.24x faster
+
+bench_ool (out-of-line message, caller-S2C, 120 ops)
+  UDS  ns/op med 400661  p50 med 397324  p95 med 608344  p99 med 755031
+  Ring ns/op med 228005  p50 med 207138  p95 med 452307  p99 med 708267   -> 1.76x faster
+```
+
+Before the fix below, the Ring side measured 114719 ns/op on `bench_simple` -- 2.9x SLOWER than UDS. The
+cause was the wait's spin budget: `gr_machmsg_wait_reply` reused the shared `DARLING_GUEST_RECVSPIN` (512
+iterations, well under a microsecond), far too small for a full round trip that has to reach the server
+and come back, so essentially every fast reply missed the spin and paid a futex park plus wake. It now
+has its own budget (`GR_MACHMSG_SPIN = 20000`): a few tens of microseconds of CPU at worst, bounded once
+per op, and irrelevant to a long wait because B3's 5s receive pays it once and then parks. One constant
+took `bench_simple` from 114719 to 17922 ns/op -- a 6.4x improvement on that path.
+
+Correctness was re-verified after the change, on the same build: hatch ON boot rc=0 with the marker,
+hatch OFF boot rc=0, B1 100 iterations pass=1 (min 49us), B2 pass=1 (0.1007s), B3 pass=1 (5.0007s),
+B4 pass=1 (0.3005s), OOL 20 pass=1. Nothing was traded for the speed.
+
+The expectation recorded earlier holds and is now measured rather than assumed: the simple path gains most
+because it removes the socket round trip entirely, and the caller-S2C path gains too because the legacy
+path pays a request socket, an inline S2C socket and a reply socket where the Ring path pays a request and
+a reply on the lane plus a shared-mailbox mmap/munmap.
+
+Note on configuration: the server was rebuilt with `DSERVER_SINGLE_THREADED=OFF` during the stall
+investigation and stays that way; these numbers are from that configuration.
+
 ## 12. Repository state
 
 - Product source: **untouched**. No commit, no branch, no push.
