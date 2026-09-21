@@ -3219,3 +3219,49 @@ one incarnation per host tid, arbitrated, published, and adoptable, with ownersh
 Not established: any census reduction, because the remaining senders are the loader's own bootstrap
 wrappers (proved in round 18) and callnums that never reach these shims; the adoption path itself is
 unexercised by this workload and therefore still unproven in PRODUCT.
+
+
+## 21. Stage 2 core landed: the loader creates, owns and USES the process-global lane (round 23)
+
+### 21.1 What works now (PRODUCT)
+
+Seeding moved off the generated hook -- that placement is what re-entered the loader's own RPC machinery -- to
+the main bootstrap, after two loader RPCs have completed and before the loaded image starts. There the loader
+
+1. builds the lane (memfd + mapping, geometry and control-block fields identical to the runtime's),
+2. negotiates it with the **same generated** `dserver_rpc_ring_attach` client (`rc=0 reject=0` in all 7 processes),
+3. records it in the loader-owned directory,
+4. **performs a real RPC over it**: `post-seed-ring rc=0 port=515` in every process.
+
+The ring helpers are the SHARED inline functions from `rpc-supplement.h`, so no second SPSC implementation
+exists, and the loader's hook now speaks the same tri-state contract as the runtime
+(`NOT_TAKEN` / `COMPLETED` / `COMMITTED_FAILURE`, with no datagram retry after publication).
+
+boot GREEN; `ring_mach_msg_test ool 20` pass=1; `basic 50` pass=1.
+
+### 21.2 The bisection that localized the remaining defect
+
+| arm | result |
+|---|---|
+| seed disabled | boot GREEN |
+| seed without `ring_attach` | boot GREEN |
+| seed with `ring_attach` | boot RED |
+| seed + attach + loader uses the lane, record never published ACTIVE | boot GREEN |
+| same, record published ACTIVE (sibling image adopts) | boot RED |
+
+The attach is the server-side precondition, and the **cross-image adoption path is the one remaining
+component that breaks boot**. It is isolated behind `MLDR_SEED_ADOPT` (default off, tree boots GREEN).
+
+### 21.3 Two real bugs fixed on the way
+
+* the loader and guest lane-record structs must agree field for field -- round 21 had added `next_seq` and
+  `creator_image` on the guest side only, so the guest wrote past the loader's record;
+* a borrowed view set `wake_fd = -1`, which made every `gr_wake_server()` an EBADF: a sibling image could
+  publish a request and never doorbell the server. It now borrows the canonical process doorbell fd.
+
+### 21.4 Open, precisely localized
+
+* adoption defect (`MLDR_SEED_ADOPT=1` RED vs default GREEN, same workload);
+* census bookkeeping: with the seed on, `ring_attach` rises by one per process (expected -- attach still
+  uses UDS+SCM_RIGHTS) while `task_self_trap` rises by ~6 with `ring` staying 0, so the server's per-call
+  transport classification must be understood before any census-reduction claim is made.
