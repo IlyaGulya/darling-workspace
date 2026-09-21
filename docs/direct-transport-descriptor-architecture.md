@@ -3022,3 +3022,67 @@ hand-written mach-trap shims in `mach_traps.c` nor the generated client wrappers
 The datagram send itself. Instrumenting the send keyed by callnum names the caller
 unambiguously; only then can the Ring route be attached where the traffic actually originates.
 Attaching a route to a wrapper nobody calls is exactly the failure this round measured.
+
+
+## 18. Who actually sends the residual UDS datagrams: the loader (round 18)
+
+### 18.1 Why round 17's route could not move the census
+
+The generated `rpc.c` is compiled by **three** consumers -- mldr (the loader), dyld, and the kernel
+image -- and the round-17 generator emitted a hard `#include` of an **emulation-only** header. That
+include is invisible to mldr, which carries its own `resources/dserver-rpc-defs.h`, so mldr stopped
+building and the **deployed** mldr remained a pre-generator binary with no route at all. A deployment
+verification that stops at "one `rpc.c.o` contains the branch" does not notice this: the image that
+sends this traffic never contained the branch.
+
+The route is now a **per-consumer hook** with **one** policy table:
+
+```c
+/* generated public header (consumer-independent) */
+#define DSERVER_RING_TRY_NOT_TAKEN 0
+#define DSERVER_RING_TRY_COMPLETED 1
+#define DSERVER_RING_TRY_COMMITTED_FAILURE 2
+/* generated wrapper body */
+int __ring_try = dserver_rpc_hooks_try_ring(callnum, "name", req, reqlen, rep, replen, &code);
+```
+
+* The kernel image and dyld bind it to `__dserver_ring_try_generated_rpc()` -- they own the lanes.
+* mldr binds it to a stub that returns `NOT_TAKEN` and records its callers. mldr runs before the lane
+  table exists, so this is a *classification*, not a fallback: the datagram path is untouched.
+
+`DSERVER_RING_TRY_NOT_TAKEN` remains the only state that may fall through to the datagram path
+(`COMMITTED_FAILURE` still forbids the retry), so the invariant survives the rebinding.
+
+### 18.2 The proof
+
+With the product build (boot and the whole focused set GREEN) and `DARLING_GUEST_UDS_SEND_SITE=1`,
+across five distinct guest pids:
+
+```text
+[dring-uds-site] pid=<...> image=mldr callnum=35 name=thread_self_trap ring=NO_LANE_MACHINERY_IN_IMAGE
+[dring-uds-site] pid=<...> image=mldr callnum=3  name=vchroot_path     ring=NO_LANE_MACHINERY_IN_IMAGE
+```
+
+and the server census in the same run:
+
+```text
+residual_uds_despite_lane { dserver_callnum_vchroot_path: 7, dserver_callnum_thread_self_trap: 7 }
+```
+
+The residual pair is **exactly** the pair mldr is observed sending. It is the loader's own bootstrap
+traffic, issued by an image that holds no lane, which is why `residual_uds_despite_lane` survived every
+wrapper-level route: no wrapper in the kernel image sends those datagrams.
+
+### 18.3 Negative result recorded as a constraint
+
+Instrumenting the last common send point itself (`dserver_rpc_hooks_send_message()`) **breaks boot**,
+in two independent forms: in-band printing (the guest's fd 2 is not a reliable diagnostic channel
+during bootstrap) and a buffered note collected for the exit-time dump (the call in the send path is
+sufficient by itself). Both forms left `shellspawn` unable to reach ready within 30 s. The product
+send path is therefore byte-clean, and the loader-side stub -- which does survive boot -- is the
+diagnostic of record.
+
+### 18.4 Product regression after the revert
+
+boot OK; `ool 20` pass=1; `basic 100` pass=1; `r2 100` pass=1; `stress_pool 16x20` pass=1; census
+workload pass=1. The Ring lane keeps serving `mach_msg_overwrite` with `machmsg_uds=0`.
