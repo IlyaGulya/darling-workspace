@@ -2563,6 +2563,73 @@ ownership, the mutation machinery that must stay green across it (M1-M6 with 4 R
 ABA/R3/R4 gate with 3 RED arms), the F1 fail-fast invariant, and the UDS census that says which callnums the
 doorbell is actually for.
 
+### 13.50 The duplex reply slot is now valid only for the CURRENT in-flight upcall
+
+The previous round made M6 replay-safe with a bounded history of the last 8 closed `(parent, upcall)` pairs.
+That passed the mutation, but a bounded cache must never BE the correctness requirement -- it only decides
+whether a stale slot is a *known* duplicate. The invariant is now stated and implemented without reference
+to any history:
+
+```
+case A  slot ready, NO upcall in flight   -> unsolicited/stale. Reject, clear, and never let it block the
+                                             next upcall's publication.
+case B  upcall in flight, pair is someone else's
+                                          -> mismatch. Reject, clear, keep waiting for the correct
+                                             completion. A wrong reply must never be left in the slot.
+case C  pair matches the in-flight upcall  -> exactly once: validate, consume, clear, close.
+```
+
+`_duplexScrubReplySlot(cb, upcallInFlight)` implements A and B; C is the existing accept path. Case A is
+rejected unconditionally -- the 8-entry history is used ONLY to annotate the trace with
+`recently_closed=0|1`. Two counters now name the two failures:
+`ring_duplex_completion_replay_reject` (case A) and `ring_duplex_reply_mismatch_reject` (case B).
+
+**Two real bugs were introduced by the first cut of this change and both were caught by the GREEN base
+going red, which is why the base run is part of the gate:**
+
+* the scrubber was placed BEFORE the `_duplexUpcallInFlight` early return in the arming guards, so it ran
+  while an upcall WAS in flight and destroyed the legitimate pending reply (`ring_duplex_s2c=0`,
+  `DUPLEX_MUNMAP_PUBLISH` followed 240us later by `DUPLEX_COMPLETION_REPLAY_REJECT parent=1 upcall=2`);
+* the drain called it with `upcallInFlight=false`, classifying the legitimate reply as case A. The drain by
+  definition has an upcall in flight, so it must pass `true`.
+
+### 13.51 M6 and M6b: the rejection no longer depends on any window
+
+```
+arm                                  workload   rejection counted     ring_duplex_s2c
+GREEN (no mutation)                  pass=1     0                     44
+M6  recent duplicate, +50ms window   pass=1     A=30 replay           44
+M6b aged-out pair (>16 txns old)     pass=1     B=1 mismatch          44
+M6b aged-out pair, +80ms window      pass=1     B=1 mismatch          44
+```
+
+M6b is the mutation that proves the property: it remembers the FIRST completion pair the guest ever
+produced, waits until at least 16 transactions have completed (so the pair is long out of any 8-entry
+window), injects it as a completion, and then runs the real transaction. The old pair is rejected as case B,
+cleared, and the transaction completes normally -- `pass=1` with `ring_duplex_s2c=44` and zero UDS fallback.
+Correctness is therefore identity-based, and the history cache is diagnostic only.
+
+M1-M5 re-verified after the change (the aggressive stale-slot cleaning must not weaken them): M1 early
+parent reply still RED (`pass=0`), M3 wrong/stale upcall id still RED (now counted as case B), M5 dropped
+completion still RED with no false success, M4 wrong-executor-TID assertion still fires. GREEN base is
+`pass=1` with both counters at 0.
+
+### 13.52 Process doorbell: not landed, and the reason is verification, not design
+
+The round's remaining items (ONE process doorbell, per-lane eventfd removal, PW1-PW5, fd-slope re-measure,
+post-doorbell perf, the guest fallback-reason histogram, simple-trap migration, new census) are NOT landed.
+The doorbell is now the only large item left, and it is a transport-LIFETIME change: the eventfd and its
+epoll Monitor move from `Thread` to `Process`, each `RingAttach` must distinguish FIRST_PROCESS_RING_ATTACH
+from LANE_ATTACH_TO_EXISTING_PROCESS_TRANSPORT so that later lanes never retain another alias, the guest must
+adopt one doorbell fd per image (the fd table is per-process but `dserver-ring.c`'s statics are per-image,
+which is exactly the process-vs-image audit the directive calls out), and the sleep handshake has to be
+re-proved against `epoll_wait` with one doorbell instead of N.
+
+This cycle's remaining capacity went to 13.50/13.51 -- two real defects in the replay machinery that a
+half-built doorbell would have made much harder to find -- rather than to an unverified transport change.
+The measured basis for the doorbell work, the mutation machinery that must stay green across it, and the
+feedstock it targets (paragraphs 13.45-13.48) are all in place.
+
 ## 12. Repository state
 
 - Product source: **untouched**. No commit, no branch, no push.
