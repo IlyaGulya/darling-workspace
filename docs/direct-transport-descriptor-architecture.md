@@ -2956,3 +2956,69 @@ Emit a Ring fast path in the generated client wrapper for callnums with a fixed,
 non-fd shape, delegating to the existing generic helper with the callnum and the
 shape's request/reply sizes; keep the datagram path only for pre-publication misses.
 One generator change covers the whole simple group, including callnums added later.
+
+
+## 17. Generated-wrapper Ring route: landed, and the census that refuses to move (round 17)
+
+### 17.1 What was landed
+
+`scripts/generate-rpc-wrappers.py` gained an explicit annotation table:
+
+```python
+RING_GENERATED_SIMPLE = { task_self_trap, thread_self_trap, host_self_trap, mach_reply_port,
+                          uidgid, get_tracer, task_is_64_bit, started_suspended,
+                          set_thread_handles, mldr_path, vchroot_path }
+```
+
+Membership is not inferred from "fits in a slot": an op is listed only when the server already
+has generic eligible-op dispatch for it (it is in `DSERVER_RING_C2S_OPCODES`), its wire shape is
+a closed request/single-reply transaction with a fixed inline body, it transfers no Linux fd, it
+takes no caller-side S2C, and it is not NO_REPLY.
+
+For each annotated op the generated client wrapper now emits, BEFORE any socket-side effect:
+
+```c
+{
+    int32_t __ring_code = 0;
+    int __ring_try = __dserver_ring_try_generated_rpc(
+        (uint32_t)dserver_callnum_<name>, <req>, <req_len>, <reply>, <reply_len>, &__ring_code);
+    if (__ring_try == GR_RING_TRY_COMPLETED) { reply_msg.reply.header.code = __ring_code;
+                                               goto ring_reply_ready; }
+    if (__ring_try == GR_RING_TRY_COMMITTED_FAILURE) {
+        return dserver_rpc_hooks_get_communication_error_status(); /* NO datagram retry */
+    }
+}
+```
+
+with `ring_reply_ready:` placed after the datagram path's atomic end, so the Ring path lands
+straight in the existing unpack code and the datagram path is byte-unchanged.
+
+The guest API is tri-state by construction -- `GR_RING_TRY_NOT_TAKEN` (0, datagram is safe),
+`GR_RING_TRY_COMPLETED` (1), `GR_RING_TRY_COMMITTED_FAILURE` (2, published: retry forbidden) --
+and it reuses the EXISTING `gr_full_trap` publish/wait/validate code, so there is no second SPSC
+protocol.
+
+The generated library is the file the guest images compile
+(`emulation.dir/.../darlingserver/src/rpc.c.o`), so this is a guest-side route, not server-only
+code: the generated source was inspected and the `thread_self_trap` wrapper carries the fast path
+verbatim (11 try blocks, 22 labels).
+
+Core regression with the route in place: boot OK, ool 20 `ring=44 uds=0`, basic 100 `ring=204
+uds=0`, delay 5000x3, timeout 300x5, r2 100 `ring=206 uds=0`, stress_pool 16x20 `ring=644 uds=0`.
+
+### 17.2 The census did not move, and that is the finding
+
+`thread_self_trap` 102 UDS / 0 Ring, `host_self_trap` 30/0, `task_self_trap` 28/0,
+`mach_reply_port` 46/0, `uidgid` 18/0, `vchroot_path` 23/0 -- unchanged from the pre-route
+census. Worse: the generated route, instrumented to report its own outcome, recorded **zero
+misses and zero completions** (no `name=generated` line, no histogram growth).
+
+A route that is present in the deployed wrapper but neither completes nor misses is a route that
+is NOT EXECUTED for this traffic. The UDS callers for these callnums are therefore neither the
+hand-written mach-trap shims in `mach_traps.c` nor the generated client wrappers.
+
+### 17.3 The next diagnostic (one place every sender must pass)
+
+The datagram send itself. Instrumenting the send keyed by callnum names the caller
+unambiguously; only then can the Ring route be attached where the traffic actually originates.
+Attaching a route to a wrapper nobody calls is exactly the failure this round measured.
