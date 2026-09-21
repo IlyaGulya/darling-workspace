@@ -2888,3 +2888,71 @@ rebuilt and deployed, and the workload still passed on the legacy transport with
 The guest fallback-reason histogram, the simple/lifecycle non-fd RPC migration and
 the new UDS census are NOT done. They were reachable only after a green doorbell --
 which is now landed -- so they are the next round's work, not this round's debt.
+
+
+## 16. Fresh UDS census and the real reason the simple group does not migrate (round 16)
+
+### 16.1 Guest-side fallback reasons, at the decision point
+
+`gr_lane_for_this_thread_named(callnum, name)` now attributes every lane miss with an
+explicit reason enum (NO_LANE_ENTRY, ATTACH_NOT_STARTED, ATTACH_IN_PROGRESS,
+ATTACH_FAILED, LANE_NOT_ACTIVE, OWNER_TID_MISMATCH, GENERATION_MISMATCH,
+CALL_NOT_RING_ELIGIBLE, PAYLOAD_NOT_SUPPORTED, BOOTSTRAP_REQUIRED,
+TEARDOWN_AFTER_LANE_RELEASE, FD_TRANSFER_REQUIRED, IMAGE_LOCAL_STATE, OTHER),
+computed from the guest's own lane table at the moment of the decision -- never from
+server state observed later. Each (reason, callnum) pair emits one
+`[dring-uds-reason]` line (opt-in `DARLING_GUEST_LANE_DIAG=1`) and the lane-stats
+dump carries a per-process `[dring-uds-reason-hist]` histogram.
+
+### 16.2 The census
+
+Fresh run (boot + `ool 20` + `basic 50`), RPC heatmap and residual census armed:
+
+```
+callnum                 total UDS   ring
+ring_attach                 201       0
+pthread_canceled            214       0
+thread_self_trap            192       0
+checkin                     166       0
+set_thread_handles          166       0
+checkout                    152       0
+mach_reply_port              76       0
+host_self_trap               50       0
+task_self_trap               48       0
+vchroot_path                 38       0
+uidgid                       30       0
+started_suspended/get_tracer/set_dyld_info/set_executable_path   13 each   0
+mldr_path                    12       0
+fork_wait_for_child          11       0
+```
+
+`residual_reason`: control_plane 367, ineligible 785, thread_has_ring 24,
+thread_no_ring_proc_none 1. `residual_uds_despite_lane`: vchroot_path 12,
+thread_self_trap 12. Guest reasons seen in the same run: the IMAGE_LOCAL_STATE case
+(the other image owns the thread's lane) and nothing else.
+
+### 16.3 The finding that changes the plan
+
+`DSERVER_RING_C2S_OPCODES` already lists thread_self_trap, host_self_trap,
+task_self_trap, mach_reply_port, uidgid, set_thread_handles, started_suspended,
+get_tracer, task_is_64_bit, mldr_path and vchroot_path; the server's generic
+eligible-op dispatch for them exists; and the guest has Ring helpers with per-callnum
+entry points (`gr_port_trap`, `gr_body_trap`, `gr_full_trap`). Yet every one of those
+callnums shows `ring = 0`.
+
+The helpers are reachable only from the mach-trap shims in `mach_traps.c`. The traffic
+that actually accounts for these counts arrives through the **generated client wrapper
+layer** (`scripts/generate-rpc-wrappers.py`), which has no Ring branch at all --
+`__dserver_ring_*` is referenced from `mach_traps.c` and the ring test fixture, never
+from a generated wrapper.
+
+So this class is NOT a lane-availability problem and NOT a bootstrap-ordering problem:
+it is a MISSING ROUTE in generated code (bucket A), and the fix has exactly one
+insertion point shared by every eligible call.
+
+### 16.4 Next step (identified, not implemented)
+
+Emit a Ring fast path in the generated client wrapper for callnums with a fixed,
+non-fd shape, delegating to the existing generic helper with the callnum and the
+shape's request/reply sizes; keep the datagram path only for pre-publication misses.
+One generator change covers the whole simple group, including callnums added later.
