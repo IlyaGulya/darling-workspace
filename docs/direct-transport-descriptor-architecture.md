@@ -2762,3 +2762,61 @@ histogram are NOT touched this round. ABI was bumped to v7 so a mixed
 pair cannot half-work (the attach check rejects it, the same mechanism round 8
 exercised for v5/v6); the skew test was not re-run because the v6 binaries no
 longer exist in the build tree.
+
+
+## 14. Cross-process doorbell isolation: measured, not fixed (round 14)
+
+### 14.1 The global server doorbell IS one shared kernel object
+
+Two guest processes were started in one Darling session (`lane_hold 4 & lane_hold 4`)
+and each process's hidden Ring descriptor was identified by KERNEL identity
+(`/proc/<pid>/fdinfo/<fd>`), never by fd number:
+
+```
+guest pid 2095875  fd 1048574  anon_inode:[eventfd]  ino=1062  eventfd-id=1251
+guest pid 2095878  fd 1048574  anon_inode:[eventfd]  ino=1062  eventfd-id=1251
+guest pid 2095879  fd 1048574  anon_inode:[eventfd]  ino=1062  eventfd-id=1251
+```
+
+Three distinct Linux guest processes hold the SAME eventfd object. An eventfd
+counter is read-and-reset by whoever reads it, so a guest holding a duplicate
+can consume another guest's pending wake. The round-13 doorbell is therefore
+NOT cross-process isolated, and its `dw_active=0` / PW1-PW5 results say nothing
+about that property: they measured one process at a time.
+
+### 14.2 The per-Process fix was attempted and is NOT landed
+
+The server side was moved into `Process` (`_ringDoorbellFD` + `_ringDoorbellMonitor`
++ a dup per attach, teardown in `~Process` and on HUP). Result: boot stalls with
+`Rootless shellspawn did not become ready`, while the server's main thread sits in
+`ep_poll` (syscall 232) -- the guest wrote a doorbell nobody was watching.
+
+Two candidate causes were narrowed and neither is confirmed:
+
+* `Process::_dispose()` cleared the fd while the guest could still attach lanes, so
+  the next attach created a SECOND eventfd object whose dup the guest's loader
+  discarded (it already held one). Moving teardown to `~Process` did not fix boot.
+* a guest-side per-write query of the loader's canonical fd broke boot by itself.
+
+The tree was then restored to the round-13 state and re-verified: boot 2.8 s,
+`ool 20` `pass=1 machmsg_ring=44 machmsg_uds=0`, `dw_active=0`. The re-generated
+patch is 202838 bytes, the same artifact size as round 13.
+
+### 14.3 The steal mutation could not be executed
+
+A guest-side hatch (`DARLING_GUEST_DOORBELL_STEAL_MS`, read the doorbell duplicate
+after a delay) was added, and it is INERT without its variable -- yet merely being
+present made boot fail (`steal-hatch-breaks-boot.log`). The guest wake path cannot
+be instrumented that way, so no steal run happened this round. The kernel-level
+capability is not in question (a process may `read()` an fd it holds); what is
+missing is the end-to-end demonstration.
+
+### 14.4 What this means for the next attempt
+
+The isolation fix must not depend on the guest re-deriving the descriptor on the
+wake path, and it must not tie the eventfd's lifetime to a `Process` object that
+is disposed while the guest still holds the duplicate. The two shapes that remain
+open: (a) keep one eventfd per guest process but own it in a server-side registry
+keyed by the guest's Linux pid and destroy it on the guest's own close, or (b) keep
+the doorbell out of the guest entirely and let the server poll the shared rings
+(the spin phase already does this; the doorbell is only the COLD wake).
