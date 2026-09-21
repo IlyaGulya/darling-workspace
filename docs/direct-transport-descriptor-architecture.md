@@ -2820,3 +2820,71 @@ open: (a) keep one eventfd per guest process but own it in a server-side registr
 keyed by the guest's Linux pid and destroy it on the guest's own close, or (b) keep
 the doorbell out of the guest entirely and let the server poll the shared rings
 (the spin phase already does this; the doorbell is only the COLD wake).
+
+
+## 15. Stable per-Linux-process doorbell: `RingWakeRegistry` (round 15)
+
+### 15.1 Why the choice of owner was the whole problem
+
+Round 13's doorbell was server-wide, which made it ONE kernel eventfd object shared
+by every guest process (measured: three distinct guest pids, `eventfd-id 1251`,
+`ino 1062`). An eventfd counter is read-and-reset by ANY holder, so the object was
+not isolatable by construction. Round 14 keyed the object on
+`DarlingServer::Process` and broke boot: a Process object can be disposed while the
+guest still holds the duplicate, so the next attach created a SECOND object whose
+dup the guest's loader discarded -- the guest wrote D1 while the server watched D2.
+
+The lesson is not "per-process is wrong"; it is "the *object* is wrong". A
+`Process` is a server-side bookkeeping object, not the Linux process incarnation.
+
+### 15.2 The anchor: a pidfd per incarnate guest process
+
+```
+Server::_ringWakeRegistry : unordered_map<pid_t, shared_ptr<RingProcessWake>>
+RingProcessWake { pid, pidfd, doorbell(eventfd), doorbellMonitor, deathMonitor }
+```
+
+* first lane attach of an incarnation: `pidfd_open(pid)` + one `eventfd` + two
+  Monitors (readable -> `_ringDrainAll()`; pidfd readable -> retire the entry);
+* every later attach, in either image: `dup` of the SAME object;
+* the incarnation exits: the pidfd Monitor removes the entry, both Monitors and
+  both fds;
+* the pid is reused: the stored pidfd for a dead process is readable, so the entry
+  is retired and a fresh one created (the `poll(POLLIN)` check on lookup);
+* nothing here is touched by `Process::_dispose()`.
+
+The guest side is unchanged from round 13: adopt the first doorbell into a
+canonical hidden fd, close every later dup, no per-wake refresh (round 14's
+per-wake elfcall was also what broke boot, and it does not belong on the hot path).
+
+### 15.3 Gates
+
+```
+cross-process isolation   pid 2152223 -> eventfd-id 1254
+                          pid 2152247 -> eventfd-id 1259      (different objects)
+same process, both images fd 1048574 in image=dyld AND image=kernel
+exit cleanup              50 sequential guest processes: server fds 85/85/85,
+                          eventfds 7/7/7                       (nothing accumulates)
+fork                      two guest processes from one shell, both pass=1 on Ring
+regression                boot PASS; B1-B4, OOL, R1, R2 pass=1; churn4096
+                          ring=8196 uds=0; S1-16 ring=644 uds=0; S1-32 ring=1284
+                          uds=0; M6 pass=1 (39 replay rejects); M6b pass=1
+                          (6 replay + 1 mismatch); F1 forced-fd-shape arm fails
+                          fast as designed (22 + 22 named counters)
+wake fds vs lanes         8 -> 5, 16 -> 9, 24 -> 9, 40 -> 9 server eventfds
+                          (constant in the LANE count; the 8/16 step is one extra
+                          guest process attaching, not a per-lane cost)
+ABI skew (real builds)    v6 guest + v7 server: pass=1 ring=0  uds=44
+                          v6 server + v7 guest: pass=1 ring=0  uds=44
+                          v7 + v7 restored   : pass=1 ring=44 uds=0
+```
+
+The skew arms are real builds: the constant was flipped, the affected side was
+rebuilt and deployed, and the workload still passed on the legacy transport with
+`ring = 0`.
+
+### 15.4 Still open
+
+The guest fallback-reason histogram, the simple/lifecycle non-fd RPC migration and
+the new UDS census are NOT done. They were reachable only after a green doorbell --
+which is now landed -- so they are the next round's work, not this round's debt.
