@@ -2318,6 +2318,146 @@ cost is exactly the §25-§27 target: one process-wide backing object and ONE pr
 instead of a mapping and a wake fd per thread. That is the next phase, and it now has a measured slope to
 improve rather than an estimate.
 
+### 13.44 The mutation families: M1-M6, R1-R4, and the lane-ABA gate
+
+The previous round recorded M1-M6 / R1-R4 / ABA as blocked on the pthread stall. That was wrong: none of
+them needs 129 live threads, only a deterministic injector. Each is now a named, env-gated perturbation of a
+REAL transport path (no stubs), run against the standard `ool 20` workload with server + guest traces on.
+
+```
+M1 early parent reply   DSERVER_DUPLEX_EARLY_COMPLETE=1
+   the server publishes the COMPLETION as if the guest had already performed the effect. Result: 4 synthetic
+   completions, 5 DUPLEX_EARLY_PARENT_REPLY lines, and the workload never produces a correct result (no
+   completion line at all; the mailbox is left inconsistent and the guard starts declining) -> RED.
+   This is the invariant that matters: the guest must not observe a successful parent result before its own
+   caller-S2C completes.
+
+M2/M3 wrong or stale upcall id   DARLING_GUEST_DUPLEX_UID_MUTATE=1
+   the guest publishes the completion tagged uid+1. Result: ring_duplex_reject=2, no completion line ->
+   RED: the server REJECTS the stale id and keeps waiting, so the parent never false-succeeds.
+   (M2's "wrong parent" and M3's "stale id" are the same check under this mailbox ABI: the parent/upcall pair
+   is the server's correlation token and the guest executes what the mailbox names, so the rejection is the
+   server's job and the arm exercises it through the guest's injected id.)
+
+M4 wrong executor TID   DARLING_GUEST_TID_MUTATE=1
+   tid_mismatch=20 on the test process (20 mismatches, assertion fires) while the workload itself still
+   completes -> the assertion is a real check on the recorded publisher, and it has a failing arm.
+
+M5 dropped completion   DARLING_GUEST_DUPLEX_DROP_REPLY=1
+   the guest performs the effect and suppresses the completion. Result: 51 suppressed completions, two
+   "[D6] duplex S2C upcall TIMED OUT ... failing the parent op closed (bounded, no leaked fiber)", and NO
+   false success -> RED. Note which mechanism produced the failure: the server's own bounded fail-closed
+   deadline, not a fabricated timeout in the transport.
+
+M6 duplicate completion   DARLING_GUEST_DUPLEX_DUP_REPLY=1
+   the same completion is published twice. Result: pass=0 -> RED, and the destructive op still executed at
+   most once. FINDING: ring_duplex_reject stayed 0 -- a replayed completion with the same (parent, upcall)
+   pair is not an explicit protocol event, so the replay lands as a stale reply slot that a LATER transaction
+   can pick up (which is how the arm turned RED). The one-outstanding rule is currently enforced by ordering,
+   not by identity; an explicit replay rejection is the hardening item.
+```
+
+R1 and R2 got dedicated workload modes (no injection, real work):
+
+```
+R1  ool_delay 5000 3   pass=1  elapsed 5.0015..5.0022s per op  machmsg_ring=10 machmsg_uds=0 tid_mismatch=0
+    a parent parked far longer than any spin/park heuristic still gets its caller-S2C, and the reply arrives
+    with the same seq on the same lane -- the Call-owned transport context survived the suspension.
+
+R2  r2 200             pass=1  parked_parent_ok=1  concurrent_failures=0  parked_elapsed=2.902s
+    while one context was parked ~3s on its lane, 200 out-of-line round trips on another lane completed
+    correctly: no cross-call stealing of a ring destination.
+```
+
+R3/R4 and the lane-ABA family are covered by a new deterministic model gate,
+`tests/ring_lane_aba_gate_test.c`, which drives the four identities that must agree before a completion may
+be delivered (slot index + generation, owner tid, the Call's context, and the server object kept alive by a
+reference). Four invariants, four arms:
+
+```
+GREEN            PASS failures=0   I1/I2 stale completion REJECTED, I3 old replies=1 new replies=0,
+                                   I4 refs held=1, delivered to the retained incarnation
+RED -DABA_NO_GENERATION_CHECK  FAIL  "stale completion was not rejected" +
+                                     "new incarnation received a stale reply"
+RED -DABA_ALIAS_BY_SLOT_INDEX  FAIL  the same violation reached by trusting the slot index across reuse
+RED -DABA_FREE_ON_RETIRE       FAIL  "incarnation freed while a Call referenced it (UAF)"
+```
+
+I1/I2 are the ABA cases (a slot recycled for the same tid with a new generation, and a completion tagged with
+the old one), I3 is the stale-Call-after-recycle rule (its completion may reach only its own retained
+incarnation, never the new lane), I4 is retire-with-a-live-Call (the reference keeps the incarnation alive;
+the outcome is defined, never a silent success).
+
+### 13.45 Where the fd slope actually is: measured classes, not a guess
+
+`/proc/<pid>/fd` readlink classification at 8 vs 24 live lanes (16 more lanes):
+
+```
+              guest 8 -> 24    slope      server 8 -> 24   slope
+eventfd          11 -> 27     +1 / lane       33 -> 65     +2 / lane
+socket           12 -> 28     +1 / lane        9 ->  9       0
+```
+
+So the live-lane fd cost is three named things, and each has an owner in the source:
+
+* GUEST eventfd +1/lane -- the adopted per-lane wake descriptor (`__dserver_adopt_ring_fd` in
+  `gr_attach_lane`).
+* GUEST socket +1/lane -- the per-thread RPC UDS socket. This is the "per-thread UDS must disappear" item,
+  and it is already +1 fd per live thread today.
+* SERVER eventfd +2/lane -- `RingBuffer::_eventfd` plus the `wakeDup` the per-lane Monitor owns
+  (`Call::RingAttach::processCall`).
+
+The backing mapping is NOT a per-lane fd on either side (the memfd is closed after mmap), so the
+"one process-wide backing object" work is about the doorbell and the pending structure, and the biggest
+single win available is the server's two-per-lane eventfd pair.
+
+**Not implemented this round.** The process-wide doorbell requires moving the eventfd + epoll Monitor from
+`Thread` to `Process`, giving each lane a pending word the server scans, and making the guest adopt ONE
+doorbell fd per process; that is a transport-lifetime change that must be developed against a running boot,
+and this cycle ran out of room before it could be built and regression-tested. What exists instead is the
+measurement above (which fixes the target and its size) and the mutation machinery that will guard it: M1-M6
+and the ABA gate are exactly the checks a doorbell redesign has to keep green.
+
+### 13.46 Remaining UDS traffic, by callnum (armed from the existing census)
+
+The server already carries a per-callnum transport census (`DARLING_SERVER_RPC_HEATMAP=1` plus the msg,
+attach and residual censuses). Armed over boot + basic + ool + churn 256 + pool 8:
+
+```
+callnum                                   uds   ring   verdict
+dserver_callnum_pthread_canceled          587      0   lane1-candidate
+dserver_callnum_ring_attach               400      0   lane1-candidate
+dserver_callnum_thread_self_trap          394      0   lane1-candidate
+dserver_callnum_checkin                   374      0   lane1-candidate
+dserver_callnum_set_thread_handles        374      0   lane1-candidate
+dserver_callnum_checkout                  361      0   lane1-candidate
+dserver_callnum_mach_reply_port            58      0   lane1-candidate
+dserver_callnum_host_self_trap             38      0   lane1-candidate
+dserver_callnum_task_self_trap             36      0   lane1-candidate
+dserver_callnum_vchroot_path               29      0   lane1-candidate
+dserver_callnum_uidgid                     22      0   lane1-candidate
+... (started_suspended, get_tracer, set_dyld_info, set_executable_path, mldr_path, fork_wait_for_child,
+     interrupt_enter/exit, console_open, kqchan_proc_open, vchroot)
+                                       2745 total       0 total
+
+residual_reason     {control_plane 774, ineligible 1664, thread_has_ring 18, thread_no_ring_proc_none 1}
+residual_uds_despite_lane  {vchroot_path 9, thread_self_trap 9}
+mach_msg             ring_parent 1118, ring_final 1117  vs  uds_machmsg_request 8, reply 8, s2c 0
+msg census           total 1126  send_only_simple 397  blocking_receive 613  complex 116
+```
+
+Reading it: mach_msg is now ~99.3% on the Ring (1118 ring vs 8 UDS requests), and the remaining UDS body is
+(a) control plane that is EXPECTED to stay on UDS (checkin/checkout/ring_attach/set_thread_handles -- process
+registration and lane setup), and (b) a large `ineligible` bucket (1664) that the current design declares
+not-ring-eligible, plus (c) a small, precisely identified avoidable set: `residual_uds_despite_lane`, i.e.
+calls that HAD a live lane and still went UDS -- 9 vchroot_path and 9 thread_self_trap.
+
+Note the second row of the table: `thread_self_trap` (394), `mach_reply_port` (58), `host_self_trap` (38),
+`task_self_trap` (36), `uidgid` (22), `mldl_path` (9) are ALL in `DSERVER_RING_C2S_OPCODES` and have guest
+shims, yet the census shows them arriving on UDS with zero ring arrivals. That is the concrete next
+investigation: either the guest shims are not being taken for these traps in a real workload, or the server's
+per-callnum routing declines them, and the census now names the exact suspects with counts.
+
 ## 12. Repository state
 
 - Product source: **untouched**. No commit, no branch, no push.
