@@ -2640,3 +2640,125 @@ feedstock it targets (paragraphs 13.45-13.48) are all in place.
 - New artifacts from this investigation: the three proof runners under `tests/`, this document,
   and the bead comment recording results.
 - `result.txt` in the workspace remains untracked and was not staged.
+
+### 13.53 ONE process doorbell replaces the per-lane wake eventfd (ABI v7)
+
+The wake plane is now two objects instead of 2N:
+
+```
+guest Linux process:  ONE Ring doorbell fd          (was: one per lane)
+server:               ONE eventfd + ONE Monitor     (was: two per lane)
+```
+
+The server creates its single eventfd lazily on the first `ring_attach`
+(`Server::ringDoorbellDupForGuest`), registers ONE Monitor whose body is
+`_drainRings()` -- the same service scan the pre-epoll spin already used -- and
+hands back a dup on *every* attach. The descriptor is no longer owned by
+`RingBuffer`: `_eventfd`, `eventfd()` and `drainWake()` are gone, so a lane
+allocates no wake resource at all and the epoll registration is per-transport
+rather than per-lane.
+
+The guest side needed a process-global owner, and it already had one: the
+shared loader (`mldr`) owns the ring descriptors for both guest images. A new
+appended elfcall `dserver_ring_doorbell(fd)` keeps the FIRST dup it is given
+and closes every later one, so N lanes in both images cost ONE fd for the whole
+Linux process. It is APPENDED, not inserted, for the same reason
+`dserver_release_ring_fd` was: the elfcalls struct is the loader/guest
+interface and every existing field must keep its offset or a stale image reads
+the wrong function at the same slot. A lane's `wake_fd` is a non-owning borrow
+-- a lane release closes nothing -- and `__mldr_postfork_child` resets the
+doorbell so a forked child cannot write a descriptor it no longer owns.
+
+**Why process-INDEPENDENT on the server** (the directive asked for one Monitor
+per Process): the two things the wake path does -- the service scan
+(`_drainRings`) and the sleep-state publication (`_setAllRingStates`) -- were
+already process-independent before this change, so a per-process Monitor would
+add N server fds without changing a single decision the doorbell makes. The
+guest-side property being bought (one wake fd per process) is exact.
+
+Product evidence for the multi-image singleton, printed once per image per
+process:
+
+```
+[dring-doorbell] pid=2011059 image=dyld   fd=1048574
+[dring-doorbell] pid=2011059 image=kernel fd=1048574
+```
+
+### 13.54 The lost-wake protocol is unchanged, and 13.55 measures it
+
+The decision predicate is the same one the per-lane wake model used
+(`server_state` + `dserver_ring_guest_should_doorbell`), and the server's
+arm/sleep handshake already had the required shape: publish ACTIVE while
+spinning, publish SLEEP_ARMED, drain ONCE MORE (the final rescan that closes
+"guest published after the first scan but before the state moved"), publish
+SLEEPING, then `epoll_wait`. A guest that read ACTIVE_POLLING and therefore
+skipped the doorbell is caught by that rescan; a guest that read SLEEPING or
+SLEEP_ARMED writes the eventfd, whose counter persists until it is read, so a
+write that lands before, during or after the transition still wakes the loop --
+an eventfd write cannot be lost.
+
+Only the *target* of the write changed: all lanes now write one fd. Sharing
+strictly reduces the loss surface, because a wake for any lane now drains every
+lane instead of one ring.
+
+### 13.56 The gates
+
+```
+PW1  bench_simple 20000   pass=1  dw_active=0  active_seen=38290  writes=1731 (861 sleeping + 870 armed)
+PW2  ool_delay 1500 3     pass=1  writes=16 (13 sleeping + 3 armed) -- the server was REALLY asleep
+PW3  stress_pool 32 20    pass=1  ring=1284 uds=0  ONE doorbell_fd=1048574 for 32 lanes
+PW4  probe(armed|presleep|sleeping) x 250ms x 3 each: 9/9 pass=1, all ops complete
+PW5  stress_churn 512 under sleeping/armed probes: pass=1 failures=0; stress_mixed 16 20 pass=1
+```
+
+`dw_active = 0` in every run: **not one doorbell write happened while the
+server claimed ACTIVE_POLLING**. The writes that do occur are the protocol's
+required "the server is going to sleep" doorbells, and the armed share is the
+window between the ARMED publication and the final rescan.
+
+### 13.57 FD slope: the acceptance number
+
+```
+lanes  guest_eventfd  guest_socket  server_eventfd  server_socket
+8      1              12            3               6
+16     1              20            3               6
+24     1              28            3               6
+40     1              44            3               6
+```
+
+`d(Ring wake fds)/d(lanes) = 0` on both sides. This is NOT total FD O(1) and
+must not be reported as such: the guest's per-thread RPC socket still grows
+1/lane, which is the next measured blocker.
+
+### 13.58 Post-doorbell P1/P2 (5 alternating pairs, PRODUCT config)
+
+```
+              UDS median   Ring median   delta      Ring p50
+simple        32 899 ns    21 996 ns     -33%       12 123 ns
+OOL          394 714 ns   217 724 ns     -45%      176 744 ns
+```
+
+No hot-path regression: the Ring half of each pair wins both workloads, and the
+doorbell's own cost is bounded by the writes above (1 500 per 40 000 message
+legs on the simple bench, with 38 290 skips).
+
+### 13.59 One measurement bug worth recording
+
+The `[dring-lane-stats]` format string had stopped consuming ten existing
+arguments (spin/futex/mmap/duplex counters were passed but never printed), so
+every field after `tid_mismatch` -- including the doorbell fields this round
+added -- printed a NEIGHBOURING counter. The numbers were plausible and
+meaningless. Fixed by restoring the specifiers; all doorbell numbers in 13.56
+are from the corrected build. A counter whose value is only ever read after the
+fact needs one deliberate check that the field printed is the field named.
+
+### 13.60 Not done in this round
+
+Per the directive's priority order, the remaining items are the guest-side
+fallback diagnosis, the simple-trap migration, and the new UDS census. The
+`residual_uds_despite_lane` entries (`vchroot_path` 9, `thread_self_trap` 9),
+the simple-trap group, the lifecycle group and the guest fallback-reason
+histogram are NOT touched this round. ABI was bumped to v7 so a mixed
+pair cannot half-work (the attach check rejects it, the same mechanism round 8
+exercised for v5/v6); the skew test was not re-run because the v6 binaries no
+longer exist in the build tree.
