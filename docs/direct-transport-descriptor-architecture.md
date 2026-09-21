@@ -3155,3 +3155,67 @@ truth, with the emulation layer keeping only the catalog, duplex, mach_msg and m
 So attach is a **true fd transfer**: one SCM_RIGHTS descriptor per attach plus one reply-body fd. The
 process doorbell is deliberately *not* re-transferred per lane (round 12), which is why the per-lane
 fd slope is zero; the remaining per-attach descriptor traffic is the lane backing itself.
+
+
+## 20. Stage 1 landed: ONE process-global logical lane per Linux host tid (round 20)
+
+### 20.1 What was implemented (not designed -- implemented and built)
+
+**Owner and data structure.** The loader owns an ordinary BSS array, which every image reaches through two
+**appended** elfcalls (`dserver_ring_lane_registry`, `dserver_ring_lane_slots`):
+
+```c
+struct mldr_ring_lane_record {          /* transport-neutral: no emulation types */
+	volatile int32_t  host_tid;         /* 0 == free */
+	volatile uint32_t state;            /* EMPTY -> ATTACHING -> ACTIVE */
+	volatile uint32_t generation;
+	volatile uint32_t slot_index;
+	volatile int32_t  owner_image;      /* diagnostic */
+	volatile void*    mapping;          /* guest VA -- valid in EVERY image */
+	volatile uint64_t mapping_size;
+};
+#define MLDR_RING_LANE_SLOTS 1024
+```
+
+**No new memfd directory was needed.** All images of a process share one Linux address space and the loader
+stays resident, so a plain pointer into loader BSS *is* the process-global registry. Nothing is shared but
+control metadata; the payload lane remains a per-thread SPSC ring, and there is no new global queue.
+
+**Mapping ownership.** Exactly one image owns each incarnation: the one that won the arbitration. A view
+created by another image is marked `borrowed` and its release path skips the `munmap` and does not
+unpublish the record; only the creating image unpublishes (and maps/unmaps) the incarnation.
+
+**Attach race.** `state` is CAS'd `EMPTY -> ATTACHING` before any work, so a second image cannot start a
+competing attach: it yields and adopts on its next call.
+
+**Boot-safe ordering (found by measurement, not by reasoning).** Probing the loader's elfcall table at the
+earliest Ring code in dyld **broke boot** (`shellspawn` never became ready). The directory is therefore
+resolved only *after* this image has completed one attach -- that path already uses the loader's elfcalls
+successfully for the process doorbell, so it is the first point where the table is proven live. Before the
+probe is allowed, an attach proceeds as before and arbitrates at publish time instead: if another image
+incarnated the thread meanwhile, this image unmaps its own backing and continues borrowed on the other's.
+
+### 20.2 Measured result
+
+Boot GREEN, focused regression GREEN (`ool 20` pass=1 `machmsg_ring=44 uds=0`, `basic 50` pass=1
+`machmsg_ring=104 uds=0`) -- no transport regression. The directory is live and used:
+
+```text
+proc_published=1  proc_adopted=0 proc_attach_arb=1  proc_attach_yield=0
+proc_published=20 proc_adopted=0 proc_attach_arb=20 proc_attach_yield=0
+proc_published=50 proc_adopted=0 proc_attach_arb=50 proc_attach_yield=0
+```
+
+Every attach now arbitrates and publishes; no duplicate attach was refused and **no image adopted another
+image's incarnation in this workload**. That is consistent with the round-19 finding: on this workload the
+kernel image's Ring shims are barely reached at all, so the cross-image case the directory exists for does
+not occur here -- and the census is consequently unchanged
+(`thread_self_trap 102/0`, `mach_reply_port 46/0`, `host_self_trap 30/0`, ...).
+
+### 20.3 What this round establishes and what it does not
+
+Established: the per-image ownership that produced `IMAGE_LOCAL_STATE` is gone at the mechanism level --
+one incarnation per host tid, arbitrated, published, and adoptable, with ownership-correct release.
+Not established: any census reduction, because the remaining senders are the loader's own bootstrap
+wrappers (proved in round 18) and callnums that never reach these shims; the adoption path itself is
+unexercised by this workload and therefore still unproven in PRODUCT.
