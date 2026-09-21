@@ -3086,3 +3086,72 @@ diagnostic of record.
 
 boot OK; `ool 20` pass=1; `basic 100` pass=1; `r2 100` pass=1; `stress_pool 16x20` pass=1; census
 workload pass=1. The Ring lane keeps serving `mach_msg_overwrite` with `machmsg_uds=0`.
+
+
+## 19. The kernel-image simple-group UDS has a single, sourced root cause (round 19)
+
+### 19.1 It is not a missing route, and not a wrapper topology problem
+
+The generated wrappers were the wrong suspect, and so were the hand-written trap shims. The product
+call path for these callnums is:
+
+```c
+/* mach_traps.c */
+mach_port_name_t thread_self_trap_impl(void) {
+	int ring_code = __dserver_ring_thread_self_trap(&port_name);   /* Ring shim FIRST */
+	if (ring_code >= 0) return ring_code == 0 ? port_name : MACH_PORT_NULL;
+	if (dserver_rpc_thread_self_trap(&port_name) != 0) ...        /* generated wrapper as FALLBACK */
+}
+```
+
+The shim is tried first. It declines with a **negative** code -- a pre-publication miss -- and only
+then does the generated wrapper run. A route added to the wrapper therefore cannot move these calls:
+the shim's own lane lookup is what fails.
+
+### 19.2 The actual cause: per-image lane state with mutual retirement
+
+```c
+static gr_lane_t* gr_lane_for_this_thread_named(uint32_t callnum, const char* name) {
+	gr_lane_t* L = gr_find_lane(tid);
+	if (L) {
+		if (L->state == 1 &&
+		    __atomic_load_n(&gr_cb(L)->server_state, __ATOMIC_ACQUIRE) == DSERVER_RING_SRV_RETIRED) {
+			/* Another image now owns this thread's server-side lane. Keep this image on UDS
+			   rather than stealing it back on every image switch ... */
+			gr_release_lane(L);
+			gr_urs_note(callnum, name, GR_URS_IMAGE_LOCAL_STATE, 0);
+```
+
+`gr_lanes` is **per-image** static storage. When a second image attaches a lane for the same host
+tid, the server marks the first image's lane RETIRED; that image then releases its slot and declines
+Ring **for the rest of its life**, with reason `IMAGE_LOCAL_STATE`. Every simple call issued later by
+that image goes to UDS. This is exactly the `IMAGE_LOCAL_STATE` the round-15 reason histogram
+reported and nothing else, and it is independent of which wrapper is called.
+
+### 19.3 The fix this mandates
+
+One **process-global lane identity**, adopted by every image, with no retirement ping-pong: the
+per-process directory that round 12 already built for the doorbell (loader-owned, distributed through
+the elfcall table, kept as the first dup) is the natural anchor. The concrete design is the minimal
+Ring client core plus a shared lane directory keyed by `(host_tid, slot, generation, mapping,
+mapping_size)`, imported by dyld and the kernel image instead of each attaching its own lane:
+
+```text
+mldr:   create process-global lane directory (loader-owned, one per Linux process)
+kernel/dyld: import the record for this host tid; no second attach, no retirement
+```
+
+The shared low-level SPSC primitives stay in one core so the memory ordering has a single source of
+truth, with the emulation layer keeping only the catalog, duplex, mach_msg and metrics above it.
+`IMAGE_LOCAL_STATE` becomes unreachable, because one image no longer retires another's lane.
+
+### 19.4 ring_attach SCM_RIGHTS, answered exactly (ABI v7)
+
+| direction | descriptor | creator | purpose | first | subsequent | guest keeps | server keeps |
+|---|---|---|---|---|---|---|---|
+| guest -> server | `ring_fd` (SCM_RIGHTS, 1 per attach) | lane allocator in the attaching image | lane backing memfd, fstat'd for its REAL size before mapping | yes | yes | mapping (per lane) | mapping (per lane) |
+| server -> guest | `wake_fd` (reply body field) | server | wake descriptor for the attached lane | yes | yes | as a non-owning borrow of the process doorbell | n/a |
+
+So attach is a **true fd transfer**: one SCM_RIGHTS descriptor per attach plus one reply-body fd. The
+process doorbell is deliberately *not* re-transferred per lane (round 12), which is why the per-lane
+fd slope is zero; the remaining per-attach descriptor traffic is the lane backing itself.
