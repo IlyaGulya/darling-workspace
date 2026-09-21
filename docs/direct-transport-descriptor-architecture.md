@@ -2458,6 +2458,111 @@ shims, yet the census shows them arriving on UDS with zero ring arrivals. That i
 investigation: either the guest shims are not being taken for these traps in a real workload, or the server's
 per-callnum routing declines them, and the census now names the exact suspects with counts.
 
+### 13.47 M6 is now replay-safe: the one-outstanding rule is identity-based, not timing-based
+
+The previous round's duplicate-completion arm turned the workload RED without a single rejection being
+counted -- the replayed `(parent, upcall)` pair was simply left sitting in the reply slot, where the NEXT
+upcall's cleanliness check saw a busy mailbox (and a later transaction could have harvested it). The
+one-outstanding rule was being enforced by ORDER, not by identity. That is protocol debt, and it is now
+paid.
+
+**Completion lifecycle, explicitly staged.** For every published upcall exactly one transition sequence is
+valid:
+
+```
+PUBLISHED -> COMPLETION_ACCEPTED -> CLOSED
+```
+
+The server records the identity of every completion it ACCEPTS (a small ring of the last 8 `(parent,
+upcall)` pairs, no allocation). Any completion that arrives naming an identity in that CLOSED set is not a
+protocol event at all: it is counted as `ring_duplex_completion_replay_reject`, traced as
+`DUPLEX_COMPLETION_REPLAY_REJECT`, and the slot is cleared so it cannot be seen by -- or harvested by -- any
+other transaction. The reaper runs in both duplex guards (before the mailbox-clean checks) and in the drain
+(before the correlation check), so a replay is caught whether the server is arming a new upcall or already
+waiting for one.
+
+**Ordering.** The guest publishes body-first and consumes the upcall slot before advertising the reply; the
+server validates the correlation, consumes the result, records the identity CLOSED, and only then can the
+next upcall be armed -- `_duplexUpcallInFlight` and the recorded CLOSED pair are both read under `_rwlock`,
+so the refusal of a replay and the arming of the next upcall cannot interleave.
+
+**M6-GREEN, with the window forced.** The replay window is timing-dependent: without a delay the two guest
+publishes usually coalesce into one slot state, so no replay is ever observable. `DARLING_GUEST_DUP_REPLAY_
+DELAY_MS` forces the interesting interleaving (the duplicate lands after the server has closed the first):
+
+```
+arm                                      workload     REPLAY_REJECT lines   counter
+GREEN (no mutation)                      pass=1            0                 0
+M6 duplicate, delay 50ms                 pass=1           19                19
+M6 duplicate, delay 150ms                pass=1           20                20
+```
+
+The injected duplicate is HARMLESS (the workload stays semantically correct and the destructive op executes
+once) AND explicitly rejected, which is the property the arm had to prove -- not merely that the workload
+breaks.
+
+**M1-M5 re-verified after the fix** (the replay state machine must not weaken them): M1 early parent reply
+still RED (no correct result), M3 wrong/stale upcall id still RED (`ring_duplex_reject=2`), M5 dropped
+completion still RED with no false success, M4 wrong-executor-TID assertion still fires. GREEN base is
+`pass=1` with `ring_duplex_completion_replay_reject=0`.
+
+### 13.48 The UDS census re-classified: only ONE callnum is class A
+
+The previous round left `control_plane` looking like a permanent exception. It is not: the final invariant is
+that AF_UNIX exists only to transfer a real Linux file descriptor. Re-classified from the census:
+
+```
+A. requires SCM_RIGHTS / a new Linux fd
+     ring_attach (400)                       -- it transfers the lane memfd; bootstrap fd transfer
+
+B. non-fd ordinary RPC  (must migrate to Ring)
+     pthread_canceled 587, thread_self_trap 394, mach_reply_port 58, host_self_trap 38,
+     task_self_trap 36, vchroot_path 29, uidgid 22, started_suspended 10, get_tracer 10,
+     set_dyld_info 10, set_executable_path 10, mldr_path 9, interrupt_enter 4, interrupt_exit 4,
+     console_open 3, kqchan_proc_open 2, vchroot 1
+
+C. bootstrap/lifecycle control, still non-fd  (must also migrate)
+     checkin 374, checkout 361, set_thread_handles 374
+
+D. temporary migration/debug
+     fork_wait_for_child 8
+```
+
+So exactly one callnum is entitled to stay on AF_UNIX today, and it is a bootstrap fd transfer that a future
+process-level SCM_RIGHTS courier should carry -- not a per-thread socket. Everything else in the table is
+non-fd work that the final design must move onto the Ring or process-shared control.
+
+**The 18 calls that had a lane and still went UDS** (`residual_uds_despite_lane`: 9 `vchroot_path`, 9
+`thread_self_trap`) are the sharpest end of this. They are not a coverage problem -- the lane existed -- so
+the branch that bypassed it is a routing defect, and the next step is to have the guest record WHY
+`gr_lane_for_this_thread()` returned NULL (or the publish failed) for those two callnums specifically. The
+shims themselves are NOT env-gated (`thread_self_trap_impl` calls `__dserver_ring_thread_self_trap`
+unconditionally), so the bypass is on the guest's lane resolution or a rejected lazy attach, not on the
+shim's presence.
+
+### 13.49 Process doorbell: not implemented, and why that is the honest status
+
+The round's central item was replacing the per-lane eventfds with ONE per-process doorbell. It is NOT
+implemented. The fd topology it targets is measured (previous round, re-stated):
+
+```
+guest:  +1 eventfd / live lane (the adopted per-lane wake fd),  +1 socket / live thread (per-thread UDS)
+server: +2 eventfd / live lane (RingBuffer::_eventfd + the Monitor dup)
+        persistent backing fd slope: 0 / lane
+```
+
+and the change is a transport-LIFETIME change across four objects (move the eventfd + epoll Monitor from
+`Thread` to `Process`, give the lane a pending word the server scans, make the guest adopt one doorbell fd
+per process and stop closing it per lane). That cannot be landed as an unverified edit: it needs build/boot
+iterations against a live prefix, and this cycle's remaining capacity went to M6 replay-safety (which was
+protocol debt on the SAME machinery and is now closed with a counter and a GREEN arm) and to the census
+re-classification.
+
+What exists instead is everything the doorbell work needs to be judged: the measured fd classes and their
+ownership, the mutation machinery that must stay green across it (M1-M6 with 4 RED arms and 1 GREEN arm, the
+ABA/R3/R4 gate with 3 RED arms), the F1 fail-fast invariant, and the UDS census that says which callnums the
+doorbell is actually for.
+
 ## 12. Repository state
 
 - Product source: **untouched**. No commit, no branch, no push.
