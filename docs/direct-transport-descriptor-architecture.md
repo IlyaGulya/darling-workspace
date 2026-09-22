@@ -3307,3 +3307,54 @@ growth (an emulated mmap in this guest).
 Remaining UDS is dominated by real fd transfer (`ring_attach`) and lifecycle (`checkin`/`checkout`), which
 are absent from `DSERVER_RING_C2S_OPCODES`. Adding an allowlist entry alone does not build: the op-class
 macro needs a row per op. That, plus the process SCM_RIGHTS courier for the attach path, is the next phase.
+
+
+## 23. Lifecycle is fd-mediated; the process descriptor courier (round 26)
+
+### 23.1 `checkin` / `checkout` are descriptor transfers, not a missing Ring path
+
+```c
+struct dserver_call_checkin  { bool is_fork; uint64_t stack_hint; int32_t lifetime_listener_pipe; };
+struct dserver_call_checkout { int32_t exec_listener_pipe; bool executing_macho; };
+```
+
+Both replies are header-only, and both body fields that look like identifiers ARE Linux descriptors: the
+server takes them as **indices into the received CMSG set**
+(`call.cpp: requestMessage.extractDescriptorAtIndex(checkinCall->body.lifetime_listener_pipe)`). `checkin`
+is issued once per new process (mldr's bootstrap and the fork child); `checkout` once per exec or thread
+exit (`execve.c`, mldr's `threads.c`). Their UDS constraint is therefore genuine fd transfer -- which is
+exactly why classifying them `SIMPLE_C2S` wedged boot in both tested variants. They belong to the same
+class as `ring_attach`, i.e. to the process descriptor channel.
+
+### 23.2 `ring_attach` ancillary behaviour, proven from the generated client
+
+```text
+request:  body .ring_fd = 0 (an INDEX)  +  ONE SCM_RIGHTS cmsghdr (SOL_SOCKET/SCM_RIGHTS, CMSG_LEN(int))
+reply:    ONE SCM_RIGHTS cmsghdr; the guest copies CMSG_DATA into fds[]; the body's wake_fd is the index
+```
+
+Every attach moves exactly one descriptor in each direction. The reply descriptor is a **dup of the
+server's process doorbell, re-sent on every attach** although the guest keeps only the first -- the
+quantified redundancy the courier is meant to remove.
+
+Measured attach volume: 14 packets for the boot chain, 47 cumulatively with 32 held lanes, 1550-2070 for
+`stress_churn 1024`; the fd ratio is 1:1 in both directions in every case.
+
+### 23.3 The courier prototype works
+
+An AF_UNIX listener in the abstract namespace (`darlingserver-fdcourier:<prefix>`, derived from the stat
+socket name so both sides compute it identically), carrying only `{generation, token, kind, fd_count}` plus
+`SCM_RIGHTS`: no callnum, no RPC body. The server verifies each received descriptor with `fstat`, counts it
+and closes it, so an experimental run cannot leak. mldr connects once per process at bootstrap and delivers
+the lane backing descriptor under a token. Measured: 8-10 connections, `fds_received == fds_closed`, boot
+GREEN, tests pass.
+
+### 23.4 Guard and census
+
+`NONFD_UDS_VIOLATION` is implemented in the generated Ring route (an ACTIVE process-global lane, a non-fd
+Ring-capable callnum, and a datagram decision would increment it) and measures **0** in every process.
+
+The census is unchanged at `uds=334 ring=458`, and the audit explains it: `checkin 86 + ring_attach 86 +
+checkout 77 = 249` of the 334 are genuine descriptor transfers; `set_dyld_info 8` is a non-fd bootstrap
+write absent from the allowlist; the remaining ~15 are the earliest bootstrap `thread_self_trap`/
+`vchroot_path` calls before the loader's lane exists.
