@@ -3466,3 +3466,14 @@ machine; run ALONE it reaches `FINAL=1 pass=1 machmsg_ring=644 machmsg_uds=0`, a
 r2 100` are at 44 / 204 / 206 with `machmsg_uds=0`. The mldr source is byte-identical to the round-45
 verified state apart from accumulated comments (checked by reconstructing that state from its committed
 patch and diffing), so the earlier non-completions were machine load, not a regression.
+
+
+### 24.5 The loader-owned slot was tried and is NOT the fix (measured)
+
+Shape tried: an appended elfcalls field `dserver_process_control_slot()` returning the address of a
+loader-owned pointer, so whichever bootstrap runs first creates the page and every later one reuses it.
+Result: some pids still created twice (`page ... sent=1` twice for pid N, once for pid M in the same run),
+and it introduces a worse hazard -- a FORK CHILD inherits the slot, so it would reuse its PARENT's page
+while the server keys regions by pid. The configuration stayed green, but the change does not do what it
+was for, so it is reverted and recorded. The shape to design next is fork-aware: the child must clear the
+slot (exactly as the courier's fork reset already does for the connection) before its bootstrap runs.
