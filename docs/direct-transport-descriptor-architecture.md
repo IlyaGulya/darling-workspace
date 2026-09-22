@@ -3358,3 +3358,47 @@ The census is unchanged at `uds=334 ring=458`, and the audit explains it: `check
 checkout 77 = 249` of the 334 are genuine descriptor transfers; `set_dyld_info 8` is a non-fd bootstrap
 write absent from the allowlist; the remaining ~15 are the earliest bootstrap `thread_self_trap`/
 `vchroot_path` calls before the loader's lane exists.
+
+
+## 24. Process-control plane: live, and the exact extraction plan for `checkin`
+
+The process-shared management page (`dserver_process_control`) is established on every boot: the loader
+creates it, hands the backing descriptor to the server over the process courier
+(`kind = PROCESS_CONTROL`, so the courier stays descriptor-only), and proves the plane with a PING round
+trip through shared memory. Measured live: `process_control_regions == requests == 10` over a full
+workload, courier `received = 183` / `matched = 173` (the difference is exactly the page descriptors,
+which are regions and not request halves), no rejects, no orphans, and the baseline regression is
+unchanged (ool 44 / basic 204 / r2 206 / stress_pool 644, all `machmsg_uds = 0`).
+
+One rule had to be fixed for it and belongs next to the lane-directory rule: **a descriptor number is not
+ownership.** An image that cached the courier's number later sent on a *different* file the process had
+reused that number for (`sendmsg` returned ENOTSOCK while `fcntl` on the same number succeeded). Images
+now ask the loader at every use, and the fork reset goes through the loader (which *forgets* the number)
+rather than closing a number the image happens to hold.
+
+### Why `checkin` belongs here, measured three times
+Routing `checkin` on a lane wedges the boot in every configuration tried: as a SIMPLE_C2S op, with its
+descriptor on the CMSG, with the descriptor on the courier, and with a caller-supplied `bootstrap` marker
+that kept the lifecycle instances on the datagram path and let only the pthread instance ride (that one
+still wedged). It is the first call a new thread makes -- the server's `Thread` object is created by that
+very call -- so it is not a hot-lane operation at all.
+
+### The extraction, point by point
+1. `call.cpp:150-230` holds the checkin ingest: `processRegistry().registerIfAbsent(...)` with the
+   lifetime pipe (extracted from the CMSG index, `call.cpp:172-177`), then
+   `threadRegistry().registerIfAbsent(header->tid, ...)` with the stack hint (`call.cpp:220-223`), then
+   `setAddress`/`registerWithProcess`. Extract that into one server function taking
+   `{pid, tid, namespaceID, architecture, is_fork, stack_hint, lifetime_fd}` and call it from BOTH the
+   RPC ingest and the control-plane service.
+2. `Process::notifyCheckin(architecture, isMainThread, isFork)` (`process.cpp:275`) is already a method;
+   the plane calls it directly with the `Thread` returned by (1) and the main-thread classification.
+3. New op `DSERVER_PROCESS_CONTROL_OP_CHECKIN` with payload `{is_fork, stack_hint, fd_token, tid}`; the
+   service resolves `fd_token` (kind `CHECKIN_FD`), runs (1) then (2), and writes the status back into the
+   page -- which is the completion ordering the bootstrap writes needed and never had.
+4. Guest side: the bootstrap checkin (mldr's, and the fork child's) publishes that op instead of the RPC.
+   The loader already has the page and a request helper; the fusion image needs the same helper in
+   `dserver-ring.c` through the elfcalls page pointer, and `threads.c`'s pthread instance keeps the
+   ordinary entry point (or moves here too, once (1) is shared and the ordering is proven).
+5. Only after that: `ring_attach`'s semantic half, `set_dyld_info`, `set_executable_path`, the teardown
+   `checkout` instance and `pthread_canceled` -- all of which are the same shape (rare, ordered, no
+   descriptor of their own) and are the remaining rows of the census.
