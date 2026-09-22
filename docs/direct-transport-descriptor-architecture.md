@@ -3402,3 +3402,27 @@ very call -- so it is not a hot-lane operation at all.
 5. Only after that: `ring_attach`'s semantic half, `set_dyld_info`, `set_executable_path`, the teardown
    `checkout` instance and `pthread_canceled` -- all of which are the same shape (rare, ordered, no
    descriptor of their own) and are the remaining rows of the census.
+
+
+### 24.1 Correction to the ordering claim (own measurement, re-read in full)
+
+The first reading of the side-by-side trace compared the first three matching lines and concluded that a
+datagram had outrun the page ("a datagram is serviced on arrival, a page only on the server's pass, so a
+preceding checkin cannot be a page write"). Re-reading the SAME log in full, in order, shows a different
+picture for that pid:
+
+    [mldr-ctl] page pid=N size=104 sent=1
+    (checkin-trace) rpc-register-process pid=N nsid=1 lifetime_pipe=-1 header_pid=N   @ .000246
+    (checkin-trace) rpc-register-thread  tid=N number=1                              @ .000390
+    (process-control) checkin-op pid=N call=1 thread=N process=N nsid=1              @ .000512
+    [mldr-ctl] checkin pid=N tid=N status=0 token=0
+    [mldr-ctl] ping pid=N status=0
+    [mldr-ctl] page pid=N size=104 sent=1          <- a SECOND page creation for the same pid
+
+Two things are visible that the first reading missed: an RPC registration precedes the plane's op for the
+same pid, and that pid creates TWO pages. So the trace interleaves two bootstraps of one process (the
+loader's and the fusion image's own), and the ordering claim above is NOT established by it. What IS
+established is the seven exclusions (reply path, payload ABI, sender pid, page position in the pass,
+thread reply address, lifetime descriptor, namespace id -- the last one measured: `nsid=1` in BOTH
+paths). The next measurement must therefore separate the two bootstraps in the trace (tag each line with
+the image that issued it) before any ordering conclusion is drawn again.
