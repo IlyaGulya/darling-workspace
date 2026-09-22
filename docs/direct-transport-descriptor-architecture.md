@@ -3477,3 +3477,18 @@ and it introduces a worse hazard -- a FORK CHILD inherits the slot, so it would 
 while the server keys regions by pid. The configuration stayed green, but the change does not do what it
 was for, so it is reverted and recorded. The shape to design next is fork-aware: the child must clear the
 slot (exactly as the courier's fork reset already does for the connection) before its bootstrap runs.
+
+
+### 24.6 The fork-aware slot: measured neutral, reverted, and what to do instead
+
+The fork-aware shape (loader-owned slot + a reset the child calls next to the courier reset) was built and
+measured: `HELLO/DONE` green, `ool 20`=44, `basic 100`=204, `r2 100`=206, and the page-creation count
+stayed at the SAME ratio as without it (7-8 creations for 5-6 pids, i.e. two pids still create twice).
+Since it adds an elfcalls ABI field and a reset hook without moving that number, it is reverted. Before
+that shape is worth its surface, the second creation must be ATTRIBUTED: log which image performs it
+(the loader, the fusion image, or a fork child) -- the current diagnostics only say `pid=N`, which is
+exactly why two bootstraps of one process cannot be told apart in the trace.
+
+Full verification after the revert (the state carried forward): `HELLO/FINAL` reached, `ool 20` ring=44,
+`basic 100` ring=204, `r2 100` ring=206, `stress_pool 16x20` ring=644, every test pass=1, all
+`machmsg_uds=0`; plane live with `regions == requests`.
