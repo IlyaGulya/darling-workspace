@@ -3457,3 +3457,12 @@ is therefore one of:
   * let the image's bootstrap ask the emulation layer (which has `elfcalls()`) to hand the page to the
     loader-side bootstrap through a hook the loader installs.
 Recorded with the code attempt removed rather than left half-built.
+
+
+### 24.4 Final verification of this session's state (settled, not assumed)
+
+`stress_pool 16 20` did not complete in three consecutive windows while other jobs were polling the same
+machine; run ALONE it reaches `FINAL=1 pass=1 machmsg_ring=644 machmsg_uds=0`, and `ool 20 / basic 100 /
+r2 100` are at 44 / 204 / 206 with `machmsg_uds=0`. The mldr source is byte-identical to the round-45
+verified state apart from accumulated comments (checked by reconstructing that state from its committed
+patch and diffing), so the earlier non-completions were machine load, not a regression.
