@@ -3492,3 +3492,41 @@ exactly why two bootstraps of one process cannot be told apart in the trace.
 Full verification after the revert (the state carried forward): `HELLO/FINAL` reached, `ool 20` ring=44,
 `basic 100` ring=204, `r2 100` ring=206, `stress_pool 16x20` ring=644, every test pass=1, all
 `machmsg_uds=0`; plane live with `regions == requests`.
+
+
+### 24.7 ATTRIBUTED: the "two pages per pid" are an execve pair, not two bootstraps (round 47)
+
+The bootstrap now tags each page request with its entry path (`argv[0]` as handed over by the kernel or
+dyld) and its tid. Measured, one `ool 20` boot:
+
+```
+pid=3681941  vchroot            (1)   ->  pid=3681941  /sbin/launchd   (2)
+pid=3681949  /bin/bash          (1)   ->  pid=3681949  /bin/sh         (2)
+pid=3681947  /usr/libexec/shellspawn
+pid=3681950  /usr/bin/ring_mach_msg_test
+```
+
+Every duplicated pid pairs **two different images** -- a `vchroot` that execve's `launchd`, a `/bin/bash`
+that execve's `/bin/sh` (the shell shim). So one process bootstraps once per IMAGE, sequentially, and a
+new page per execve is correct: the previous image's page is released with its incarnation, exactly as the
+courier advances its generation on execve. Consequences:
+
+  * **The premise of §24.5/§24.6 is void**: there is no double creation to eliminate, so the loader-owned
+    slot and its fork-aware reset are unnecessary, not merely unproven. They stay reverted.
+  * **The §24.1 withdrawal is itself withdrawn**: it rested on "two interleaved bootstraps of one
+    process", and the two lines are an execve pair, i.e. sequential. The ordering observation that round
+    was about is not invalidated by interleaving.
+
+Per-image ordering measured in the same trace (`ATTACH-RPC` = the image's `ring_attach`, `PAGE` = the
+plane's page for that image):
+
+```
+pid=3681941  SEED-ATTACH -> PAGE(vchroot) -> PING(0) -> SEED-ATTACH -> PAGE(launchd) -> PING(0) -> ATTACH-RPC x2
+pid=3681949  ATTACH-RPC -> SEED-ATTACH -> PAGE(/bin/bash) -> PING(0) -> SEED-ATTACH -> PAGE(/bin/sh) -> PING(0)
+pid=3681950  ATTACH-RPC -> SEED-ATTACH -> PAGE(/usr/bin/ring_mach_msg_test) -> PING(0) -> ATTACH-RPC x4
+```
+
+So the plane is NOT uniformly available before the first lane attach: for `launchd` the page precedes the
+attach, for the shell and the test image the attach precedes the page. That is the measured round-28
+pre-attach datagram dependency, now attributed per image instead of asserted globally, and it is why the
+loader's first writes stay on the datagram path.
