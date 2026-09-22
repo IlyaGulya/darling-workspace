@@ -3426,3 +3426,19 @@ established is the seven exclusions (reply path, payload ABI, sender pid, page p
 thread reply address, lifetime descriptor, namespace id -- the last one measured: `nsid=1` in BOTH
 paths). The next measurement must therefore separate the two bootstraps in the trace (tag each line with
 the image that issued it) before any ordering conclusion is drawn again.
+
+
+### 24.2 What the trace also showed: two pages per process, and a measurement lesson
+
+Two `[mldr-ctl] page pid=N sent=1` lines appear for one pid, i.e. the bootstrap that creates the control
+page runs TWICE per process (the loader's and the fusion image's), and each run creates its own page. The
+server keeps one per pid, so the second replaces the first -- harmless today, and the reason the trace
+interleaves two bootstraps. Making every bootstrap ask for the loader's page through the elfcalls table
+is the right shape, and it was attempted this round: it could not be built in the budget available
+because the loader's table is a file-static in `stack.c`, so the accessor is not linkable from the
+bootstrap. Recorded here with the code attempt removed rather than left half-done.
+
+Measurement lesson, again: this workload needs about THREE minutes from launch to the last test
+(ool 20 + basic 100 + r2 100 + stress_pool 16x20). Several reads at 110-170 s looked like regressions and
+were not -- the same configuration was green at ~180 s in the same session. Read the FINAL/`pass=` lines
+after the run's own timeout, not on a shorter clock.
