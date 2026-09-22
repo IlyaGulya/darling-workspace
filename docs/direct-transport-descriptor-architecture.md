@@ -3442,3 +3442,18 @@ Measurement lesson, again: this workload needs about THREE minutes from launch t
 (ool 20 + basic 100 + r2 100 + stress_pool 16x20). Several reads at 110-170 s looked like regressions and
 were not -- the same configuration was green at ~180 s in the same session. Read the FINAL/`pass=` lines
 after the run's own timeout, not on a shorter clock.
+
+
+### 24.3 Why the loader-owned page could not be built here (exact, for the next attempt)
+
+`stack.c` is **included by `mldr.c`** (it is not only compiled as its own translation unit), so a
+non-static accessor added there lands twice in one TU and the build fails with a redefinition at the same
+line. The table itself (`static struct elf_calls _elfcalls`) is file-static by design. The workable shape
+is therefore one of:
+  * move the table out of `stack.c` into a TU that is compiled once and expose a getter from there; or
+  * have the LOADER write its page pointer into a location the image's bootstrap already reads (the lane
+    directory is loader-owned and shared, but its layout is the lane ABI -- so a separate, small
+    loader-owned record is the cleaner home); or
+  * let the image's bootstrap ask the emulation layer (which has `elfcalls()`) to hand the page to the
+    loader-side bootstrap through a hook the loader installs.
+Recorded with the code attempt removed rather than left half-built.
