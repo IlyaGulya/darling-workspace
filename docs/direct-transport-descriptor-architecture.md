@@ -3265,3 +3265,45 @@ component that breaks boot**. It is isolated behind `MLDR_SEED_ADOPT` (default o
 * census bookkeeping: with the seed on, `ring_attach` rises by one per process (expected -- attach still
   uses UDS+SCM_RIGHTS) while `task_self_trap` rises by ~6 with `ring` staying 0, so the server's per-call
   transport classification must be understood before any census-reduction claim is made.
+
+
+## 22. Stage 2 complete: natural cross-image adoption is the default (round 25)
+
+The loader creates and OWNS the process-global lane for the main thread, uses it itself, and publishes the
+incarnation; the guest images then ADOPT it. PRODUCT acceptance on the default configuration: boot GREEN,
+`ool 20` and `basic 50` pass=1, `proc_adopted=1` in every process, and no `ring_attach` for the adopted
+tid -- the image no longer attaches a lane of its own.
+
+Census on the same workload (server heatmap, with the transport tag now set where the call is taken off a
+lane rather than only in the duplex reply step):
+
+```text
+TOTAL uds=334 ring=458                      <- Ring is the majority transport for counted calls
+mach_reply_port       0 / 46    host_self_trap 0 / 30    task_self_trap 0 / 36
+uidgid                0 / 18    set_thread_handles 0 / 86
+thread_self_trap      8 / 94    vchroot_path 7 / 24      pthread_canceled 47 / 95
+checkin              86 / 0     checkout 77 / 0          ring_attach 86 / 0 (real fd transfer)
+set_dyld_info         8 / 0     (loader bootstrap write, not in the allowlist)
+```
+
+Three defects made this look impossible for many rounds, and only one of them was in the transport:
+
+1. **The adoption-mode encoding dropped a bit.** The mode was published as `0x100|mode` and decoded as
+   `(creator_image >> 8) & 0xff`, which maps mode 2 to 1. The adopting image therefore always took the
+   "create the borrowed view, then decline it" arm: the view was created and dropped, the lookup fell
+   through to a SECOND `ring_attach` for the same tid, the server retired the shared lane, and boot wedged.
+2. **The directory gate hung off the process doorbell**, which the fork-child reset clears, so the
+   adopting image never resolved the directory and attached its own lane instead. The gate is now
+   self-validating: the directory exists iff the loader's registry elfcalls answer.
+3. **The heatmap tagged transport only in `beginRingReply`**, so every ordinary ring-served call was
+   reported as UDS. Tagging in the generic ring service path (`ringServiceThread`) showed the simple group
+   had been on the Ring all along.
+
+Supporting fixes landed with it: the seed's doorbell survives the fork-child variable reset; `ring_attach`
+is refused for a tid that already has an incarnation (Case A); BORROWED views are preserved across
+`__dserver_ring_postfork_reset` and live in statically reserved slots, so adoption never needs catalog
+growth (an emulated mmap in this guest).
+
+Remaining UDS is dominated by real fd transfer (`ring_attach`) and lifecycle (`checkin`/`checkout`), which
+are absent from `DSERVER_RING_C2S_OPCODES`. Adding an allowlist entry alone does not build: the op-class
+macro needs a row per op. That, plus the process SCM_RIGHTS courier for the attach path, is the next phase.
