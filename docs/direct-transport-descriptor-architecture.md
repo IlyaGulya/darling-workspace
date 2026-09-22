@@ -3530,3 +3530,27 @@ So the plane is NOT uniformly available before the first lane attach: for `launc
 attach, for the shell and the test image the attach precedes the page. That is the measured round-28
 pre-attach datagram dependency, now attributed per image instead of asserted globally, and it is why the
 loader's first writes stay on the datagram path.
+
+
+### 24.8 Round 48: the plane before the first write is RED; the plane after them is GREEN
+
+Directive tried: establish the process-control plane BEFORE the loader's first write and route
+`set_dyld_info` through it (a no-reply op with no descriptor -- the exact shape the plane exists for),
+with the datagram path kept as the fallback. Implemented: the plane block moved above
+`dserver_rpc_set_dyld_info`, a new `DSERVER_PROCESS_CONTROL_OP_SET_DYLD_INFO` case that synthesizes the
+ordinary `dserver_rpc_call_set_dyld_info_t` and runs it through `callFromMessage` -> `doWork` with
+`suppressReplyDelivery()` (the page is the completion), and the architecture carried in `payload[3]`.
+
+Measured: **RED**. `HELLO` never printed and the launcher reported
+`Rootless shellspawn did not become ready within 30000ms`. The server trace shows the plane WAS live for
+that pid -- `process-control region pid=3686572 size=104`, `request pid=3686572 op=1 seq=1` (the PING) --
+so the failure is the ordering, not the plane: the loader's first writes must precede the plane's
+establishment, exactly as the two round-27/28 negatives said for the lane. Reverted; the plane is
+established after `set_executable_path` again and `set_dyld_info` is back on the datagram path.
+
+This is the FIFTH member of one measured family -- publish-only, ordered-ack, seed-before-writes, a new
+call-table row, and now plane-before-writes -- so the classification stands: the loader's pre-image writes
+are process bootstrap, and they precede every in-process transport this design has built.
+
+Full verification after the revert: `HELLO/FINAL` reached, `ool 20` ring=44, `basic 100` ring=204,
+`r2 100` ring=206, `stress_pool 16x20` ring=644, every test pass=1, all `machmsg_uds=0`.
