@@ -3922,3 +3922,21 @@ writes used. That is the next thing to measure, and it is one line each: log the
 holds for that pid (it re-maps on every `PROCESS_CONTROL` bundle, and a second image sends its own). Until
 that is answered, the checkin route stays implemented-but-unexercised and the datagram fallback is what
 runs -- which is exactly what the boot shows, and what this record claims: nothing more.
+
+
+### 31.2 The page-identity measurement did not run; state it as open, not as answered
+
+The instrument was added (`page=%p` at the establishment site and at the checkin site, `page=`/`gen=` on
+the server's region line), and the server side DID take effect in the measured run (`region pid=N size=112`,
+i.e. the larger struct with `transport_ready`). The guest side did NOT: the run's lines are still the old
+format (`ready pid=N state=1` with no pointer), so the binary that ran did not carry that build, and the
+question "do the two sites consult the same page?" is NOT answered by this run.
+
+What the run does add: the server maps **112-byte** regions for each pid (the appended-field struct), and
+the establishment lines exist for the same pids whose `checkin-route` says `ready=0`. The standing
+hypothesis, to be tested with the instrument that is now in the source: the establishment site and the
+checkin site are reached in DIFFERENT mldr invocations (the image names in `checkin-route` are execve
+chains), and `g_process_control_page` is per-invocation BSS -- so the invocation that checks in consults
+its own page, which is not the page the earlier invocation established. If that holds, the fix is not in
+the plane but in where the page is established: it must be established (or re-established) in the
+invocation that performs the checkin, or handed across the image transition by the loader.
