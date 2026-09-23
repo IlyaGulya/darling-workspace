@@ -4212,3 +4212,29 @@ Classification of the remaining socket-backed traffic with this table (replacing
   * POST_LANE_NONFD_BUG candidates, to be checked one by one: `thread_self_trap uds=10`,
     `vchroot_path uds=9`, `pthread_canceled uds=75`, `fork_wait_for_child uds=4` -- these have a usable lane
     for their other instances (184/20/491/4 ring), so each UDS instance needs a reason.
+
+
+### 32.1 The reason histogram is dumped but never populated
+
+§6 ("fix every POST_LANE_NONFD_BUG the census finds") needs the REASON each UDS instance chose the socket.
+The mechanism exists and is dumped at `sys_exit`:
+
+```
+for (unsigned r = 0; r < GR_URS_COUNT; ++r) {
+    uint64_t c = __atomic_load_n(&gr_urs_counts[r], __ATOMIC_RELAXED);
+    if (c != 0) { fprintf("[dring-uds-reason-hist] pid=%d reason=%s count=%llu ..."); }
+}
+```
+
+Measured with `DARLING_GUEST_LANE_STATS=1 DARLING_GUEST_UDS_SEND_SITE=1 DARLING_GUEST_RING_TRACE=1` on a
+product run (`HELLO=1 DONE=1`): **zero** `[dring-uds-reason-hist]` lines, and `grep -c
+g_stat_uds_reason dserver-ring.c` is 0 -- i.e. nothing ever increments `gr_urs_counts`, so the histogram is
+a print of an empty table. The enum (`GR_URS_NO_LANE_ENTRY` .. `GR_URS_FD_TRANSFER_REQUIRED`) is complete and
+named; what is missing is the recording call at the guest's own decision point.
+
+So §6 is blocked on one small instrumentation change, not on a transport question: record the reason where
+the datagram decision is made, then the four candidates the census names (`thread_self_trap uds=10`,
+`vchroot_path uds=9`, `pthread_canceled uds=75`, `fork_wait_for_child uds=4`) each get a named reason and can
+be classified as PRE_LANE / TEARDOWN / FD / real nonfd bug.
+
+This run was GREEN (`HELLO=1 DONE=1`, `ool 20`/`basic 100` pass).
