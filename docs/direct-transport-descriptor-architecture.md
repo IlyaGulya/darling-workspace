@@ -3972,3 +3972,35 @@ fallback is what runs -- which is what the boot shows.
 
 Regression with this build (verified): `FINAL=1 HELLO=1`, `ool 20`=44, `basic 100`=204, `r2 100`=206,
 `stress 16x20`=644, every test `pass=1`, all `machmsg_uds=0`.
+
+
+### 31.4 Layout and identity agree -- the value flips within ONE invocation
+
+Measured on both sides in the same run:
+
+```
+guest : ready pid=277253 state=1 page=0x7016f1d78000 sz=112 off=104      (establishment, inv 1)
+guest : ready pid=277253 state=1 page=0x7571b5c06000 sz=112 off=104      (establishment, inv 2)
+guest : checkin-route pid=277253 ready=0 page=0x7016f1d78000 .../vchroot
+guest : checkin-route pid=277253 ready=0 page=0x7571b5c06000 .../launchd
+server: region pid=277253 size=112 page=0x711652520000 sz=112 off=104 ino=14567386 dev=1
+server: region pid=277253 size=112 page=0x71165251e000 sz=112 off=104 ino=14567388 dev=1
+```
+
+* `sz=112 off=104` on BOTH sides: the struct layout and the field offset agree, so the offset hypothesis
+  is REFUTED.
+* The memfd identities differ per invocation (ino 14567386 / 14567388): two pages for two execve images,
+  which is the intended one-page-per-incarnation shape, and the server mapped both.
+* In invocation 1 the establishment reads `state=1` from page `0x7016f1d78000` and the checkin site reads
+  `ready=0` from THE SAME ADDRESS. Nothing in between re-creates the page (`g_process_control_page` is
+  assigned once, and the lazy accessor returns early when it is non-NULL), and a plane request writes only
+  `reply_state`/`request_*`/`seq`, never `transport_ready`.
+
+So something WRITES 0 to that word between the two reads. The next measurement is to bracket it: log
+`transport_ready` after each plane request in that invocation (before and after the two bootstrap writes),
+which localises the write to one of them, and then to whoever performs it (guest or server, on which
+mapping).
+
+The `HELLO=0` in this run is the 130 s timeout, not a regression: the verified regression on this code is
+`FINAL=1 HELLO=1`, `ool 20`=44, `basic 100`=204, `r2 100`=206, `stress 16x20`=644, all `pass=1`, all
+`machmsg_uds=0`.
