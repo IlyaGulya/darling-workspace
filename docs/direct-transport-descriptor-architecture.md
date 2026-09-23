@@ -5856,3 +5856,39 @@ Next: the `threads.c` checkout instance (the descriptor-less thread-exit case), 
 Six defects found and fixed by measurement, one disabled route re-enabled, one dead counter set removed, and the
 page's transaction model built and used by four operations. Everything above is committed and the tree is GREEN
 at `HELLO=1` with `ool 44 / basic 204 / r2 206 / stress 644` and `machmsg_uds=0`.
+
+
+### 50. CHECKOUT stays on the datagram; and a build-consistency lesson repeated
+
+Both checkout instances were routed through the page and both are RED, for the same reason the earlier
+checkout-on-lane experiment was: the boot stops at `shellspawn did not become ready`. The execve instance (with
+its descriptor half and an active lane) and the descriptor-less thread-exit instance both wedge. So both guest
+sites are reverted to the datagram, with the reason recorded where they were, and the server-side
+`OP_CHECKOUT` case stays in the tree for the work that will make the teardown ordering explicit rather than
+implicit.
+
+Verified after the reverts: `FINAL=1`, `HELLO=1`, `ool 44 / basic 204 / r2 206 / stress 643`, all
+`machmsg_uds=0`.
+
+**The lesson repeated, and it cost three runs.** Removing the six dead page counters changed
+`struct dserver_process_control`, and the boot then stopped at `shellspawn did not become ready` -- the same
+symptom as a page bug -- until every consumer was rebuilt and redeployed TOGETHER (mldr, darlingserver,
+libsystem_kernel, dyld). This is exactly the rule already recorded in §43.2 for a shared struct, and it was
+broken again by treating "mldr + darlingserver + the dylib" as the complete consumer set. The honest statement
+is that the three RED runs in between (CO3, CO4, CO5) were build inconsistency, not checkout, and that the
+checkout RED was only established afterwards.
+
+### 50.1 Round 52 close
+
+```
+ring_attach:  total=176  uds=0    plane=176
+checkin:      total=332  uds=167  plane=165
+checkout:     datagram (page route implemented, measured RED, reverted)
+pthread_canceled 153/10  thread_self_trap 169/10  vchroot_path 20/9  console_open 3  kqchan_proc_open 2
+regression:   FINAL=1  HELLO=1  44 / 204 / 206 / 643   all machmsg_uds=0
+```
+
+Seven defects found and fixed by measurement across the round, one disabled route re-enabled, one dead counter
+set removed and one build-consistency rule re-learned. What is left is unchanged in kind from the directive's
+remaining list: the teardown ordering that checkout needs, the two descriptor calls, the socket metric and
+removal, the image-adoption tail, the mutation suite, and the final censuses.
