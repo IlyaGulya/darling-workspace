@@ -3874,3 +3874,26 @@ Full regression with the same build: `FINAL=1 HELLO=1`, `ool 20`=44, `basic 100`
 So the ordered bootstrap stream now exists on ONE shared channel for the first two writes, and the
 classification in §29 loses `set_dyld_info` / `set_executable_path` from PRE_IMAGE_BOOTSTRAP. What remains
 there is the loader's own first `ring_attach`.
+
+
+## 31. Round 49g: the checkin's route to the page exists; whether it is taken is not yet attributed
+
+Built: the main-thread checkin is routed through the SAME ordered shared channel as the two bootstrap
+writes when the page is ready -- `OP_CHECKIN` with the architecture and `is_fork` in payload[0], the tid
+in payload[1], the lifetime descriptor's COURIER TOKEN in payload[2] and the stack hint in payload[3],
+matching the case that has been in the server since round 45 (and that already proved `status=0` with the
+thread and process resolving correctly). The seven earlier exclusions are answered by the change in
+situation rather than by a new hypothesis: they all described the page being serviced on the server's own
+pass while the datagram is serviced on arrival, which only mattered while the process's OTHER bootstrap
+traffic was a datagram. It is not any more -- `set_dyld_info` and `set_executable_path` are on this page
+too, so the stream is one ordered sequence.
+
+Measured: `HELLO=1 DONE=1`, `ool 20` pass=1, `basic 100` pass=1, `machmsg_ring=44/204`, `machmsg_uds=0`
+-- GREEN. But `checkin-op = 0`: the plane's CHECKIN case did NOT run, so this run's checkin took the
+datagram fallback. `__mldr_process_control_ready()` was false at that point in that image (the page is
+created per image, and this call site is reached after the image transition). The route is therefore
+implemented but NOT exercised, and it is not claimed as exercised.
+
+Next attribution, one line: log `ready` at the checkin call site (as is already done for the plane
+establishment) so the false case names the image, and decide whether the page must be re-established after
+an image transition or handed to the new image by the loader.
