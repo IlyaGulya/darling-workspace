@@ -4442,3 +4442,30 @@ reason line to reach the log from the image that performs those calls.
 
 The `GR_URS_RING_FULL` reason stays in the tree: it is a real condition of `gr_port_trap`, it was simply not
 the one that fired, and leaving it unnamed is what let two rounds of reading assume it.
+
+
+### 32.9 The two candidates bypass BOTH ring attempts -- that is the finding
+
+Three measurements together, all on GREEN product runs:
+
+  * the loader's `try_ring` never refused (an instrumented refusal log printed nothing);
+  * the new `GR_URS_RING_FULL` reason never fired (0 occurrences);
+  * the reason emission was made UNCONDITIONAL and bounded (one line per (reason, callnum), at most eight
+    per process) and still printed **zero** lines -- under the full workload (ool + basic + r2 +
+    stress_pool), with `DARLING_GUEST_LANE_DIAG` set or not.
+
+`gr_urs_note` has five call sites, three of them inside the guest's own lane lookup
+(`gr_lane_for_this_thread_named`: lane not active, image-local state, and the miss reason). So a fallback
+that went through the generated wrapper OR through the guest's lane lookup would have produced a line, and
+none did. Only two consumers define `dserver_rpc_hooks_try_ring` (the kernel image and the loader) and both
+implement it.
+
+Therefore the 9-10 datagram instances each of `thread_self_trap` and `vchroot_path` are issued by a call path
+that uses NEITHER the generated wrapper's ring attempt NOR the guest lane lookup -- i.e. a direct
+`dserver_rpc_*` call inside the kernel image that takes the datagram by construction. That is where the next
+investigation goes, and it is a source-reading step first (find the direct call for those two callnums and
+route it through the ring path the way the other 184/20 instances already are), not another boot.
+
+Nothing about the transport changed in this section; the three negative measurements are the deliverable, and
+they close the two hypotheses the earlier sections had left open (ring-full, and a generated-wrapper
+refusal).
