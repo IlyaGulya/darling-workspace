@@ -4805,3 +4805,44 @@ stress_pool 16 20  ->  HELLO=1 FINAL=1 pass=pass=1 machmsg_ring=644 machmsg_uds=
 
 So the full regression is GREEN again on a tree that carries, from this round: the reverse courier, the
 plane's generation PING, and the loader-side receive (with a 1 ms miss budget).
+
+
+### 38.2 Fifth doorbell attempt: the two halves do not simply compose
+
+Enabled BOTH halves in one change (the pid-keyed one-time rule AND the `ring_attach` reply token), which was
+the stated requirement. Measured:
+
+```
+HELLO=0        kind=7 bundles: 0        attach-rc: 2 (the loader's seed attempts)
+[mldr-seed] attach-rc pid=417310 rc=0 reject=0 wake=8     <- the loader DID resolve a doorbell
+machmsg_ring=12  machmsg_uds=10                            <- and UDS returned
+[dring-uds-reason-hist] pid=417310 reason=ATTACH_FAILED count=22
+```
+
+What that says, precisely:
+
+  * the loader's seed attach got its doorbell (`wake=8`) -- from the CMSG fallback, since `kind=7` is 0: with
+    the rule on, the first call found the generation unknown, so the courier send declined and the reply
+    carried the descriptor the old way;
+  * the LATER attaches then failed: `ATTACH_FAILED` x22 with ten UDS calls. So the guest's attach path does
+    NOT accept "no wake fd, use the one you already have" in the situation this creates -- my round-49f
+    acceptance (`wake_fd < 0 && __dserver_ring_doorbell(-1) < 0`) evidently does not cover the image whose
+    loader slot has no doorbell yet, or the CMSG fallback and the token branch disagree about which one
+    carries it.
+
+Reverted again to the verified behaviour. Verified after the revert: `FINAL=1 HELLO=1`, `ool 20`=44,
+`basic 100`=204, `r2 100`=206, `stress 16x20`=643, every test `pass=1`, all `machmsg_uds=0`.
+
+FIVE attempts are now measured, and each one moved the target:
+
+| # | setting | what happened |
+|---|---|---|
+| 1 | rule + token, before Phase-0 | `kind=7` 0, generation 0 -- the bundle was refused as stale |
+| 2 | after Phase-0 | still 0 -- the loader's seed attach precedes its own courier drain |
+| 3 | + generation via the plane's PING | `kind=7` 1 with a REAL generation -- delivery works |
+| 4 | + loader-side receive, matching binaries | `wake=8` -- the loader resolves a doorbell for the first time; the generation-keyed rule sent 36 |
+| 5 | + pid-keyed rule, both halves together | the loader still resolved `wake=8`, and the LATER attaches failed (`ATTACH_FAILED` x22) |
+
+The next step is not another toggle: it is to instrument the guest's attach acceptance for the exact case
+"the rule returned -1 for this attach" -- one line in that branch plus one run -- because that is the only
+place the fifth attempt failed that the fourth did not.
