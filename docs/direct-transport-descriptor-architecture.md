@@ -3710,11 +3710,22 @@ rpc-socket] created pid=192353 tid=192355 n=2 reason=checkin
 Two facts follow, and the second is the actionable one:
 
   * the count is now an ATTRIBUTED number rather than an allocation nobody looks at;
-  * `machmsg_uds = 0` for those same calls: the checkin is SERVED BY THE LANE, so the descriptor is
-    created because the CALL SITE ASKS FOR IT before the lane is tried, not because the datagram is used.
-    The remaining work is therefore not "make checkin ride the lane" -- it already does -- but "stop asking
-    for a socket before the lane has had its chance", which is the same shape as the round-48 lesson: the
-    ask itself is the dependency.
+  * CORRECTION of my own first reading of this run: `machmsg_uds = 0` in that dump counts the mach_msg
+    calls of the test, NOT the checkin, so it does not show the checkin riding the lane. The per-thread
+    ordering, measured from the same log, does answer the question:
+
+    ```
+    tid=192314: SOCKET -> ATTACH
+    tid=192315: SOCKET -> ATTACH
+    tid=192317: ATTACH          (no socket: this thread's calls were all lane-served)
+    ```
+
+    A new thread CHECKS IN BEFORE IT ATTACHES A LANE (`rpc-register-thread` precedes `RING_ATTACH_RPC_SENT`
+    for the same tid), so the checkin has no lane to ride and the socket is genuinely needed for it. The
+    dependency is therefore ordering, not laziness: `per_thread_rpc_socket_created = 0` requires the
+    thread's checkin to have a transport that does not need a lane -- which is exactly what the
+    shared management plane (Phase-0) is for. The lazy count is what turned that from an assumption into a
+    measured statement.
 
 MEASURED NEGATIVE on the way: removing the eager creation without changing the call site left the
 thread-create checkin running with `t_server_socket == -1`, and the boot stopped
