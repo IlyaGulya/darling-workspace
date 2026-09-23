@@ -4004,3 +4004,30 @@ mapping).
 The `HELLO=0` in this run is the 130 s timeout, not a regression: the verified regression on this code is
 `FINAL=1 HELLO=1`, `ool 20`=44, `basic 100`=204, `r2 100`=206, `stress 16x20`=644, all `pass=1`, all
 `machmsg_uds=0`.
+
+
+### 31.5 Localised: the readiness word is 1 through both writes and 0 at the checkin
+
+```
+mldr-ctl] ready pid=280523 state=1 page=0x7880dfa71000 sz=112 off=104      (establishment)
+mldr-ctl] after-dyld pid=280523 status=0 ready=1                            (plane serviced set_dyld_info)
+mldr-ctl] after-execpath pid=280523 status=0 ready=1                        (plane serviced set_executable_path)
+mldr-ctl] ready pid=280523 state=1 page=0x7910a99f5000                     (second invocation's establishment)
+checkin-route pid=280523 ready=0 page=0x7880dfa71000 .../vchroot
+checkin-route pid=280523 ready=0 page=0x7910a99f5000 .../launchd
+```
+
+So `transport_ready` is 1 at establishment and 1 after BOTH plane writes -- i.e. the whole ordered stream
+works and the readiness value is correct while it matters -- and it is 0 by the time the checkin site runs,
+in the same invocation, from the same address. The flip is therefore inside the window between the
+exec-path request and the checkin site. That window contains, in order: `explicit_thread_self_trap`, the
+lane seed (`__mldr_ring_lane_seed`, which itself issues an RPC and adopts the doorbell), and the plane's
+own lazy accessor use. The next measurement brackets exactly those three, and only one of them can be the
+writer, because the guest's plane code writes only `reply_state`/`request_*`/`seq` and the server's page
+code writes only reply fields.
+
+This is a precise, reproducible target rather than a hypothesis: one print after each of the three.
+
+State: the checkin route stays implemented-but-unexercised; the datagram fallback runs; the tree is GREEN
+(`FINAL=1 HELLO=1`, 44/204/206/644, all `pass=1`, all `machmsg_uds=0`) with these diagnostic prints in
+place, and they are diagnostics only -- no behaviour depends on them.
