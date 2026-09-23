@@ -3829,3 +3829,48 @@ Classification of what is still socket-backed, by the reason rather than by a bu
 Owed: one heatmap run on the current tree to replace the quoted per-callnum table, and the same run with
 server timestamps to close the two image classes the timeline is still missing (fork child, exec
 transition of an existing pid).
+
+
+## 30. Round 49f: PHASE-0 WORKS -- the bootstrap writes ride the shared page (GREEN)
+
+Round 48 said: establishing the plane before the loader's first write, with a synchronous semantic PING, is
+RED. This round changed the DEPENDENCY rather than the position, and it is GREEN.
+
+### 30.1 What was built
+
+* ABI (`dserver_process_control`, appended): `volatile uint32_t transport_ready`. The server sets it the
+  moment it has MAPPED the region -- which it does from the courier's `SO_PEERCRED` pid alone, with no
+  `Process` and no `Thread` in existence. A guest waiting on it is waiting for a TRANSPORT
+  acknowledgement, not a semantic round trip.
+* Loader: the plane is created and established BEFORE `dserver_rpc_set_dyld_info`; the guest waits for
+  `transport_ready` (bounded) and issues NO PING.
+* Both bootstrap writes move TOGETHER, as required: `OP_SET_DYLD_INFO` (address/length in the payload) and
+  `OP_SET_EXECUTABLE_PATH`. The path does NOT need a string channel in the page: the ordinary
+  `SetExecutablePath` call reads it from the CALLER's memory via `process->readMemory(_body.buffer, ...)`,
+  so the page carries the same guest pointer and length the datagram body carries and the semantics stay
+  one implementation.
+* The missing wake, found by measurement: with only the courier LISTENER in the server's epoll, a
+  one-byte wake on an established connection left the server in epoll, no loop pass ran, and the page
+  request was never serviced (`ready=1`, `dyld-info-op=0`, `HELLO=0`). Accepted connections are now
+  watched too (`_isFdCourierSocket` + an EPOLLIN watch on the connection), the one-byte message is counted
+  as `process_control_wakes`, and the event path drains the courier and services the page.
+  The guest rings the process doorbell when it exists and falls back to the courier connection when it
+  does not -- which is the normal case at this point in the bootstrap, because the doorbell arrives with
+  the first lane attach, i.e. after the plane.
+
+### 30.2 Measured
+
+```
+HELLO=1 DONE=1  ool 20 pass=1  basic 100 pass=1
+mldr-ctl] ready pid=258123 state=1          (transport_ready observed; 7 processes)
+dyld-info-op pid=258123 status=0            (the plane serviced set_dyld_info; 8 ops)
+machmsg_ring=44 machmsg_uds=0
+machmsg_ring=204 machmsg_uds=0
+```
+
+Full regression with the same build: `FINAL=1 HELLO=1`, `ool 20`=44, `basic 100`=204, `r2 100`=206,
+`stress 16x20`=644, every test `pass=1`, all `machmsg_uds=0`.
+
+So the ordered bootstrap stream now exists on ONE shared channel for the first two writes, and the
+classification in §29 loses `set_dyld_info` / `set_executable_path` from PRE_IMAGE_BOOTSTRAP. What remains
+there is the loader's own first `ring_attach`.
