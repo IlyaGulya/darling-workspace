@@ -5165,3 +5165,64 @@ Also corrected here: `attach_mldr_callers` and `attach_dylib_callers` are report
 callers" but means "not populated". They must either be filled or removed -- a counter that always answers the
 same way is worse than no counter, because a measurement that looks like evidence and is not is how the
 `fds[]`-uninitialised defect and the `attach-lane-op=0` misreading both survived a round.
+
+
+### 43. Round 49 final state
+
+Regression (full, on the verified tree, with the one-time doorbell rule ON and ATTACH_LANE on the page):
+
+```
+FINAL=1  HELLO=1   passes: pass=1 pass=1 pass=1 pass=1
+ool 20:       ring=44    uds=0
+basic 100:    ring=204   uds=0
+r2 100:       ring=206   uds=0
+stress 16x20: ring=644   uds=0
+```
+
+Census (live snapshot, two independent captures agreeing):
+
+```
+TOTALS  total=1598  uds=417  ring=1020  plane=161        (previous round: uds=604)
+
+checkin               159 / uds=159
+checkout              145 / uds=136  ring=9
+console_open            3 / uds=3
+fork_wait_for_child     8 / uds=4    ring=4
+kqchan_proc_open        2 / uds=2
+pthread_canceled      550 / uds=76   ring=474
+ring_attach           159 / uds=18   ring=0  plane=141
+thread_self_trap      179 / uds=10   ring=169
+vchroot_path           29 / uds=9    ring=20
+
+doorbell:  processes=9  sent_to_guest=18  reused=141  suppressed=141
+residual_uds_despite_lane: {checkout 136, vchroot_path 9, thread_self_trap 9}
+nonfd_uds_violation: none reported;  first_uds_calls=9
+```
+
+`ring_attach` moved from `174/174 on UDS` to `159 total / 18 uds / 141 plane`, and the total legacy UDS count
+fell from 604 to 417. The two operations the residual census still names as ring-eligible-but-on-UDS are
+unchanged (`vchroot_path` 9, `thread_self_trap` 9) -- the image-adoption gap of §32.10, untouched this round.
+
+P1/P2 (absolute numbers, NOT a controlled Ring-vs-UDS A/B, so no regression claim either way):
+
+```
+bench_simple 2000:  p50=12493.0 p95=69001.0 p99=189097.1  (previous round p50=16551.0)
+bench_ool    2000:  p50=188075.9 p95=442757.0 p99=574485.9 (previous round p50=183584.9)
+```
+
+Defects found and fixed this round, each by measurement rather than by review:
+
+  1. the doorbell's one-time rule was indistinguishable from a hard failure, so every later attach was
+     rejected and the workload silently returned to the datagram (§39.1);
+  2. a generated-wrapper defect: `fds[]` was read uninitialised whenever a reply carried no descriptor, so
+     every `-1` fallback in the tree was defeated by a stack value (§39.2);
+  3. the page route treated `-9 (EBADF)` as a successful attach, leaving the guest believing in a lane it
+     never got (§41);
+  4. the page route's own diagnostic sat behind the early `break` it was meant to explain (§41);
+  5. an unbounded wait on an unserviced page turned into a stalled boot (§41);
+  6. `attach_mldr_callers`/`attach_dylib_callers` always report zero because they are never populated (§41.3).
+
+Four items are blocked with reasons rather than described as pending: the courier doorbell (reachable only once
+the pre-page window closes), the per-thread socket counter and its physical removal (both bound to checkin
+leaving the datagram, and checkin on the page is measured correct-but-boot-stopping), and the two
+`POST_LANE_NONFD_BUG` candidates (the image-adoption ownership change).
