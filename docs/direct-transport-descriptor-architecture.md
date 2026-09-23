@@ -4634,3 +4634,52 @@ a different ordering.
 Kept from this attempt: the `ring_doorbell_sent_to_guest` / `ring_doorbell_reused` metrics and the
 generation-0 fallback in `sendFdCourierBundleToGuest` (both are correct in themselves and were needed to see
 why the bundle was refused).
+
+
+### 35. Per-image bootstrap timeline with server timestamps (§7 deliverable)
+
+One run with `MLDR_COURIER_DIAG=1 DARLING_SERVER_COURIER_LOG=1 DSERVER_LOG_STDERR=true`, events merged by
+pid; server lines carry their own monotonic stamp, guest lines carry the sequence number added in §31.
+
+**Loader / initial image (the `launchd`-style bootstrap):**
+
+```
+1760.284 checkin:process
+1760.284 srv:plane-region            <- the page is mapped
+1760.285 srv:plane-request           <- the PING the plane issues on establishment
+        plane:set_dyld_info          <- via the page
+1760.285 srv:plane-request
+        plane:set_executable_path    <- via the page
+        lane:seed-attach
+        doorbell:loader
+1760.296 courier:checkout-fd x2      -> exec transition
+1760.298 srv:plane-region            <- a fresh page for the new incarnation
+1760.299 srv:plane-request
+```
+
+**Ordinary shell/test exec image:**
+
+```
+1760.325 checkin:process
+        lane:attach-rpc
+1760.325 courier:lane-backing x2     <- the lane backing descriptor
+1760.330 courier:console-fd x2       <- console_open on the courier
+1760.333 courier:checkout-fd x2
+1760.335 srv:plane-region            <- the page is mapped AFTER the attach here
+1760.336 srv:plane-request
+        plane:set_dyld_info
+        plane:set_executable_path
+        lane:seed-attach
+```
+
+Two facts fall out of the ordering, and they are the fork/exec classes §7 was missing:
+
+  * the classes differ in WHEN the plane is established relative to the lane attach: in the loader it comes
+    before the seed, in an ordinary exec image the attach comes first;
+  * a process that execs gets a FRESH page for the new incarnation (`srv:plane-region` appears again after
+    `courier:checkout-fd`), which is the one-page-per-incarnation shape the ABI was built for.
+
+The fork class is visible in the same run as `checkin:process` following a `courier:checkout-fd` pair for a
+new pid (pids 382881/382882/382883/382884 all appear within 0.3 s of the first process, each with its own
+attach and plane), i.e. the fork child re-establishes both transport halves itself instead of inheriting
+them -- which is what the fork-reset design requires.
