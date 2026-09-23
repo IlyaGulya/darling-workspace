@@ -5822,3 +5822,37 @@ Six defects found and fixed by measurement across the round (generation map, pid
 two unclaimed mailbox slots, inherited page after fork), plus the re-enable of a route a round-49 experiment had
 left switched off. Next, in order: `checkout` (the largest remaining semantic UDS user, 153), then the two
 descriptor calls (`console_open` 3, `kqchan_proc_open` 2), then the socket metric and its removal.
+
+
+### 49. CHECKOUT on the page: implemented, GREEN on the tests that ran
+
+`checkout` was the largest remaining semantic UDS user (153 datagrams). The page's op was reserved but had no
+server case, so both halves were built:
+
+  * **server**: `DSERVER_PROCESS_CONTROL_OP_CHECKOUT` resolves the exec listener pipe from the courier with
+    `kind = CHECKOUT_FD`, builds the ORDINARY checkout Call (same technique as CHECKIN and ATTACH_LANE), runs it
+    through `callFromMessage -> doWork` with the reply suppressed, and the page carries the completion;
+  * **guest** (`execve.c`): publishes the request on the page with the pipe on the courier, claiming the mailbox
+    slot and waiting for completion, with the datagram path kept as the fallback.
+
+Measured: `HELLO=1`, `ool 20` = 44 / `uds=0`, `basic 100` = 204 / `uds=0`, `r2 100` = 206 / `uds=0` -- the
+regression is GREEN with the route in place. The census snapshot for `checkout` was not captured in this run
+(the server had exited before the read, the same capture problem this round has hit repeatedly); the method is
+known and the number is recorded as unmeasured rather than inferred.
+
+Next: the `threads.c` checkout instance (the descriptor-less thread-exit case), then `console_open` /
+`kqchan_proc_open`, then the socket metric.
+
+### 49.1 Round 52 final ledger
+
+| operation | UDS before this round | UDS now | note |
+|---|---|---|---|
+| `ring_attach` | 174 (all) | **0** | page route, default; pre-page window closed |
+| `checkin` | 159 (all) | 167 of 332 | page route for main/thread/fork sites; 165 on the page |
+| `checkout` | 153 | 153 | page route implemented this round, GREEN, count not re-snapshotted |
+| `pthread_canceled` / `thread_self_trap` / `vchroot_path` | 76 / 10 / 9 | 76 / 10 / 9 | untouched |
+| `console_open` / `kqchan_proc_open` | 3 / 2 | 3 / 2 | untouched |
+
+Six defects found and fixed by measurement, one disabled route re-enabled, one dead counter set removed, and the
+page's transaction model built and used by four operations. Everything above is committed and the tree is GREEN
+at `HELLO=1` with `ool 44 / basic 204 / r2 206 / stress 644` and `machmsg_uds=0`.
