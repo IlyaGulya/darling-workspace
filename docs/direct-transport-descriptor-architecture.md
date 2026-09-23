@@ -4567,3 +4567,39 @@ sockets per thread, one process doorbell, one lane page. `other=10` is unclassif
 (readlink did not match any of the four patterns) and is the next thing to name -- it is constant with thread
 count, so it is not a scaling term, but leaving it as "other" is exactly the kind of bucket this work has
 been removing.
+
+
+### 33.2 The slope is exactly 2 sockets per thread, and `other` is named
+
+Third size measured, so the slope is a line and not two points:
+
+```
+stress_pool  1 4000:  total=18  sockets=5   eventfds=1  memfds=1  pipes=1  other=10
+stress_pool  8 4000:  total=32  sockets=19  eventfds=1  memfds=1  pipes=1  other=10
+stress_pool 40 4000:  total=96  sockets=83  eventfds=1  memfds=1  pipes=1  other=10
+```
+
+  * 1 -> 8 threads: +14 sockets for +7 threads = **2.0 per thread**;
+  * 8 -> 40 threads: +64 sockets for +32 threads = **2.0 per thread**;
+  * intercept: 5 - 2*1 = 3 sockets that do not scale;
+  * `eventfds` 1, `memfds` 1, `pipes` 1 at every size: the process doorbell, the lane catalog page and the
+    lifetime pipe are process-scoped, as designed.
+
+The ten `other` descriptors are named now (the sampler prints their targets):
+
+```
+4  /tmp/FD-1.log            (the harness's own stdout/stderr redirects)
+2  /dev/null
+1  /tmp/dr-on-matched       (the prefix directory)
+1  <agent session jsonl>    (inherited from the shell that launched the run)
+1  /dev/urandom
+1  /dev/pts/0
+```
+
+Every one of them is a harness/launcher artifact, not a transport descriptor -- so the transport inventory is
+complete and exact: **2 sockets per thread, 1 eventfd, 1 memfd, 1 pipe per process**, plus 3 non-scaling
+sockets at the intercept that the next pass should name the same way.
+
+This is the FD deliverable of §27 in its measured form: the target slope is zero, the measured slope is 2
+sockets per thread, and the scaling term is the per-thread RPC socket -- the object the final architecture
+removes. No transport change was made for this measurement.
