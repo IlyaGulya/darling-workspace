@@ -5590,3 +5590,36 @@ Verified state with the route gated off: `FINAL=1`, `ool 44 / basic 204 / r2 206
 Four defects were found and fixed in round 50, all by measurement: the generation map used by the re-queue, the
 pid-keyed pairing registry, the non-unique courier token, and the unclaimed mailbox slot. The single remaining
 blocker for the whole line is the third-attach hang of §44.2.
+
+
+### 44.4 The server completes every attach; the guest does not see the third
+
+A step trace was added to the server's attach path (under the courier-log gate, so it costs nothing in a normal
+run) and it answers the §44.2 question directly:
+
+```
+attach-trace [P:706892] enter ring_fd= 21 / enter fd_token= 0 / pre-attach / post-RingBuffer::attach reject= 0
+attach-trace [P:706892] post-doorbell wake_fd= -2
+attach-trace [P:706892] post-register tid= 706894
+attach-trace [P:706892] ... post-register tid= 706895
+attach-trace [P:706896] enter ring_fd= 24 / enter fd_token= 0        <- and nothing after this
+attach-lane-op pid=706892 tid=706894 size=2816 status=0 reject=0 token=0
+attach-lane-op pid=706892 tid=706895 size=2816 status=0 reject=0 token=0
+attach-lane-op pid=706892 tid=706896 size=2816 status=0 reject=0 token=16388091547143425843
+fd-courier sent-to-guest pid=706892 token=... kind=6
+```
+
+So the server did not stall: all three attaches are serviced, `post-register` runs for two of them, and the third
+even receives the process doorbell (`token=16388091547143425843`, delivered on the courier). What does NOT happen
+is the guest's return: its third attach prints `RING_ATTACH_RPC_SENT` and never `RING_ATTACH_END`, so the guest
+never sees the completion the server wrote -- while the boot stops right after the `kind=6` (kqchan) send.
+
+One more thing the trace exposes, and it is the sharpest lead yet: the third attach's `processCall` runs under
+`[P:706896]` while the page it is answered through is keyed `706892`, and the two attaches that DO complete run
+under the page's own pid. The completion is written into the page the guest is waiting on, but the call itself
+executes in a different process context -- which is exactly where the reply's delivery has to be checked next:
+print the page's pid and the publishing tid in the same line and compare them for the attach that does not
+return.
+
+Verified with the trace in place (it is gated, so the normal path is unchanged): `HELLO=1`, `ool 44`, `basic 204`,
+`r2 206`, all `machmsg_uds=0`.
