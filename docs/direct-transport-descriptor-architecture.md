@@ -5108,3 +5108,29 @@ Next step for these 14, in order of what the evidence supports: publish the page
 bootstrap so the earliest attach finds it, then re-measure. The instrument that must come with it is a
 shared-memory counter (the page itself can carry "attaches attempted / page missing"), because the
 environment-gated line cannot report anything in this window.
+
+
+### 42. The courier doorbell is wired and deliberately unexercised
+
+The page route now sends the descriptor itself when its reply owned one: `Call` names the wake fd it produced,
+the page's servicing code sends it with `sendDSERVER_FD_COURIER_KIND_PROCESS_DOORBELL` and reports the token in
+`reply_payload[1]`, and the guest receives it off the courier exactly as it receives a datagram reply's token.
+
+Measured with the route live:
+
+```
+FINAL=1  HELLO=1  passes: pass=1 pass=1        (no regression)
+kind=7 bundles: 0        every plane attach: wake=-1
+```
+
+That is the CORRECT result, and it closes a question rather than opening one. The wake fd is produced only when
+the one-time delivery is due; by the time any plane attach runs, the delivery has already happened on the
+loader's early attach (which is pre-page and therefore on the datagram), so every plane attach is suppressed
+and has nothing to hand over. `wake=-1` there is the design working, not the courier failing.
+
+The consequence is precise and worth stating as the coupling rule for this pair of tasks: **the courier
+doorbell path is reachable only for a process whose FIRST attach is a plane attach.** That is exactly the
+pre-page window of §41.2. So "deliver the doorbell once through the courier" and "close the pre-page window"
+are not two tasks but one, in this order: publish the page early enough that the loader's earliest attach
+finds it, and the courier delivery becomes the path that actually runs -- and at that point it is already
+implemented, already wired, and its token path is already exercised by `console_open`/`kqchan_proc_open`.
