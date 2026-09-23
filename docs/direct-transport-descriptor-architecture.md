@@ -4350,3 +4350,27 @@ bootstrap/teardown family the earlier reading suspected. `vchroot_path` and `thr
 IMAGE-LOCAL-looking calls (a path lookup and a trap that the loader/image performs) -- the obvious
 hypothesis to test is that these instances come from an image whose lane view is absent
 (`GR_URS_IMAGE_LOCAL_STATE`), which would make them a *view* problem rather than a routing one.
+
+
+### 32.6 The two candidates: both are ring-ELIGIBLE in policy and most instances DO ride the lane
+
+Source facts for the pair (§32.5 named them):
+
+  * `thread_self_trap` and `vchroot_path` are both in `RING_GENERATED_SIMPLE` (policy value 0), and the
+    loader's hand-written consumers get a real `dserver_rpc_hooks_try_ring` that calls
+    `__mldr_ring_call` whenever `__mldr_ring_lane_ready()` -- so the loader is not a consumer without a
+    lane route.
+  * The census shows most instances already on the lane: `thread_self_trap` 184 ring vs 10 uds,
+    `vchroot_path` 20 ring vs 9 uds.
+  * Both call sites in the loader are AFTER its lane seed (`__mldr_ring_lane_seed` at ~367,
+    `dserver_rpc_explicit_thread_self_trap` at ~387, `dserver_rpc_vchroot_path` at ~1865), and the attach
+    census says their UDS instances are `post_attach_uds` with `ring_eligible=1`.
+
+So neither is "a call with no route": each is an instance where the wrapper tried and the attempt came back
+NOT_TAKEN. The single measurement that separates the possibilities is the RETURN VALUE of `__mldr_ring_call`
+for those instances (negative = refused, and by which check) plus the server's op-class answer for the
+callnum -- one log line at the loader's try_ring with `rc` and the callnum, run once, and the pair is
+classified. That is the next step, and it is small because the hook is already a single function.
+
+What this section does NOT claim: it does not claim the two are unfixable, and it does not claim they are
+bootstrap-only -- `post_attach_uds` is measured, so they happen with a lane attached.
