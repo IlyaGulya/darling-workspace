@@ -4708,3 +4708,39 @@ that would settle whether the plane/courier work cost anything on the hot path, 
 What can be said without overclaiming: the workload-level regression suite is GREEN with every descriptor
 half either on the courier or on the page, and the hot-path benchmarks still pass with the same shape
 (simple ~29 us median 17 us; OOL ~219 us median 184 us).
+
+
+### 37. Third doorbell attempt: the courier carried it -- and the reply token is the remaining defect
+
+Step forward first, and it is kept: the plane's establishment PING now carries the incarnation's GENERATION
+in payload[3], and the server records it when it has none from the courier drain. Verified GREEN on its own:
+
+```
+HELLO=1 DONE=1  pass=1 pass=1   machmsg_ring=44/204   machmsg_uds=0
+ping requests: 8   (all carrying the generation)
+```
+
+That closes the gap the first two attempts died of: the server knows the generation BEFORE this process's
+first attach, so a bundle it sends to that attach is no longer stamped 0.
+
+With the one-time rule re-enabled on top, the courier finally carried a doorbell:
+
+```
+sent-to-guest pid=391064 token=7606716567886162703 kind=7 gen=5927304846994962
+```
+
+-- a correct kind, a correct nonzero token and a real generation. And yet:
+
+```
+[mldr-seed] attach-rc pid=391064 rc=0 reject=0 wake=-1
+[dring-doorbell] lines: 0        fd-courier-recv calls: 0        HELLO=0
+```
+
+The loader's seed attach received `wake_fd = -1`, and its client never called the courier receive, so the
+reply's token did not reach it. That is a defect in the REPLY TOKEN PATH, not in the delivery: the bundle
+arrived, the token was in the reply the server built, and the receiving side did not resolve it.
+
+Reverted, keeping the generation fix (verified GREEN alone: `FINAL=1 HELLO=1`, `ool 20`=44, `basic 100`=204,
+`r2 100`=206, `stress 16x20`=644, every test `pass=1`, all `machmsg_uds=0`). The next step is exactly that
+reply path -- why the generated wrapper's token branch did not fire for `ring_attach` on the loader's own
+seed call, which is a source-reading question first.
