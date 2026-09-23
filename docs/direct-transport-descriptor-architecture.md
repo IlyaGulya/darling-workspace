@@ -5251,3 +5251,38 @@ caller; the measurement does not support that assumption.
 
 Scope note, so the number cannot be misread in the other direction: the attribution covers page-route attaches
 only. The UDS attaches carry no image tag, so 135 is the attributed count out of 149, not a total.
+
+
+### 43.2 The attach route's own attribution, and the process mistake that came with it
+
+The route now counts on the page itself (no environment, no printing -- which is what the diag could not do in
+the early window). Measured with the counters live:
+
+```
+attach_route_ok=2   attach_route_not_ready=0   attach_route_refused=2
+callers: mldr=0  dylib=135
+ring_attach: total=149  uds=14  plane=135
+```
+
+Two things to read carefully, and one of them is a defect in this very counter:
+
+  * `refused` is the UDS fallback: the server answered the page with a negative status (the `-EBADF` case of
+    §41, i.e. the descriptor half had not arrived on the courier when the page was serviced). So the fourteen
+    UDS attaches are `refused`-class, not `not_ready`-class -- the earlier readiness theory is now measured
+    out rather than argued out. The fix for a `refused` is ordering on the DESCRIPTOR side, not the page side.
+  * the numbers are for ONE process, not the run: the server **stores** the page counters into metrics on each
+    pass instead of accumulating them, so the last process serviced wins. A snapshot that looks like a total
+    and is a single sample is the same class of defect as the always-zero counters of §43.1 -- recorded here
+    so it is not read as a total.
+
+Process mistake, recorded because it cost a run: adding fields to `dserver_process_control` changes the struct
+size, and the loader creates the page with `sizeof(struct dserver_process_control)`. Rebuilding only
+`darlingserver` and `libsystem_kernel.dylib` left `mldr` stale, so the page was created too small, the server
+skipped the region (`region.size < sizeof(...)`) and the boot stopped at `shellspawn did not become ready`. The
+lesson already in this tree for generated RPC structs applies to every shared struct, including this page:
+**when a shared definition changes, every consumer is rebuilt and redeployed together.** Rebuilding `mldr` too
+restored the run immediately (`FINAL=1`, every test `pass=1`).
+
+Next step, now measured rather than assumed: the fourteen are descriptor-ordering refusals, so the work is to
+let a page-serviced attach wait for its courier descriptor instead of refusing -- which is the same ordering
+question §42 raised for the doorbell.
