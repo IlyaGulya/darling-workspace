@@ -6027,3 +6027,30 @@ Round 52-54 ledger, measured on live servers:
 Nine defects were found and fixed by measurement across these rounds, the last being the reply-funnel abort that
 had been mis-diagnosed twice as a boot wedge. Remaining semantic UDS, in order of size: `checkin` 167,
 `pthread_canceled` 76, `thread_self_trap` 10, `vchroot_path` 9, `console_open` 3, `kqchan_proc_open` 2.
+
+
+### 55. The remaining checkin datagrams are not from the main-thread site
+
+A bounded TRANSPORT wait was added to the main-thread checkin (a fresh incarnation's page is created at that
+point and its transport is not up yet, so the route was falling back). Measured: the wait is harmless -- the full
+regression is GREEN (`FINAL=1`, `ool 44 / basic 204 / r2 206 / stress 644`, all `uds=0`) -- and the checkin count
+did not move (`total=332 uds=167 plane=165`). So those datagrams do not come from the site that was just
+changed, and the next step is attribution rather than another conversion.
+
+The instrument for that must not be another page counter: the six per-site counters tried in §47 never
+incremented and were removed in §48.1, which is the same lesson twice. What will work is what already works
+here -- the server's own log at the UDS checkin path (`Call::Checkin::processCall` can name the tid and the
+process it services), because the server is the only party that sees every datagram checkin regardless of which
+guest site sent it.
+
+Measured state after this step:
+
+```
+checkout:     total=166   uds=3    plane=163
+ring_attach:  total=176   uds=0    plane=176
+checkin:      total=332   uds=167  plane=165
+regression:   FINAL=1  HELLO=1  44 / 204 / 206 / 644   all uds=0
+```
+
+Next, in order: attribute the 167 from the server side, then `pthread_canceled` (76), `thread_self_trap` (10),
+`vchroot_path` (9), `console_open` (3), `kqchan_proc_open` (2), then the socket metric and its removal.
