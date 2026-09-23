@@ -5997,3 +5997,33 @@ server exits before the read); the route is GREEN and the number is recorded as 
 Remaining, unchanged in kind: the descriptor-less thread-exit checkout (same funnel fix applies; it needs the
 measurement the execve instance just got), `console_open` / `kqchan_proc_open`, the socket metric and its
 removal, the image-adoption tail, the mutation suite, and the final censuses with the FD slope.
+
+
+### 54. Both checkout instances on the page: 153 -> 1
+
+With the reply funnel no longer aborting on a departed peer (§53), the descriptor-less thread-exit checkout was
+restored as well, and the live census now reads:
+
+```
+checkout:     total=164   uds=1    ring=0   plane=163      (was 153 datagrams)
+ring_attach:  total=176   uds=0    ring=0   plane=176      (was 174 datagrams)
+checkin:      total=332   uds=167  ring=0   plane=165      (was 159 datagrams)
+HELLO=1  FINAL=1  passes: pass=1 pass=1 pass=1 pass=1
+ool 44/uds=0   basic 204/uds=0   r2 206/uds=0   stress 644/uds=0
+ENOTCONN occurrences: 0
+```
+
+Three of the four lifecycle operations are now off AF_UNIX: the attach entirely, checkout almost entirely (one
+datagram left, presumably a path taken before the page was ready), and half of checkin.
+
+Round 52-54 ledger, measured on live servers:
+
+| operation | datagrams before | datagrams now | on the page |
+|---|---|---|---|
+| `ring_attach` | 174 | **0** | 176 |
+| `checkout` | 153 | **1** | 163 |
+| `checkin` | 159 | 167 | 165 |
+
+Nine defects were found and fixed by measurement across these rounds, the last being the reply-funnel abort that
+had been mis-diagnosed twice as a boot wedge. Remaining semantic UDS, in order of size: `checkin` 167,
+`pthread_canceled` 76, `thread_self_trap` 10, `vchroot_path` 9, `console_open` 3, `kqchan_proc_open` 2.
