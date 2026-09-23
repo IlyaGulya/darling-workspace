@@ -4072,3 +4072,31 @@ lines belong to different mldr invocations that happen to share a page address.
 State: the checkin route stays implemented-but-unexercised, the datagram fallback runs, the tree is GREEN
 (`FINAL=1 HELLO=1`, 44/204/206/644, all `pass=1`, all `machmsg_uds=0`), and the added prints are
 diagnostics only.
+
+
+### 31.7 The instrument had a side effect -- that is what the ordering contradiction was
+
+With the invocation tag added, the trace is unambiguous and the contradiction is explained:
+
+```
+mldr-ctl] page pid=289510 size=112 sent=1                      <- page CREATED here
+mldr-ctl] checkin-route pid=289510 ready=0 page=0x74697f4f6000 image=mldr!.../vchroot
+mldr-ctl] ready pid=289510 state=1 page=0x74697f4f6000 sz=112 off=104
+mldr-ctl]   ready-image=vchroot
+mldr-ctl] after-dyld     ... ready=1 image=vchroot
+```
+
+The `checkin-route` diagnostic calls `__mldr_process_control_page()`, and THAT ACCESSOR CREATES THE PAGE
+LAZILY when it is absent. So the instrument itself performed the creation (the `page ... sent=1` line is
+its own), then immediately read `transport_ready` -- which was 0 because nothing had waited for the server
+yet -- and the establishment block afterwards found the page already created and waited, printing
+`state=1`. The "checkin before establishment" ordering was the instrument's own side effect, not the
+program's control flow, and every conclusion drawn from that ordering is withdrawn.
+
+What survives, and is worth keeping: the ordering question needs an instrument that only READS. The next
+step is exactly that -- print `g_process_control_page` (the pointer, no accessor call) plus
+`transport_ready` at each site, re-run, and only then decide whether the checkin site is reached before or
+after the establishment in the same invocation.
+
+Also still true from this run: the plane is established and both writes are serviced (`status=0`), and the
+readiness word is 1 from the establishment onward within that invocation.
