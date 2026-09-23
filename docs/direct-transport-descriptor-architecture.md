@@ -5429,3 +5429,68 @@ GREEN at the recorded numbers, and four items stay blocked with their reasons on
 (pre-page window), the per-thread socket counter and its removal (checkin leaving the datagram), and the two
 `POST_LANE_NONFD_BUG` candidates (image-adoption ownership). The one design question that unblocks the largest
 group is the page's servicing model: may a request outlive its requester, and how is a late answer retired.
+
+
+### 44. ProcessControlTxn: the model, the measurement, and the identity blocker it exposed
+
+**Implemented** (§1-§8 of the directive):
+
+  * `ProcessControlTxn` (server-owned): pid, generation, seq, op, payload, fd token, expected fd kind, the
+    accepted descriptor, a three-state lifecycle (`CLAIMED -> WAIT_FD -> READY`), and the completion target's
+    identity (page mapping + size). It is kept in `_processControlTxns`, never a raw guest pointer, never a raw
+    fd number, never a Thread reference.
+  * The page is only a mailbox: `DSERVER_PROCESS_CONTROL_CLAIMED` is now a published state distinct from DONE,
+    and the server publishes it the moment it takes ownership.
+  * Descriptor pairing is asynchronous in BOTH orders: a request whose descriptor is absent goes to WAIT_FD
+    with no reply and no fallback, and the courier continuation hands the descriptor to the TRANSACTION (not to
+    a re-queued bundle, not to a close).
+  * Cancellation: `_cancelProcessControlTxn` runs on the process's courier close, closes the retained
+    descriptor, destroys the transaction and counts `process_control_txn_cancelled`.
+  * Incarnation-safe completion: a reply is written only if the region mapping is still the one the transaction
+    was claimed against; otherwise `process_control_late_reply_retired`.
+  * Counters: claimed / wait_fd / completed / cancelled / late_reply_retired, all exported.
+
+**Measured, and this is the important part.** Two defects were found and fixed inside the attempt:
+
+  * the re-queued bundle was stamped from `_ringDoorbellGeneration` while the resolver compares
+    `_fdCourierGeneration` -- a different map -- so every re-queued descriptor was rejected as
+    `StaleGeneration` and closed, and the page sat PENDING forever;
+  * the pending bundle and its waiter were keyed by **pid**, and the measurement shows the two halves arriving
+    under **different pids for one Linux process**:
+
+```
+PARKED  pid=672791 token=13188803017164813297 kind=1
+bundle  pid=672797 token=13188803017164813297 kind=1 gen=6037603892614826   <- same token, different pid
+```
+
+With the pairing keyed on the token instead, the descriptor problem disappeared completely:
+
+```
+attach_route:  ok=2   refused=0   claimed_no_lane=0
+txn:           claimed=3   wait_fd=0   completed=3
+```
+
+Every transaction now completes, and no attach is refused. **But the boot still wedges**, and the trace shows
+why -- the same identity confusion reaches the doorbell:
+
+```
+attach-lane-op pid=682019 tid=682021 ... token=0        <- no descriptor
+attach-lane-op pid=682019 tid=682022 ... token=0        <- no descriptor
+attach-lane-op pid=682019 tid=682023 ... token=7605696141601330329   <- the ONE delivery went here
+[P:682023(682023)] sent-to-guest pid=682019 token=... kind=7
+```
+
+The page is keyed by `682019`, the courier connection reports `682023`, and the one-time doorbell rule is keyed
+by pid -- so the single delivery went to a tid that is not the attaching process, the first two attaches were
+delivered no descriptor at all (`token=0`), and the boot stopped right after the `kqchan_proc_open` reply.
+
+The token is also **not** unique across processes: the same token appears under both pids. So the identity that
+must be settled is: **which of these identifiers is the process incarnation** -- `SO_PEERCRED` gives a pid,
+threads give tids, and the guest's own generation does not separate them (both pids above carry the same
+generation). That is one focused question with a measurement attached, not a design debate, and it is now the
+only thing between this model and the page route being on by default.
+
+**State**: the page route for ATTACH_LANE is gated behind `DARLING_GUEST_PLANE_ATTACH` and is OFF by default,
+because with it on the boot wedges and with it off the proven path runs. Verified GREEN with the gate off:
+`FINAL=1`, `ool 44 / basic 204 / r2 206 / stress 644`, all `machmsg_uds=0`. The transaction model, the token
+keying, the CLAIMED state, the cancellation and the incarnation-safe completion all stay in the tree.
