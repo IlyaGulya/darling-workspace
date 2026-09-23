@@ -4238,3 +4238,28 @@ the datagram decision is made, then the four candidates the census names (`threa
 be classified as PRE_LANE / TEARDOWN / FD / real nonfd bug.
 
 This run was GREEN (`HELLO=1 DONE=1`, `ool 20`/`basic 100` pass).
+
+
+### 32.2 Correction to §32.1: the histogram IS populated -- the dumping processes are not the ones that fall back
+
+Reading the recorder instead of the dump:
+
+```
+static void gr_urs_note(uint32_t callnum, const char* name, int reason, gr_lane_t* lane) {
+    __atomic_fetch_add(&gr_urs_counts[reason], 1u, __ATOMIC_RELAXED);
+    ...
+}
+```
+and it has FIVE call sites (a lane that is not active, an image-local state, a miss with
+`gr_urs_reason_for_miss`, an attach failure, and the generated wrapper's own miss). So the reasons are
+recorded at the decision point already, and §32.1's "nothing ever increments it" is WRONG and is withdrawn.
+
+What the run actually shows is a coverage gap in the DUMP: five processes printed `[dring-lane-stats]` (with
+the histogram loop after it) and none of them had a non-zero count, while the census attributes the
+fallbacks (`thread_self_trap uds=10`, `vchroot_path uds=9`, `pthread_canceled uds=75`,
+`fork_wait_for_child uds=4`) to the workload -- i.e. the processes whose calls fall back are not the ones
+that reach the dumping exit path. To answer §6 the histogram must be dumped where the fallbacks happen (or
+the reasons must be folded into the server-side per-callnum table, which already has the counts).
+
+So §6's blocker is narrower than §32.1 claimed: not "instrument the decision point", but "dump the existing
+histogram from the processes that actually take the datagram path".
