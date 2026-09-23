@@ -5306,3 +5306,32 @@ not necessarily the one that created the page. That is the next measurement: log
 rather than adding another structural fix on top of an unmeasured identity assumption. The mistake this round
 already made once (a loader-bootstrap change premised on "the loader is the caller", which the attribution then
 contradicted) is not worth making twice.
+
+
+### 43.4 Park-until-descriptor: implemented, measured RED, reverted
+
+The refusals of §43.2 are `Missing` from the resolver, and the resolver already has the right machinery for
+`Missing`: it parks a continuation in `_fdCourierWaiters` and the descriptor's arrival resumes it. The page case
+was simply throwing that away and answering `-EBADF`. So the page was changed to stay PENDING and let the
+next pass service it, with the continuation re-queuing the descriptor under the same key (consuming it, which
+is what the first version did, would leave a parked page with nothing left to resolve).
+
+Measured:
+
+```
+attach_route_ok=2   attach_route_refused=0   <- the refusals are gone, the mechanism works
+ring_attach total=8 uds=6 plane=2            <- but the run never got past its first few attaches
+HELLO=0   FINAL=0                            <- the boot stops
+```
+
+Reverted, and the verified state re-measured GREEN (`FINAL=1`, `ool 44 / basic 204 / r2 206 / stress 644`, all
+`uds=0`).
+
+What this rules out is worth more than the attempt: a page request left PENDING does not converge with a
+descriptor that arrives later **on this servicing model**, even though the descriptor's arrival does re-enter
+the loop and does service the page on that pass. The refusal, by contrast, is behaviourally correct -- the
+guest falls back to the datagram and the attach completes -- which is why the boot never breaks when the page
+route refuses. The cost of that correctness is the 14 attaches, and the honest conclusion is that closing them
+needs the page's servicing model changed (§31.9's open question for CHECKIN as well), not a third variation of
+the same branch. Three attempts have now been spent on this single branch (drain, park, re-queue) which is the
+point at which the branch stops being the problem.
