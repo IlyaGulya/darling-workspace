@@ -4282,3 +4282,35 @@ BOOTSTRAP (the loader's writes and first attach), PRE_LANE_LIFECYCLE (checkin) a
 (`thread_self_trap uds=10`, `vchroot_path uds=9`, `pthread_canceled uds=75`, `fork_wait_for_child uds=4`)
 are the ones that still need a reason from a hand-written site before any of them can be called a real
 non-fd bug.
+
+
+### 32.4 The census defect is fixed: plane-serviced calls have their own column (measured)
+
+`CallTransport` gained `ProcessControl`; the three synthesized dispatch sites in
+`Server::_serviceProcessControl` tag the thread before `doWork()`; the heatmap row now carries a `plane`
+field and the row filter and total include it. Measured on the same product workload:
+
+```
+rows=21  total=1691  uds=604  ring=1067  plane=20        (604 + 1067 + 20 = 1691, rows reconcile)
+
+plane rows:  set_dyld_info plane=10 (uds=0)   set_executable_path plane=10 (uds=0)
+
+remaining UDS by call:
+  checkin                174   ring=0     PRE_LANE_LIFECYCLE (a thread checks in before its lane exists)
+  ring_attach            174   ring=0     PRE_IMAGE_BOOTSTRAP (semantic half)
+  checkout               153   ring=9     TEARDOWN_NO_LANE
+  pthread_canceled        75   ring=491   candidate
+  thread_self_trap        10   ring=184   candidate
+  vchroot_path             9   ring=20    candidate
+  fork_wait_for_child      4   ring=4     candidate
+  console_open             3   ring=0     semantic datagram; descriptor on the courier
+  kqchan_proc_open         2   ring=0     same
+```
+
+So legacy semantic UDS is **604**, not 624: the plane's own 20 serviced calls no longer inflate it, and each
+of the four candidates now has a number to explain rather than a bucket. The reconciliation is exact
+(`500 + 604 + 1067 + 20` counting the ring-only rows = 1691), which is what the hard census gate in §26
+needs before it can ask for zero.
+
+The census row field `plane` and the `CallTransport::ProcessControl` tag are the measurement change this
+round produced; the transport itself is unchanged by it.
