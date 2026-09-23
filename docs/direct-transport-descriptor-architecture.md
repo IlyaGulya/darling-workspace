@@ -5134,3 +5134,34 @@ pre-page window of §41.2. So "deliver the doorbell once through the courier" an
 are not two tasks but one, in this order: publish the page early enough that the loader's earliest attach
 finds it, and the courier delivery becomes the path that actually runs -- and at that point it is already
 implemented, already wired, and its token path is already exercised by `console_open`/`kqchan_proc_open`.
+
+
+### 41.3 What the pre-page window actually is, measured
+
+With the attach and residual censuses armed:
+
+```
+attach_census_first_uds_calls: 7        <- UDS calls before the ring exists, per process
+ring_attach: total=149  uds=14  plane=135
+attach_mldr_callers: 0   attach_dylib_callers: 0      <- these two fields are never populated
+```
+
+Seven processes, fourteen UDS attaches: **two attaches per process on the datagram**, against 135 on the page.
+The two are the process's first two attaches; everything after them finds the page established and rides it.
+
+So closing this window is a bootstrap-ORDERING change in the loader (the page must exist before its own
+earliest attach publishes a lane), and its payoff is fourteen calls out of a hundred and forty-nine -- about
+nine percent of this operation -- while its risk is the whole boot, because the earliest attach is exactly the
+window where this tree has already recorded several measured hazards (in-band printing, environment scans,
+probing the elfcall table).
+
+Recorded as the single next action with its price attached, rather than taken at the end of a long session: the
+change is small, the failure mode is not, and the evidence to do it well is now all in place -- the ordering
+that must move, the instrument that must accompany it (a shared-memory counter, since the environment-gated
+line is silent in that window), and the measurement that will say whether it worked (`ring_attach uds` 14 -> 0,
+with `kind=7` becoming non-zero for the first time because the courier doorbell path of §42 becomes reachable).
+
+Also corrected here: `attach_mldr_callers` and `attach_dylib_callers` are reported as zero, which reads as "no
+callers" but means "not populated". They must either be filled or removed -- a counter that always answers the
+same way is worse than no counter, because a measurement that looks like evidence and is not is how the
+`fds[]`-uninitialised defect and the `attach-lane-op=0` misreading both survived a round.
