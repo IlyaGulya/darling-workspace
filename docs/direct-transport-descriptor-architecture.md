@@ -5494,3 +5494,44 @@ only thing between this model and the page route being on by default.
 because with it on the boot wedges and with it off the proven path runs. Verified GREEN with the gate off:
 `FINAL=1`, `ool 44 / basic 204 / r2 206 / stress 644`, all `machmsg_uds=0`. The transaction model, the token
 keying, the CLAIMED state, the cancellation and the incarnation-safe completion all stay in the tree.
+
+
+### 44.1 The token was not process-unique: the third defect of this round
+
+`gr_fd_courier_send` built its token as `generation * C ^ (++counter)`. Two different processes with the same
+generation and their first send produced the **same token**, which is exactly what the courier log showed:
+
+```
+PARKED  pid=672791 token=13188803017164813297 kind=1
+bundle  pid=672797 token=13188803017164813297 kind=1 gen=6037603892614826
+```
+
+The pairing registry is keyed by that token, so one process's request could be paired with another process's
+descriptor. Fixed in both senders (the kernel image and the loader): the pid is mixed into the token.
+
+Measured with the pid in the token and the page route enabled:
+
+```
+attach_route:  ok=2   refused=0   claimed_no_lane=0
+txn:           claimed=3   wait_fd=0   completed=3
+```
+
+Descriptor pairing is solved: no refusals, no WAIT_FD, every transaction completes. **The boot still wedges**,
+right after the `kqchan_proc_open` reply, and the cause is measured OUT of the three things it could have been:
+the transaction lifecycle (all complete), the pairing (zero waits), and the guest's wait bound (the give-up
+path is never taken, `claimed_no_lane=0`). What remains is the guest's post-attach path in the image that
+takes the page route, which needs a per-tid trace rather than another server-side change.
+
+So the route is gated (`DARLING_GUEST_PLANE_ATTACH`, default OFF) and the proven datagram path is the default.
+Verified GREEN: `FINAL=1`, `ool 44 / basic 204 / r2 206 / stress 644`, all `machmsg_uds=0`.
+
+Round 50 ledger, honestly:
+
+| item | state |
+|---|---|
+| `ProcessControlTxn` (CLAIMED/WAIT_FD/READY, cancellation, incarnation-safe completion, counters) | implemented |
+| asynchronous descriptor pairing, both orders | implemented and measured (`refused=0`, `wait_fd=0`) |
+| defects found and fixed this round | 3 (generation map in the re-queue, pid-keyed pairing, non-unique token) |
+| CHECKIN over the page | not attempted this round (blocked on the page route being default) |
+| ATTACH_LANE over the page | implemented, pairing GREEN, boot wedges -> gated OFF |
+| pre-page window (9), image-adoption tail, socket metric, socket removal | unchanged, still blocked |
