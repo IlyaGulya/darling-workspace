@@ -5370,3 +5370,31 @@ page's SERVICING MODEL -- whether a page request may outlive its requester, and 
 which is the same question CHECKIN has been waiting on since §31.9, and it is a design decision rather than
 another branch. The counters must become per-cause and accumulated before that work starts, or the next attempt
 will again be unable to say which of its causes it died of.
+
+
+### 43.6 The counters, accumulated, separate the two causes
+
+The route counters were published by STORING, which made a per-process sample read as a run total. With the
+delta accumulated (per-region last-seen values), the same run gives a coherent picture:
+
+```
+attach_route:  ok=135   not_ready=0   refused=7
+ring_attach:   total=151  uds=16  plane=135
+callers:       mldr=0     dylib=135
+regression:    FINAL=1    every test pass=1
+```
+
+The arithmetic now separates what a single number could not:
+
+  * `plane=135` == `ok=135` -- every attach that reached the page succeeded through it, with no fallback;
+  * `refused=7` accounts for seven of the sixteen UDS attaches: those DID reach the page and were refused on
+    their descriptor;
+  * the remaining `16 - 7 = 9` were never seen by the page at all -- the pre-page window (`not_ready=0` only
+    means the page existed and was already ready whenever it was consulted, so these never consulted it).
+    This is the class the environment-gated diagnostic could never report, now measured by subtraction.
+
+So the sixteen are two problems, not one: seven are descriptor-ordering refusals (the branch closed in §43.5 on
+a servicing-model question) and nine are attaches taken before the page exists (a bootstrap-order question). A
+single `uds` number was hiding both, which is exactly why the counters had to become per-cause and accumulated
+before any further attempt -- and why §41.3's "the fourteen are the loader's" reading, and §31's attempts to
+close the whole window at once, were both chasing a composite.
