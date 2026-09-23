@@ -5080,3 +5080,31 @@ Two things follow directly, and both are concrete rather than programme-level:
   * `checkin` is unchanged at 149/149. The page's CHECKIN exists (§31) and is semantically correct, so what
     is missing is not the route but the servicing position; `ring_attach` now proves the machinery around it
     works, which is new information for that older question.
+
+
+### 41.2 The fourteen: they are pre-page, not pre-readiness
+
+The readiness wait was added (`transport_ready` re-checked for up to 200 ms before falling back, a TRANSPORT
+wait that by the PHASE-0 rule cannot depend on semantic guest registration) and it changed nothing:
+
+```
+ring_attach total=149 uds=14 plane=135     <- identical
+doorbell: processes=7 sent=14 suppressed=135
+```
+
+So those 14 attaches are not "the region is not ready yet". They are attaches taken **before the page exists
+at all**: the loader's earliest attach happens before its own bootstrap creates the page, which is exactly
+why `no-page` never appears in the diagnostic either -- the diagnostic's own gate is an environment lookup,
+and an environment scan at the earliest attach is a MEASURED boot hazard that the loader deliberately avoids
+by not having an environment yet (`getenv` there returns whatever the pre-init state holds). The diag is
+therefore silent precisely in the window it was added to describe, and the honest reading is: the fallback
+lines cannot be trusted that early, so this needs a different instrument (a counter published in shared
+memory, not a `getenv`), not a different wait.
+
+Neutral-but-kept: the bounded readiness wait is correct for the general case (a page that exists but is not
+yet mapped by the server) and costs nothing when the page is already ready, so it stays.
+
+Next step for these 14, in order of what the evidence supports: publish the page earlier in the loader's
+bootstrap so the earliest attach finds it, then re-measure. The instrument that must come with it is a
+shared-memory counter (the page itself can carry "attaches attempted / page missing"), because the
+environment-gated line cannot report anything in this window.
