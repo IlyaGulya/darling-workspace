@@ -4603,3 +4603,34 @@ sockets at the intercept that the next pass should name the same way.
 This is the FD deliverable of §27 in its measured form: the target slope is zero, the measured slope is 2
 sockets per thread, and the scaling term is the per-thread RPC socket -- the object the final architecture
 removes. No transport change was made for this measurement.
+
+
+### 34. One-time doorbell, second attempt (after Phase-0): still RED, reverted again
+
+Re-enabled the one-time delivery with the Phase-0 reasoning: the plane is now established BEFORE the first
+write, so the process's courier generation should be known by the first attach, which is what the first
+attempt lacked. Measured:
+
+```
+HELLO=0   DONE=0   passes: none
+kind=7 bundles sent: 0        [dring-doorbell] lines: 0
+```
+
+So the courier never carried the doorbell at all -- the generation-0 fallback was taken again, because the
+LOADER's seed attach still precedes its own courier traffic (its `PROCESS_CONTROL` bundle is sent before the
+attach but the generation map is populated by the drain, which had not seen it yet at that point). With
+`wake_fd = -1` from the one-time rule and the CMSG fallback apparently not reaching the loader, the seed
+published no lane and the boot stopped.
+
+Reverted to the verified behaviour (every attach reply carries a dup; the guest's loader keeps the first and
+closes the rest). Verified after the revert: `FINAL=1 HELLO=1`, `ool 20`=44, `basic 100`=204, `r2 100`=206,
+`stress 16x20`=644, every test `pass=1`, all `machmsg_uds=0`.
+
+Both halves of §26's requirement are now measured rather than argued: the attach reply must be built once per
+attach (the park path re-enters `processCall`), AND the incarnation's generation must reach the server before
+its first attach -- Phase-0 gives the page early, but the generation travels on the courier's drain, which is
+a different ordering.
+
+Kept from this attempt: the `ring_doorbell_sent_to_guest` / `ring_doorbell_reused` metrics and the
+generation-0 fallback in `sendFdCourierBundleToGuest` (both are correct in themselves and were needed to see
+why the bundle was refused).
