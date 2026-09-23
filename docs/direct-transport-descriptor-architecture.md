@@ -3554,3 +3554,68 @@ are process bootstrap, and they precede every in-process transport this design h
 
 Full verification after the revert: `HELLO/FINAL` reached, `ool 20` ring=44, `basic 100` ring=204,
 `r2 100` ring=206, `stress_pool 16x20` ring=644, every test pass=1, all `machmsg_uds=0`.
+
+
+## 25. Round 49: the courier becomes BIDIRECTIONAL (server -> guest descriptors)
+
+### 25.1 What was built
+
+The existing process-scoped `SOCK_SEQPACKET` connection now carries descriptors in BOTH directions. No
+second socket is created, and the message shape is unchanged in kind: `process_generation`, `token`,
+`kind`, `fd_count`, SCM_RIGHTS -- no semantic body, no callnum, no result code crosses this socket.
+
+* Generator: a reply may now declare a wire-only `@fd_token`. The reply body carries the token; the
+  descriptor itself is not pushed as CMSG. `REPLY_FD_COURIER_KINDS` names the calls whose reply
+  descriptor rides the courier, and the legacy CMSG reply stays the fallback when the courier cannot take
+  the descriptor (`sendFdCourierBundleToGuest` returns 0 for a process with no live connection).
+* First two real operations: `console_open` (kind `CONSOLE_FD`) and `kqchan_proc_open`
+  (kind `KQCHAN_FD`).
+* Server: `Server::sendFdCourierBundleToGuest(pid, kind, fd)` finds the process's connection, stamps the
+  pid's generation, sends one descriptor, transfers ownership (closes its copy) and returns the token.
+  `Call::sendFdCourierToGuest` is the Call-level face of it, because the generated inline reply code only
+  sees `Call` -- MEASURED, calling `Server::sharedInstance()` there fails with
+  `incomplete type 'DarlingServer::Server' named in nested name specifier`.
+* Guest: `__dserver_fd_courier_receive(token)` drains the connection, keeps a process-global pending
+  registry keyed by token, and resolves the token the reply named. Duplicate tokens keep the first
+  descriptor and close the second; a full registry closes rather than leaks; every drop is counted.
+* Ordering is the same rule as the request direction, mirrored: the server sends the descriptor BEFORE it
+  publishes the reply, so a guest holding a token normally finds the descriptor already queued.
+
+### 25.2 Three real defects found by measuring (all fixed)
+
+1. `MSG_DONTWAIT` written as `2` -- that is `MSG_PEEK`, so the "non-blocking" drain peeked the same
+   message forever and the shellspawn spun in userspace instead of booting. `MSG_DONTWAIT` is `0x40`.
+2. The pending registry's "free slot" test was `fd < 0`, but a static array is zero-initialized and
+   `fd == 0` is not `< 0`: no slot was ever found, the descriptor was closed on arrival, the lookup then
+   missed and the blocking fallback read waited forever. "Free" is `token == 0`.
+3. The generator's reply-token instrument was first emitted with `\t` escapes as literal text and with a
+   doubled macro continuation; the fix is to append the emitted statement to the SAME write as the proven
+   sibling line, so it inherits that line's escaping.
+
+### 25.3 Measurement
+
+Instruments (temporary, now removed except a bounded MISS report): the server logged the token the reply
+would carry (`reply-token pid=N token=T bodylen=24`), and the guest logged its parse outcome
+(`GOT ... len=20 level=1 type=1 fd=9`). With both in place the two halves agreed on the token and the
+descriptor arrived, which is what closed defects 1 and 2.
+
+Product run with the reverse courier live:
+
+```
+FINAL=1  HELLO=1
+ool 20        ring=44  uds=0
+basic 100     ring=204 uds=0
+r2 100        ring=206 uds=0
+stress 16x20  ring=644 uds=0
+courier receive misses = 0
+```
+
+### 25.4 Procedure defect that cost this round its first five measurements
+
+Every run between the first and the last was served by a **stale darlingserver**: `darling --rootless
+shell` reuses a live server for the prefix, so a run that does not shut the prefix down first measures the
+OLD server with the OLD guest session, and its pids in the log are from the old session. The tell was a
+log whose pids (15796, 27552) were far below the current run's. The reliable procedure is: full-env
+`darling --rootless shutdown`, kill any process whose cmdline names the prefix, verify none remain, then
+install and launch. Both the "boot stalls" readings from those runs and the conclusions drawn from them
+were withdrawn.
