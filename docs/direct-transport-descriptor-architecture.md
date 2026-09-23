@@ -5286,3 +5286,23 @@ restored the run immediately (`FINAL=1`, every test `pass=1`).
 Next step, now measured rather than assumed: the fourteen are descriptor-ordering refusals, so the work is to
 let a page-serviced attach wait for its courier descriptor instead of refusing -- which is the same ordering
 question §42 raised for the doorbell.
+
+
+### 43.3 The drain-before-resolve attempt: no change, and what that rules out
+
+The refusal is `-EBADF` from `resolveFdCourierBundle`, and the guest sends the descriptor BEFORE publishing the
+request, so the natural hypothesis was a queue-timing race: the courier message still sitting in the process's
+queue while the page is serviced. `_drainFdCourierMessages()` was called immediately before the resolve.
+
+Measured: **no change.** `attach_route_refused` unchanged, `ring_attach` unchanged at `uds=14 / plane=135`, and
+the full regression stayed GREEN (`FINAL=1`, `ool 44 / basic 204 / r2 206 / stress 644`, all `uds=0`).
+
+That rules the queue-timing explanation out and narrows the refusal to identity: the bundle exists, but
+`resolveFdCourierBundle(pid, token, kind)` does not find it under the pid the page is keyed by. The candidate
+that fits every observation is that the two are keyed differently -- the page is keyed by the pid that mapped
+the region (the kernel's own `SO_PEERCRED` answer on the courier connection that created it) while the pending
+bundle is keyed by whatever pid the SENDING connection reported -- and the guest dylib's courier connection is
+not necessarily the one that created the page. That is the next measurement: log both pids at the resolve,
+rather than adding another structural fix on top of an unmeasured identity assumption. The mistake this round
+already made once (a loader-bootstrap change premised on "the loader is the caller", which the attribution then
+contradicted) is not worth making twice.
