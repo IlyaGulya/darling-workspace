@@ -5535,3 +5535,58 @@ Round 50 ledger, honestly:
 | CHECKIN over the page | not attempted this round (blocked on the page route being default) |
 | ATTACH_LANE over the page | implemented, pairing GREEN, boot wedges -> gated OFF |
 | pre-page window (9), image-adoption tail, socket metric, socket removal | unchanged, still blocked |
+
+
+### 44.2 The wedge, localized: the third sequential attach, with the Ring working underneath
+
+With the route enabled and both logs on, the picture is now specific rather than vague:
+
+```
+[dring-attach] RING_ATTACH_RPC_SENT pid=696549 tid=696551 ...     <- 1st: reaches END, no-wake-fd, owned=1048574
+[dring-attach] RING_ATTACH_RPC_SENT pid=696549 tid=696552 ...     <- 2nd: reaches END, no-wake-fd, owned=1048574
+[dring-attach] RING_ATTACH_RPC_SENT pid=696553 tid=696553 ...     <- 3rd: SENT, and NEVER an END
+MACHMSG_TRANSPORT process=696549 image=kernel host_tid=696552 lane=104 seq=10 direction=reply transport=RING callnum=38 code=0
+```
+
+Three facts, each of which removes a candidate:
+
+  * the Ring itself is healthy underneath -- `transport=RING`, `callnum=38`, `code=0`, replies consumed, sequence
+    advancing to 10. The stall is not a broken lane and not a broken reply path;
+  * the guest OWNS a doorbell on the first two attaches (`owned=1048574`), so "no wake fd" was never the
+    problem either;
+  * the third attach is the one that hangs, and the attaches are SEQUENTIAL -- so this is not the concurrent
+    publish race the CAS was added for.
+
+The mailbox CAS is kept regardless, because one outstanding request per page is the model (§7) and publishing
+over another request is a hazard whether or not it is this run's cause: the slot is now claimed with a
+compare-exchange from IDLE, with a bounded wait and a counted `attach_route_no_slot` outcome.
+
+What the third attach needs to answer is narrower than anything tried so far: what does the server do with the
+third request that it does not do with the first two? The transaction counters say all three are claimed and
+completed, so the answer is in the reply's delivery to a tid that is not the page's first caller -- and the
+instrument for that is a per-tid completion trace on the page, not another server-side branch.
+
+Verified state with the route gated off: `FINAL=1`, `ool 44 / basic 204 / r2 206 / stress 644`, all
+`machmsg_uds=0`.
+
+### 44.3 Round 50 summary against the directive
+
+| directive item | state |
+|---|---|
+| §1-§3 `ProcessControlTxn` + explicit state machine | implemented (CLAIMED / WAIT_FD / READY, documented) |
+| §4 asynchronous descriptor pairing, both orders | implemented; MEASURED solved: `refused=0`, `wait_fd=0`, `completed=all` |
+| §5 server owns the descriptor after courier acceptance | implemented (continuation hands it to the transaction; cancellation closes it) |
+| §6 incarnation-safe completion + late-reply counter | implemented (`process_control_late_reply_retired`) |
+| §7 one outstanding mailbox | enforced by CAS now, not assumed |
+| §8 CLAIMED separate from COMPLETED | implemented and published |
+| §9-§13 CHECKIN barrier / ordered bootstrap | not reached: the page route is not yet default |
+| §14-§16 ATTACH refusals, cancellation mutations | refusals measured to zero; mutations not yet run |
+| §17-§18 pre-page window | unchanged (9 per run, measured by subtraction) |
+| §19 one-time doorbell | implemented; still unreachable while the route is gated |
+| §21-§23 image-adoption tail | unchanged |
+| §24-§26 socket metric / removal / semantic-UDS invariant | unchanged |
+| §27-§35 census, FD slope, perf, mutations | unchanged this round |
+
+Four defects were found and fixed in round 50, all by measurement: the generation map used by the re-queue, the
+pid-keyed pairing registry, the non-unique courier token, and the unclaimed mailbox slot. The single remaining
+blocker for the whole line is the third-attach hang of §44.2.
