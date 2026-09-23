@@ -5226,3 +5226,28 @@ Four items are blocked with reasons rather than described as pending: the courie
 the pre-page window closes), the per-thread socket counter and its physical removal (both bound to checkin
 leaving the datagram, and checkin on the page is measured correct-but-boot-stopping), and the two
 `POST_LANE_NONFD_BUG` candidates (the image-adoption ownership change).
+
+
+### 43.1 The dead counter, filled, and the fact it immediately produced
+
+`recordAttachBinaryFact` had **no caller anywhere in the tree** -- so `attach_mldr_callers` and
+`attach_dylib_callers` were constant zero, which reads as "no callers" and means "nothing reports". Fixed at
+the only place the page route can learn it: the guest stamps its image identity into `payload[3]` (bits 8+,
+which were free -- the low byte is the architecture the server already reads), and the server records the
+caller. Then, regression GREEN with the change (`FINAL=1`, every test `pass=1`, `uds=0`):
+
+```
+attach_mldr_callers=0    attach_dylib_callers=135    attach_no_ring_code=0
+ring_attach: total=149  uds=14  plane=135
+```
+
+The fact, stated plainly: **every page-route attach comes from the guest dylib; none from mldr in this run.**
+That is new information and it sharpens §41.3 -- the fourteen pre-page attaches are not "the loader's early
+attaches" as the round-49 text guessed, because the loader does not appear in the attribution at all. Whatever
+produces those fourteen is an image that does not travel the page route, and the next step for that window is
+therefore to establish which image those attaches come from, with the counter that now works, before touching
+the loader's bootstrap order. The earlier plan (move the page creation earlier) assumed the loader was the
+caller; the measurement does not support that assumption.
+
+Scope note, so the number cannot be misread in the other direction: the attribution covers page-route attaches
+only. The UDS attaches carry no image tag, so 135 is the attributed count out of 149, not a total.
