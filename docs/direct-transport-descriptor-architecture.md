@@ -4882,3 +4882,81 @@ is, and a run whose pass column is green while its uds column is not is a RED re
 The doorbell task therefore stays open, with its target now precisely stated: the one-time delivery must be
 achieved WITHOUT any attach failing, and the measurement that proves it is `attach-failed=0` together with
 `machmsg_uds=0` on the stress workload -- both, not either.
+
+
+### 39. The one-time doorbell lands: a hard-failure/completion confusion, and a real defect beside it
+
+Two defects were found by reading, and the second one is a genuine product defect independent of the doorbell.
+
+**39.1 The server treated the suppressed delivery as a hard failure.** `Call` handled the doorbell's
+descriptor-dup result like this:
+
+```cpp
+guestWakeFd = process ? Server::sharedInstance().ringDoorbellDupFor(process->id()) : -1;
+if (guestWakeFd < 0) {
+        rejectReason = dserver_ring_reject_total_size;   // the whole attach is REJECTED
+} else {
+        thread->attachRing(ring, nullptr);               // the lane is NEVER attached
+        Server::registerRingThread(thread);
+}
+```
+
+`-1` already meant "this process has no doorbell at all" -- a real failure -- so the one-time rule's
+*finished* state was indistinguishable from it: every later attach was rejected, the lane was never attached,
+and the workload fell back to the datagram. That is exactly the fifth attempt's signature (`attach-failed`
+16, then 20, `machmsg_uds` back above zero) and it also explains why the guest's `no-wake-fd` diagnostic
+never fired: the attach failed one layer ABOVE the branch it instruments.
+
+The fix separates the two outcomes: `ringDoorbellDupFor` returns **-2** for "the ONE delivery already
+happened for this process incarnation" and keeps `-1` for "no doorbell exists". `Call` then treats -2 as
+SUCCESS with no descriptor in the reply -- the ring is attached and the thread registered -- and counts it
+in a new `ring_doorbell_suppressed` counter. The attach-census's notion of success moved from
+`guestWakeFd >= 0` to "the ring is attached", which is the property it was actually trying to measure.
+
+**39.2 A generated-wrapper defect: `fds[]` was read uninitialised.** In the client wrapper,
+
+```c
+int fds[N];                       // never initialised
+if (valid_fd_count > 0) { ... memcpy into fds ... }
+...
+(*(reply).body.wake_fd >= 0) ? fds[(reply).body.wake_fd] : -1
+```
+
+A reply that carries no descriptor leaves `fds[]` untouched while the reply body still carries an index, so
+the caller received whatever was on the stack instead of `-1`. Every fallback in this tree is written
+against `-1` ("no descriptor arrived"), so the value silently defeated them. Fixed by pre-filling `fds[]`
+with `-1`, which makes "no descriptor arrived" identical to "the server sent -1". This is a defect on its
+own terms: it can bite any reply-fd call whose server-side descriptor disappears.
+
+### 39.3 Verified state
+
+With the rule and the reply token enabled together, and both fixes in place:
+
+```
+FINAL=1  HELLO=1   passes: pass=1 pass=1 pass=1 pass=1
+ool 20:       ring=44   uds=0
+basic 100:    ring=204  uds=0
+r2 100:       ring=206  uds=0
+stress 16x20: ring=643  uds=0        <- the workload is on the Ring, no fallback
+attach-failed=0    no-wake-fd=27     <- 27 re-attaches carried NO descriptor and still bound their lane
+guest doorbell slots: `doorbell=1048574` once per image, then -1 for every re-attach
+```
+
+`no-wake-fd=27` is the acceptance signal: the reply no longer transfers a descriptor after the first
+delivery, and the guest binds every later lane from the doorbell it already owns (asked of the owner, never
+remembered as a number).
+
+### 39.4 The residual, stated exactly
+
+`sent_to_guest / processes = 2.00`. Both deliveries are legitimate: the loader and the guest image carry
+SEPARATE courier connections, and the guest-side slot is per IMAGE, so a pid-keyed rule delivers once per
+connection. Moving the re-arm from the connection-close path to the wake-retire path (a finer,
+incarnation-level site) was tried and MEASURED RED: the rootless boot then never reaches ready
+(`shellspawn did not become ready`, failing at the earliest `RING_ATTACH_RPC_SENT` with `doorbell=-1`),
+because the second image owns no doorbell anywhere. Exactly-once therefore needs an identity finer than the
+pid; the erase stays on the connection-close path until that identity exists, and the cost of doing so is
+one extra descriptor per process -- transferred once, absorbed by the guest's own slot logic.
+
+The lesson from §38.3 is what made this findable: the earlier attempt looked finished because the suite was
+green, and it was green because the workload had fallen back to UDS. Reading `machmsg_uds` on every run is
+what turned that into a visible rejection instead of a passing test.
