@@ -4516,3 +4516,24 @@ architectural gap of the SAME family as the borrowed-view work (§19-20), not a 
 the image to ADOPT the live lane instead of retaining UDS, which is the one-lane-per-tid ownership question
 this bead is already about. Recording it here also removes the last open reading: nothing else in the
 fallback set is unexplained.
+
+
+### 33. FD inventory: the METHOD is not yet trustworthy, so no numbers are published
+
+Attempted the §27 measurement (transport descriptors at 1/8/24/40 threads, from `/proc/<pid>/fd` classified
+by `readlink`) with a host-side sampler. Two attempts picked the WRONG process -- the same pid was reported
+for `stress_pool 1 40` and `stress_pool 8 40`, with 34 sockets and 1 eventfd, which is a launcher/shellspawn
+shape, not a test process running 1 vs 8 worker threads. The guest pid is only printed by the test's own
+`[dring-lane-stats]` line AT EXIT, so it cannot be used to sample a live process, and "newest matching
+cmdline" was not enough to disambiguate.
+
+Rather than publish counts that are not attributable to the workload, this is recorded as an open
+measurement-method problem. Two workable fixes, in order of cost:
+  * have the guest print its pid (and thread count) at START, not only at exit, so the sampler has a pid it
+    can trust for the duration of the run; or
+  * sample every process whose cmdline matches AND whose start time is inside the run's window, and report
+    them as a set with the thread count each one reports, instead of picking one.
+
+Nothing about the transport changed here; the deliverable of this section is the negative result about the
+method plus the two ways to fix it, because an fd slope computed from the wrong process is worse than no
+slope.
