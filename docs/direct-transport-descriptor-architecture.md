@@ -3687,3 +3687,35 @@ the seed attach failed with `rc=-70` -- a size mismatch, not a transport fault.
 
 State after the revert (verified): `FINAL=1 HELLO=1`, `ool 20`=44, `basic 100`=204, `r2 100`=206,
 `stress 16x20`=644, every test `pass=1`, all `machmsg_uds=0`, 10 doorbell lines (one per image attach).
+
+
+## 27. Round 49c: the per-thread RPC socket is now LAZY, and the measurement names the culprit
+
+Built: the eager creation in `darling_thread_entry` is gone. `__darling_thread_rpc_socket()` creates the
+socket at the first call that actually asks for it, registers it with the thread callbacks' guard, and
+prints a bounded creation line naming the reason (`checkin` for the thread-create path). A thread whose
+calls are all served by the lane creates nothing.
+
+Measured (full regression, `FINAL=1 HELLO=1`, `ool 20`=44, `basic 100`=204, `r2 100`=206,
+`stress 16x20`=644, every test `pass=1`, all `machmsg_uds=0`):
+
+```
+socket creations = 27, and EVERY ONE carries reason=checkin
+rpc-socket] created pid=192305 tid=192314 n=1 reason=checkin
+rpc-socket] created pid=192305 tid=192315 n=2 reason=checkin
+rpc-socket] created pid=192353 tid=192354 n=1 reason=checkin
+rpc-socket] created pid=192353 tid=192355 n=2 reason=checkin
+```
+
+Two facts follow, and the second is the actionable one:
+
+  * the count is now an ATTRIBUTED number rather than an allocation nobody looks at;
+  * `machmsg_uds = 0` for those same calls: the checkin is SERVED BY THE LANE, so the descriptor is
+    created because the CALL SITE ASKS FOR IT before the lane is tried, not because the datagram is used.
+    The remaining work is therefore not "make checkin ride the lane" -- it already does -- but "stop asking
+    for a socket before the lane has had its chance", which is the same shape as the round-48 lesson: the
+    ask itself is the dependency.
+
+MEASURED NEGATIVE on the way: removing the eager creation without changing the call site left the
+thread-create checkin running with `t_server_socket == -1`, and the boot stopped
+(`HELLO=0`, shellspawn never ready). The call site must ask lazily; the counter then reports the truth.
