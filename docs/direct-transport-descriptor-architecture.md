@@ -4960,3 +4960,42 @@ one extra descriptor per process -- transferred once, absorbed by the guest's ow
 The lesson from §38.3 is what made this findable: the earlier attempt looked finished because the suite was
 green, and it was green because the workload had fallen back to UDS. Reading `machmsg_uds` on every run is
 what turned that into a visible rejection instead of a passing test.
+
+
+### 40. ATTACH_LANE on the page: implemented, measured RED, reverted
+
+The last step toward `ring_attach UDS = 0` was implemented end to end and measured.
+
+What was built: `OP_ATTACH_LANE` (the op id was already reserved in the page's op table, unwired) serviced
+by `Server::_serviceProcessControl` by synthesizing the ordinary `ring_attach` call -- the descriptor half
+resolved from the courier with `DSERVER_FD_COURIER_KIND_LANE_BACKING`, which is the same kind the datagram
+route already uses -- and the reply read back out of the suppressed reply BODY (reject reason and the
+doorbell's wire token), with the guest publishing the request on the page and receiving the token's
+descriptor off the courier exactly as a datagram reply's token is. The suppressed-reply path needed one
+addition to make that possible: a bounded copy of the reply body, because a page route has no datagram to
+read it from.
+
+Measured:
+
+```
+HELLO=0    FINAL=0    attaches still fail: 4
+attach-lane-op=0       <- the server never serviced a single ATTACH_LANE request
+Rootless shellspawn did not become ready within 30000ms
+```
+
+Two facts, both useful: the page's `OP_ATTACH_LANE` was never entered (`attach-lane-op=0`), so the guest's
+publish did not reach the server; and the boot stopped at the earliest attach, which is the same failure
+shape as the whole pre-attach family. The experiment is fully reverted (guest route, server case, and the
+reply-body capture), and the verified state was re-measured after the revert:
+
+```
+FINAL=1  HELLO=1  stress_pool 16x20: ring=644 uds=0   (the doorbell rule stays ON)
+```
+
+So the remaining `ring_attach` UDS traffic is still the semantic attach half, and it needs a first step
+before the route can be built: a measurement of whether the guest's publish is even reached -- i.e. whether
+`dserver_process_control_page()` in the KERNEL image returns the loader's page and whether
+`__dserver_fd_courier_send` succeeds there at that moment. Both are one-line attribution questions, and both
+were left unanswered by this attempt because the code was written before the question was asked. That is the
+mistake this record exists to prevent repeating: the page route must be instrumented where it DECIDES not to
+run, not only where it runs.
