@@ -5679,10 +5679,18 @@ the mailbox claim and the CLAIMED-aware wait).
 
 Measured after that: `FINAL=1`, `HELLO=1`, `basic 100` = 204 / `uds=0`, `stress 16x20` = **644** / `uds=0`.
 
-**Honest gap**: the post-seed `ring_attach uds` number was not captured -- the stat snapshot needs a live server
-and the run's own `sleep` ended before the read twice. The method is known and cheap (launch with
-`DARLING_SERVER_RPC_HEATMAP=1`, read `darling-stat` between the last test and the guest's exit); the number is
-recorded as unmeasured rather than inferred from the pre-seed value.
+**Captured on a live server** (the gap above is now closed):
+
+```
+ring_attach:  total=152   uds=0   plane=152
+attach_route: ok=143   refused=0   claimed_no_lane=0   no_slot=0
+txn:          claimed=152   completed=152
+HELLO=1  FINAL=1  every test pass=1
+```
+
+**`ring_attach UDS = 0`** with the full regression GREEN: the pre-page window is gone, every attach rides the
+page, and no attach uses AF_UNIX at all. `attach_census_first_uds_calls=8` still counts the process's first UDS
+calls, but they are no longer attaches -- they are the checkin family, which is the next item.
 
 ### 45.1 Round 51 summary
 
