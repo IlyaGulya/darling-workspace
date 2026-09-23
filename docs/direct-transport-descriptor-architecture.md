@@ -4469,3 +4469,50 @@ route it through the ring path the way the other 184/20 instances already are), 
 Nothing about the transport changed in this section; the three negative measurements are the deliverable, and
 they close the two hypotheses the earlier sections had left open (ring-full, and a generated-wrapper
 refusal).
+
+
+### 32.10 Located by reading: the two candidates are the image-switch UDS retention path
+
+Reading the two kernel call sites settles it, and neither is a coding slip:
+
+```
+mach_port_name_t thread_self_trap_impl(void) {                     // mach_traps.c
+    int ring_code = __dserver_ring_thread_self_trap(&port_name);
+    if (ring_code >= 0) {
+        return ring_code == 0 ? port_name : MACH_PORT_NULL;        // 0 = ok, KERN_FAILURE = committed
+    }
+    if (dserver_rpc_thread_self_trap(&port_name) != 0) { ... }     // only a NEGATIVE return falls back
+}
+
+if (__dserver_ring_vchroot_path(...) == 0) { code = t_code; }      // vchroot_userspace.c
+else { code = dserver_rpc_vchroot_path(...); }
+```
+
+Both fall back only on a NEGATIVE return, and `gr_port_trap` returns a negative value only BEFORE publish
+(no lane, or ring full -- both measured out). The positive `KERN_FAILURE` (committed-unknown) is handled
+without a retry, so the double-execution hazard I was looking for is NOT present at these sites.
+
+What is left is the guest lookup's early return that has NO reason note:
+
+```
+gr_lane_t* gr_lane_for_this_thread_named(uint32_t callnum, const char* name) {
+    gr_lane_t* L = gr_find_lane(tid);
+    if (L) {
+        if (L->state == 1 && server_state == DSERVER_RING_SRV_RETIRED) {
+            ...
+            if (was_borrowed) { gr_proc_unpublish(tid); }
+            return adopted_after_retire;      // <-- returns NULL with NO gr_urs_note
+        }
+        ...
+```
+
+That is the documented behaviour ("Another image now owns this thread's server-side lane. Keep this image on
+UDS rather than stealing it back on every image switch"), and it is exactly the shape the three zero-reason
+measurements predicted: a fallback with no reason line, because this path does not emit one.
+
+So §6's two candidates are the **image-switch UDS retention**: an image that has switched away from owning a
+thread's lane keeps that thread on the datagram for `thread_self_trap` / `vchroot_path`. That is an
+architectural gap of the SAME family as the borrowed-view work (§19-20), not a missing route: the fix is for
+the image to ADOPT the live lane instead of retaining UDS, which is the one-lane-per-tid ownership question
+this bead is already about. Recording it here also removes the last open reading: nothing else in the
+fallback set is unexplained.
