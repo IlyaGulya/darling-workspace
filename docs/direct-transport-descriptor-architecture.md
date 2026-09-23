@@ -5335,3 +5335,38 @@ route refuses. The cost of that correctness is the 14 attaches, and the honest c
 needs the page's servicing model changed (§31.9's open question for CHECKIN as well), not a third variation of
 the same branch. Three attempts have now been spent on this single branch (drain, park, re-queue) which is the
 point at which the branch stops being the problem.
+
+
+### 43.5 Park, second attempt: one real defect fixed, the RED survives, and the branch is closed
+
+The first park attempt stamped its re-queued bundle with `_ringDoorbellGeneration(pid)`. The resolver compares
+against `_fdCourierGeneration[pid]` -- a DIFFERENT map -- so every re-queued descriptor was rejected as
+`StaleGeneration` and closed, and the page sat PENDING forever. That is a real defect in the attempt, not in the
+model, and it was fixed: the same map as the resolver, or the bundle is discarded.
+
+Measured with it fixed:
+
+```
+attach_route_refused=0        <- the refusals really are gone
+PARKED=0                      <- the park branch's own log never fired
+ring_attach total=8 uds=6 plane=2
+HELLO=0                       <- and the boot still stops
+```
+
+`PARKED=0` is the informative part: the stall does not run through the branch under study. With the guard in
+place the page stays PENDING by design, the guest's own 2 s bound expires and it falls back to the datagram --
+and the server later services the request anyway, attaching a lane for a tid whose attach the guest has already
+completed elsewhere. That is a second attach rather than an unanswered one, and it is what the run does not
+survive. The counters that should separate these causes cannot: the page counters are per-process samples
+(stored, not accumulated) and the aggregate row is one number for a whole class.
+
+Reverted to the refusal, and the verified state re-measured GREEN (`FINAL=1`, `ool 44 / basic 204 / r2 100 206 /
+stress 643`, all `uds=0`).
+
+This branch is now closed rather than retried a fourth time. Four variations have been spent on it (immediate
+refusal, drain, park, corrected park), and the last one produced a real defect fix and a real fact: the refusal
+is not the problem; a page request that outlives its guest's bounded wait is. Anything further here is the
+page's SERVICING MODEL -- whether a page request may outlive its requester, and how a late answer is retired --
+which is the same question CHECKIN has been waiting on since §31.9, and it is a design decision rather than
+another branch. The counters must become per-cause and accumulated before that work starts, or the next attempt
+will again be unable to say which of its causes it died of.
