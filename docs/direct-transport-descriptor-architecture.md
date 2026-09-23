@@ -3940,3 +3940,35 @@ chains), and `g_process_control_page` is per-invocation BSS -- so the invocation
 its own page, which is not the page the earlier invocation established. If that holds, the fix is not in
 the plane but in where the page is established: it must be established (or re-established) in the
 invocation that performs the checkin, or handed across the image transition by the loader.
+
+
+### 31.3 Answered: the two sites DO share the page; the readiness write is what does not arrive
+
+Measured with the instrument in the tree (same run, one pid, two execve invocations):
+
+```
+mldr-ctl] ready pid=271546 state=1 page=0x7df756666000      <- establishment, invocation 1
+mldr-ctl] ready pid=271546 state=1 page=0x73636263e000      <- establishment, invocation 2
+checkin-route pid=271546 ready=0 page=0x7df756666000 image=mldr!.../vchroot
+checkin-route pid=271546 ready=0 page=0x73636263e000 image=.../mldr!.../launchd
+process-control] region pid=271546 size=112 page=0x74cbbd1ca000 gen=...
+process-control] region pid=271546 size=112 page=0x74cbbd1c8000 gen=...
+```
+
+So the §31.1 hypothesis is REFUTED: each invocation's establishment site and checkin site report the SAME
+page pointer, and `__mldr_process_control_ready()` reads that same page. The page is per-invocation (two
+execve images, two pages, two `PROCESS_CONTROL` bundles -- which is correct, one page per incarnation), and
+the server mapped both (size=112, the appended-field struct).
+
+What does not happen is the readiness WRITE arriving: the establishment reported `state=1` (so
+`transport_ready` was 1 at that moment) and the checkin site reads 0 from the same address. The candidates
+left are mechanical and each is one measurement:
+  * the guest and the server disagree on the OFFSET of `transport_ready` (print
+    `offsetof(dserver_process_control, transport_ready)` and `sizeof` on both sides in one run);
+  * the server's mapping and the guest's mapping are not the same memory object (compare the memfd's
+    `st_ino`/`st_dev` as seen by each side).
+Until one of those is measured, the checkin route stays implemented-but-unexercised, and the datagram
+fallback is what runs -- which is what the boot shows.
+
+Regression with this build (verified): `FINAL=1 HELLO=1`, `ool 20`=44, `basic 100`=204, `r2 100`=206,
+`stress 16x20`=644, every test `pass=1`, all `machmsg_uds=0`.
