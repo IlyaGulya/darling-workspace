@@ -4786,3 +4786,22 @@ enabled the boot does not complete.
 The next step is now unambiguous and small: key the one-time delivery on the incarnation's first attach (or
 have the guest acknowledge receipt), then re-enable the rule with the reply token -- both halves work
 individually (`kind=7` with a real generation, and `wake=8` resolved by the loader).
+
+
+### 38.1 A defect I introduced two steps ago, caught by the workload and fixed
+
+The loader-side courier receive (§38) retried for 200 x 0.5 ms = **100 ms** before reporting a miss. Measured
+consequence: the 16-thread stress workload stopped completing (`stress_pool 16 20` alone, in isolation,
+never printed FINAL, with `machmsg_ring=7` and one lane held) while the three single-threaded tests still
+passed. Any call whose token was not queued paid 100 ms, and with 16 workers that is a stall, not a delay.
+
+Fixed by narrowing the window to 4 x 0.25 ms = 1 ms, on the argument that the server sends the descriptor
+BEFORE it publishes the reply, so a token that is not queued yet is in flight for microseconds. Verified in
+isolation:
+
+```
+stress_pool 16 20  ->  HELLO=1 FINAL=1 pass=pass=1 machmsg_ring=644 machmsg_uds=0
+```
+
+So the full regression is GREEN again on a tree that carries, from this round: the reverse courier, the
+plane's generation PING, and the loader-side receive (with a 1 ms miss budget).
