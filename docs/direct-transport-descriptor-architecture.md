@@ -4846,3 +4846,39 @@ FIVE attempts are now measured, and each one moved the target:
 The next step is not another toggle: it is to instrument the guest's attach acceptance for the exact case
 "the rule returned -1 for this attach" -- one line in that branch plus one run -- because that is the only
 place the fifth attempt failed that the fourth did not.
+
+
+### 38.3 DECISIVE: with the one-time rule on, the suite is green on the WRONG transport
+
+Full regression with the pid-keyed rule AND the reply token enabled (all three consumers rebuilt, so the
+earlier stale-binary explanation is out of the way):
+
+```
+FINAL=1  HELLO=1  passes: pass=1 pass=1 pass=1 pass=1      <- every test PASSES
+machmsg_ring=24   machmsg_uds=20
+machmsg_ring=104  machmsg_uds=100
+machmsg_ring=205  machmsg_uds=1
+machmsg_ring=4    machmsg_uds=640                          <- the stress test ran on the DATAGRAM
+drive: ring_doorbell_sent_to_guest=24  ring_doorbell_reused=1512  ring_doorbell_processes=12
+       attach-failed=16
+```
+
+That is the worst shape a regression can take, and it is why the rule is now disabled with a comment saying
+it must stay that way until the failure is understood: the suite passes because the workload FELL BACK to
+UDS, not because the Ring path works. Sixteen attaches failed; the guest's own `no-wake-fd` diagnostic (added
+for exactly this case) never fired, so the failure is not on the acceptance branch I instrumented.
+
+Reverted; verified afterwards with the correct transport numbers:
+
+```
+FINAL=1 HELLO=1   ool 20: ring=44 uds=0   basic 100: ring=204 uds=0
+r2 100: ring=206 uds=0   stress 16x20: ring=644 uds=0     attach-failed=0
+```
+
+The lesson generalises beyond this bead and is worth keeping: **a passing suite is not evidence when the
+fallback path can absorb the failure.** `machmsg_uds` must be read on every run, exactly as the pass column
+is, and a run whose pass column is green while its uds column is not is a RED result.
+
+The doorbell task therefore stays open, with its target now precisely stated: the one-time delivery must be
+achieved WITHOUT any attach failing, and the measurement that proves it is `attach-failed=0` together with
+`machmsg_uds=0` on the stress workload -- both, not either.
