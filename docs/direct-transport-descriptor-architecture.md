@@ -4683,3 +4683,28 @@ The fork class is visible in the same run as `checkin:process` following a `cour
 new pid (pids 382881/382882/382883/382884 all appear within 0.3 s of the first process, each with its own
 attach and plane), i.e. the fork child re-establishes both transport halves itself instead of inheriting
 them -- which is what the fork-reset design requires.
+
+
+### 36. P1/P2 on the current tree
+
+Same product configuration (default Ring), one run:
+
+```
+bench_simple 2000   pass=1  ns_per_op=28668.2   p50=16551.0  p95=75301.9  p99=164686.0  min=7032.9  max=675646.1
+bench_ool    2000   pass=1  ns_per_op=218509.2  p50=183584.9 p95=427467.1 p99=607161.1  min=76814.1 max=1524037.0
+```
+
+  * P1 (simple mach_msg round trip): 28.7 us/op, median 16.6 us;
+  * P2 (out-of-line descriptors): 218.5 us/op, median 183.6 us.
+
+Provenance, stated because it matters: these are ABSOLUTE numbers on the current build, not a controlled A/B
+against UDS. The last controlled pairs were measured in round 12 with the same harness (UDS 40102 vs Ring
+17922 ns/op for simple; 400661 vs 228005 for OOL), and round 12's Ring figure for simple was 21996 ns/op
+against today's 28668. The two are not comparable as a regression claim: the build, the prefix and the
+machine load differ, and this session's own lesson is that back-to-back runs on a loaded machine move these
+medians materially. A controlled pair (Ring vs UDS on ONE build, ideally alternating) is the measurement
+that would settle whether the plane/courier work cost anything on the hot path, and it is owed.
+
+What can be said without overclaiming: the workload-level regression suite is GREEN with every descriptor
+half either on the courier or on the page, and the hot-path benchmarks still pass with the same shape
+(simple ~29 us median 17 us; OOL ~219 us median 184 us).
