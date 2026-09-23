@@ -3619,3 +3619,27 @@ log whose pids (15796, 27552) were far below the current run's. The reliable pro
 `darling --rootless shutdown`, kill any process whose cmdline names the prefix, verify none remain, then
 install and launch. Both the "boot stalls" readings from those runs and the conclusions drawn from them
 were withdrawn.
+
+
+### 25.5 Reverse-direction mutations, measured (`DARLING_SERVER_COURIER_MUTATE`)
+
+The guest validates every received bundle before it is stored: the kind must be one this build knows
+(`CONSOLE_FD`, `KQCHAN_FD`, `PROCESS_DOORBELL`) and the generation must be the process's own. A refused
+descriptor is CLOSED at the point of refusal, so a token can never resolve to a descriptor that belongs to
+another operation or a dead epoch. The fallback wait is bounded (SO_RCVTIMEO 200 ms on the shared socket),
+because a semantic reply that names a token whose descriptor never arrives is a committed failure of that
+operation and must be reported, not turned into a hang.
+
+| mode | boot | `ool 20` | receive misses | sent_to_guest | fallback_cmsg | reading |
+|---|---|---|---|---|---|---|
+| duplicate | `HELLO=1` | `pass=1` | 0 | 10 (5 ops x2) | 0 | the operation executes ONCE, the duplicate is closed, boot stays GREEN |
+| kind (0xFFFF) | `HELLO=0` | — | 2 | 2 | 0 | refused; no descriptor fabricated, no false success |
+| stale (gen+1) | `HELLO=0` | — | 2 | 2 | 0 | refused; same |
+| nofd | `HELLO=0` | — | 2 | 2 | 0 | the reply names a token with no descriptor: reported as a miss, the boot fails rather than hanging |
+
+`fallback_cmsg = 0` in every mode: the legacy CMSG reply path is not silently absorbing the traffic the
+courier was supposed to carry.
+
+Still owed in this direction (not measured yet, and not claimed): the `orphan` mode, and a dump of the
+guest's reverse-direction counters (`receive_kind_rejects`, `receive_stale_rejects`, `receive_dropped`,
+`receive_misses`) in the `[dring-lane-stats]` line so the rejects are visible without a per-mode log read.
