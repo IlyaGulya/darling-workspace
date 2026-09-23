@@ -3730,3 +3730,64 @@ Two facts follow, and the second is the actionable one:
 MEASURED NEGATIVE on the way: removing the eager creation without changing the call site left the
 thread-create checkin running with `t_server_socket == -1`, and the boot stopped
 (`HELLO=0`, shellspawn never ready). The call site must ask lazily; the counter then reports the truth.
+
+
+## 28. Round 49d: Phase-0 -- the per-image timeline, and the design choice from source
+
+### 28.1 Timeline (guest side, measured)
+
+Extracted per (pid, tid) from a product run (`/tmp/LZ2.log`, 68 events over 35 tids). Guest lines carry no
+clock, so this is file ORDER, which is what the ordering questions are about:
+
+```
+lane:seed-attach -> doorbell:loader -> socket:created(reason=checkin) -> lane:attach-rpc
+```
+
+Per-thread, the same run shows:
+
+```
+tid=192314: SOCKET -> ATTACH
+tid=192315: SOCKET -> ATTACH
+tid=192317: ATTACH          (no socket)
+```
+
+and the server-side trace from a run WITH `DSERVER_LOG_STDERR=true` (round 47/48 logs) puts
+`checkin:process -> checkin:thread -> srv:plane-region -> srv:plane-request(op=1) -> lane:seed-attach` --
+i.e. the plane's region is mapped and its first request serviced BEFORE the loader seeds its lane.
+
+Image classes captured so far: the loader's own bootstrap (`lane:seed-attach`, `doorbell:loader`), an
+ordinary shell/test image (execve pairs `vchroot -> launchd`, `/bin/bash -> /bin/sh`, attributed in
+§24.7), and thread creation (the SOCKET -> ATTACH rows above). NOT yet captured in one run with server
+timestamps: the fork child and the exec transition of an existing pid. That run is owed.
+
+### 28.2 Design A is not a proposal -- it is already the shape of the code
+
+`Server::_drainFdCourierMessages` maps a `DSERVER_FD_COURIER_KIND_PROCESS_CONTROL` bundle into
+`_processControl[pid]` using only the connection's `SO_PEERCRED` pid. No `Process`, no `Thread`, no
+namespace and no checkin is involved, and the mapping is serviced in the server's own loop pass. That is
+precisely Design A's requirement: **transport registration independent of semantic guest registration**.
+Design B (launcher-boundary provisioning) would need a new owner in the launch path for a capability the
+courier already provides, so A is the smaller one and it is chosen.
+
+What round 48 falsified was therefore NOT Design A but one sequence built on top of it:
+
+```
+create the page -> synchronous PING whose answer depends on normal Process state -> before the first
+loader write
+```
+
+### 28.3 The exact Phase-0 delta
+
+1. Server: when a `PROCESS_CONTROL` region is mapped, publish `transport_ready` in the page and futex-wake
+   it. No Process is consulted, so this cannot be the round-48 hazard.
+2. Loader: create the page, send ONLY its fd on the courier, and wait on `transport_ready` (bounded) --
+   with NO PING. Establish it before `dserver_rpc_set_dyld_info`, which is where round 48 failed: the
+   difference is that nothing semantic is awaited, only a transport acknowledgement the courier path can
+   give without a Process.
+3. Then the ordered bootstrap stream on that one page: CHECKIN (seq 1) -> SET_DYLD_INFO (seq 2) ->
+   SET_EXECUTABLE_PATH (seq 3), each completing before the next is issued. No datagram interleaving.
+4. Only then the lane: ATTACH_LANE's semantic half on the same page (§17), doorbell not resent (§26).
+
+The Phase0ControlShm ABI already has the fields this needs (`abi_version`, `process_generation`,
+`request_seq/state/op/payload[4]`, `reply_seq/state/status`, `futex`, `server_seen`); `transport_ready` is
+the one field still to add.
