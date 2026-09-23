@@ -4744,3 +4744,45 @@ Reverted, keeping the generation fix (verified GREEN alone: `FINAL=1 HELLO=1`, `
 `r2 100`=206, `stress 16x20`=644, every test `pass=1`, all `machmsg_uds=0`). The next step is exactly that
 reply path -- why the generated wrapper's token branch did not fire for `ring_attach` on the loader's own
 seed call, which is a source-reading question first.
+
+
+### 38. Fourth doorbell attempt: real progress, a mixed-state incident, and the real next target
+
+With matching binaries and the loader-side receive implemented (the loader's `dserver_rpc_hooks_fd_courier_receive`
+was a `return -1` STUB -- correct when only the loader-to-server direction existed, wrong now that the
+doorbell arrives in the other direction):
+
+```
+[mldr-seed] attach-rc pid=399509 rc=0 reject=0 wake=8      <- the loader RESOLVED a doorbell
+kind=7 bundles sent: 36                                     <- but the one-time rule did not hold
+HELLO=0
+```
+
+Two findings, both precise:
+
+  * the reply-token path works once the loader can RECEIVE: `wake=8` is the first time the loader resolved a
+    doorbell at all;
+  * the one-time rule needs a key that does not move under it. It is keyed on
+    `_ringDoorbellGeneration(pid)`, and that value CHANGES while the boot runs (the plane's PING sets it
+    after the first attaches), so 36 bundles were sent for far fewer processes. The rule must key on the
+    incarnation's FIRST delivery (or on an explicit guest acknowledgement), not on a generation that the
+    plane is still teaching.
+
+A procedure incident worth recording: a revert script asserted on text it had already replaced in an earlier
+step, so it wrote the GENERATOR revert and then died BEFORE writing the server revert. The tree spent one run
+in a mixed state (generator without the reply token, server still applying the one-time rule) whose signature
+is unmistakable and worth memorising: `kind=7` bundles sent, `[dring-uds-reason-hist] reason=ATTACH_FAILED`,
+`machmsg_uds` back above zero, `HELLO=0`. It was repaired by reverting the generator and rebuilding
+`mldr darlingserver libsystem_kernel.dylib`, and the verified GREEN run after the repair is:
+
+```
+FINAL=1 HELLO=1   ool 20=44  basic 100=204  r2 100=206  stress 16x20=644   all pass=1   all machmsg_uds=0
+```
+
+KEPT from this attempt: the loader-side courier receive (a real implementation instead of the stub) and the
+generation fix from §37. REVERTED: the one-time rule and the `ring_attach` reply token, because with them
+enabled the boot does not complete.
+
+The next step is now unambiguous and small: key the one-time delivery on the incarnation's first attach (or
+have the guest acknowledge receipt), then re-enable the rule with the reply token -- both halves work
+individually (`kind=7` with a real generation, and `wake=8` resolved by the loader).
