@@ -4263,3 +4263,22 @@ the reasons must be folded into the server-side per-callnum table, which already
 
 So §6's blocker is narrower than §32.1 claimed: not "instrument the decision point", but "dump the existing
 histogram from the processes that actually take the datagram path".
+
+
+### 32.3 The reason instrumentation covers the generated wrappers only
+
+`DARLING_GUEST_LANE_DIAG=1` (which makes `gr_urs_note` emit one `[dring-uds-reason]` line per
+(reason, callnum)) produced ZERO lines on a product run that is otherwise GREEN (`HELLO=1 DONE=1`). Together
+with §32.2 that pins the coverage: `gr_urs_note` is called from the GENERATED wrapper path and from the
+lane-resolution misses that path takes, while the operations the census shows falling back --
+`thread_self_trap`, `vchroot_path`, `pthread_canceled`, `fork_wait_for_child`, `set_dyld_info`,
+`checkin`, `ring_attach` -- are issued from HAND-WRITTEN call sites (the loader's own RPC glue and the
+lifecycle code), which never enter that path and therefore never record a reason.
+
+That is the honest state of §6: the reason census exists and works for generated calls, and the remaining
+fallbacks are exactly the hand-written ones, which is consistent with their classification -- PRE_IMAGE_
+BOOTSTRAP (the loader's writes and first attach), PRE_LANE_LIFECYCLE (checkin) and TEARDOWN_NO_LANE
+(checkout's detached instance). The four candidates the per-callnum table names
+(`thread_self_trap uds=10`, `vchroot_path uds=9`, `pthread_canceled uds=75`, `fork_wait_for_child uds=4`)
+are the ones that still need a reason from a hand-written site before any of them can be called a real
+non-fd bug.
