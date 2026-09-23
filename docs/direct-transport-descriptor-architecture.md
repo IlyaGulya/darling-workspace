@@ -4031,3 +4031,36 @@ This is a precise, reproducible target rather than a hypothesis: one print after
 State: the checkin route stays implemented-but-unexercised; the datagram fallback runs; the tree is GREEN
 (`FINAL=1 HELLO=1`, 44/204/206/644, all `pass=1`, all `machmsg_uds=0`) with these diagnostic prints in
 place, and they are diagnostics only -- no behaviour depends on them.
+
+
+### 31.6 Correction: nothing "flips" -- the checkin site runs BEFORE the establishment in that path
+
+The window brackets came back in a different ORDER than the source suggests, and that is the answer:
+
+```
+mldr-ctl] page pid=282979 size=112 sent=1                     <- the page is created and sent
+mldr-ctl] checkin-route pid=282979 ready=0 page=0x74d909560000 <- the CHECKIN site runs HERE
+mldr-ctl] ready pid=282979 state=1 page=0x74d909560000         <- the establishment block's diag
+mldr-ctl] after-dyld     pid=282979 status=0 ready=1
+mldr-ctl] after-execpath pid=282979 status=0 ready=1
+mldr-ctl] before-threadself pid=282979 ready=1
+mldr-ctl] after-threadself  pid=282979 ready=1
+mldr-ctl] after-seed        pid=282979 ready=1
+```
+
+The checkin site is reached BEFORE the establishment block's diagnostic in the same pid, with the SAME page
+pointer. So the readiness word is not being cleared by anything -- it had simply not been set yet at the
+point the checkin asked (the page existed and had been sent, but the establishment block that waits for
+`transport_ready` had not run in that path). §31.5's "something writes 0" reading is superseded by this
+ordering evidence, and the earlier §31.4 observation is consistent with it: the establishment diag prints
+`state=1` because BY THEN the server had mapped the page.
+
+The remaining question is therefore a control-flow one, not a memory one: in the path that reaches the
+checkin, what runs between the page's creation/send and the establishment block? That is answerable by
+reading the code rather than by another boot, and the fix is either to establish earlier in that path or to
+let the checkin wait for readiness itself (it already has `wait_ready`, so the checkin site can simply wait
+before deciding).
+
+State: the checkin route stays implemented-but-unexercised, the datagram fallback runs, the tree is GREEN
+(`FINAL=1 HELLO=1`, 44/204/206/644, all `pass=1`, all `machmsg_uds=0`), and the added prints are
+diagnostics only.
