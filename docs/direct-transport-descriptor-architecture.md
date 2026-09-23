@@ -3897,3 +3897,28 @@ implemented but NOT exercised, and it is not claimed as exercised.
 Next attribution, one line: log `ready` at the checkin call site (as is already done for the plane
 establishment) so the false case names the image, and decide whether the page must be re-established after
 an image transition or handed to the new image by the loader.
+
+
+### 31.1 The attribution, measured: `ready=0` at the checkin site in EVERY image
+
+```
+checkin-route pid=268566 tid=268566 ready=0 lifetime=-1 image=mldr!/tmp/.../vchroot
+checkin-route pid=268566 tid=268566 ready=0 lifetime=-1 image=mldr!/tmp/.../launchd
+checkin-route pid=268571 tid=268571 ready=0 lifetime=-1 image=mldr!/tmp/.../shellspawn
+checkin-route pid=268573 tid=268573 ready=0 lifetime=-1 image=mldr!/tmp/.../bash
+checkin-route pid=268573 tid=268573 ready=0 lifetime=-1 image=mldr!/tmp/.../sh
+checkin-op = 0
+```
+
+Every image reaches this call site with the page NOT ready, and with no lifetime pipe (`lifetime=-1`, which
+is why the token is 0 and the server's trace says `lifetime_pipe=-1`). Yet the SAME pids have
+`[mldr-ctl] ready pid=N state=1` lines and the same run shows `dyld-info-op status=0`, so the page WAS
+ready earlier in that process -- the establishment block sits at line ~311 and this call site at ~1770, and
+`g_process_control_page` is only ever assigned (line 1055) and never reset.
+
+So the two measurements are inconsistent unless the page the checkin site consults is not the page the
+writes used. That is the next thing to measure, and it is one line each: log the PAGE POINTER and
+`transport_ready` at the establishment site and at this call site, plus the region identity the server
+holds for that pid (it re-maps on every `PROCESS_CONTROL` bundle, and a second image sends its own). Until
+that is answered, the checkin route stays implemented-but-unexercised and the datagram fallback is what
+runs -- which is exactly what the boot shows, and what this record claims: nothing more.
