@@ -5960,3 +5960,40 @@ Two of my own readings were wrong in this round and both are recorded rather tha
 `shellspawn did not become ready` line is a per-process message that appears in GREEN runs, and a run must be
 read after its own `FINAL`. The count of misread runs is now four; every one of them came from reading a
 diagnostic line instead of the verdict, which is the single most expensive habit in this work.
+
+
+### 53. The teardown abort, fixed at the reply funnel -- and checkout now rides the page
+
+§52 named the real failure: the server aborts when a reply send meets a peer that is gone. The throw site is
+`message.cpp`'s send loop, which treats EAGAIN, EINTR, EPIPE and ECONNREFUSED as "drop this message and carry on"
+and throws on everything else -- and `ENOTCONN` ("Transport endpoint is not connected") was not in that list. A
+teardown call whose caller is exiting therefore took the whole server down.
+
+Fixed at the funnel, which is where it belongs: **a vanished peer is a dropped message, never a reason to abort
+the process.** That is not checkout-specific -- any reply to a departed peer would have done the same.
+
+With the abort gone, the execve checkout on the page is GREEN:
+
+```
+FINAL=1  HELLO=1  passes: pass=1 pass=1 pass=1 pass=1
+ool 20: 44/uds=0   basic 100: 204/uds=0   r2 100: 206/uds=0   stress 16x20: 644/uds=0
+ENOTCONN occurrences: 0
+```
+
+So the operation that appeared to "wedge the boot" twice was the server dying, and the fix is one errno in a
+list that already had three of its siblings. The census snapshot for `checkout` was again not captured (the
+server exits before the read); the route is GREEN and the number is recorded as unmeasured.
+
+### 53.1 What this round established
+
+  * `ring_attach` uses no AF_UNIX at all (measured live: `uds=0 plane=176`).
+  * `checkin` moved from 159/159 datagrams to 167/332 with 165 on the page (measured live), including the
+    main-thread site that a round-49 experiment had left disabled.
+  * `checkout` on the page is GREEN once the reply funnel stops aborting on a departed peer; the server-side
+    `OP_CHECKOUT` case is in the tree and the execve instance uses it.
+  * Eight defects found and fixed by measurement, including one that had been mis-diagnosed twice (the abort),
+    one false RED corrected, one build-consistency rule re-learned, and one dead counter set removed.
+
+Remaining, unchanged in kind: the descriptor-less thread-exit checkout (same funnel fix applies; it needs the
+measurement the execve instance just got), `console_open` / `kqchan_proc_open`, the socket metric and its
+removal, the image-adoption tail, the mutation suite, and the final censuses with the FD slope.
