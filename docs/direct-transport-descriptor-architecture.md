@@ -4999,3 +4999,49 @@ before the route can be built: a measurement of whether the guest's publish is e
 were left unanswered by this attempt because the code was written before the question was asked. That is the
 mistake this record exists to prevent repeating: the page route must be instrumented where it DECIDES not to
 run, not only where it runs.
+
+
+### 41. ATTACH_LANE on the page: GREEN, and the attach's semantic half leaves the datagram
+
+Attempt 2 succeeded, and the two things that made attempt 1 unreadable were both fixed first: the route was
+instrumented where it DECIDES not to run, and its wait was BOUNDED so an unanswered page degrades instead of
+stalling a boot.
+
+What attempt 1 got wrong, measured in attempt 2:
+
+  1. **A negative reply was treated as an attach.** The server answered `-9` (EBADF) because the request was
+     serviced while its descriptor half was still in flight on the courier, and the guest set
+     `plane_route = 1` anyway -- so it believed in a lane that did not exist. That is what stalled the boot,
+     not the page. Now `rc < 0` is a REFUSAL that falls back to the datagram route, and the guest's own
+     diagnostic says so (`[dring-plane-attach] refused tid=... rc=-9`).
+  2. **The attribution sat behind an early `break`.** `attach-lane-op=0` in attempt 1's measurement made the
+     whole route look unentered while the server was in fact servicing it. A diagnostic placed after the exit
+     it is meant to explain reports the wrong thing -- the same lesson as §40, one level down.
+
+Verified GREEN with the route live and the one-time doorbell still ON:
+
+```
+FINAL=1  HELLO=1   passes: pass=1 pass=1 pass=1 pass=1
+ool 20:       ring=44   uds=0
+basic 100:    ring=204  uds=0
+r2 100:       ring=206  uds=0
+stress 16x20: ring=643  uds=0
+guest:        [dring-plane-attach] ok tid=... rc=0 reject=0 wake=-1     (one per attaching thread)
+```
+
+So `ring_attach`'s SEMANTIC half no longer needs the datagram: the page carries it, the descriptor half still
+rides the process-scoped courier with `kind = LANE_BACKING` (exactly the kind the datagram route used), and
+the reply is read from the suppressed reply body. Combined with §39, the attach now costs no ordinary
+semantic RPC on AF_UNIX at all on the measured path -- the remaining AF_UNIX use is the checkin family and
+the teardown checkout, both already documented.
+
+Two residuals, stated rather than implied:
+
+  * **`wake=-1` on every attach, including the first.** The doorbell descriptor did not arrive through the
+    page route's token, so the guest's doorbell must still be coming from somewhere else on this path
+    (the loader's seed connection). That is worth one attribution line: the page route's token is wired, but
+    it is not the path that actually delivers the process doorbell.
+  * **The `ring_attach` row in the census was not re-read for this run** (the server had already exited when
+    the counters were queried). The evidence that the route is live is the guest-side line plus
+    `machmsg_uds = 0` on all four workloads, which is stronger than the row would have been -- but the row
+    is the number this step was defined by, so the next run must capture it live.
