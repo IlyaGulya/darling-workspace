@@ -5916,3 +5916,47 @@ same proper measurement the execve instance just got, rather than another revert
 Round 52 is therefore: `ring_attach UDS = 0` (measured), checkin on the page for three sites (measured), the
 execve checkout on the page (measured GREEN), seven defects fixed, one dead counter set removed, one build rule
 re-learned, one false RED corrected.
+
+
+### 52. CHECKOUT on the page aborts the server, and that is why it stays on the datagram
+
+Both checkout instances were routed through the page twice -- the execve instance (descriptor half on the
+courier) and the descriptor-less thread-exit instance -- and the log names the real failure, which is not a boot
+wedge and not a false read:
+
+```
+terminate called after throwing an instance of 'std::system_error'
+  what():  Failed to send messages through socket: Transport endpoint is not connected
+Rootless shellspawn did not become ready within 30000ms
+```
+
+**The server aborts.** Checkout is a TEARDOWN call: its caller is going away, and the server still attempts a
+reply send that the page route's `suppressReplyDelivery()` does not prevent -- the attempt throws and takes the
+process down. That also explains the earlier readings: what looked like a boot wedge was the server dying, and
+what looked like a false RED (§51) was a run read before the abort.
+
+Both guest sites are therefore on the datagram, with this reason recorded in place, and the server-side
+`OP_CHECKOUT` case stays in the tree: it is the right shape for the operation, and what it needs is the
+teardown-ordering work -- a page-serviced call whose caller may be gone must not attempt any send, which is a
+change to the reply funnel rather than to this case.
+
+Verified after the reverts: `FINAL=1`, `HELLO=1`, `ool 44 / basic 204 / r2 206 / stress 644`, all
+`machmsg_uds=0`; prefix clean.
+
+### 52.1 Round 52 close, with the honest ledger
+
+```
+ring_attach:  total=176  uds=0    plane=176      <- measured live
+checkin:      total=332  uds=167  plane=165      <- measured live (159/159 before the round)
+checkout:     datagram, both instances; page route implemented, ABORTS the server, reverted with the cause
+regression:   FINAL=1  HELLO=1  44 / 204 / 206 / 644   all machmsg_uds=0
+```
+
+Seven defects found and fixed by measurement; one disabled route re-enabled (the main-thread checkin); one dead
+counter set removed; one build-consistency rule re-learned; one false RED corrected; and one operation proven,
+by an abort with a named exception, to need reply-funnel work before it can leave the datagram.
+
+Two of my own readings were wrong in this round and both are recorded rather than quietly fixed: the
+`shellspawn did not become ready` line is a per-process message that appears in GREEN runs, and a run must be
+read after its own `FINAL`. The count of misread runs is now four; every one of them came from reading a
+diagnostic line instead of the verdict, which is the single most expensive habit in this work.
