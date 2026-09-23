@@ -4314,3 +4314,39 @@ needs before it can ask for zero.
 
 The census row field `plane` and the `CallTransport::ProcessControl` tag are the measurement change this
 round produced; the transport itself is unchanged by it.
+
+
+### 32.5 §6 answered: TWO operations use UDS while their thread HAS a live lane
+
+Armed census (`DARLING_SERVER_RPC_HEATMAP=1 DARLING_SERVER_RESIDUAL_CENSUS=1
+DARLING_SERVER_ATTACH_CENSUS=1`), same product workload, GREEN (`FINAL=1 HELLO=1`, every test `pass=1`):
+
+```
+residual_uds_despite_lane = { checkout: 153, vchroot_path: 9, thread_self_trap: 9 }
+residual_reason           = { thread_no_ring_proc_none: 1, thread_no_ring_proc_has: 0,
+                              thread_has_ring: 171, control_plane: 348, ineligible: 1361 }
+
+attach_census (per callnum):
+  checkin              pre_attach_uds=9    post_attach_uds=165   pre_attach_eligible=9  ring_eligible=1
+  checkout             pre_attach_uds=0    post_attach_uds=153   pre_attach_eligible=0  ring_eligible=1
+  vchroot_path         pre_attach_uds=0    post_attach_uds=9     pre_attach_eligible=0  ring_eligible=1
+  fork_wait_for_child  pre_attach_uds=0    post_attach_uds=8     ring_eligible=0
+  console_open         pre_attach_uds=0    post_attach_uds=3     ring_eligible=0
+```
+
+Read as a classification (no bucket names invented, each row from a measured field):
+
+  * `checkin` 9 pre-attach: the thread has no lane yet BY CONSTRUCTION (it checks in before attaching) --
+    PRE_LANE_LIFECYCLE, not a bug. Its 165 post-attach instances already ride something else.
+  * `checkout` 153 residual: the known teardown instance (§X2: the handler clears the Thread so the reply
+    has no lane route) -- TEARDOWN_NO_LANE.
+  * `vchroot_path` 9 and `thread_self_trap` 9 residual with `ring_eligible=1`: **these are the real
+    POST_LANE_NONFD_BUG cases** -- the thread HAS a live lane, the operation is ring-eligible, and it took
+    the datagram anyway.
+  * `fork_wait_for_child` 8 and `console_open` 3: `ring_eligible=0`, so their datagram use is not a defect.
+
+So §6 is answered: there are exactly two operations to investigate, not four, and neither is the
+bootstrap/teardown family the earlier reading suspected. `vchroot_path` and `thread_self_trap` are both
+IMAGE-LOCAL-looking calls (a path lookup and a trap that the loader/image performs) -- the obvious
+hypothesis to test is that these instances come from an image whose lane view is absent
+(`GR_URS_IMAGE_LOCAL_STATE`), which would make them a *view* problem rather than a routing one.
