@@ -4061,6 +4061,14 @@ reading the code rather than by another boot, and the fix is either to establish
 let the checkin wait for readiness itself (it already has `wait_ready`, so the checkin site can simply wait
 before deciding).
 
+One caveat that must be closed first, because the two readings cannot both be true: the establishment block
+is UNCONDITIONAL and sits at line ~311 while the checkin call site is at ~1780, so within one invocation the
+`ready` diagnostic must precede `checkin-route`. The trace shows the opposite, with the same page pointer on
+both lines. Before any code is changed on the strength of it, the trace needs to distinguish invocations:
+stderr order is preserved (unbuffered), so the cheapest disambiguator is an invocation counter (or the image
+path) on EVERY diagnostic line, and a re-run then says whether the ordering is real or whether these two
+lines belong to different mldr invocations that happen to share a page address.
+
 State: the checkin route stays implemented-but-unexercised, the datagram fallback runs, the tree is GREEN
 (`FINAL=1 HELLO=1`, 44/204/206/644, all `pass=1`, all `machmsg_uds=0`), and the added prints are
 diagnostics only.
