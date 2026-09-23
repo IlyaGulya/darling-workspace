@@ -4132,3 +4132,29 @@ alone cannot distinguish two passes of the SAME image).
 
 State unchanged and verified GREEN: `FINAL=1 HELLO=1`, `ool 20`=44, `basic 100`=204, `r2 100`=206,
 `stress 16x20`=644, all `pass=1`, all `machmsg_uds=0`; the checkin route is implemented but unexercised.
+
+
+### 31.9 The checkin route was exercised -- and the boot stops (measured, reverted)
+
+`page=(nil)` at the checkin site answered the ordering question: the site is reached BEFORE the page exists,
+so the route could never be taken. Establishing the transport AT THE SITE (`__mldr_process_control_create()`
++ `wait_ready()` when the page is NULL) made the route reachable, and then:
+
+```
+checkin-op pid=300510 call=1 thread=300510 process=300510 nsid=1     (twice: two processes)
+HELLO=0   dyld-op=1 (a healthy boot performs 8)   shellspawn never became ready
+```
+
+So the plane's CHECKIN is EXECUTED and SEMANTICALLY CORRECT -- the synthesized call resolves its thread, its
+process and `nsid=1` -- and the boot still stops. That is the round-45/46 outcome reproduced with the plane
+established at the point of use, which rules out the establishment position as the cause and leaves the
+servicing model: the page is serviced on the server's own loop pass, while the datagram is serviced on
+arrival, and this checkin's effect must be visible to the process's other traffic (the fork/exec handshake
+that travels on a socket).
+
+Reverted: the checkin stays on the datagram path, with the measurement recorded next to the call site.
+Verified after the revert: `FINAL=1 HELLO=1`, `ool 20`=44, `basic 100`=204, `r2 100`=206,
+`stress 16x20`=644, every test `pass=1`, all `machmsg_uds=0`.
+
+Also settled in this round: the diagnostics now carry a per-process sequence number and an invocation image
+tag, so any future ordering claim can be checked against a stamped order rather than a line position.
