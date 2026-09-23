@@ -5708,3 +5708,32 @@ calls, but they are no longer attaches -- they are the checkin family, which is 
 Six defects were found and fixed across rounds 50-51, every one by measurement: the generation map used by the
 re-queue, the pid-keyed pairing registry, the non-unique courier token, the unclaimed mailbox slot in the guest
 attach, the unclaimed slot in the loader's publisher, and the inherited page after fork.
+
+
+### 46. CHECKIN on the page: GREEN, and it is the operation that used to stop the boot
+
+Round 49 established that the page's CHECKIN ran correctly (`call=1, thread=pid, process=pid, nsid=1`) and then
+stopped the boot; the conclusion recorded there was that the page's servicing model was incompatible with the
+checkin lifecycle. With the transaction model (§1-§8) and the page-ownership fix (§45) in place, the
+thread-create checkin was routed through the page and measured:
+
+```
+checkin:      total=218   uds=116   ring=0   plane=102      (was 159 / uds=159)
+ring_attach:  total=116   uds=0     ring=0   plane=116
+txn:          claimed=116  completed=116
+HELLO=1  DONE=1  basic 100 pass=1  machmsg_uds=0
+```
+
+Two things are now true that were not before:
+
+  * **CHECKIN rides the page and the boot is GREEN.** The operation that wedged the boot in round 49 completes
+    through the same page now, which is the difference the transaction model and the page-owner fix made -- not
+    a change to checkin's semantics, which were always correct.
+  * **The ordering barrier holds** (§9-§11): the guest waits for the server's completion before returning from
+    checkin, and the server's `OP_CHECKIN` runs the ordinary Call and writes its status back to the page, so
+    later process traffic cannot overtake a checkin that has not committed.
+
+The remaining 116 checkin datagrams are the **main-thread** checkin, which is a different call site and was
+deliberately left on the datagram path by the earlier work (it is ordered against `checkout` in the exec/fork
+handshake, where a socket gave ordering for free). That site is the next item, and it is now the only checkin
+path still using AF_UNIX.
