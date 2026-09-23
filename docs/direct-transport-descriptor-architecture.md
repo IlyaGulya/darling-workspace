@@ -3791,3 +3791,41 @@ loader write
 The Phase0ControlShm ABI already has the fields this needs (`abi_version`, `process_generation`,
 `request_seq/state/op/payload[4]`, `reply_seq/state/status`, `futex`, `server_seen`); `transport_ready` is
 the one field still to add.
+
+
+## 29. Round 49e: census of the current tree, with its provenance stated
+
+Measured from the verified run of this round (`/tmp/LZ2.log`, the same run that produced the GREEN
+regression):
+
+```
+lane-stats processes                5
+machmsg_ring (sum over processes)   1104
+machmsg_uds  (sum over processes)   0
+nonfd_uds_violation                 0
+lanes acquired / released / held    154 / 153 / 1
+per-thread RPC socket creations     27, every one reason=checkin
+```
+
+The per-CALLNUM census is from the round-46/47 heatmap run and is NOT refreshed by the runs above, so it
+is quoted as the previous round's measurement, not as the current one:
+
+```
+checkin 174 · ring_attach(semantic) 174 · checkout 152-156 (ring 4-9) · pthread_canceled 75/490 ·
+set_dyld_info 10 · set_executable_path 10 · thread_self_trap 10/184 · vchroot_path 9/20 ·
+fork_wait_for_child 4/4 · console_open 3 · kqchan_proc_open 2 · TOTAL uds~623 ring~1066
+```
+
+Classification of what is still socket-backed, by the reason rather than by a bucket name:
+
+| class | operations | why it is still on the socket |
+|---|---|---|
+| PRE_IMAGE_BOOTSTRAP | `set_dyld_info`, `set_executable_path`, the loader's first `ring_attach` | they precede the first lane attach and, measured in round 48, the plane's establishment cannot be moved ahead of them unchanged |
+| PRE_LANE_LIFECYCLE | thread-create `checkin` | measured ordering this round: a new thread checks in BEFORE it attaches a lane, so no lane can carry it; it is also fd-bearing (lifetime pipe) |
+| FD_LEGACY_NOT_YET_COURIER | none for the two ops moved this round | `console_open` / `kqchan_proc_open` descriptors now ride the courier; their SEMANTIC reply is still a datagram carrying a token, which is a semantic transport question, not an fd one |
+| TEARDOWN_NO_LANE | `checkout` teardown instance | the handler clears the Thread, so the reply has no lane route (X2, measured) |
+| DEBUG/COMPAT | the ring-disabled compatibility path | behind a switch by design |
+
+Owed: one heatmap run on the current tree to replace the quoted per-callnum table, and the same run with
+server timestamps to close the two image classes the timeline is still missing (fork child, exec
+transition of an existing pid).
