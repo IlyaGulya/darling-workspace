@@ -4374,3 +4374,42 @@ classified. That is the next step, and it is small because the hook is already a
 
 What this section does NOT claim: it does not claim the two are unfixable, and it does not claim they are
 bootstrap-only -- `post_attach_uds` is measured, so they happen with a lane attached.
+
+
+### 32.7 The two candidates narrow to ONE condition: a full ring
+
+Measured: the loader's own `try_ring` never refused in a product run (`[mldr-ring] refused` = zero lines
+with the instrument in place), so the 9-10 datagram instances of `thread_self_trap` / `vchroot_path` do not
+come from the loader's generated-wrapper path. They come from the KERNEL image's dedicated fast paths
+(`__dserver_ring_thread_self_trap` / `__dserver_ring_vchroot_path`), which try the ring first and fall back
+to the datagram when the helper returns -1:
+
+```
+static int gr_port_trap(uint32_t callnum, uint32_t* out_port) {
+    gr_lane_t* L = gr_lane_for_this_thread_named((uint32_t)callnum, "gr_port_trap");
+    if (!L) {
+        return -1; // no ring for this thread -> UDS fallback (reason counted at the lookup)
+    }
+    dserver_ring_slot_t* req = dserver_ring_producer_begin(c2s, GR_SLOT_SIZE, GR_SLOT_COUNT);
+    if (!req) {
+        return -1; // ring full -> UDS fallback
+    }
+    ...
+```
+
+There are exactly two -1 conditions, and the census already rules out the first for these instances: the
+residual census records them as `thread_has_ring` (the thread HAD a live lane). What remains is the second:
+`dserver_ring_producer_begin` returned NULL because the c2s ring had no free slot, and the call fell back to
+a datagram by design.
+
+That makes the fix concrete and small, and it is the same shape as the earlier M6 lesson (a guest must not
+silently drop a slot the server may be parked on):
+
+  1. count that condition (`GR_URS_RING_FULL`), because the reason histogram has no reason for it today and
+     that is why the census could not name it;
+  2. on a full ring, WAIT for a slot (bounded) instead of falling back to UDS -- a full ring is
+     backpressure, not a routing failure, and falling back reintroduces exactly the transport this bead is
+     removing.
+
+Neither claim here is beyond the source: the -1 conditions are the two lines quoted, and the census field
+that rules out the first one (`thread_has_ring`) is measured.
