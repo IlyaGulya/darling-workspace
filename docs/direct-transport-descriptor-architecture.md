@@ -4537,3 +4537,33 @@ measurement-method problem. Two workable fixes, in order of cost:
 Nothing about the transport changed here; the deliverable of this section is the negative result about the
 method plus the two ways to fix it, because an fd slope computed from the wrong process is worse than no
 slope.
+
+
+### 33.1 FD inventory, measured (method fixed first)
+
+The method problem in §33 was fixed by making the TEST name itself at start
+(`[rmmt] start pid=N mode=... workers=N`, one line, added to `ring_mach_msg_test`), so the host-side sampler
+uses the pid of the process the workload actually runs in instead of guessing from cmdlines. The sample is
+taken while the test is running (`stress_pool N 4000`, sampled at 25 s).
+
+```
+stress_pool 1  4000:  total=18  sockets=5   eventfds=1  memfds=1  pipes=1  other=10
+stress_pool 40 4000:  total=96  sockets=83  eventfds=1  memfds=1  pipes=1  other=10
+```
+
+Read as a slope:
+
+  * `eventfds` = **1** at both sizes: the ONE process doorbell does not scale with threads. That is the
+    perf#28 property, now measured from the fd table rather than asserted.
+  * `memfds` = **1**: the lane catalog is one page (`pages=1` in the lane-stats line agrees), not one memfd
+    per lane.
+  * `pipes` = 1 and `other` = 10: constant.
+  * `sockets` goes 5 -> 83 for 1 -> 40 threads: **+78 for +39 threads = exactly 2 sockets per thread**. The
+    per-thread RPC socket is still the descriptor that scales with threads, and it is the thing the final
+    architecture removes.
+
+So the FD slope target (§27) is not met yet, and the measurement now says by how much and by what: two
+sockets per thread, one process doorbell, one lane page. `other=10` is unclassified by this sampler
+(readlink did not match any of the four patterns) and is the next thing to name -- it is constant with thread
+count, so it is not a scaling term, but leaving it as "other" is exactly the kind of bucket this work has
+been removing.
