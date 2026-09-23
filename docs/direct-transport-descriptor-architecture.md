@@ -5398,3 +5398,34 @@ a servicing-model question) and nine are attaches taken before the page exists (
 single `uds` number was hiding both, which is exactly why the counters had to become per-cause and accumulated
 before any further attempt -- and why §41.3's "the fourteen are the loader's" reading, and §31's attempts to
 close the whole window at once, were both chasing a composite.
+
+
+### 43.7 The invisible class, quantified by subtraction, and the capture limit found
+
+Three things were done to make the pre-page attaches visible, and only the first two worked:
+
+  * the guest counts them (`gr_attach_no_page`, `gr_attach_ready_fail` at `dserver-ring.c:1388` and the
+    ready-path bail), and prints them in the lane-stats dump -- an `sys_exit` channel already known to be safe,
+    deliberately not an early-path print;
+  * the counters are in the built binary (verified in the source at 557/1388/1954/1992 and rebuilt);
+  * but the dump is TRUNCATED by the capture: the line ends `... courier_attemDONE`, i.e. the guest's stderr
+    interleaves with the next command's output and the tail fields are lost. So the field exists and does not
+    reach a readable log through this launch path -- a capture limitation, recorded rather than worked around
+    with another instrument, because the number is already known by subtraction.
+
+What is known without it (aggregate run, §43.6):
+
+```
+plane=135 == ok=135     every attach that reached the page succeeded
+refused=7               reached the page, refused on their descriptor
+uds=16                  so 16 - 7 = 9 never reached the page at all
+```
+
+So the class that no instrument could see is nine attaches per run, and the arithmetic that produced it is
+closed: the page-route counters cover exactly what the page saw, and the aggregate row covers the rest.
+
+State of the whole line after this round: everything is reverted except what is measured working, the tree is
+GREEN at the recorded numbers, and four items stay blocked with their reasons on record -- the courier doorbell
+(pre-page window), the per-thread socket counter and its removal (checkin leaving the datagram), and the two
+`POST_LANE_NONFD_BUG` candidates (image-adoption ownership). The one design question that unblocks the largest
+group is the page's servicing model: may a request outlive its requester, and how is a late answer retired.
