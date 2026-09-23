@@ -4100,3 +4100,35 @@ after the establishment in the same invocation.
 
 Also still true from this run: the plane is established and both writes are serviced (`status=0`), and the
 readiness word is 1 from the establishment onward within that invocation.
+
+
+### 31.8 The side-effect explanation is itself refuted: the ordering survives a read-only instrument
+
+The diagnostics were changed to read the page pointer through a read-only accessor (no lazy creation), and
+the trace is UNCHANGED:
+
+```
+mldr-ctl] page pid=291917 size=112 sent=1
+mldr-ctl] checkin-route pid=291917 ready=0 page=0x77b892de4000 image=mldr!.../vchroot
+mldr-ctl] ready pid=291917 state=1 page=0x77b892de4000 sz=112 off=104
+mldr-ctl]   ready-image=vchroot
+mldr-ctl] after-dyld/execpath/threadself/seed ... ready=1 image=vchroot
+```
+
+So §31.7 is WITHDRAWN: the ordering was not the instrument. What the trace says, with the same page
+pointer and the same image tag on every line, is that in this invocation the checkin site prints BEFORE the
+establishment block's line -- while the source puts the establishment at ~311 and the checkin at ~1810, and
+the `page ... sent=1` line (which comes from `__mldr_process_control_create`) precedes BOTH.
+
+Three facts therefore stand together and cannot all be explained by one `main()` pass:
+  * the page exists before the checkin (`page sent=1` is first);
+  * `ready` is 0 at the checkin and 1 at the establishment line and afterwards;
+  * both plane writes are serviced (`status=0`).
+
+The next investigation must NOT be another hypothesis about memory: it needs (a) a monotonic sequence
+number stamped on every diagnostic line so any reordering is impossible, and (b) a check of whether this
+path reaches `main()` more than once per image (the loader is re-entered across execve, and the image tag
+alone cannot distinguish two passes of the SAME image).
+
+State unchanged and verified GREEN: `FINAL=1 HELLO=1`, `ool 20`=44, `basic 100`=204, `r2 100`=206,
+`stress 16x20`=644, all `pass=1`, all `machmsg_uds=0`; the checkin route is implemented but unexercised.
