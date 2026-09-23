@@ -3643,3 +3643,47 @@ courier was supposed to carry.
 Still owed in this direction (not measured yet, and not claimed): the `orphan` mode, and a dump of the
 guest's reverse-direction counters (`receive_kind_rejects`, `receive_stale_rejects`, `receive_dropped`,
 `receive_misses`) in the `[dring-lane-stats]` line so the rejects are visible without a per-mode log read.
+
+
+## 26. Round 49b: one-time doorbell delivery is NOT yet safe (measured), and what it exposed
+
+Goal: stop transferring a dup of the SAME process doorbell on every `ring_attach` reply -- deliver it once
+per process incarnation through the courier, and let every later attach carry no fd at all.
+
+Built: `Server::_ringDoorbellDelivered` keyed by `(pid, generation)` returning -1 for an incarnation that
+already received one; `ring_attach` added to `REPLY_FD_COURIER_KINDS` with an appended wire-only
+`fd_token` in its reply; the guest accepting `wake_fd == -1` when the shared loader already owns a
+doorbell.
+
+Measured: **RED**, and the failure is informative rather than a tuning problem.
+
+1. `sent-to-guest pid=N token=1 kind=7 gen=0` -- the doorbell bundle was stamped with generation 0,
+   because the LOADER's own seed attach runs before any courier traffic exists for that incarnation. The
+   guest's staleness check then refused the descriptor (`gen=0 != its own`), closed it, the token resolved
+   to nothing, the seed published no lane (`attach-rc ... wake=-1`, `map=(nil)`) and the boot stopped.
+   Fixed on the way and KEPT: the server drains the courier before answering (the request-direction
+   bundle can still be in the backlog when the reply is built) and the token mixes pid, generation and
+   counter (MEASURED: with generation 0 the first token was exactly `1` -- reproducible from a constant
+   for any pid).
+2. A bundle the receiver will refuse is worse than the legacy path, so a bundle with an unknown generation
+   now falls back to the reply CMSG and says so (`fd_courier_fallback_cmsg`).
+3. Even with that fallback the seed still failed: the one-time rule returned -1 for the SECOND build of
+   the same attach reply (the courier park path re-enters `processCall`), so the incarnation's only
+   delivery was consumed by a reply that was not the one the loader read.
+
+Reverted to the verified behaviour: every attach reply carries a dup and the guest's shared loader keeps
+the first and closes the rest (one wake fd per process, N transfers). The counters
+(`ring_doorbell_sent_to_guest`, `ring_doorbell_reused`) were removed with it rather than left reporting a
+mechanism that is off.
+
+What the next attempt must change, exactly:
+  * make the attach reply be built once per attach (or make the delivery idempotent per attach), and
+  * give the server the incarnation's generation BEFORE the loader's first attach -- the loader's seed
+    attach is the first attach of a process and has no courier traffic behind it.
+
+Procedure lesson that cost three runs: changing the generated RPC structs requires rebuilding **mldr** as
+well as `darlingserver` and `libsystem_kernel.dylib`. A stale loader parsed the reply with the old size and
+the seed attach failed with `rc=-70` -- a size mismatch, not a transport fault.
+
+State after the revert (verified): `FINAL=1 HELLO=1`, `ool 20`=44, `basic 100`=204, `r2 100`=206,
+`stress 16x20`=644, every test `pass=1`, all `machmsg_uds=0`, 10 doorbell lines (one per image attach).
