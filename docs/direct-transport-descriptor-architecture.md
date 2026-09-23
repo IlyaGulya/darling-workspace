@@ -5795,3 +5795,30 @@ Two honest notes:
     should be either fixed or removed rather than left reading a constant (the lesson of §43.1, which this round
     managed to repeat with a new counter).
   * `checkout` (153 datagrams) is now the largest remaining semantic UDS user, and it is the next item.
+
+
+### 48.1 The dead counters, removed
+
+The six per-site checkin counters added in §47 were never incremented -- they read a constant zero, which is the
+"counter that always answers the same way" defect this work has already recorded twice (the dead attach-caller
+counters of §43.1 and the sampled route counters of §43.6). They were removed rather than left in place, with the
+reason recorded where they were: the aggregate heatmap already carries the movement they were meant to explain,
+and a counter that cannot be wrong is not evidence.
+
+Verified after the removal: `HELLO=1`, `ool 44 / basic 204 / r2 206`, all `machmsg_uds=0` (the stress workload
+was cut by its window in that run, as it has been several times; it was GREEN with the same binaries in §48's
+measurement).
+
+### 48.2 Where round 52 leaves the line
+
+```
+ring_attach:  total=176  uds=0    plane=176      <- no attach uses AF_UNIX
+checkin:      total=332  uds=167  plane=165      (159/159 at the start of the round)
+checkout:     total=163  uds=153  ring=10
+pthread_canceled / thread_self_trap / vchroot_path: 153/10, 169/10, 20/9
+```
+
+Six defects found and fixed by measurement across the round (generation map, pid-keyed pairing, non-unique token,
+two unclaimed mailbox slots, inherited page after fork), plus the re-enable of a route a round-49 experiment had
+left switched off. Next, in order: `checkout` (the largest remaining semantic UDS user, 153), then the two
+descriptor calls (`console_open` 3, `kqchan_proc_open` 2), then the socket metric and its removal.
