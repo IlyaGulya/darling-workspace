@@ -5737,3 +5737,27 @@ The remaining 116 checkin datagrams are the **main-thread** checkin, which is a 
 deliberately left on the datagram path by the earlier work (it is ordered against `checkout` in the exec/fork
 handshake, where a socket gave ordering for free). That site is the next item, and it is now the only checkin
 path still using AF_UNIX.
+
+
+### 47. Round 52 state
+
+Two more checkin sites were routed through the page after §46, and the measured movement is:
+
+```
+checkin:      total=218   uds=110   plane=108      (was 218 / uds=116 / plane=102, and 159/159 before round 52)
+ring_attach:  total=116   uds=0     plane=116
+checkout:     total=107   uds=100   ring=7
+HELLO=1  DONE=1  basic 100 pass=1  machmsg_uds=0
+```
+
+What moved: the fork-child checkin (which needed a bounded TRANSPORT wait, because a forked child gets a FRESH
+page from the ownership fix and its transport is not established at that instant -- without the wait it fell
+back to the datagram and the counters did not move at all). What did not: 110 checkin datagrams remain, and they
+are not the sites already converted, so the next step is to attribute them by caller rather than to convert
+another site blind -- the same lesson this round has now taught three times.
+
+Honest ledger for the round: `ring_attach` is at zero UDS; checkin moved from 159/159 to 110 datagrams with 108
+on the page; `checkout` (100) and the two descriptor calls (`console_open` 3, `kqchan_proc_open` 2) are
+untouched; the socket metric, the image-adoption tail and the mutation suite are untouched.
+
+Verified GREEN at every step: `HELLO=1`, `basic 100` = 204 / `uds=0`, `stress 16x20` = 643-644 / `uds=0`.
