@@ -5623,3 +5623,26 @@ return.
 
 Verified with the trace in place (it is gated, so the normal path is unchanged): `HELLO=1`, `ool 44`, `basic 204`,
 `r2 206`, all `machmsg_uds=0`.
+
+
+### 44.5 Mailbox serialization for every publisher: correct, and measured not to be the wedge
+
+The page had two publishers, and only one of them claimed the slot: the guest attach (CAS, §44.2) and
+`__mldr_process_control_request` -- which is the publisher for every OTHER operation, including the loader's
+bootstrap writes. Publishing over another request overwrites `request_seq`, after which the server answers a
+sequence the waiting caller does not hold. That is a real defect against §7's model, so it was fixed: the slot
+is now claimed with a compare-exchange there too, a caller that cannot claim returns a distinct error and falls
+back to its own route, and the wait treats CLAIMED as "ownership moved, wait for completion" rather than as a
+reason to give up.
+
+Measured with the route enabled: **the boot still wedges** (`HELLO=0`, `DONE=0`), and no `no-slot` outcome is
+counted. So the concurrent-publisher overwrite was a real defect but NOT the cause of the third attach losing
+its answer.
+
+Verified that the serialization did not disturb the default path (it is on the loader's bootstrap route too):
+`FINAL=1`, `ool 44 / basic 204 / r2 206 / stress 642`, all `machmsg_uds=0`.
+
+The wedge therefore still points at §44.4's lead and nothing else: the attach that does not return is executed
+under a different process identity than the page it is answered through. The next instrument is one line --
+print the page's pid and the publishing tid in the same completion line -- and that is the only open thread in
+this line of work.
