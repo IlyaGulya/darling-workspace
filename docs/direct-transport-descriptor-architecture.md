@@ -5646,3 +5646,57 @@ The wedge therefore still points at §44.4's lead and nothing else: the attach t
 under a different process identity than the page it is answered through. The next instrument is one line --
 print the page's pid and the publishing tid in the same completion line -- and that is the only open thread in
 this line of work.
+
+
+### 45. The wedge was a forked child publishing into its parent's page
+
+The lead of §44.4 was right and the cause was one level below it: the page pointer is a **static in the image**,
+so a forked child inherited its parent's page and published its requests **into the parent's page**. The server
+answered there, and the child's caller waited for a reply addressed to another process -- the third-attach hang.
+
+Fix: the page names its owner (`owner_pid`, written at creation) and the accessor abandons a page whose owner is
+not this process, creating a fresh one for this incarnation.
+
+Measured with the route live and the fix in place -- the first time the page route for ATTACH_LANE runs as the
+default path:
+
+```
+FINAL=1  HELLO=1   passes: pass=1 pass=1 pass=1 pass=1
+ool 20:       ring=44    uds=0
+basic 100:    ring=204   uds=0
+r2 100:       ring=206   uds=0
+stress 16x20: ring=643   uds=0
+
+attach_route:  ok=142  refused=0  claimed_no_lane=0  no_slot=0
+txn:           claimed=142  wait_fd=0  completed=142
+ring_attach:   total=151  uds=9  plane=142          (was 151 / uds=16 / plane=135)
+```
+
+`attach_route_refused = 0` is §14's acceptance, met. The remaining nine are the **loader's own seed attach**,
+which went straight to the datagram while every later attach rode the page -- so the seed was routed through the
+page as well (descriptor on the courier with `kind = LANE_BACKING`, semantics and completion on the page, with
+the mailbox claim and the CLAIMED-aware wait).
+
+Measured after that: `FINAL=1`, `HELLO=1`, `basic 100` = 204 / `uds=0`, `stress 16x20` = **644** / `uds=0`.
+
+**Honest gap**: the post-seed `ring_attach uds` number was not captured -- the stat snapshot needs a live server
+and the run's own `sleep` ended before the read twice. The method is known and cheap (launch with
+`DARLING_SERVER_RPC_HEATMAP=1`, read `darling-stat` between the last test and the guest's exit); the number is
+recorded as unmeasured rather than inferred from the pre-seed value.
+
+### 45.1 Round 51 summary
+
+| item | state |
+|---|---|
+| §1-§8 transaction model, CLAIMED vs DONE, async pairing, cancellation, incarnation-safe completion | implemented |
+| §14 `attach_route_refused = 0` | MET (142 plane, 0 refused, 0 wait_fd, 0 no_slot) |
+| page route for ATTACH_LANE | ON by default (hatch `DARLING_GUEST_PLANE_ATTACH_OFF`) |
+| §17-§18 pre-page window | seed routed through the page; the resulting count not captured |
+| §9-§13 CHECKIN barrier | not attempted (next: the page route is now default, so it can be) |
+| §19 doorbell once | reachable now; not re-measured |
+| §21-§26 image-adoption, socket metric, socket removal, semantic-UDS invariant | unchanged |
+| §27-§35 census, FD slope, perf, mutations | unchanged |
+
+Six defects were found and fixed across rounds 50-51, every one by measurement: the generation map used by the
+re-queue, the pid-keyed pairing registry, the non-unique courier token, the unclaimed mailbox slot in the guest
+attach, the unclaimed slot in the loader's publisher, and the inherited page after fork.
