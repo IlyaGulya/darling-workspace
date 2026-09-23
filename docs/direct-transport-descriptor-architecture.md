@@ -5045,3 +5045,38 @@ Two residuals, stated rather than implied:
     the counters were queried). The evidence that the route is live is the guest-side line plus
     `machmsg_uds = 0` on all four workloads, which is stronger than the row would have been -- but the row
     is the number this step was defined by, so the next run must capture it live.
+
+
+### 41.1 The acceptance number, measured live
+
+```
+dserver_callnum_ring_attach   total=149   uds=14   ring=0   plane=135
+```
+
+Against the previous round's `ring_attach 174 / uds=174`: the attach's semantic half is now on the process
+control page for **135 of 149** attaches (90%), and the remaining **14 on UDS are the ones that happen before
+the page is established** (the loader's earliest attaches -- `transport_ready` is published when the server
+maps the region, and a page cannot carry a request before it exists). The route is therefore live and the
+number that defined this step moved from "all" to "the pre-page window only".
+
+Same snapshot, the other rows that matter:
+
+```
+checkin               149 / uds=149
+checkout              139 / uds=132  ring=7
+pthread_canceled      542 / uds=74   ring=468
+thread_self_trap      165 / uds=8    ring=157
+vchroot_path           23 / uds=7    ring=16
+console_open            3 / uds=3
+kqchan_proc_open        2 / uds=2
+doorbell: processes=7  sent_to_guest=14  suppressed=135
+```
+
+Two things follow directly, and both are concrete rather than programme-level:
+
+  * `console_open` (3) and `kqchan_proc_open` (2) have their descriptor half on the courier already; their
+    SEMANTIC half is what still costs a datagram, and `OP_ATTACH_LANE` is now the worked example of how to
+    move it -- same page shape, same suppressed-reply-body read.
+  * `checkin` is unchanged at 149/149. The page's CHECKIN exists (§31) and is semantically correct, so what
+    is missing is not the route but the servicing position; `ring_attach` now proves the machinery around it
+    works, which is new information for that older question.
