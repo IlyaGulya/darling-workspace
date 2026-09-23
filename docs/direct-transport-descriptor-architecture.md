@@ -6054,3 +6054,31 @@ regression:   FINAL=1  HELLO=1  44 / 204 / 206 / 644   all uds=0
 
 Next, in order: attribute the 167 from the server side, then `pthread_canceled` (76), `thread_self_trap` (10),
 `vchroot_path` (9), `console_open` (3), `kqchan_proc_open` (2), then the socket metric and its removal.
+
+
+### 56. Attribution from the server side: the datagram checkins are fork children and main/thread checkins with no lifetime descriptor
+
+The instrument that works -- the server's own log at the UDS checkin path -- answers §55 in one run:
+
+```
+uds-checkin pid=826379 tid=826379 fork=0 lifetime=-1
+uds-checkin pid=826379 tid=826381 fork=0 lifetime=-1
+uds-checkin pid=826383 tid=826383 fork=1 lifetime=-1
+uds-checkin pid=826402 tid=826402 fork=1 lifetime=-1
+...
+count=218
+```
+
+Every one carries `lifetime=-1`, so **none of them is the exec path** (which has a lifetime pipe). They are
+fork children (`fork=1`) and main/thread checkins (`fork=0`), and each pid/tid appears twice.
+
+That contradicts the conversion: the fork-child site WAS routed through the page in §47 and the thread-create
+site in §46. So for these processes the page route is not being taken even though it exists in the code -- the
+candidate is that a forked child's page is not ready within the bounded wait (the child inherits the parent's
+page pointer, the ownership check abandons it, and a fresh page needs a courier round trip that the wait may not
+cover), or that the code is not reached at all on this path.
+
+That is the next measurement, and it is now cheap: the same log plus a page-route success/failure line at the
+two converted sites will say which. It is worth stating plainly that this is the fifth time in this work that a
+conversion has been recorded as done on the strength of the code being present rather than the route being
+taken, and the attribution log is the instrument that would have caught all five.
