@@ -4413,3 +4413,32 @@ silently drop a slot the server may be parked on):
 
 Neither claim here is beyond the source: the -1 conditions are the two lines quoted, and the census field
 that rules out the first one (`thread_has_ring`) is measured.
+
+
+### 32.8 The full-ring hypothesis is REFUTED by measurement; what remains is the guest's own lookup
+
+Added `GR_URS_RING_FULL` (a named reason at the `!req` exit of `gr_port_trap`) and ran the product workload
+with `DARLING_GUEST_LANE_DIAG=1 DARLING_GUEST_LANE_STATS=1 DARLING_SERVER_RPC_HEATMAP=1
+DARLING_SERVER_RESIDUAL_CENSUS=1`:
+
+```
+HELLO=1 FINAL=1, every test pass=1
+reason=RING_FULL occurrences: 0
+[dring-uds-reason-hist] lines: 0
+```
+
+So the ring was never full for those instances, and §32.7's conclusion is WITHDRAWN. `gr_port_trap` has two
+-1 exits; the second is now measured out, which leaves the first -- `gr_lane_for_this_thread_named()` found
+no lane for the calling tid. The guest's lookup and the server's `thread_has_ring` can disagree because they
+answer different questions: the server asks whether the thread has a lane attached, the guest asks whether
+THIS tid has a usable entry in ITS image's catalog -- and a tid whose lane lives in another image's view (or
+that has not attached yet in this image) is a miss on the guest side while the server still sees a ring.
+
+The reason for that miss cannot be read from this run because the processes that take those fallbacks do not
+emit the reason lines at all (the dump and the per-miss emit both live in code paths they do not reach --
+§32.2/§32.3). That is the honest state: the cause is now "the guest's lane lookup missed for that tid", the
+two candidate operations are the only ones the census flags, and naming the exact reason needs the guest
+reason line to reach the log from the image that performs those calls.
+
+The `GR_URS_RING_FULL` reason stays in the tree: it is a real condition of `gr_port_trap`, it was simply not
+the one that fired, and leaving it unnamed is what let two rounds of reading assume it.
