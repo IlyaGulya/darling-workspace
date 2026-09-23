@@ -5892,3 +5892,27 @@ Seven defects found and fixed by measurement across the round, one disabled rout
 set removed and one build-consistency rule re-learned. What is left is unchanged in kind from the directive's
 remaining list: the teardown ordering that checkout needs, the two descriptor calls, the socket metric and
 removal, the image-adoption tail, the mutation suite, and the final censuses.
+
+
+### 51. Correction: the checkout "RED" was a false read
+
+§50 recorded both checkout routes as RED on the strength of a `shellspawn did not become ready` line. That line
+appears in GREEN runs too -- it is a per-process message, not the run's verdict -- and the runs in question were
+read at the wrong moment, before their own `FINAL`. Measured properly, with the execve route restored:
+
+```
+FINAL=1  HELLO=1  passes: pass=1 pass=1 pass=1 pass=1
+ool 20: 44/uds=0   basic 100: 204/uds=0   r2 100: 206/uds=0   stress 16x20: 644/uds=0
+```
+
+**The execve checkout on the page is GREEN** and is kept. The lesson is the same one this work has recorded more
+than once and keeps re-learning: a per-process diagnostic line is not a verdict, and a run must be read after
+its own completion marker -- the discipline that produced the false RED here is the same one that produced the
+false "done" readings earlier in the project, in the opposite direction.
+
+The descriptor-less thread-exit checkout is not restored in this round; it is a teardown call and it needs the
+same proper measurement the execve instance just got, rather than another revert on a misread.
+
+Round 52 is therefore: `ring_attach UDS = 0` (measured), checkin on the page for three sites (measured), the
+execve checkout on the page (measured GREEN), seven defects fixed, one dead counter set removed, one build rule
+re-learned, one false RED corrected.
