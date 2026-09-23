@@ -5761,3 +5761,37 @@ on the page; `checkout` (100) and the two descriptor calls (`console_open` 3, `k
 untouched; the socket metric, the image-adoption tail and the mutation suite are untouched.
 
 Verified GREEN at every step: `HELLO=1`, `basic 100` = 204 / `uds=0`, `stress 16x20` = 643-644 / `uds=0`.
+
+
+### 48. The main-thread checkin was disabled by a round-49 experiment
+
+The attribution question of §47 answered itself in the source: the main-thread checkin sat behind
+
+```c
+if (false && __mldr_process_control_ready()) {
+```
+
+-- switched off by the round-49 RED experiment and never re-enabled, so EVERY process's main checkin used the
+datagram. That is the whole of the remaining checkin UDS traffic, and it needed no new code to fix, only the
+route it already had.
+
+Re-enabled, and measured with a live server:
+
+```
+checkin:      total=332   uds=167   plane=165      (was 218 / uds=110 / plane=108; 159/159 before this round)
+ring_attach:  total=176   uds=0     plane=176
+checkout:     total=163   uds=153   ring=10
+HELLO=1  FINAL=1  passes: pass=1 pass=1 pass=1 pass=1
+ool 20: 44/uds=0   basic 100: 204/uds=0   r2 100: 206/uds=0   stress 16x20: 644/uds=0
+```
+
+The route that stopped the boot in round 49 now carries the main checkin with the full regression GREEN -- the
+difference being the transaction model (§1-§8) and the page-ownership fix (§45), not any change to checkin.
+
+Two honest notes:
+
+  * the per-site attribution counters added for this measurement read zero, so the six counters did not do their
+    job -- the site-level split is known only from the aggregate movement (plane 108 -> 165), and the counters
+    should be either fixed or removed rather than left reading a constant (the lesson of §43.1, which this round
+    managed to repeat with a new counter).
+  * `checkout` (153 datagrams) is now the largest remaining semantic UDS user, and it is the next item.
