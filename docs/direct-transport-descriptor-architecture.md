@@ -4158,3 +4158,57 @@ Verified after the revert: `FINAL=1 HELLO=1`, `ool 20`=44, `basic 100`=204, `r2 
 
 Also settled in this round: the diagnostics now carry a per-process sequence number and an invocation image
 tag, so any future ordering claim can be checked against a stamped order rather than a line position.
+
+
+## 32. Round 49j: the fresh per-callnum census, and a defect it exposes in the census itself
+
+Measured on the current tree, live from the server's stat channel during the standard product workload
+(`DARLING_SERVER_RPC_HEATMAP=1`), after the plane is established before the first write:
+
+```
+rows=21   total=1691   uds=624   ring=1067        (rows reconcile: 624 + 1067 = 1691)
+
+pthread_canceled        566   uds=75   ring=491
+thread_self_trap        194   uds=10   ring=184
+checkin                 174   uds=174  ring=0     PRE_LANE_LIFECYCLE
+set_thread_handles      174   uds=0    ring=174
+ring_attach             174   uds=174  ring=0     semantic half still a datagram
+checkout                162   uds=153  ring=9
+mach_reply_port          58   uds=0    ring=58
+host_self_trap           38   uds=0    ring=38
+task_self_trap           36   uds=0    ring=36
+vchroot_path             29   uds=9    ring=20
+uidgid                   22   uds=0    ring=22
+started_suspended        10   uds=0    ring=10
+get_tracer               10   uds=0    ring=10
+set_dyld_info            10   uds=10   ring=0     <-- serviced by the PLANE, counted as UDS
+set_executable_path      10   uds=10   ring=0     <-- serviced by the PLANE, counted as UDS
+mldr_path                 9   uds=0    ring=9
+fork_wait_for_child       8   uds=4    ring=4
+console_open              3   uds=3    ring=0     semantic datagram; descriptor on the courier
+kqchan_proc_open          2   uds=2    ring=0     same
+vchroot                   1   uds=0    ring=1
+kqchan_mach_port_open     1   uds=0    ring=1
+```
+
+Counterpart evidence from the same run: `process_control_regions=10`, `process_control_requests=20`,
+`process_control_wakes=20`, `fd_courier_sent_to_guest=5`, `fd_courier_fds_received=183`,
+`fd_courier_fd_matched=173`, `ring_doorbell_processes=9`.
+
+**The defect this exposes**: `process_control_requests = 20` is exactly `set_dyld_info 10 +
+set_executable_path 10`, and those 20 rows are counted in the UDS column. The heatmap tags a call by the
+transport its REQUEST arrived on, and a plane request is not tagged at all, so the synthesized call falls
+into the datagram bucket. The census therefore OVERSTATES legacy semantic UDS by the plane's own traffic --
+in this run by 20 of 624. Any gate of the form "legacy semantic UDS = 0" has to separate the plane's
+serviced calls from real datagram-serviced ones first, or it will never reach zero while the plane is used.
+That is the next census change, and it is a measurement change, not a transport one.
+
+Classification of the remaining socket-backed traffic with this table (replacing the quoted one in §29):
+  * PRE_LANE_LIFECYCLE: `checkin 174` (a new thread checks in before it attaches a lane).
+  * PRE_IMAGE_BOOTSTRAP: the loader's first `ring_attach` (its 174 includes the per-thread attaches).
+  * FD_LEGACY_NOT_YET_COURIER: none -- `console_open` / `kqchan_proc_open` descriptors ride the courier
+    (`fd_courier_sent_to_guest=5` matches their 5 calls); their SEMANTIC reply is still a datagram.
+  * TEARDOWN_NO_LANE: the `checkout` instances with no lane route (153 of 162).
+  * POST_LANE_NONFD_BUG candidates, to be checked one by one: `thread_self_trap uds=10`,
+    `vchroot_path uds=9`, `pthread_canceled uds=75`, `fork_wait_for_child uds=4` -- these have a usable lane
+    for their other instances (184/20/491/4 ring), so each UDS instance needs a reason.
