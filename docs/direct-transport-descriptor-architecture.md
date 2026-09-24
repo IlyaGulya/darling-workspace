@@ -6462,3 +6462,37 @@ lane-eligible and the `ring` column of the heatmap is counting something else.
 This correction is recorded rather than quietly overwritten because the error is the third of its kind in this
 document -- a number produced by an instrument that could not answer the question asked -- and because the
 `has_lane=1` / `lane=1` substring collision is exactly the sort of thing that will recur.
+
+
+### 66. Answer to §65: `pthread_canceled` is not lane-eligible, and the heatmap's `ring` column is not trustworthy for such calls
+
+The separating measurement §65 named, run on the full regression:
+
+```
+AZ1:  HELLO=1  FINAL=1  passes: pass=1 pass=1 pass=1 pass=1
+pthread_canceled:  lane=0 571   lane=1 0   has_lane=1 571   has_lane=0 0
+```
+
+`lane=1` never appears -- zero of 571 invocations were taken off the lane, across a run that includes
+`stress_pool 16 20` and therefore has lanes in active use. So the first of §65's two candidates holds: the callnum
+is **not lane-eligible**. This is a generator policy fact, not a guest defect, and `pthread_canceled` on the
+datagram is by design.
+
+That also settles the second number, and it is the more useful outcome of the two: the full-run heatmap reported
+`pthread_canceled total=571 uds=75 ring=496`, and this measurement shows that **zero** of those calls were
+serviced from a lane. So the `ring` column is counting something other than "this call was taken off a lane" for
+at least this callnum. Until that column is understood per callnum, no conclusion about the transport of a
+non-eligible call may be drawn from it -- which is the same warning as §38.3 (`machmsg_uds` must be read every
+run) applied to the other column.
+
+What this closes and what it leaves:
+
+* `pthread_canceled`, `thread_self_trap` and `vchroot_path` are the three callnums that are not lane-eligible.
+  Their datagram traffic is the design, and the "remaining semantic UDS" figure should be read as those three
+  callnums plus the permanently-datagram loader checkin of §63 -- not as a migration gap.
+* The reachable target is therefore what §58 measured: attach and checkout off AF_UNIX entirely, checkin on the
+  page for every site that can carry it, and the per-thread RPC socket, whose only consumer is the checkin, as the
+  next thing to remove.
+* The heatmap's `ring` column needs its own attribution before it is cited again; the transport tag it is built
+  from is set at the point a call is taken off the lane (§29), so a callnum that is never taken off a lane must
+  read zero there, and 496 means the tag is not what the column assumes.
