@@ -8469,3 +8469,39 @@ Also recorded: the first attempt at this diagnostic was **invalid** -- it was la
 previous run, and the resulting log held a single line (the timeout) with no guest output at all, which is the
 signature of a reused server rather than a boot. The clean relaunch produced the 31-line log quoted above. The
 workspace rule exists because this exact mistake produces a plausible-looking measurement.
+
+
+### 117. The CMSG branch writes an INDEX, not a descriptor -- and the plane case was reading it as one
+
+§116 named the mechanism; reading the generated sender's fallback branch to the end gives the concrete defect:
+
+```c
+} else {
+    reply.pushDescriptor(socket);
+    replyStruct->body.socket = (fdIndex++);      /* an INDEX into the CMSG list -- initially 0 */
+    replyStruct->body.fd_token = 0;
+}
+```
+
+`body.socket` in that branch is **not** the descriptor: it is the position of the descriptor in the CMSG list,
+which is 0 for the first one. The pre-§106 plane case did `if (rb->socket >= 0) returnedFd = rb->socket;`, so on
+this path it took **fd 0** as the descriptor -- then re-sent "fd 0" on the courier and, when that returned 0, closed
+**fd 0** in the server process. Three separate faults from one misread field:
+
+1. a descriptor the caller cannot receive is silently reported as success (`status=0`, `token=0`, `fd=-1`);
+2. the value 0 is used as a real descriptor;
+3. `close(returnedFd)` closes the server's fd 0.
+
+The fix removes the misuse and records the miss instead of guessing:
+
+* only a **non-zero `fd_token`** counts as a descriptor transfer (the courier path);
+* when `fd_token == 0`, the plane case does **not** treat `body.socket` as a descriptor, counts
+  `fdCourierFallbackCmsg`, and names the event (`kqchan-plane-no-token`) when the courier log is on;
+* `returnedFd` stays -1, so nothing is sent and nothing is closed.
+
+The underlying fault remains the one §116 named: the generated sender chose a transport (CMSG) that a plane caller
+cannot read, and it did so **silently**. Removing the misread makes the boot's failure honest instead of corrupting
+the service; the courier's own reason for returning 0 is the next measurement.
+
+Worth stating plainly: this defect was invisible to every counter in the tree. The call reported `status=0`, the
+guest reported a resolved call, and the only signal was a `-1` descriptor in a line added for a different purpose.
