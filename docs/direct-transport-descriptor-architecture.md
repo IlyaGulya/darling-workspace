@@ -7942,3 +7942,44 @@ when it is learned from **any** channel, not only from a courier envelope.
 
 Everything upstream of it -- the page route, the opcode, the reply status, the guest's token resolution -- is
 measured working. This is the last thing standing between the call and a usable descriptor.
+
+
+### 103. §102 refuted by measurement -- and kqchan is closed; the hatch now names `mach_msg_overwrite`
+
+The instrument added to the courier's own log line settled §102 in one run:
+
+```
+bundle-to pid=1398575 kind=7 socket=14 isLoader=1 conns=1 gen=6322248287677099 genKnown=1
+```
+
+`genKnown=1` with a real generation. So the courier is **not** refusing on the `generation == 0` path, and §102's
+chicken-and-egg explanation is wrong -- the PING handler already records the generation from
+`page->request_payload[3]`, and that is enough.
+
+What the same run shows is better than a fix: the hatch's next complaint is no longer `kqchan_mach_port_open`.
+
+```
+[rpc-socket-DENIED] pid=1398575 tid=1398575 call=mach_msg_overwrite
+```
+
+`kind=6` (`KQCHAN_FD`) does not appear in this run at all, and neither does a `kqchan-open` line -- because the call
+**succeeded** before any of that mattered and the boot moved on. The generated reply-fd path (§100/§101) and the
+generation rule (§102) are both working; the migration of `kqchan_mach_port_open` onto the management plane plus the
+courier is **done**.
+
+That leaves `mach_msg_overwrite` as the sixth consumer, and it is a different animal from the previous five: it is
+the Mach message exchange itself, not a management operation, so the transport it must use is the **lane**, not the
+plane. A per-thread socket being created for it means the lane is not carrying a call that is squarely its business
+-- which is the core transport question this directive exists to answer, reached by the hatch rather than by a
+census.
+
+Progress this cycle, stated as measurements:
+
+| step | hatch's next complaint |
+|---|---|
+| start | `mach_port_deallocate` |
+| after duplex lane | `vchroot` |
+| after plane `OP_VCHROOT` | `kqchan_mach_port_open` |
+| after plane op + courier + reply-fd + token | `interrupt_enter` |
+| after urgent pool | `sigprocess` |
+| after urgent completion | **`mach_msg_overwrite`** |
