@@ -6606,3 +6606,60 @@ The next instrument has to say whether the page request happened at all for thos
 guest page counter (two sets of those were written and never incremented, §47/§48.1). The server already logs the
 request's `payload[1]` (the tid) when it services an OP_CHECKIN; logging the same tid at the socket-creation site
 and intersecting the two lists answers it in one run, the way the checkin attribution of §56 did.
+
+
+### 70. The sequence collision is real, was fixed, and is NOT the cause either
+
+§69 narrowed the 27 to "the page request either never reached the server or was never completed". The
+intersection the section named answers the first half, and it is decisive:
+
+```
+socket tids: 19   checkin-op req tids: 143
+in BOTH: 19       socket-only (no page request): 0
+sample both: ('1206534','1206536') ('1206534','1206537') ('1206543','1206544') ...
+```
+
+**Every** thread that created a socket also appears in the server's list of serviced `OP_CHECKIN` requests --
+`socket-only` is empty. So the page request DID reach the server and WAS serviced, and §69's own status
+measurement says every one of those was completed with status 0. The guest therefore had a successful answer in
+the page and created a socket anyway.
+
+That leaves exactly one condition in the guest's acceptance test that can still fail:
+
+```c
+if (page->reply_state == DSERVER_PROCESS_CONTROL_DONE && page->reply_seq == mine && page->reply_status == 0)
+```
+
+`reply_state` is set by the server immediately before the futex wake, and `reply_status` was measured 0. So
+`reply_seq != mine` is the only remaining possibility -- and the sequence is taken from a **non-atomic**
+increment in a multi-threaded process:
+
+```c
+static uint32_t checkin_seq = 0;
+uint32_t mine = ++checkin_seq;
+```
+
+Two threads of one process can therefore receive the SAME `mine`; the server answers one of them, and the other
+observes a `reply_seq` that is not its own, refuses the result, and repeats the operation on the datagram --
+creating the per-thread RPC socket this route exists to avoid. That is a real defect, and it was fixed at every
+site that takes a mailbox sequence (`mldr.c` shared publisher and seed, `threads.c` checkin and exit-checkout,
+`fork.c`, `execve.c`), each with `__atomic_add_fetch`.
+
+**Measured after the fix: `rpc-socket creations: 27`, unchanged.** So the collision is real but is not the cause
+either, and this section must not be recorded as a fix for the socket count. The change is kept: a non-atomic
+sequence in a shared protocol is a defect regardless of whether it explains this symptom.
+
+Four hypotheses have now been eliminated by measurement, each with a run:
+
+| hypothesis | measurement | verdict |
+|---|---|---|
+| the result is refused (non-zero status) | 165 of 165 page replies status 0 | eliminated |
+| the mailbox sequence race (§68) | ownership change, 27 unchanged | eliminated |
+| the request never reaches the server | 19 of 19 socket tids are serviced | eliminated |
+| the sequence collides between threads (§70) | atomic fix, 27 unchanged | eliminated |
+
+What remains is the completion wait itself: `reply_state` not reaching `DONE` within the guest's bound. The
+instrument for that cannot be a page counter (two sets were written and never incremented, §47/§48.1) and cannot
+be an in-band print on the bootstrap path (a measured hazard); it has to be a print in `threads.c`, which runs
+after the loader has finished and is therefore a safe place for one, gated and bounded, naming which of the
+acceptance terms failed and what the guest actually read.
