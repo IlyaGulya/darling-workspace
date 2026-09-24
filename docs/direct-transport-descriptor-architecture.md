@@ -8056,3 +8056,54 @@ The fix is one of two, and the first is strictly better because it does not dupl
 
 §103's "kqchan is closed" and §104's correction are both superseded by this: the denial moving on was real, the
 descriptor delivery was never fixed, and the reason is a **size guard that cannot pass**.
+
+
+### 106. The true mechanism: the descriptor WAS shipped -- the plane case read only `socket` and ignored `fd_token`
+
+§105 blamed a size guard. Reading the struct layout corrects that too, and the correction is the actual defect:
+
+```c
+struct dserver_reply_kqchan_mach_port_open {      /* the BODY, with no header */
+    int32_t socket;
+    uint64_t fd_token __attribute__((aligned(8)));
+};
+```
+
+`4 + 4(padding) + 8 = 16`. So the body **is** 16 bytes, `sizeof(dserver_reply_kqchan_mach_port_open_t)` **is** 16,
+and `bodyLen >= sizeof(...)` is `16 >= 16` -- **true**. §105's "the guard can never pass" was wrong; the guard
+passes.
+
+What fails is what the case does with the body:
+
+```c
+auto* rb = reinterpret_cast<const dserver_reply_kqchan_mach_port_open_t*>(body);
+bodySocketSeen = rb->socket;                                  // == -1
+if (returnedFd < 0 && rb->socket >= 0) { returnedFd = rb->socket; }
+...
+if (returnedFd >= 0) { uint64_t tok = sendFdCourierBundleToGuest(pid, KIND_KQCHAN_FD, returnedFd); ... }
+```
+
+The generated sender **already** ran, already called `sendFdCourierToGuest`, already shipped the descriptor, and
+wrote `body.socket = -1` with the token in `body.fd_token` -- that is precisely what the generated code does on a
+non-zero token. So the case reads `socket == -1`, concludes there is no descriptor, and never publishes the token
+the sender had already computed. The guest reads `status=0 token=0 fd=-1`; the plane's `reply_payload[1]` stays
+zero; and a second courier send was attempted only in the paths where a socket was still believed to exist.
+
+The measured `body_len=16 body_socket=-1` in §103's run is therefore not a truncation and not a failure -- it is
+**the sender reporting that it moved ownership to the courier**, and the plane case was written as if it were the
+one doing the transfer.
+
+The fix is to read the token and stop duplicating the transport (directive §15: one semantic core, transport
+adapters only):
+
+```c
+if (rb->fd_token != 0) { page->reply_payload[1] = rb->fd_token; returnedFd = -1; }
+```
+
+which is one branch, removes a second descriptor transfer, and publishes exactly the token the generated sender
+issued.
+
+Three successive readings of one log line -- §103 ("kqchan is closed"), §104 ("it is not"), §105 ("a size guard
+cannot pass"), §106 ("the guard passes; the token was ignored") -- each correcting the last. The instrument that
+settled it was the one that recorded **both** outcomes: without `body_socket` and `body_len` alongside `status`,
+every one of those readings was possible.
