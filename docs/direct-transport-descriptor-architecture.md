@@ -7764,3 +7764,52 @@ State, unchanged and stated as measurement:
 | shellspawn reaches `main` | no |
 | boot completes under the hatch | no |
 | regression under the hatch / FD slope | not run / not measured |
+
+
+### 99. The root is not a transport at all: `Kqchan::MachPort::setup()` returns -1 and the call still reports success
+
+Recording **both** outcomes was the right instrument, and one run answered the whole question:
+
+```
+kqchan-open pid=1386966 status=0 from_wake=-1 body_len=16 body_socket=-1
+[kqchan-plane] status=0 token=0 fd=-1 out=0
+```
+
+Read against the handler:
+
+```c
+void DarlingServer::Call::KqchanMachPortOpen::processCall() {
+    int code = 0;
+    int socket = -1;
+    ...
+    try { socket = kqchan->setup(); }
+    catch (std::system_error e) { code = -e.code().value(); }
+    catch (...) { code = -ESRCH; }
+    ...
+    _sendReply(code, socket);
+}
+```
+
+`status=0`, `body_socket=-1`, no wake fd: so `kqchan->setup()` returned **-1 without throwing**, `code` stayed 0, and the reply went out reporting success with no descriptor. That is exactly the observed `status=0 token=0 fd=-1` -- and it is **not a transport defect at all**.
+
+So the whole chain this loop has been following -- page route, courier bundle, reply-fd kind, reply token -- is now shown to be **working**: the server received the request, ran the ordinary handler, published status 0, and had nothing to send because the **semantics** produced nothing. Every transport instrument reads zero because the transports are not what is broken.
+
+It also explains the intermittency without any transport condition: `setup()` succeeds or fails depending on its own internal state, and the two outcomes differ in the reply body, not in the delivery.
+
+The next instrument is therefore inside `Kqchan::MachPort::setup()` -- what it does, what it returns -1 for, and what condition decides between the two outcomes -- and it is a semantics investigation, not a transport one.
+
+What this closes, stated as the measurement rather than as progress:
+
+| what | measurement |
+|---|---|
+| calls needing a per-thread RPC socket, boot path | 0 |
+| urgent publications left unserviced | 0 |
+| courier bundles missing | 0 |
+| page route, courier and reply-fd plumbing for kqchan | **working** (server ran the handler, published status 0) |
+| `Kqchan::MachPort::setup()` | returns -1 **without throwing**, intermittently |
+| shellspawn reaches `main` | no |
+| boot completes under the hatch | no |
+| regression under the hatch / FD slope | not run / not measured |
+
+Six defects were found and fixed on the way here, five of them in the transport layer this directive asked to
+build, and the sixth is the one that was hiding behind them.
