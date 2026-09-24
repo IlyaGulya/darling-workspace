@@ -8379,3 +8379,47 @@ that fd. So the fix records it:
 That is the rule from the workspace rules applied literally -- **a descriptor number is not ownership** -- and it
 removes a socket creation that no migration of a callnum could have removed, because there is no callnum: this is a
 consumer the counter-based view could not see and the hatch could not name.
+
+
+### 115. MILESTONE: the per-thread RPC socket class is closed -- zero requests AND zero creations
+
+The `bsdthread_terminate` fix was measured, and the hatch has nothing left to name:
+
+```
+denials total: 0
+[rpc-socket] created ...        (not one line)
+kqchan-plane] status=0 token=16194714452175325495 fd=8 out=8
+```
+
+Two independent counters, both zero, and they mean different things. The denial counter is zero because no call
+**asked** for a per-thread socket; the creation counter is zero because no code path **manufactured** one. A run
+where the hatch is silent because the hatch is not consulted is exactly the error §103 made, so both are checked.
+
+The guest's own creation line (`[rpc-socket] created pid=… tid=… n=… reason=…`) never appears, which is the direct
+evidence: **`per_thread_rpc_socket_created == 0` on the boot path**, the directive's §26 target.
+
+What the boot does now is fail for a reason that has nothing to do with sockets. There is no abort, no denial, and
+the last guest activity is a lane release:
+
+```
+[dring-lane-release] pid=1451283 tid=1451283 slot=0 borrowed=1 ret=0x7F348C1DEF43
+Rootless shellspawn did not become ready within 30000ms (/proc/self/fd/6/shellspawn.sock)
+```
+
+So the transport work this directive asked for is **done for the boot path** and the remaining failure is the
+shellspawn readiness hang, which the mach-msg code already describes in its own comment as a distinct defect class:
+
+> a real caller-S2C munmap arrives while this caller is parked in `gr_machmsg_wait_reply` … Without the bit the
+> guard declines, the server falls back to a UDS S2C, and the ring-parked caller can never service it: the op then
+> hangs until the shellspawn timeout.
+
+The counting, by the hatch's own complaint, now reads:
+
+| | |
+|---|---|
+| consumers found and migrated | **14** (plus the batch of 8 port operations) |
+| transport classes clean | 3 (no denial, no urgent timeout, no courier miss) |
+| per-thread RPC socket requests on boot | **0** |
+| per-thread RPC socket creations on boot | **0** |
+| boot completes under the hatch | no -- different cause, socket-free |
+| regression under the hatch / FD slope | not yet run |
