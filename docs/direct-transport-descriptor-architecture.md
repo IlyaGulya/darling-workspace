@@ -6121,3 +6121,62 @@ OP_CHECKIN case -- one line, in `_serviceProcessControl`, naming the seq and the
 This is the fifth conversion in this work that was recorded as done on the strength of the code being present
 rather than the route being taken (§56), and the first one where the reason is visible: a route that works and a
 result the caller does not believe.
+
+
+### 58. THE CAUSE OF THE DUPLICATES: the page route carried the wrong architecture
+
+§57 established that half of all checkins were duplicates -- the page route ran, the guest refused the result and
+repeated the same checkin on the datagram. The server's reply status for the OP_CHECKIN case was the instrument
+that named it: `102 status=-22` out of 108. -22 is -EINVAL, and the server produces it in exactly one way on this
+path, through `processCallBasicReplyCode`'s `catch (std::exception&)`. That guard already logged its verdict, and
+the log had been sitting in every capture of this round unread:
+
+```
+102 Uncaught exception from processCall (call dserver_callnum_checkin); replying -22
+```
+
+Printing the exception message (one line, gated) gave the sentence:
+
+```
+102 [processcall-guard] std::exception: Impossible: parent process architecture != child process architecture on fork
+```
+
+The throw site is `Process::notifyCheckin`, which compares the architecture the checkin CARRIES against the
+process's own and refuses a mismatch. The enum is `0 invalid, 1 i386, 2 x86_64, 3 arm32, 4 arm64`, and the three
+page-route sites were sending:
+
+| site | sent | should send |
+|---|---|---|
+| `mldr.c` (main checkin) | `_32on64 ? 1 : 2` | correct -- this was the 6 `status=0` |
+| `mldr/elfcalls/threads.c` (thread create) | hardcoded `1u` = **i386** | the real architecture |
+| `libsystem_kernel/.../fork.c` (fork child) | hardcoded `1u` = **i386** | the real architecture |
+
+So 102 of 108 page checkins carried `i386` for an `x86_64` process. The page route answered -EINVAL, the guest
+saw a non-zero status, and it repeated the checkin on the datagram -- which is why the transport was wrong while
+every regression in this round was GREEN. `mldr.c` had computed this correctly all along, which is why exactly
+six checkins succeeded and why the defect looked like a partial failure rather than a systematic one.
+
+**Fix**: `threads.c` now sends `mldr_load_results._32on64 ? 1u : 2u` (the same expression `mldr.c` uses, with the
+loader's `load_results` declared `extern` there), and `fork.c` sends the same mapping computed locally from the
+compiler's predefines. The latter is local rather than via `dserver_rpc_hooks_get_architecture()` because
+including `resources/dserver-rpc-defs.h` in that translation unit conflicts with its own `memcpy` declaration
+(measured: four compile errors).
+
+**Measured after the fix** (live census, full regression):
+
+```
+checkin:      total=174  uds=10   plane=164      (was total=332  uds=167  plane=165)
+checkout:     total=130  uds=0    plane=130      (was uds=153, then 1-3)
+ring_attach:  total=174  uds=0    plane=174
+pthread_canceled: 446/74/372     thread_self_trap: 194/10/184     vchroot_path: 29/9/20
+Uncaught exception: 0            processcall-guard: 0
+ool 44/uds=0   basic 204/uds=0   r2 206/uds=0   all pass=1
+```
+
+`total` fell from 332 to 174 -- exactly half, which is the duplicate itself, and the arithmetic that identified
+it. **Three of the four lifecycle operations are now off AF_UNIX**: attach entirely, checkout entirely, and
+checkin 164 of 174 (94%), with 10 datagrams left to attribute.
+
+The lesson is the same one §56 and §57 recorded, now with the mechanism: a route that is present, that runs, and
+whose answer the caller discards is indistinguishable from a route that was never taken -- unless the reply's
+status is read. The exception was being logged the whole time.
