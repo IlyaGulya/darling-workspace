@@ -6180,3 +6180,20 @@ checkin 164 of 174 (94%), with 10 datagrams left to attribute.
 The lesson is the same one §56 and §57 recorded, now with the mechanism: a route that is present, that runs, and
 whose answer the caller discards is indistinguishable from a route that was never taken -- unless the reply's
 status is read. The exception was being logged the whole time.
+
+**Verified on the clean regression** (no diagnostic logging, the run that must carry the claim):
+
+```
+HELLO=1  FINAL=1  passes: pass=1 pass=1 pass=1 pass=1
+ool 44/uds=0   basic 204/uds=0   r2 206/uds=0   stress 644/uds=0
+Uncaught exception: 0
+checkin: total=176 uds=11 plane=165     checkout: total=164 uds=1 plane=163
+ring_attach: total=176 uds=0 plane=176
+```
+
+Note the diagnostic-logging run in the table above is slower than the clean one (the stress pool does not reach
+its verdict inside the same window with the courier log on), so the verdict must be taken from the clean run and
+the census from either -- a caution that cost one reading in this round.
+
+`checkin` UDS is down from 167 to 11 of 176, and `total` from 332 to 176. What remains to attribute is small and
+named: 11 checkin datagrams, `pthread_canceled` 75, `thread_self_trap` 11, `vchroot_path` 10.
