@@ -6393,3 +6393,40 @@ A caution recorded with this: one reading in this round showed `uds-checkin=2` a
 success; the file had been rewritten by a later short run whose boot failed. Two runs writing one log path is
 the same class of error as reading a diagnostic line instead of the verdict, and the defence is the same --
 name the run and read its own completion marker.
+
+
+### 64. State after the loader conclusion, and an instrument gap for the remaining three callnums
+
+With §63 reverted and verified GREEN, the live census on the full regression reads:
+
+```
+checkin:           total=176  uds=11  plane=165      (was total=332 uds=167)
+checkout:          total=165  uds=2   plane=163      (was uds=153)
+ring_attach:       total=176  uds=0   plane=176      (was uds=174)
+pthread_canceled:  total=571  uds=75  ring=496
+thread_self_trap:  total=198  uds=11  ring=187
+vchroot_path:      total=32   uds=10  ring=22
+```
+
+Three of the four lifecycle operations are off AF_UNIX and the two remaining large ones are already mostly on
+the lane: `pthread_canceled` is 87% on the Ring, `thread_self_trap` 94%, `vchroot_path` 69%. The remaining
+semantic UDS is 98 calls in total across those three.
+
+The intended instrument for attributing them is the guest's own reason histogram, and it does not fire for this
+class:
+
+```
+[dring-adopt] 80   [dring-attach] 120   [dring-doorbell] 11
+[dring-lane-release] 31   [dring-lane-stats] 7
+[dring-uds-reason-hist] 0
+```
+
+`[dring-lane-stats]` prints once per process at `sys_exit`, as designed, so the dump path is reached -- but no
+reason line accompanies it. That means the reason accounting does not cover the sites these three callnums fall
+back from, which is the same shape as the dead-counter defects recorded twice in this document: an instrument
+that is present, runs, and has nothing to say about the thing it was built for.
+
+So the next step for these three is not another conversion but an attribution change: either the reason is
+recorded where these calls actually decide, or the server names the transport of each of them directly (the
+heatmap already splits by callnum, so a server-side line per UDS `pthread_canceled` -- with the tid and whether
+that tid has a lane -- would answer it in one run, the way the checkin attribution of §56 did).
