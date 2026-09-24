@@ -7383,3 +7383,46 @@ signal stack is exactly the kind of lifetime that a handler must not depend on.
 
 That is the last piece before `sigprocess` can move: widen the urgent payload to eight words, rebuild everything,
 add the op code and the server case, and wire the one call site.
+
+
+### 89. Zero socket denials on the socket-disabled boot -- the remaining failure is not the socket
+
+`sigprocess` was migrated to the urgent pool with the bounded-poll variant, and that exposed a server bug that
+would have made every urgent publication silently ineffective:
+
+```
+[urgent-wait-TIMEOUT] op=12 slot=1 mine=1 state=1 seq=1
+```
+
+`state=1` is PENDING: the server never serviced the slot. The cause is the placement of the drain -- it sat
+**after** the management slot's guard,
+
+```c
+if (__atomic_read(&page->request_state) != PENDING) { continue; }
+```
+
+so on a page with no management request (the common case) the whole page was skipped and the urgent slots were
+never examined. The fire-and-forget `interrupt_enter` had looked like it worked only because it never waits: its
+publication was also never serviced, and its effect (the server's flush of a saved reply) was silently lost.
+
+Moved before the guard, the boot measures:
+
+```
+[rpc-socket-DENIED] occurrences: 0
+[urgent-wait-TIMEOUT] occurrences: 0
+[fd-courier-recv] MISS pid=... token=... stored=0 dropped=0
+Rootless shellspawn did not become ready within 30000ms
+```
+
+**Zero denials**: with `DARLING_DISABLE_THREAD_RPC_UDS=1`, no call on the boot path asks for a per-thread RPC
+socket any more. Five migrations got there -- `mach_port_deallocate` (duplex lane), `vchroot` (management plane),
+`kqchan_mach_port_open` (management plane + courier), `interrupt_enter`/`interrupt_exit` (urgent pool), and
+`sigprocess` (urgent pool with a bounded poll) -- and every one of them was a call the censuses could not see.
+
+The boot still fails, and **not on the socket**: the remaining line is the courier MISS of §84, the descriptor
+arriving after the token. That is the next piece, and it is the parked-waiter path the server side already has for
+its own courier bundles.
+
+Two things this measurement does not yet establish, stated plainly: the boot does not complete, so
+`socket-disabled boot GREEN` is not claimed; and the urgent pool's correctness under the bounded poll is
+established only by this boot, not by the mutation suite the directive asks for. Both are next.
