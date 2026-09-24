@@ -6711,3 +6711,42 @@ the dead per-site counters (§47/§48.1), the sampled route counters, the `has_l
 (§65/§66), and now a label that names a call rather than the reason. The defence is the same each time and was
 what found this one: ask the instrument to name the thing that actually decided, and cross-check it against a
 second measurement that can disagree.
+
+
+### 72. Correction to §66: only `pthread_canceled` is not lane-eligible, and it is missing from the policy table with no reason recorded
+
+§66 concluded that three callnums are not lane-eligible. Reading the policy table itself corrects that:
+
+```python
+RING_GENERATED_SIMPLE = {
+    'task_self_trap': 0, 'thread_self_trap': 0, 'host_self_trap': 0, 'mach_reply_port': 0,
+    'set_dyld_info': 0, 'set_executable_path': 0, 'uidgid': 0, 'get_tracer': 0,
+    'task_is_64_bit': 0, 'started_suspended': 0, 'set_thread_handles': 0, 'mldr_path': 0,
+    'vchroot_path': 0,
+    ...
+    'checkout': 0,
+    # perf#30 FD-COURIER: the pthread-create checkin rides the lane; the main-thread one does not.
+}
+```
+
+`thread_self_trap` and `vchroot_path` **are** in the table -- they are lane-eligible, and their heatmap columns
+(`ring=187` and `ring=22`) agree. So §66's list of three was wrong; the eligibility test it used (zero lane
+invocations in one run) was read as a policy fact when it was only a measurement of that run.
+
+`pthread_canceled` is **not** in the table, and unlike every other exclusion in it there is **no reason
+recorded** -- the table carries explicit justifications for the lifecycle calls (checkout's detached-completion
+requirement, checkin's wedge and the separate-entry-point work it needs) and none for this one. It is the only
+call the lane cannot carry whose exclusion is unexplained.
+
+That makes it the concrete next change, and it is the change that actually reaches the socket target: with
+`pthread_canceled` lane-eligible, the first datagram-needing call of a new thread is no longer forced onto the
+datagram, so `per_thread_rpc_socket_created` stops counting it. Adding an existing call to the routing table does
+not shift the generated callnum enum (the rule about never adding a call-table row is about new entry points),
+so it is safe in the sense that matters here -- but it must be generated, built and measured like any other
+change, and its acceptance is the socket count falling while the regression stays GREEN with `machmsg_uds=0`.
+
+The caution recorded alongside: `checkin` is deliberately absent from the table and rides the process-control
+page instead, and the table's own comment records that putting the lifecycle checkin on the lane wedged the boot
+three times. `pthread_canceled` is not that call -- it is an ordinary per-thread operation -- but the same
+question must be asked of it before it is routed: whether its result is ordered against anything that another
+transport carries.
