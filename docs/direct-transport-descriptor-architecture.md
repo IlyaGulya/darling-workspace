@@ -6306,3 +6306,36 @@ Uncaught exception: 0
 The checkin route therefore keeps its measured state from §58 (164 of 174 on the page, 10 datagrams), and the
 remaining `fork=0` traffic stays attributed to the loader site having no page at that point -- which is now a
 statement about ORDERING, not about a missing capability.
+
+
+### 62. The mechanism, with line numbers: the checkin runs before the establishment because `load()` does
+
+§61 concluded that the checkin must move later rather than the establishment earlier, and named no positions.
+They are these, all in `src/startup/mldr/mldr.c`:
+
+```
+main:210/212   load(filename, CPU_TYPE_X86 | 0, false, argv, &mldr_load_results)
+                 -> load64() -> setup_space()  [mldr.c:1915]
+                      -> CHECKIN                       mldr.c:2100     page == NULL here
+main:329       __mldr_process_control_create()          the page is created HERE
+main:337       the generation PING
+main:354/369   set_dyld_info / set_executable_path      the bootstrap writes
+```
+
+So `load()` is called from `main` at 210/212, well before the establishment block at 329, and `setup_space` is
+reached from it -- which is why the checkin finds `page == NULL` on every image and why the bounded wait added in
+§55 was waiting for something that did not exist yet. The source comment at the establishment block ("the
+loader's first writes must precede the plane's establishment") is correct about the WRITES, which are at 354/369,
+and it does not describe the CHECKIN, which is at 2100 and therefore earlier than all of it.
+
+The change is therefore a reordering inside the loader, and it has to move the checkin, not the establishment:
+the establishment cannot move earlier (§61 measured that RED), and the checkin cannot stay where it is if it is
+to use the page. Concretely the checkin block leaves `setup_space` and runs in `main` after the establishment and
+after the PING, taking with it the two things it owns there -- the lifetime pipe close and the `vchroot_path`
+retrieval, both of which use only `lr` (== `&mldr_load_results`) and `lifetime_pipe`, which `main` has.
+
+Acceptance, unchanged from §60 and now precisely located: `checkin-route` must read `ready=1 page=<non-null>`,
+the `fork=0` datagram count must fall to the genuinely pre-page cases, and the regression must stay GREEN with
+`machmsg_uds=0`. The one risk to watch is the ordering that the source comment protects: the checkin must not
+end up AFTER the bootstrap writes, because a checkin whose result must be visible to the process's other traffic
+cannot follow them.
