@@ -8544,3 +8544,44 @@ Everything the directive set out to do on the boot path is therefore measured do
 The next question is a lifecycle one -- why the shellspawn process is absent rather than blocked (only
 `darlingserver` is alive at 50 s into the run, and the guest's last act is a lane release) -- and it is reachable
 without touching any transport.
+
+
+### 119. The guest exits 0 before pre-main completes -- and the prefix was carrying 893 stale processes
+
+Two findings, both from asking `/proc` a direct question instead of reading the log again.
+
+**The exit status.** The guest process for the failing boot is a zombie, so its status is readable:
+
+```
+1733427 Zs - mldr        /proc/1733427/stat -> state Z, exit_code 0, ppid 1733412
+```
+
+`exit_code 0` means the guest **terminates successfully** during pre-main initialisation. It is not a crash and not
+a hang: the process runs the loader, attaches, adopts, does the kqchan call, releases the lane -- and then exits 0
+without ever reaching `main`. `shellspawn` in the build tree carries its `main-entry` print and that line never
+appears, so this confirms §95/§96 by a different route and adds the missing fact: the outcome is a **clean early
+exit**, which is a decision somewhere in pre-main rather than a fault.
+
+That also rules out the reading §115 was tempted by: the boot is not waiting on any transport. The process is gone
+before the transport matters.
+
+**The prefix was carrying 893 stale processes.** A prefix-scoped listing by `exe` -- not by `cmdline` -- found them:
+
+```
+prefix-owned procs (by exe): 894
+```
+
+Their `cmdline` is `/usr/libexec/shellspawn`, which does **not** contain the prefix path, so the cleanup recipe that
+matches `/proc/<pid>/cmdline` against the prefix **never matched them** and every run added more. They held stale
+`mldr (deleted)` mappings from earlier deploys.
+
+Two corrections follow for the lifecycle rules, and they are worth keeping:
+
+* a prefix-scoped stale-process match must consider `exe` as well as `cmdline`, because a guest process's `cmdline`
+  is the in-guest path and carries no prefix;
+* the accumulated set grows silently across runs, so it is a run-to-run state hazard even when it is not the
+  current failure.
+
+Killing all 893 (`remaining=0`, `mounts=0`) did **not** change the boot: the same `exit 0`. So the staleness was
+real garbage and not the cause -- recorded because "we cleaned something and the symptom stayed" is the honest
+result, and because the next person to see a prefix with hundreds of processes should know where they come from.
