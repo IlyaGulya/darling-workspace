@@ -6977,3 +6977,44 @@ correction did for the other twenty.
 The pattern this makes explicit, and it is the fifth instance: a counter or a class is only as good as the
 question it was built for, and the cheapest correction is to read the call site rather than to build a fix for a
 number.
+
+
+### 79. The last five calls are early calls, and the image-adoption gap is not confirmed by any call
+
+§78 left five genuinely open: `console_open` (3) and `kqchan_proc_open` (2). Reading their definitions and call
+sites closes them too:
+
+```python
+('console_open', [], [('console', '@fd'), ('fd_token', '@fd_token')])
+'console_open':     'DSERVER_FD_COURIER_KIND_CONSOLE_FD'
+'kqchan_proc_open': 'DSERVER_FD_COURIER_KIND_KQCHAN_FD'
+```
+
+Both are **descriptor-carrying** calls: the descriptor rides the process courier (like `ring_attach` and
+`checkout`, which are on the lane and on the courier), and the call itself is lane-eligible. Their callers are
+`openat.c` (opening the console) and `libkqueue/proc.c` (creating a kqueue channel) -- both of which happen
+**early in a process's life**, before its lane exists.
+
+And `residual_uds_despite_lane` does **not** name them: it names only `vchroot_path` and `thread_self_trap`, which
+§78 showed are loader calls. So these five are not "lane existed and was ignored" either; they are the same class
+as the pre-page checkin of §69 -- a call made before the transport it would use exists.
+
+**Conclusion: the image-adoption / one-lane-per-tid gap is not confirmed by a single call in the residual.** Every
+one of the calls that remain on the datagram is now accounted for by one of three facts, each read from the source
+rather than inferred from a counter:
+
+| fact | calls |
+|---|---|
+| issued by the loader (no lanes by design) | `vchroot_path`, `thread_self_trap`, the main checkin |
+| issued before the lane exists (early in the process) | `console_open`, `kqchan_proc_open`, the pre-page checkin |
+| not lane-eligible by policy | `pthread_canceled` (measured RED when routed), `interrupt_enter`/`interrupt_exit`, `fork_wait_for_child` |
+
+That is the honest final state of the residual, and it changes the plan: building the image-adoption ownership
+change is **not** justified by this census. It was §32.10's diagnosis for two calls that turn out to be loader
+calls, and every other candidate has been explained. If that gap is real it needs its own evidence, and this
+round did not produce any.
+
+What is left as genuinely open work is therefore not a list of calls but two design questions: a transport for the
+calls the lane cannot carry (`pthread_canceled` and the interrupts, ~90 datagram calls and the per-thread sockets
+they force), and whether the early calls (`console_open`, `kqchan_proc_open`) should wait for the lane instead of
+falling back. Both are changes, and neither is a bug hunt.
