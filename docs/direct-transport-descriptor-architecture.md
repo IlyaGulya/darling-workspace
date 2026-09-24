@@ -7724,3 +7724,43 @@ condition that is now known to alternate rather than be constant.
 State, unchanged: the per-thread socket is requested by nothing on the boot path, the urgent pool services
 everything published to it, and the courier delivers what it is given -- the defect is in what this one call
 produces, not in a transport.
+
+
+### 98. The reply-fd plumbing was genuinely missing, was added, and the delivery is still intermittent
+
+Two real omissions were found and fixed in the generator, both of which the pattern of the other descriptor-bearing
+calls made obvious once looked for:
+
+* `kqchan_mach_port_open` was **absent from `REPLY_FD_COURIER_KINDS`** (which contains `console_open`,
+  `kqchan_proc_open` and `ring_attach`), so no reply-fd courier branch was generated for it at all;
+* its **reply parameters had no `('fd_token','@fd_token')`**, unlike `kqchan_proc_open` and `console_open`, so the
+  reply carried no token for the courier to be addressed by.
+
+Both were added. The measured result is that the call **still alternates**:
+
+```
+CT1:  [kqchan-plane] status=0 token=12310729662566266998 fd=8 out=8     (delivered)
+CU1:  [kqchan-plane] status=0 token=0 fd=-1 out=0                      (not delivered)
+```
+
+Same build, same boot, different outcome -- so the omissions were real and necessary but are not the whole cause,
+and there is a condition that decides between the two runs. That condition is the next question, and it is now
+sharply posed: the same call, on the same page, with the same server build, sometimes produces a token and a
+descriptor and sometimes produces neither while reporting success.
+
+What is worth noting about the shape of this defect, because it is unlike the others this loop fixed: the failures
+before it were deterministic and each one had a single cause that a measurement could name. This one is
+**conditional**, which means the next instrument has to record the state on **both** outcomes rather than only on
+the failing one -- otherwise the working case's conditions stay invisible and only half the question is answered.
+
+State, unchanged and stated as measurement:
+
+| what | measurement |
+|---|---|
+| calls needing a per-thread RPC socket, boot path | 0 |
+| urgent publications left unserviced | 0 |
+| courier bundles missing | 0 |
+| kqchan descriptor delivered | **intermittent** -- `fd=8` or `fd=-1`, both with status 0 |
+| shellspawn reaches `main` | no |
+| boot completes under the hatch | no |
+| regression under the hatch / FD slope | not run / not measured |
