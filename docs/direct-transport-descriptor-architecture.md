@@ -6663,3 +6663,51 @@ instrument for that cannot be a page counter (two sets were written and never in
 be an in-band print on the bootstrap path (a measured hazard); it has to be a print in `threads.c`, which runs
 after the loader has finished and is therefore a safe place for one, gated and bounded, naming which of the
 acceptance terms failed and what the guest actually read.
+
+
+### 71. The `reason=checkin` label is a LIE, and `per_thread_rpc_socket_created = 27` is not 27 checkin fallbacks
+
+Two measurements, each decisive, and together they overturn §24 and §67:
+
+**(a) The acceptance test never fails.** A gated bounded print was added at the thread-create acceptance
+decision, naming which term failed and what the guest actually read:
+
+```
+rpc-socket creations: 19
+[checkin-diag] lines: 0
+```
+
+Zero. `checked_in` is set on **every** page-route checkin -- there is no refused result, no foreign sequence, no
+timeout. So the socket is NOT created because the checkin fell back, and §67's "27 thread-create checkins did not
+accept the page route" is wrong.
+
+**(b) The reason label is set unconditionally.** `threads.c` sets it at the top of the thread entry, before
+anything else:
+
+```c
+t_callbacks = args.callbacks;
+t_rpc_socket_reason = "checkin";      // <- a label for "if a socket is created", not a measurement
+...
+// the socket is created lazily by the first call that needs a datagram, and the label is cleared after
+```
+
+The label therefore describes the thread's **first datagram-needing call**, whatever that call is, and it is
+printed as if it were the cause. With (a) showing the checkin route succeeds, the 27 creations are threads whose
+first datagram-needing call was something else entirely -- and the callnums that cannot use the lane are exactly
+the three §66 identified: `pthread_canceled` (0 of 592 on the lane), `thread_self_trap`, `vchroot_path`.
+
+So the corrected statement is:
+
+* `per_thread_rpc_socket_created` counts threads whose first datagram-needing call was any non-lane call, not
+  threads whose checkin failed;
+* the socket's consumer is therefore **not** "the checkin" (§24) -- it is any call the lane cannot carry, and the
+  checkin is merely the first such call in a freshly created thread;
+* the target `per_thread_rpc_socket_created = 0` cannot be reached by moving the checkin to the page. It is
+  reached when the calls a thread makes are lane-eligible, or when the socket is no longer the datagram
+  transport for them.
+
+This is the fourth time in this document that an instrument answered a different question than the one asked --
+the dead per-site counters (§47/§48.1), the sampled route counters, the `has_lane=1`/`lane=1` substring collision
+(§65/§66), and now a label that names a call rather than the reason. The defence is the same each time and was
+what found this one: ask the instrument to name the thing that actually decided, and cross-check it against a
+second measurement that can disagree.
