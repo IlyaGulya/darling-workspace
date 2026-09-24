@@ -7983,3 +7983,30 @@ Progress this cycle, stated as measurements:
 | after plane op + courier + reply-fd + token | `interrupt_enter` |
 | after urgent pool | `sigprocess` |
 | after urgent completion | **`mach_msg_overwrite`** |
+
+
+### 104. Correction to §103: kqchan is NOT closed -- the descriptor is still not delivered
+
+§103 read "the hatch's next complaint is `mach_msg_overwrite`" as "kqchan now works". A later run with the mach-msg
+ring enabled, and with the guest's own kqchan line checked this time, says otherwise:
+
+```
+[kqchan-plane] status=0 token=0 fd=-1 out=0
+```
+
+The guest still receives no descriptor: `token=0`, `fd=-1`. §103 never looked at the guest's `[kqchan-plane]` line
+in the run whose denial had moved, so "the call succeeded" was inferred from the hatch being quiet about it, which
+is exactly the error the migration hatch was built to avoid -- **a call that stops creating a socket is not
+necessarily a call that got what it needed.**
+
+So two separate things are open, and §103 conflated them:
+
+* `kqchan_mach_port_open` reaches the plane, the server runs the handler, `status=0` -- and the descriptor is
+  **still not delivered** (`token=0`).
+* `mach_msg_overwrite` needs a per-thread socket unless `DARLING_GUEST_RING_MACH_MSG=1` is set; with that hatch on,
+  the run measured **`[rpc-socket-DENIED] = 0`** -- the hatch's whole class is gone for the boot path -- while the
+  boot still does not complete.
+
+The counter-correction is recorded rather than overwritten because it changes what the next measurement must be:
+the denial counter going quiet and the guest getting its descriptor are **two claims**, and only the second one is
+progress.
