@@ -6197,3 +6197,39 @@ the census from either -- a caution that cost one reading in this round.
 
 `checkin` UDS is down from 167 to 11 of 176, and `total` from 332 to 176. What remains to attribute is small and
 named: 11 checkin datagrams, `pthread_canceled` 75, `thread_self_trap` 11, `vchroot_path` 10.
+
+
+### 59. After the fix: every page reply is accepted, and the remaining datagrams are a second, different defect
+
+The attribution run after §58 is unambiguous about the fix:
+
+```
+  1  fork=0 lifetime=-1 page=0 page_ready=0     <- the very first checkin, before its page exists
+166  fork=0 lifetime=-1 page=1 page_ready=1
+  9  fork=1 lifetime=-1 page=1 page_ready=1
+total=176
+checkin-reply statuses: 165 status=0            (was 102 x -22)
+Uncaught exception: 0
+```
+
+**Every page-route checkin now completes with status 0** and the guest accepts it -- the -EINVAL class is gone
+entirely, and `total` is 176 rather than 332 because the duplicates are gone with it.
+
+What is left is a different thing, and it is worth stating precisely rather than folding into the same story:
+175 datagram checkins still arrive from processes that HAVE a ready page, and their page replies succeeded. So
+these are not a fallback from a refused result -- the guest is sending a datagram checkin in addition to a page
+checkin that worked.
+
+The concrete candidate, and it is the hazard this work already recorded once: the guest's completion check in
+`threads.c` accepts a page checkin only when `reply_seq == mine && reply_status == 0`. The server's tail clears
+`request_state` to IDLE immediately after publishing, so a second thread of the same process can claim the slot
+and publish its own sequence BEFORE the first thread has read its answer. The first then observes `reply_seq`
+belonging to the second, refuses the result, and repeats its checkin on the datagram -- and with several threads
+created at once this is systematic rather than rare, which matches 166 of 176.
+
+If that is the mechanism, the fix is a protocol one and small: the server must not release the slot on publish;
+the GUEST releases it after it has read its own answer. The mailbox model is one outstanding request per page,
+and "one outstanding" has to mean "until the requester has read it", not "until the server has written it".
+
+The measurement that would confirm it is a guest-side count of `reply_seq != mine` at the completion check --
+which must be a page counter, not a print, for the reasons §47 and §48.1 recorded twice.
