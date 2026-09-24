@@ -6750,3 +6750,37 @@ page instead, and the table's own comment records that putting the lifecycle che
 three times. `pthread_canceled` is not that call -- it is an ordinary per-thread operation -- but the same
 question must be asked of it before it is routed: whether its result is ordered against anything that another
 transport carries.
+
+
+### 73. `pthread_canceled` on the lane: measured RED, and the table now records why it is absent
+
+§72 found `pthread_canceled` absent from `RING_GENERATED_SIMPLE` with no reason recorded and proposed adding it.
+That was tried, generated, built and measured:
+
+```
+HELLO=0   FINAL=0   rpc-socket creations: 1
+Rootless shellspawn did not become ready within 30000ms
+```
+
+**RED.** Routing it on the lane stops the boot, exactly the outcome this table already records for the lifecycle
+checkin. So §72's premise was wrong: `pthread_canceled` is **not** "an ordinary per-thread operation with no
+ordering dependency". It is reached early enough -- the libpthread cancellation handshake -- that the lane cannot
+be relied on to exist, and its result must be visible to the thread's other traffic.
+
+Reverted, and the revert verified GREEN on the full regression:
+
+```
+HELLO=1  FINAL=1  passes: pass=1 pass=1 pass=1 pass=1
+ool 44/uds=0   basic 204/uds=0   r2 206/uds=0   stress 644/uds=0
+shellspawn-not-ready: 0     rpc-socket creations: 27
+```
+
+The valuable part of §72 survives even though its proposal did not: the table now carries a comment on this
+exclusion, which is what §72 correctly observed was missing. The rule the comment states is the one this work has
+learned repeatedly -- a call that is reached early, or whose result another transport must observe, cannot move to
+the lane no matter how ordinary it looks, and the only way to know which it is, is to try it and read the verdict.
+
+Consequence for the socket target, now with all five candidates closed: `per_thread_rpc_socket_created = 27` is
+the **price of the datagram** for calls that cannot use the lane, not a migration gap that ordering or routing can
+close. Reaching zero requires a transport that is not the per-thread socket for those calls -- the same
+conclusion §71 reached from the other direction -- and that is a design change, not a fix.
