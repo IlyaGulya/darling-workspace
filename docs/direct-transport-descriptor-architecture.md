@@ -8010,3 +8010,49 @@ So two separate things are open, and §103 conflated them:
 The counter-correction is recorded rather than overwritten because it changes what the next measurement must be:
 the denial counter going quiet and the guest getting its descriptor are **two claims**, and only the second one is
 progress.
+
+
+### 105. Why the plane's kqchan case cannot see the descriptor: the recorded reply body is truncated at the pre-token size
+
+Reading the plane case against the generated sender gives the exact mechanism, and it explains every number in
+§103's run at once.
+
+The generated sender already does the right thing:
+
+```c
+void _sendReply(int resultCode, int32_t socket) {
+    Message reply(sizeof(dserver_rpc_reply_kqchan_mach_port_open_t), 0);   // 12 + 4 + 8 = 24
+    ...
+    if (socket >= 0) {
+        uint64_t __fd_courier_token = sendFdCourierToGuest(_header.pid, DSERVER_FD_COURIER_KIND_KQCHAN_FD, socket);
+        if (__fd_courier_token != 0) { replyStruct->body.socket = -1; replyStruct->body.fd_token = __fd_courier_token; }
+        else { reply.pushDescriptor(socket); }
+    }
+}
+```
+
+and the plane case reads it back through the suppressed-reply accessor:
+
+```c
+const uint8_t* body = created->suppressedReplyBody(&bodyLen);
+if (body && bodyLen >= sizeof(dserver_reply_kqchan_mach_port_open_t)) { ... returnedFd = rb->socket; }
+```
+
+Measured: `body_len=16`. `sizeof(dserver_reply_kqchan_mach_port_open_t)` is **24** (a 12-byte header, `int32_t
+socket`, and the 8-byte `fd_token`). Sixteen is exactly the pre-token size, so the guard is false, `returnedFd`
+stays -1, no token is published, and the guest reads `status=0 token=0 fd=-1`.
+
+So the descriptor is not missing and the plumbing is not wrong in the direction §100/§101 chased: the reply body
+the plane case inspects is **the body from before the token field existed**, and the guard written against the new
+size can therefore never pass. `noteSuppressedReplyBody` has no caller in the sources searched, which is consistent
+with the recording path predating the widened reply.
+
+The fix is one of two, and the first is strictly better because it does not duplicate semantics:
+
+* record the **whole** reply message body in the suppressed-reply buffer, so the plane case reads the same 24 bytes
+  the generated sender wrote -- including the token the sender already computed; or
+* have the plane case call the courier itself and publish its own token, which is what it does today and is why the
+  size guard matters.
+
+§103's "kqchan is closed" and §104's correction are both superseded by this: the denial moving on was real, the
+descriptor delivery was never fixed, and the reason is a **size guard that cannot pass**.
