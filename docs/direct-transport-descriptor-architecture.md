@@ -7275,3 +7275,42 @@ it was found the same way the other three were: by making the socket fail and na
 State of the loop after three migrations and this audit: the socket-disabled boot names exactly one remaining
 class (`interrupt_enter`/`interrupt_exit`), whose transport is now decided by evidence, and the descriptor-order
 MISS from §84 is a bounded addition to the reusable publisher. Neither is a blocker; both are the next steps.
+
+
+### 86. The urgent channel is built and the signal calls are off the socket
+
+Directive §19-21 asked for a shared-memory urgent transport for the signal-context calls, and it is built:
+
+* **the page** gained a fixed pool -- `urgent_state[4]`, `urgent_op[4]`, `urgent_seq[4]`,
+  `urgent_payload[4][4]`, `urgent_reply_status[4]`, `urgent_reply_seq[4]` -- appended to
+  `dserver_process_control`. A pool, never an allocator;
+* **the server** drains every pending urgent slot in the same pass as the management slot, running the
+  **ordinary** `interrupt_enter`/`interrupt_exit` Calls (one implementation of the semantics) and writing the
+  informational reply back into the slot;
+* **the guest** publishes with `__dserver_plane_urgent_publish()`: CAS a free slot, fill, release-store, wake the
+  **process doorbell** with a raw write -- and return immediately. No park, no futex wait, no lazily-initialised
+  state, no allocation, which is the §21 constraint for signal context. A DONE slot is reaped back to IDLE by the
+  next publisher with a CAS, so no waiter is needed;
+* `interrupt_enter`/`interrupt_exit` are wired at every call site (`sigexc.c` x2 each, `sigaction.c`) with the
+  datagram path only as the -1 fallback.
+
+**Socket-disabled boot after the migration:**
+
+```
+before:  [rpc-socket-DENIED] call=interrupt_enter
+after:   [rpc-socket-DENIED] call=sigprocess
+```
+
+So the whole signal class is off the per-thread socket, and the loop has run **four** times end to end:
+`mach_port_deallocate` (duplex), `vchroot` (management plane), `kqchan_mach_port_open` (management plane +
+courier), `interrupt_enter`/`interrupt_exit` (urgent pool). The next name is `sigprocess`, which is the same
+signal class and therefore the same urgent transport -- a call site and a server case, not a new design.
+
+Why the reply is informational and that is not a shortcut: `InterruptEnter::processCall` calls
+`_handleInterruptEnterForCurrentThread()` and the effect the guest needs is the server's **flush of a saved reply
+onto the thread's lane**, which the guest services when the handler returns. The call's own reply carries only a
+status the handler logs. That is what makes a fire-and-forget publication correct here rather than merely
+convenient.
+
+Two things remain open and neither is a blocker: the descriptor-order MISS from §84 (token before descriptor in
+the guest's courier queue) and the remaining names the hatch will produce after `sigprocess`.
