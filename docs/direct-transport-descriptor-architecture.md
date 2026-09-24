@@ -7314,3 +7314,39 @@ convenient.
 
 Two things remain open and neither is a blocker: the descriptor-order MISS from §84 (token before descriptor in
 the guest's courier queue) and the remaining names the hatch will produce after `sigprocess`.
+
+
+### 87. `sigprocess`: a raw signal handler that needs a completion -- so the urgent pool needs a bounded poll
+
+The next name from the hatch is `sigprocess`, and its audit changes the urgent design rather than just adding a
+call site.
+
+**It is called from a raw signal handler.** The enclosing function is `sigexc_handler(int linux_signum, struct
+linux_siginfo* info, struct linux_ucontext* ctxt)` at `sigexc.c:332`, and this file runs it on its own
+`sigexc_altstack` -- so the call happens on the signal stack, in signal context, exactly as §21 describes.
+
+**And it needs a completion, unlike `interrupt_enter`.** Its signature has in/out pointers
+(`thread_state`, `fstate`, and an in/out `bsd_signum`), and the caller uses the returned status
+(`int ret = dserver_rpc_sigprocess(...)`). Fire-and-forget is therefore not enough: the handler must know the
+operation completed before it continues.
+
+That combination rules out the two obvious answers and points at a third:
+
+* it cannot park on a futex (signal context), so it cannot use the management slot;
+* it cannot use the thread's lane (the handler may interrupt the thread that holds it);
+* it **can** publish to the urgent pool and then **poll** its own slot, because polling shared memory is
+  signal-safe: atomics, no park, no allocation, no lazy state.
+
+So the urgent pool needs one bounded addition: a publish-and-poll variant
+(`__dserver_plane_urgent_publish_wait`) that claims a slot, publishes, wakes the doorbell, and spins -- bounded,
+with a raw yield -- until its own slot reads DONE. The reply's in/out data does not need to travel through the
+slot at all: the server writes those guest pointers during `processCall`, so the slot only has to report
+completion and status.
+
+Why this is safe rather than merely workable: the urgent pool is **independent** of both the lane and the
+management slot, so a handler that interrupts a thread holding either one still makes progress -- the server
+services urgent slots in its own pass and the handler only reads memory. That independence is the property §20
+asked for, and it is the reason a bounded poll is acceptable here where a park is not.
+
+That is the next step, and it is bounded: one variant of the publisher, one op code, one server case, one call
+site.
