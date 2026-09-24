@@ -7464,3 +7464,42 @@ State after five migrations: zero socket denials and zero urgent timeouts on the
 single addressing bug as the remaining failure. The directive's stop condition is not met -- the boot does not
 complete and no regression has been run under the hatch -- but the socket itself is no longer what stands in the
 way.
+
+
+### 91. Two precise causes for the courier MISS, and §90's image hypothesis was wrong
+
+A paired diagnostic -- the server naming the connection it sends to, the guest naming its own socket -- replaced
+guessing with two facts:
+
+```
+guest:  [fd-courier-recv] MISS token=8760697097353443878 stored=0 dropped=0 mySocket=6
+server: bundle-to pid=1356172 kind=7 socket=14 isLoader=1 conns=1
+        sent-to-guest pid=1356172 token=7747477101651350255 kind=7
+```
+
+**First: `conns=1`.** There is exactly **one** courier connection for this pid, so §90's image-addressing
+hypothesis is wrong for this case -- there is no second connection to mis-address. The `isLoader` tag and the
+image preference are harmless (and may still be needed once a process has both images connected), but they are not
+the cause of this MISS, and the section that claimed they were is corrected here.
+
+**Second, and this is the cause: the server sends `kind=7` (`PROCESS_DOORBELL`) and the token it sends
+(`7747477101651350255`) is not the token the guest is waiting for** (`8760697097353443878`). So the kqchan
+migration did not put a descriptor on the courier at all, and the guest is waiting on a token that was never
+sent.
+
+That in turn has two sub-causes, both of which the code shows:
+
+* the server case reads the returned descriptor with `created->suppressedReplyWakeFd()`, but
+  `kqchan_mach_port_open` returns it in the reply **body** (`dserver_reply_kqchan_mach_port_open_t::socket`), not
+  as a wake descriptor -- so the value was -1 and nothing was sent;
+* because nothing was sent, `page->reply_payload[1]` kept the **stale** token of whatever request used the slot
+  before, and the guest read that. That is the same class as the ordering defects of §59/§70/§71 (an answer field
+  read without being tied to the request that produced it), one step earlier: a field that is not **cleared**
+  when the request is published.
+
+So the fix is two lines of substance: take the descriptor from the suppressed reply **body** the way ATTACH_LANE
+does, and clear `reply_payload[1]` (and `[0]`) when publishing a request, so a guest can never read a token that
+belongs to an earlier request.
+
+State: zero socket denials, zero urgent timeouts, and the socket-disabled boot failing on this one courier
+delivery -- with both of its causes now named from measurements rather than inferred.
