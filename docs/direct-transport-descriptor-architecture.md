@@ -6895,3 +6895,45 @@ That is the sharpest form the goal has taken: **one defect covering 25 calls, an
 rest**, with each call's class now decided by the table rather than by a guess. It also means the reachable
 reduction from fixing the image-adoption gap is 25 datagram calls and up to 25 per-thread sockets, not a
 handful -- which is why that gap is the next thing worth building rather than the mutations.
+
+
+### 77. The 25 are not a migration-guard violation: the lane simply does not exist in the image that falls back
+
+§76 reduced the residual to 25 lane-eligible calls falling back (`vchroot_path` 10, `thread_self_trap` 10,
+`console_open` 3, `kqchan_proc_open` 2). The guest already carries the exact instrument for that class, and it is
+not the reason histogram:
+
+```c
+int __dserver_ring_try_generated_rpc(...) {
+    ...
+    if (rc == -1) {
+        // NONFD_UDS_VIOLATION: the process-global directory already has an ACTIVE incarnation for this
+        // thread, this callnum is non-fd and Ring-capable, and the client is about to take the datagram
+        // path anyway. This is the migration guard: on a warmed process it must stay 0.
+        if (gr_proc_find_active(vtid)) { __atomic_fetch_add(&g_stat_nonfd_uds_violation, 1u, ...); }
+        gr_urs_note(callnum, "generated", gr_urs_reason_for_miss(vtid), 0);
+```
+
+It is dumped by `[dring-lane-stats]` as `nonfd_uds_violation=`, so it needs no new code. Measured on the full
+regression:
+
+```
+HELLO=1  FINAL=1  passes: pass=1 pass=1 pass=1 pass=1
+nonfd_uds_violation: 0 in all 5 processes        (nonzero: 0 of 5)
+[dring-uds-reason] lines: 0
+```
+
+**Zero.** So the migration guard never fires: for these calls there is **no ACTIVE process-global lane** for the
+thread, and the fallback is not "an active lane existed and the call chose UDS anyway". It is the absence of a
+usable lane in the image that is making the call.
+
+That also explains why the reason emission is silent, and it is a second, independent reason on top of §64's: the
+`gr_urs_note` call sits in `__dserver_ring_try_generated_rpc`, which lives in the image that owns the generated
+route -- and if the call is falling back in a **different** image, that function is never entered, so neither the
+counter nor the note can fire. The reason vocabulary has an entry for exactly this (`GR_URS_IMAGE_LOCAL_STATE`,
+"this image has no lane table / different image owns the lane"), and nothing in this run could reach it.
+
+So the instrument for the next step must live in the image that actually falls back, not in the one that owns the
+generated route -- and the fix is the one §32.10 named: the image-adoption / one-lane-per-tid ownership change.
+The two facts measured here make that fix's target precise: 25 calls, no active lane at the point of the call,
+and no migration-guard violation to explain away.
