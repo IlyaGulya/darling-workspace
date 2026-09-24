@@ -7650,3 +7650,41 @@ produced every step of this work: make the failing thing name itself.
 What is established, unchanged by this section: the per-thread RPC socket is requested by nothing on the boot
 path, the urgent pool services everything published to it, and the courier delivers and resolves the descriptor
 that the kqchan route returns.
+
+
+### 96. The death is before `main`: shellspawn never enters it, and kqchan is the last step of pre-main init
+
+§95 bracketed shellspawn's readiness sequence and got zero lines. The obvious next question was whether the
+diagnostics were simply too late, so entry prints were added at the top of `main`, after the runtime-mode check,
+and around `setupSigchild`:
+
+```
+[shellspawn-step] lines: 0        <- including main-entry
+[kqchan-plane] status=0 token=17958013178760321872 fd=8 out=8
+Rootless shellspawn did not become ready within 30000ms
+```
+
+**Not even `main-entry` prints.** So shellspawn never reaches `main` at all: the process stops during **pre-main
+initialization** -- dyld, duct, or a static constructor -- and the kqchan plane call, which succeeds, is the last
+step of that initialization that anything observes.
+
+That is a much narrower place than §95 could name, and it explains the two facts recorded there: the process is
+gone rather than blocked (there is no `main` to block in), and no abort or signal message accompanies it (the exit
+is not through a path that prints).
+
+It also means the defect is not in any of the transports this loop migrated -- all three measure zero -- but in
+what the pre-main initialization does **after** the kqueue channel is opened. The next instrument is there: the
+initialization that runs between the kqchan call and the point where control would enter `main`, using the same
+technique that produced every step of this work.
+
+State, unchanged and stated as measurement:
+
+| what | measurement |
+|---|---|
+| calls needing a per-thread RPC socket, boot path | 0 |
+| urgent publications left unserviced | 0 |
+| courier bundles missing | 0 |
+| kqchan descriptor delivered and resolved | yes (fd=8, out=8) |
+| shellspawn reaches `main` | **no** -- stops in pre-main initialization |
+| boot completes under the hatch | no |
+| regression under the hatch / FD slope | not run / not measured |
