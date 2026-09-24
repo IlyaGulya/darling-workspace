@@ -6937,3 +6937,43 @@ So the instrument for the next step must live in the image that actually falls b
 generated route -- and the fix is the one §32.10 named: the image-adoption / one-lane-per-tid ownership change.
 The two facts measured here make that fix's target precise: 25 calls, no active lane at the point of the call,
 and no migration-guard violation to explain away.
+
+
+### 78. Correction to §76/§77: 20 of the 25 are LOADER calls and are on the datagram by design
+
+§76 called 25 calls "lane-eligible but falling back" and §77 measured that no active lane existed for them. Both
+missed the simplest explanation, which the source states outright:
+
+```
+mldr.c:2149   dserver_rpc_vchroot_path(...)                          <- the LOADER's call
+mldr.c:404    dserver_rpc_explicit_thread_self_trap(kernfd, ...)     <- the LOADER's call, explicit kernfd
+```
+
+`vchroot_path` (10 UDS) and `thread_self_trap` (10 UDS) are both issued by **the loader**, inside the same
+`setup_space` path that §63 established can never use the page, and `thread_self_trap` is issued through the
+**explicit** entry point with `kernfd` -- the datagram by construction. The loader is a consumer **without lanes**
+by design; its own `dserver-rpc-defs.h` says so and binds `try_ring` accordingly, which is why the reason
+histogram and the migration counter are both silent for these calls (§77): the image that owns those instruments
+is not the image making the call.
+
+So §76's class is wrong, and the correction matters because it changes what the next fix is worth:
+
+| call | uds | really is |
+|---|---|---|
+| `vchroot_path` | 10 | loader call, datagram by design (like the loader checkin, §63) |
+| `thread_self_trap` | 10 | loader call, datagram by construction (`explicit_*`, kernfd) |
+| `console_open` | 3 | the only remaining lane-eligible fallback candidate |
+| `kqchan_proc_open` | 2 | the only remaining lane-eligible fallback candidate |
+
+**The reachable reduction from an image-adoption fix is therefore 5 calls, not 25**, and the "biggest reachable
+concession" §76 pointed at is not that. Building the image-adoption / one-lane-per-tid ownership change to chase
+`vchroot_path` and `thread_self_trap` would have been building it for calls that must stay on the datagram anyway.
+
+What remains genuinely open is `console_open` (3) and `kqchan_proc_open` (2) -- five calls, each of which needs its
+own attribution before anything is built, because nothing so far distinguishes "lane-eligible and falling back"
+from "issued by the loader through an explicit entry point" except reading the call site, which is what this
+correction did for the other twenty.
+
+The pattern this makes explicit, and it is the fifth instance: a counter or a class is only as good as the
+question it was built for, and the cheapest correction is to read the call site rather than to build a fix for a
+number.
