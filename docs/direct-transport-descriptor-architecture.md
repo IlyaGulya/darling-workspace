@@ -6570,3 +6570,39 @@ bound expiring under 16-way contention, or a non-zero `reply_status` for the thr
 The instrument that separates them is the one already used for the checkin question -- the server's
 `checkin-reply status=` line, read on a run that also counts the socket creations, so that the 27 can be matched
 to the statuses the server published for them.
+
+
+### 69. The 27 are not a refused result: every page checkin the server published was status 0
+
+§68 left three candidates for the 27 socket-creating thread-create checkins. One run answers it:
+
+```
+rpc-socket creations: 27        reasons: 27 reason=checkin
+checkin-reply statuses: 165 status=0        (no non-zero status at all)
+checkin-reply lines: 165        uds-checkin: 176
+uds-checkin breakdown: 166 fork=0 page=1 page_ready=1 | 9 fork=1 page=1 page_ready=1 | 1 page=0
+rpc-socket by process: 8 + 8 + 8 + 2 + 1
+```
+
+**Every page checkin the server completed was accepted with status 0** -- there is no `-EINVAL`, no `-ESRCH`, no
+refusal of any kind. So the thread-create fallback is not a refused result, and with §68's ownership change the
+sequence race is gone as well. What is left is that the page request either never reached the server or was never
+completed for those 27.
+
+The breakdown also settles what the remaining datagram traffic IS, and it is worth writing down because it is
+easy to mistake for the same defect:
+
+* `166 fork=0 page=1 page_ready=1` -- these are the **loader main checkins**, one per process invocation, which
+  §63 established can never ride the page. They are permanent by design, and they are the bulk of the column.
+* `9 fork=1 page=1 page_ready=1` -- fork-child checkins, whose site has a page and still takes the datagram.
+* `1 page=0` -- the very first checkin, before any page exists.
+* The 27 socket-creating thread-creates are a **subset of the 166**, from three processes that each created eight.
+
+So `checkin uds=176` is not 176 migration gaps: it is ~139 loader checkins, 9 fork checkins, 1 pre-page and the
+27 thread-creates. Reading the column without this breakdown is how a permanently-datagram call gets counted as
+work remaining.
+
+The next instrument has to say whether the page request happened at all for those 27, and it must not be another
+guest page counter (two sets of those were written and never incremented, §47/§48.1). The server already logs the
+request's `payload[1]` (the tid) when it services an OP_CHECKIN; logging the same tid at the socket-creation site
+and intersecting the two lists answers it in one run, the way the checkin attribution of §56 did.
