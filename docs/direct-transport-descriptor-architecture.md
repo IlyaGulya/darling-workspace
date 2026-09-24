@@ -7503,3 +7503,41 @@ belongs to an earlier request.
 
 State: zero socket denials, zero urgent timeouts, and the socket-disabled boot failing on this one courier
 delivery -- with both of its causes now named from measurements rather than inferred.
+
+
+### 92. All three classes clean: zero socket denials, zero urgent timeouts, zero courier misses
+
+Both §91 fixes were applied -- the server reads the returned descriptor from the suppressed reply **body** the way
+ATTACH_LANE does, and every publisher clears `reply_payload[0]`/`[1]` when it publishes a request -- and the
+socket-disabled boot now measures:
+
+```
+[rpc-socket-DENIED]    0
+[urgent-wait-TIMEOUT]  0
+[fd-courier-recv] MISS 0
+bundle-to pid=1359571 kind=6 socket=14 isLoader=1 conns=1
+sent-to-guest pid=1359571 token=15507764019810476574 kind=6
+```
+
+`kind=6` is `DSERVER_FD_COURIER_KIND_KQCHAN_FD`: the kqchan descriptor is now actually sent, and the guest
+resolves it. So the three failure classes this work has been driving down are all empty on the boot path:
+
+* **no call asks for a per-thread RPC socket** (five migrations: deallocate, vchroot, kqchan, interrupt enter/exit,
+  sigprocess);
+* **no urgent publication goes unserviced** (the drain-order bug is fixed and measured);
+* **no courier bundle goes missing** (the reply-body read and the payload clearing are both in).
+
+The boot still does not complete -- `HELLO=0`, `shellspawn did not become ready` -- and for the first time it fails
+**without a diagnostic line**, which is the honest state: the transport classes are clean and the remaining defect
+is something else that nothing currently names. That is the next instrument, not a blocker: the same technique
+that produced every step of this work -- make the thing fail, and name why.
+
+Stated plainly for the stop condition: the socket-disabled boot is still RED, so no regression has been run under
+the hatch and the FD-slope target is unmeasured. What is established is narrower and solid: with the per-thread
+socket denied, nothing on the boot path needs it, and the urgent and courier paths carry their traffic without a
+loss.
+
+Four real defects were found and fixed on the way here, each by measurement: the urgent drain placed after the
+management guard (every urgent publication silently unserviced), the courier bundle read from the wrong reply
+field, the inherited reply token, and -- earlier in the same loop -- the contract-gated duplex route. Each one was
+invisible to the censuses.
