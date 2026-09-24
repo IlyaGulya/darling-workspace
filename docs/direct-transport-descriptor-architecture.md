@@ -8107,3 +8107,45 @@ Three successive readings of one log line -- §103 ("kqchan is closed"), §104 (
 cannot pass"), §106 ("the guard passes; the token was ignored") -- each correcting the last. The instrument that
 settled it was the one that recorded **both** outcomes: without `body_socket` and `body_len` alongside `status`,
 every one of those readings was possible.
+
+
+### 107. kqchan is closed, with evidence on BOTH sides -- and the hatch names `mach_port_move_member`
+
+The §106 fix was measured, and for the first time the descriptor transfer is proven from both ends:
+
+```
+reply-token pid=1425682 token=14186306812444856812 bodylen=24
+[kqchan-plane] status=0 token=14186306812444856812 fd=8 out=8
+```
+
+The token the generated sender issued is the token the guest resolved, the body is the full 24 bytes (header plus
+the 16-byte body, so `fd_token` is present), and the guest holds fd 8 in its out-parameter. `kqchan_mach_port_open`
+-- the whole fd-bearing class for the kqueue channel -- is done on the plane plus courier, with no per-thread
+socket.
+
+The hatch moved on to the seventh consumer:
+
+```
+[rpc-socket-DENIED] pid=1425682 tid=1425682 call=mach_port_move_member
+```
+
+`mach_port_move_member` is a different shape from the previous six and is the first one that is a **plain lane
+candidate**: three `uint32_t` parameters (`target`, `member`, `after`), **no reply** (`[], `), so the
+`RING_ORDERED_NO_REPLY` route applies -- publish on the lane, wait for the transport acknowledgement, public shape
+unchanged. It is not in `RING_GENERATED_SIMPLE`, which is why it takes a per-thread socket today.
+
+Per §72/§73 the table carries a reason for entries that were tried and refused, and `pthread_canceled` -- also a
+NO_REPLY call -- was refused with RED. So this is tried, not assumed: add it to the routing table, rebuild every
+consumer, and let the boot say whether the NO_REPLY lane route carries it.
+
+Progress, as the hatch's own complaint:
+
+| # | consumer | transport it moved to |
+|---|---|---|
+| 1 | `mach_port_deallocate` | duplex lane |
+| 2 | `vchroot` | management plane |
+| 3 | `kqchan_mach_port_open` | plane + courier (**now proven both sides**) |
+| 4 | `interrupt_enter`/`exit` | urgent pool |
+| 5 | `sigprocess` | urgent pool + completion |
+| 6 | `mach_msg_overwrite` | mach-msg ring (`DARLING_GUEST_RING_MACH_MSG=1`) |
+| 7 | `mach_port_move_member` | **lane -- to be measured** |
