@@ -6496,3 +6496,38 @@ What this closes and what it leaves:
 * The heatmap's `ring` column needs its own attribution before it is cited again; the transport tag it is built
   from is set at the point a call is taken off the lane (§29), so a callnum that is never taken off a lane must
   read zero there, and 496 means the tag is not what the column assumes.
+
+
+### 67. `per_thread_rpc_socket_created = 27`, and every one of them is the thread-create checkin
+
+The socket metric was measured on the full regression with its own diagnostic (`[rpc-socket] created ... reason=`):
+
+```
+HELLO=1  FINAL=1  passes: pass=1 pass=1 pass=1 pass=1
+ool 44/uds=0   basic 204/uds=0   r2 206/uds=0   stress 644/uds=0
+rpc-socket creations: 27      reasons: 27 reason=checkin
+[rpc-socket] created pid=1185805 tid=1185807 n=1 reason=checkin
+[rpc-socket] created pid=1185805 tid=1185808 n=2 reason=checkin
+[rpc-socket] created pid=1185821 tid=1185829 n=1 reason=checkin
+...
+```
+
+**27 sockets, every single one attributed to `checkin`.** That confirms the §24 finding by measurement rather than by reading the code: the per-thread RPC socket has exactly one consumer, and it is the checkin. So removing it is a question about the checkin and nothing else.
+
+The number also says the fallback is still taken: `threads.c` reaches
+`if (!checked_in && dserver_rpc_explicit_checkin(__darling_thread_rpc_socket(), ...))`, and `__darling_thread_rpc_socket()`
+is only evaluated when `!checked_in` -- so 27 creations mean 27 thread-create checkins did not accept the page
+route. The checkin census in the same period reads `uds=11 plane=165`, so the two numbers are not the same
+population; the socket counter is the more direct one for this question and the one to drive to zero.
+
+The acceptance for the socket target is therefore exact and now instrumented: `rpc-socket creations: 0` on a full
+regression. The reason it is not zero is the one §59 named and could not measure at the time -- the thread-create
+site's completion check requires `reply_seq == mine && reply_status == 0` (or a claimed transaction), and the
+architecture defect that used to make `reply_status` non-zero for this site is fixed (§58), so what remains is the
+sequence race: the server releases the mailbox slot on publish, and a second thread of the same process can claim
+it and publish its own sequence before the first thread has read its answer.
+
+So the next change is the one §59 described: **the guest releases the mailbox slot after reading its answer, not
+the server on publish**. It is a protocol change across the server's page tail and the three guest publishers,
+and its acceptance is both the socket count going to zero and the checkin census's `uds` column falling to the
+loader's permanently-datagram site.
