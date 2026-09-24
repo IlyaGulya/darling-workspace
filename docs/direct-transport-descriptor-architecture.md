@@ -6861,3 +6861,37 @@ Read together with §73 and §74, the shape of the remaining work is now explici
 That table is the honest state of the goal: Ring is the default transport for everything it can carry, three of
 the four lifecycle operations are off AF_UNIX, and what is left is enumerated with a reason for each class rather
 than left as a count.
+
+
+### 76. The residual splits into exactly two classes, and the "one-shot" class was wrong
+
+§75 listed four classes. Reading the policy table for each remaining call -- no run needed -- corrects one of them
+and collapses another:
+
+| call | in `RING_GENERATED_SIMPLE` | consequence |
+|---|---|---|
+| `vchroot_path` (10 uds) | yes | lane-eligible, falling back |
+| `thread_self_trap` (10 uds) | yes | lane-eligible, falling back |
+| `console_open` (3 uds) | yes | lane-eligible, falling back |
+| `kqchan_proc_open` (2 uds) | yes | lane-eligible, falling back |
+| `checkout` | yes | lane-eligible (and measured on the page) |
+| `pthread_canceled` (75 uds) | no | not eligible |
+| `interrupt_enter` / `interrupt_exit` (5 + 5 uds) | no | not eligible |
+| `fork_wait_for_child` (5 uds) | no | not eligible |
+| `checkin` | no | rides the process-control page instead |
+
+So there are exactly **two** classes, not four:
+
+1. **Lane-eligible but falling back -- 25 calls**: `vchroot_path` 10, `thread_self_trap` 10, `console_open` 3,
+   `kqchan_proc_open` 2. This is **one** defect, and it is the one §32.10 located: the image-adoption /
+   one-lane-per-tid ownership change (the borrowed-view family). §75 put `console_open` and `kqchan_proc_open` in
+   a "genuinely one-shot, attribution first" class; that was wrong -- they are in the table, so they are the same
+   defect as the other two and no separate attribution is owed for them.
+2. **Not lane-eligible by policy -- ~90 calls**: `pthread_canceled` 75 (measured RED when routed, §73),
+   `interrupt_enter`/`interrupt_exit` 5+5, `fork_wait_for_child` 5, plus the loader checkin which rides the page.
+   These need a transport other than the per-thread socket, which is the design change §71 and §74 both point at.
+
+That is the sharpest form the goal has taken: **one defect covering 25 calls, and one design change covering the
+rest**, with each call's class now decided by the table rather than by a guess. It also means the reachable
+reduction from fixing the image-adoption gap is 25 datagram calls and up to 25 per-thread sockets, not a
+handful -- which is why that gap is the next thing worth building rather than the mutations.
