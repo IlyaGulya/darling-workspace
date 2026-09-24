@@ -8186,3 +8186,28 @@ transport adapters only):
 The student of the previous two attempts is worth stating: the guest's `mach_traps.c` needed
 `<darlingserver/rpc-supplement.h>` explicitly -- `rpc.h` does not pull the operation enum in -- which is the kind
 of omission that costs a build cycle and no more.
+
+
+### 109. The eighth consumer: `pthread_canceled` gets the explicit management op the directive asks for
+
+The `mach_port_move_member` migration was measured green -- the hatch no longer names it -- and the boot moved to
+the call the directive names explicitly:
+
+```
+[rpc-socket-DENIED] pid=1433373 tid=1433373 call=pthread_canceled
+[rpc-socket-DENIED] pid=1433375 tid=1433375 call=pthread_canceled
+```
+
+Two processes, both in the libpthread cancellation handshake. `DSERVER_PROCESS_CONTROL_OP_PTHREAD_CANCELED 7u` was
+already reserved in the operation enum and had **no server case and no guest route**, so this is directive §5-§7
+implemented rather than a new mechanism:
+
+* the server case builds `dserver_rpc_call_pthread_canceled_t`, runs the **ordinary** `PthreadCanceled` Call with
+  `suppressReplyDelivery()`, and publishes its status -- one semantic core (directive §15);
+* the guest route in `sys_pthread_canceled` tries the plane first and falls back to the datagram **only** when
+  `planeStatus == -1`, which is the "not published / not completed" case -- so a published call is never retried
+  (directive §5-§7), and the completion is explicit rather than inferred.
+
+Note the sentinel is the plane's own return, not the status: a legitimate status can be any errno including -1, so
+keying the fallback on the returned status would retry a call that had already been published. That distinction is
+the whole content of §5-§7's "no UDS retry after publication".
