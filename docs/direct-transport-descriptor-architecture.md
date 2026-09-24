@@ -7616,3 +7616,37 @@ Summary of this loop, stated as the measurement rather than as progress:
 Five migrations, four defects found by measurement (the contract-gated duplex route, the urgent drain placed after
 the management guard, the courier bundle read from the wrong reply field, the inherited reply token), and every
 one of them invisible to the censuses that preceded them.
+
+
+### 95. shellspawn never reaches its own setup: the kqchan call is its last observed step
+
+A diagnostic was placed in `shellspawn`'s `main` around its readiness sequence
+(`setupSigchild` -> `rootlessTestDelaySocketReady` -> `rootlessTestMarkSocketPending` -> `setupSocket` (bind +
+listen) -> `listenForConnections`), writing one line per step to fd 2. The socket-disabled run measures:
+
+```
+[kqchan-plane] status=0 token=17052573802098778302 fd=8 out=8
+[shellspawn-step] lines: 0
+Rootless shellspawn did not become ready within 30000ms
+```
+
+**Not one step line appears.** So shellspawn does not reach `setupSigchild()`, which is the first thing after the
+block that the diagnostics bracket -- meaning the kqchan call, which succeeds (status 0, fd resolved, written to
+the caller's out parameter), is the **last observed action of the process**, and whatever follows it is where the
+process stops.
+
+Two facts that narrow this further, both from the same run:
+
+* a live inspection during a socket-disabled boot shows **only `darlingserver`** among the prefix's processes --
+  no shellspawn, no shell. The guest process does not sit blocked; it is gone. That is why the host reports
+  "did not become ready" rather than hanging on a lock;
+* no abort, terminate or signal message accompanies it, so the exit is not through a path that prints.
+
+So the remaining defect is strictly **after** the kqchan plane call and **before** shellspawn's own setup, and
+nothing in either trace names it yet. The next instrument is between those two points -- in the initialization
+that runs after the kqueue channel is opened and before `setupSigchild` -- and the technique is the same one that
+produced every step of this work: make the failing thing name itself.
+
+What is established, unchanged by this section: the per-thread RPC socket is requested by nothing on the boot
+path, the urgent pool services everything published to it, and the courier delivers and resolves the descriptor
+that the kqchan route returns.
