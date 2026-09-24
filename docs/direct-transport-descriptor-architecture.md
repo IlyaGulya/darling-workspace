@@ -6339,3 +6339,57 @@ the `fork=0` datagram count must fall to the genuinely pre-page cases, and the r
 `machmsg_uds=0`. The one risk to watch is the ordering that the source comment protects: the checkin must not
 end up AFTER the bootstrap writes, because a checkin whose result must be visible to the process's other traffic
 cannot follow them.
+
+
+### 63. The loader's checkin cannot ride the page at all -- proved by making the page available and watching it fail
+
+§60/§62 aimed at making the page available at the loader's checkin site. That was achieved, and the boot then
+failed -- which turns the whole question around and settles it.
+
+The establishment block was moved from its position after `load()` to immediately before it, so that `load()` ->
+`load64` -> `setup_space` -> checkin all run after the page exists. The move had to be made twice: the first
+attempt landed the block inside `#ifdef __i386__` and it was compiled out, which is visible in the log as the
+establishment never printing and the bootstrap writes falling to `ready=0`. After correcting the placement, the
+measurement is unambiguous:
+
+```
+[mldr-ctl] page pid=1160286 size=136 sent=1
+[mldr-ctl] ready pid=1160286 state=1 page=0x7aded64ac000 sz=136 off=104
+[mldr-ctl]   ready-image=vchroot
+[mldr-ctl] checkin-route pid=1160286 tid=1160286 ready=1 page=0x7aded64ac000 lifetime=-1 image=vchroot
+[mldr-ctl] seq=1 after-dyld pid=1160286 status=0 ready=1 image=vchroot
+...
+HELLO=0   FINAL=0   shellspawn did not become ready
+```
+
+`checkin-route` now reads `ready=1 page=0x...` on every image -- the exact acceptance §60 asked for -- and the boot
+does not complete. So:
+
+* the page IS available at the checkin site, so a missing page was never the reason;
+* two different earlier positions for the establishment (inside `setup_space`, §61; before `load()`, here) both
+  give RED, so the position of the establishment was never the reason either;
+* the RED is caused by the page route for THIS checkin.
+
+That also finally explains the round-49i RED with evidence rather than inference: it was never about the
+architecture byte (§58), the inherited page (§45), the transaction model (§44) or the position -- it is that this
+particular checkin cannot be expressed as a page write. The source comment said so all along: this checkin's
+result must be visible to the process's OTHER traffic, and the page is serviced on the server's own pass while a
+datagram is serviced the moment it arrives. What is new is that the claim is now measured from both directions.
+
+**Reverted** (the block is back after `load()`, before the bootstrap writes) and the revert verified GREEN:
+
+```
+HELLO=1  FINAL=1  passes: pass=1 pass=1 pass=1 pass=1
+ool 44/uds=0   basic 204/uds=0   r2 206/uds=0   stress 643/uds=0
+Uncaught exception: 0   shellspawn-not-ready: 0
+```
+
+Consequence for the plan: the loader's main checkin stays on the datagram, and the `fork=0` datagram traffic
+attributed in §59/§60 is that call, permanently -- it is not a migration gap to close by ordering. The reachable
+target is the OTHER two sites, which are already on the page (`checkin` 164 of 174 in §58), and the remaining
+work is the socket metric, the teardown calls and the image-adoption tail.
+
+A caution recorded with this: one reading in this round showed `uds-checkin=2` and was briefly taken as a
+success; the file had been rewritten by a later short run whose boot failed. Two runs writing one log path is
+the same class of error as reading a diagnostic line instead of the verdict, and the defence is the same --
+name the run and read its own completion marker.
