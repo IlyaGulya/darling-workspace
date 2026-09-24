@@ -6082,3 +6082,42 @@ That is the next measurement, and it is now cheap: the same log plus a page-rout
 two converted sites will say which. It is worth stating plainly that this is the fifth time in this work that a
 conversion has been recorded as done on the strength of the code being present rather than the route being
 taken, and the attribution log is the instrument that would have caught all five.
+
+
+### 57. The datagram checkins are DUPLICATES: the page route works and its result is not accepted
+
+§55/§56 left two hypotheses (the page is not ready in a fork child; the route code is not reached). The
+server-side instrument added here answers both at once, because the server is the only party that can say
+whether a process had a page at the moment its datagram arrived. The attribution line now carries
+`page=` and `page_ready=`, read from the server's own `_processControl` registry:
+
+```
+uds-checkin pid=1116661 tid=1116661 fork=0 lifetime=-1 page=0 page_ready=0
+uds-checkin pid=1116661 tid=1116661 fork=0 lifetime=-1 page=1 page_ready=1
+uds-checkin pid=1116661 tid=1116663 fork=0 lifetime=-1 page=1 page_ready=1
+uds-checkin pid=1116661 tid=1116663 fork=0 lifetime=-1 page=1 page_ready=1
+uds-checkin pid=1116666 tid=1116666 fork=1 lifetime=-1 page=1 page_ready=1
+uds-checkin pid=1116666 tid=1116666 fork=0 lifetime=-1 page=1 page_ready=1
+...
+count=218      histogram: page=0/page_ready=0 -> 1;  page=1/page_ready=1 -> 217
+```
+
+**Both hypotheses are refuted.** For 217 of 218 datagram checkins the process HAD a mapped page with its
+transport published. So the guest is not falling back because the transport is missing -- it has it and does not
+use it.
+
+And every (pid, tid) appears TWICE. A line is printed once per `Checkin::processCall`, so those are two distinct
+checkin calls for the same thread. Combined with §52's live census (`checkin total=332 uds=167 plane=165`), the
+arithmetic is exact: **332 = 2 x 166**. Half of all checkins are duplicates -- the page route runs (165 of them,
+counted as `plane`), the guest does not accept its result, and the same checkin is then repeated on the datagram
+(167). The datagram masks the defect, which is why every regression in this round has been GREEN while the
+transport was wrong.
+
+The guest accepts a page-route checkin only when `reply_status == 0`, or when the server has claimed the
+transaction. So the server is completing the OP_CHECKIN with a non-zero status, and the guest treats that as
+"not checked in" and repeats the operation. The next instrument is the server's own reply status for the
+OP_CHECKIN case -- one line, in `_serviceProcessControl`, naming the seq and the status it publishes.
+
+This is the fifth conversion in this work that was recorded as done on the strength of the code being present
+rather than the route being taken (§56), and the first one where the reason is visible: a route that works and a
+result the caller does not believe.
