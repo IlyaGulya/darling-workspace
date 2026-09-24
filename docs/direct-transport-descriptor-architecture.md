@@ -7018,3 +7018,54 @@ What is left as genuinely open work is therefore not a list of calls but two des
 calls the lane cannot carry (`pthread_canceled` and the interrupts, ~90 datagram calls and the per-thread sockets
 they force), and whether the early calls (`console_open`, `kqchan_proc_open`) should wait for the lane instead of
 falling back. Both are changes, and neither is a bug hunt.
+
+
+### 80. The socket-disabled hatch works, and the FIRST blocker is not in the census
+
+The directive's acceptance tool was built: `DARLING_DISABLE_THREAD_RPC_UDS=1` makes the per-thread RPC socket
+creation **fail hard and name the call** rather than silently recreate the transport this work removes. It has
+two halves, because the name is only known in the image that makes the call:
+
+* every generated wrapper names itself (`dserver_rpc_hooks_note_call("<call>")`, emitted by the generator before
+  the socket acquisition);
+* `mach_driver_get_fd()` -- the guest image's socket accessor -- checks the hatch and aborts, printing
+  `[rpc-socket-DENIED] pid= tid= call=<name>`.
+
+The mldr accessor keeps its own denial as a backstop. The hatch reads the environment libc-free (a scan of
+`/proc/self/environ`) because this code runs around the bootstrap, where `getenv` is unavailable and an
+in-band instrumented path is a measured boot hazard.
+
+**First socket-disabled boot:**
+
+```
+HELLO=0   FINAL=0   Rootless shellspawn did not become ready within 30000ms
+[rpc-socket-DENIED] pid=1318784 tid=1318784 call=mach_port_deallocate
+[rpc-socket-DENIED] pid=1318784 tid=1318784 call=interrupt_enter
+```
+
+Two things follow immediately, and the first is the important one:
+
+**`mach_port_deallocate` is the first blocker, and it is not in the residual census at all.** Every census in
+§75-79 was built from the server's heatmap, which counts calls the server serviced; a call that never reaches the
+server because the guest denies its own transport does not appear there. The hatch finds consumers the census
+cannot see, which is exactly why the directive asked for it before any more census work.
+
+**And it cannot go on the simple Ring or on the management plane.** The source states the rule outright:
+
+```
+"WRONG LANE, NOT BAD OP": deallocate / mod_refs fail rules 1-3 because the SIMPLE fast ring has no way to
+deliver a caller-side S2C while the caller is parked. A future DUPLEX-ring lane that can accept caller-side
+S2C mid-call is the right home for destroy-capable ops. Until that lane exists they stay UDS; do NOT smuggle
+them back onto the simple ring via a "clever subset" that still risks an S2C.
+```
+
+So `mach_port_deallocate` is **destroy-capable**: it can trigger a caller-side S2C while the caller is parked,
+which the simple lane cannot deliver. It is also **hot** (a Mach trap), so the process management plane -- which
+the directive scopes to rare management work -- is the wrong home for it as well. Its transport is a **duplex
+lane**, and the codebase already has one: the duplex mailbox and its `DSERVER_DUPLEX_*` hatches exist from earlier
+rounds.
+
+That reorders the migration the directive laid out, and the order now comes from the hatch rather than from the
+census: `mach_port_deallocate` (duplex lane) first, then `interrupt_enter` (which the hatch also named, and which
+§19-21 require to be reentrancy-audited rather than dropped into the single management slot), and only then the
+rare lifecycle calls the census listed.
