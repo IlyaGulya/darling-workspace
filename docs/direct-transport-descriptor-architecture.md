@@ -8341,3 +8341,41 @@ The count so far, by the hatch's own complaint:
 | 9-11 | `construct`, `destruct`, `mod_refs` | port | plane |
 | 12 | `semaphore_signal[_all]` | semaphore | plane |
 | -- | eight more port operations | port | plane (batch) |
+
+
+### 114. `call=unknown`: the request came through a path that carries no call name -- `bsdthread_terminate`
+
+The semaphore migrations were measured green -- the hatch no longer names `semaphore_signal` -- and then it said
+something new:
+
+```
+[rpc-socket-DENIED] pid=1448194 tid=1448194 call=unknown
+```
+
+`call=%s` is printed by the guest kernel's denial site from `__dserver_current_call`, which the generated wrappers
+set through `dserver_rpc_hooks_note_call(name)`. So `unknown` means the request **did not come from a generated
+wrapper at all**. There are exactly two direct requesters in the tree, and only one of them prints through this site:
+
+```c
+/* bsdthread_terminate.c */
+// we can also unguard the RPC FD for this thread now
+guard_table_remove(mach_driver_get_fd());
+```
+
+The terminate path asks for the fd purely in order to remove it. `mach_driver_get_fd()` **creates** a per-thread
+socket when the thread has none, so this path manufactures a transport it only wanted to clean up -- and it does so
+without a call name, which is why the hatch could not name it. (The other direct requester, `fork.c`'s
+`guard_table_add(__dserver_per_thread_socket(), ...)`, goes through the loader and prints through the *loader's*
+denial site with `reason=` instead.)
+
+The guard was never this path's to look up: the loader adds it with the fd it created
+(`t_callbacks->rpc_guard(new_rpc_fd)`), and the guest's `rpc_guard`/`rpc_unguard` callbacks already receive exactly
+that fd. So the fix records it:
+
+* `rpc_guard(fd)` notes the fd in a thread-local and `rpc_unguard(fd)` clears it;
+* `bsdthread_terminate` unguards **the recorded fd**, and a thread that never had a guarded RPC fd simply has
+  nothing to unguard.
+
+That is the rule from the workspace rules applied literally -- **a descriptor number is not ownership** -- and it
+removes a socket creation that no migration of a callnum could have removed, because there is no callnum: this is a
+consumer the counter-based view could not see and the hatch could not name.
