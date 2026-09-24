@@ -7350,3 +7350,36 @@ asked for, and it is the reason a bounded poll is acceptable here where a park i
 
 That is the next step, and it is bounded: one variant of the publisher, one op code, one server case, one call
 site.
+
+
+### 88. `sigprocess` needs five payload words, and the urgent pool has four
+
+§87 decided the transport; the shape then turned out not to fit. `sigprocess` carries:
+
+```
+bsd_signal_number, linux_signal_number, sender_pid, code      (4 x int32)
+signal_address                                                 (u64)
+thread_state, float_state                                      (u64 POINTERS)
+```
+
+and the last two are **pointers to large structures** -- `x86_thread_state64_t` / `x86_float_state64_t` -- which
+the server **writes into** (`state_from_kernel(ctxt, &tstate, &fstate)` runs after the call returns). So the
+caller needs the server to have completed the write before it continues, which is exactly the completion §87
+established it needs.
+
+Packing it: the four int32s and `signal_address` need three words, the two pointers two more -- **five** -- and the
+urgent pool carries **four** (`urgent_payload[SLOTS][4]`). One word short, and the shapes do not pack: the
+pointers are 64-bit and the int32s together are 128.
+
+So the bounded addition of §87 needs one more thing: the urgent payload widened to **eight** words. That is an
+ABI change to `dserver_process_control` and therefore every consumer must be rebuilt and redeployed together --
+the rule this work has already paid for three times -- but it is a width change to an existing array, not a new
+mechanism, and the pool stays fixed.
+
+The alternative -- pointing the slot at a guest-side argument block, the way `SetExecutablePath` passes its path
+-- was considered and rejected for this call: the server already has to write into two of the arguments, so the
+guest would have to keep that block alive across a bounded poll from a signal handler, and a stack block on the
+signal stack is exactly the kind of lifetime that a handler must not depend on.
+
+That is the last piece before `sigprocess` can move: widen the urgent payload to eight words, rebuild everything,
+add the op code and the server case, and wire the one call site.
