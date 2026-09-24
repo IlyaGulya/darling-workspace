@@ -7154,3 +7154,52 @@ measured step rather than a plan.
 One honest note on the measurement: the deallocate migration was verified by the **absence** of its denial in the
 next socket-disabled boot, not by a full GREEN run. The boot still fails at `vchroot`, so the socket-disabled
 regression is not yet GREEN and the directive's stop condition is not met -- the loop continues from here.
+
+
+### 83. Second migration done: `vchroot` on the management plane, and the reusable publisher
+
+`vchroot` was migrated exactly as the directive's §14/§15 prescribe -- an explicit management-plane operation
+running the **ordinary** semantic Call, with no second implementation:
+
+* `DSERVER_PROCESS_CONTROL_OP_VCHROOT 8u` in the protocol header;
+* a server case modeled on `SET_EXECUTABLE_PATH` (the guest's pointer and size travel in the payload; the server
+  builds `dserver_rpc_call_vchroot_t` and runs `Vchroot::processCall` through the ordinary path, so the semantics
+  have one home and this is only a transport adapter);
+* a guest route in `vchroot_userspace.c` that tries the plane first and falls back to the datagram only when the
+  plane returns -1 ("not published / not completed", so nothing is duplicated).
+
+And, more useful than the migration itself, the **reusable guest publisher**:
+
+```c
+int __dserver_plane_request(uint32_t op, uint64_t p0, uint64_t p1, uint64_t p2, uint64_t p3);
+```
+
+One implementation of the mailbox protocol for every migrated call -- claim the slot with a CAS, publish, wake the
+**process doorbell** (never a courier byte, per directive §8), wait for completion, snapshot the answer fields,
+then release (the ordering §67/§70/§71 measured). It returns the server's status for a completed request and -1
+otherwise, so every migration that follows is a call site plus a server case rather than a new protocol.
+
+**Socket-disabled boot after the migration:**
+
+```
+before:  [rpc-socket-DENIED] call=vchroot
+after:   [rpc-socket-DENIED] call=kqchan_mach_port_open
+         [rpc-socket-DENIED] call=interrupt_enter
+```
+
+`vchroot` no longer creates a per-thread socket. The loop has now run twice end to end -- fail, migrate, rebuild,
+re-run, next name -- and both migrations were of calls the earlier censuses could not see
+(`mach_port_deallocate`, and now `kqchan_mach_port_open`), which is the strongest argument for having built the
+hatch before doing any more census work.
+
+Next in the loop:
+
+* **`kqchan_mach_port_open`** -- the kqueue-channel class of directive §16: descriptor-bearing, so the semantic
+  half goes on the management plane with an `fd_token` and the descriptor on the process courier with
+  `DSERVER_FD_COURIER_KIND_KQCHAN_FD`, in either arrival order (the token registry already exists).
+* **`interrupt_enter`** -- still the reentrancy audit of §19-21, unchanged: it may not share the single
+  management slot if it can re-enter while the same thread holds it, and from signal context it may only use
+  atomics, raw syscalls and preallocated memory.
+
+The socket-disabled regression is still not GREEN -- the boot fails at `kqchan_mach_port_open` -- so the
+directive's stop condition is not met and the loop continues.
