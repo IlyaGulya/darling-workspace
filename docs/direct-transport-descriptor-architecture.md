@@ -7813,3 +7813,42 @@ What this closes, stated as the measurement rather than as progress:
 
 Six defects were found and fixed on the way here, five of them in the transport layer this directive asked to
 build, and the sixth is the one that was hiding behind them.
+
+
+### 100. Refinement to §99: the handler DOES produce a valid fd -- the reply path is what loses it
+
+§99 read `body_socket=-1` as `setup()` returning -1. Reading the two `setup()` implementations corrects that:
+
+```c
+int DarlingServer::Kqchan::setup() {
+    int fds[2];
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, fds) < 0) { throw ...; }
+    _socket = std::make_shared<FD>(fds[0]);
+    ... fcntl checks, all throwing ...
+    return fds[1];          // a VALID descriptor, always
+}
+```
+
+Every failure path in `Kqchan::setup()` **throws**, and the success path returns `fds[1]`, which is a valid
+descriptor. `MachPort::setup()` returns that value unchanged. So the handler cannot have produced -1 on a call
+that completed with `status=0`.
+
+Which means the -1 in the reply body is **not** what the handler produced: it is what the **reply path** recorded.
+The measurement says so directly -- `body_len=16` is exactly a reply header plus one `int32`, with **no
+`fd_token` field**, and `from_wake=-1` says the suppressed-reply wake descriptor was never captured. So the
+descriptor the call legitimately produced was **lost between the handler and the page reply**, and the guest
+received `status=0` with no way to obtain it.
+
+That returns the question to the reply-fd plumbing §98 touched, with a sharper target: `_sendReply(code, socket)`
+must capture the descriptor for a **suppressed** reply, and the generated reply for this call must carry the
+`fd_token` field. Both were attempted; neither took effect in the measured build, and the instrument now says
+exactly which one is missing: the **token field is absent from the body** (`body_len=16`), so the generator change
+did not reach the server's reply construction.
+
+So the next step is narrow and verifiable in one build: make `dserver_reply_kqchan_mach_port_open_t` actually carry
+the `fd_token` (and confirm `body_len` grows past 16), then confirm the server's suppressed-reply path captures the
+descriptor the handler returned.
+
+This is a better place to stop than §99's conclusion, because it is a statement about a specific missing field
+with a measurement that will show it appear, rather than a statement about a semantics function that turned out to
+be correct.
