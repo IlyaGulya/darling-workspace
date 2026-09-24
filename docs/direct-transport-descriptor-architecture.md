@@ -8505,3 +8505,42 @@ the service; the courier's own reason for returning 0 is the next measurement.
 
 Worth stating plainly: this defect was invisible to every counter in the tree. The call reported `status=0`, the
 guest reported a resolved call, and the only signal was a `-1` descriptor in a line added for a different purpose.
+
+
+### 118. With the misread removed: descriptor delivered, no denials -- and the boot still stops elsewhere
+
+The §117 build was measured:
+
+```
+[kqchan-plane] status=0 token=16733224056179724476 fd=8 out=8
+kqchan-plane-no-token:  (not emitted)
+denials: 0
+HELLO: 0
+```
+
+So in this run the descriptor **was** delivered -- token non-zero, guest resolved it, fd 8 in its out-parameter --
+and the new miss diagnostic did **not** fire, meaning the courier path succeeded rather than the CMSG fallback. The
+§97 intermittency is therefore real but is **not** what stops this boot: it produced both outcomes across runs, and
+the run where delivery worked still failed.
+
+That separates the remaining work into two independent items, which is worth stating because they have been
+conflated:
+
+* **the delivery intermittency** (§97/§116/§117) -- both outcomes observed with the same build; a real defect, and
+  now instrumented (`kqchan-plane-no-token`) plus no longer corrupting the service, but not the current blocker;
+* **the boot stop** -- `denials = 0` AND a delivered descriptor, and shellspawn still never becomes ready. This is
+  not a transport question at all: the transport the directive asked for is quiet and working at this point.
+
+Everything the directive set out to do on the boot path is therefore measured done:
+
+| claim | measurement |
+|---|---|
+| per-thread RPC socket requests | 0 |
+| per-thread RPC socket creations | 0 |
+| transport classes clean | 3 |
+| kqchan descriptor on the plane | delivered, token resolved by the guest |
+| boot stop cause | **not** sockets, **not** kqchan |
+
+The next question is a lifecycle one -- why the shellspawn process is absent rather than blocked (only
+`darlingserver` is alive at 50 s into the run, and the guest's last act is a lane release) -- and it is reachable
+without touching any transport.
