@@ -8240,3 +8240,32 @@ Implemented as the same shape as the previous three:
 The pattern is now stable enough to state as a rule for the remaining consumers: a Mach operation reached before
 the lane can be relied on is a **management-plane operation**, its parameters go in the payload words, its
 semantics are the existing Call, and its guest route falls back only when the plane did not publish.
+
+
+### 111. The tenth consumer: `mach_port_destruct`, and where the architecture convention stops working
+
+`mach_port_construct` was measured green and the hatch moved to:
+
+```
+[rpc-socket-DENIED] pid=1438410 tid=1438410 call=mach_port_destruct
+```
+
+Same four-parameter budget as `construct` (`target`, `name`, `srdelta`, `guard`) and the same management-plane
+treatment -- with one difference that matters and is worth stating rather than hiding:
+
+`construct` could borrow the top byte of `payload[3]` for the architecture because `options` is a pointer and a
+pointer's high byte is zero. `destruct`'s fourth parameter is `guard`, an **arbitrary 64-bit value**, so there is
+no spare byte to borrow. The architecture is therefore simply not carried for this op, exactly as it is not carried
+for `move_member` or `pthread_canceled`, and those are measured working.
+
+That is the honest limit of the convention: it works while the fourth word happens to be a pointer, and it stops
+working the moment it is not. The durable answer is a dedicated architecture field on the page, which is a
+shared-struct change and therefore a full-consumer rebuild; it is noted here rather than done mid-migration,
+because the running evidence says the synthesized Call does not need it for these operations.
+
+Pattern for the remaining consumers, now applied four times without change:
+
+1. `DSERVER_PROCESS_CONTROL_OP_<NAME>` appended to the enumeration;
+2. a server case that builds the ordinary call struct, runs the existing Call with `suppressReplyDelivery()`, and
+   publishes `suppressedReplyCode()`;
+3. a guest route that tries the plane and falls back to the datagram only on `planeStatus == -1`.
