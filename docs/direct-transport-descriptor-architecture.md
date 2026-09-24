@@ -8423,3 +8423,49 @@ The counting, by the hatch's own complaint, now reads:
 | per-thread RPC socket creations on boot | **0** |
 | boot completes under the hatch | no -- different cause, socket-free |
 | regression under the hatch / FD slope | not yet run |
+
+
+### 116. The descriptor intermittency of §97 is still alive -- and now its mechanism is named
+
+A cleanly launched run (prefix shut down, no prefix-matching process left, verified before launch) printed the
+failure §97 recorded and §106 was thought to have closed:
+
+```
+[dring-adopt] post-claim pid=1454273 ok
+[kqchan-plane] status=0 token=0 fd=-1 out=0
+```
+
+So the delivery is still **intermittent**, and the two outcomes are now distinguishable by one field. Reading the
+generated sender against the guest route gives the mechanism:
+
+```c
+uint64_t __fd_courier_token = sendFdCourierToGuest(_header.pid, KIND_KQCHAN_FD, socket);
+if (__fd_courier_token != 0) { replyStruct->body.socket = -1; replyStruct->body.fd_token = __fd_courier_token; }
+else { reply.pushDescriptor(socket); }        /* the CMSG fallback */
+```
+
+When the courier send returns 0, the generated sender deliberately falls back to **CMSG** (`pushDescriptor`) -- a
+transport the **plane route does not read**. The plane case reads the reply body and, failing that, has no
+descriptor; the guest's `[kqchan-plane]` line reports exactly that: `status=0 token=0 fd=-1`.
+
+So there are two distinct faults, and §106 fixed only the first:
+
+1. **fixed**: the plane case ignored an `fd_token` the sender had already produced and shipped;
+2. **open**: when the sender cannot use the courier it silently switches to a descriptor transport the plane
+   caller cannot observe -- and the plane caller has no way to know that happened.
+
+The second is the one blocking the boot, and it is a *contract* fault rather than a plumbing fault: a route chosen
+by the caller (the plane) must not have its answer delivered by a transport the caller does not own. The fix has to
+be one of:
+
+* the plane route refuses the descriptor and returns a status that says so, so the guest falls back to the datagram
+  (safe -- nothing committed), or
+* the plane route gets a CMSG-capable reply path of its own.
+
+The measurement that names which one is needed is the courier log for the same request: why
+`sendFdCourierToGuest` returned 0 for this process at this moment.
+
+Also recorded: the first attempt at this diagnostic was **invalid** -- it was launched without shutting down the
+previous run, and the resulting log held a single line (the timeout) with no guest output at all, which is the
+signature of a reused server rather than a boot. The clean relaunch produced the 31-line log quoted above. The
+workspace rule exists because this exact mistake produces a plausible-looking measurement.
