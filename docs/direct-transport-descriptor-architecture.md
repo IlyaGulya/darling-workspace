@@ -7580,3 +7580,39 @@ Recorded as the current stop condition of this loop, with the honest summary of 
 | boot completes under the hatch | **no** -- stops after the kqchan descriptor, no diagnostic |
 | regression under the hatch | not run |
 | FD slope | not measured |
+
+
+### 94. The kqchan route is confirmed working end to end -- the boot stops after it, not on it
+
+The guest-side instrument §93 asked for, at the kqchan call site:
+
+```
+[kqchan-plane] status=0 token=5431114203572406296 fd=8 out=8
+denials=0   courier-miss=0
+```
+
+Every field is what a correct migration produces: the plane returned **status 0**, the reply carried a **token**,
+the courier receive **resolved it to fd 8**, and the value was **written to the caller's out parameter**. So the
+kqchan migration is complete and correct -- descriptor delivered, resolved, and handed to libkqueue -- and the
+boot does not stop on it.
+
+That closes the fifth migration the same way the other four were closed, and it moves the remaining defect
+strictly **after** this point: the shellspawn handshake's next step, which nothing currently logs. The server's
+trace ends at the kqchan bundle and the guest's trace ends at this line, so the next instrument has to be on
+whatever shellspawn does next -- not on any transport, because all three transport classes measure zero.
+
+Summary of this loop, stated as the measurement rather than as progress:
+
+| what | measurement |
+|---|---|
+| calls needing a per-thread RPC socket, boot path | **0** |
+| urgent publications left unserviced | **0** |
+| courier bundles missing | **0** |
+| kqchan descriptor delivered and resolved | **yes** (fd=8, out=8) |
+| boot completes under the hatch | **no** |
+| regression under the hatch | not run |
+| FD slope | not measured |
+
+Five migrations, four defects found by measurement (the contract-gated duplex route, the urgent drain placed after
+the management guard, the courier bundle read from the wrong reply field, the inherited reply token), and every
+one of them invisible to the censuses that preceded them.
