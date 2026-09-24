@@ -6784,3 +6784,37 @@ Consequence for the socket target, now with all five candidates closed: `per_thr
 the **price of the datagram** for calls that cannot use the lane, not a migration gap that ordering or routing can
 close. Reaching zero requires a transport that is not the per-thread socket for those calls -- the same
 conclusion §71 reached from the other direction -- and that is a design change, not a fix.
+
+
+### 74. FD inventory: one socket per thread, measured from /proc
+
+The architecture claim under test is "AF_UNIX only as a process-level SCM_RIGHTS courier, never an ordinary RPC
+transport". Counting sockets directly in `/proc/<pid>/fd` for live guest processes:
+
+```
+pid=1693592  threads=18  sockets=20      (ring_mach_msg_test stress_pool 8 20)
+pid=2095878  threads=6   sockets=7
+pid=2095879  threads=6   sockets=8
+pid=2096000  threads=6   sockets=7
+pid=2164089  threads=3   sockets=4
+pid=2164090  threads=3   sockets=5
+```
+
+**sockets = threads + 1 or + 2** in every row. The constant is the process-level pair (the SCM_RIGHTS courier and
+the process doorbell); everything above it is one socket per thread -- the per-thread RPC socket, which §71 and
+§73 established is created by the first call of that thread the lane cannot carry.
+
+So the FD slope is **1 socket per thread**, not 0, and §33's earlier figure of two per thread was measuring a
+state that has since improved but is not zero. The claim "AF_UNIX is only a courier" is therefore **not yet true
+at the process level**: the courier is one of them, and the rest are per-thread RPC transports held by threads
+whose first call needed a datagram.
+
+Caveat recorded with the numbers: these processes were left over from earlier runs of the same prefix (the
+command lines name `lane_hold` and `stress_pool 8 20`, not the run in progress), so they are a valid inventory of
+the deployed state but not a sample of one named run. The ratio is consistent across all of them, which is what
+makes it usable; a future measurement should name its run and take the sample from it, as §63's caution requires.
+
+What this closes: the socket target has a measured shape now. Zero requires that no thread's first call needs a
+datagram, and since the calls that need one are the three that cannot use the lane (and the early
+`pthread_canceled`), the transport for those calls has to change. That is the design change §71 and §73 both
+pointed at, and it is the honest form of the remaining work on this axis.
