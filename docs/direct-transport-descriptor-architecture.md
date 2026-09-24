@@ -7892,3 +7892,53 @@ descriptor the guest can actually use.
 
 Correction recorded rather than overwritten, because §100 sent the investigation at the generator and the generator
 was already right.
+
+
+### 102. The root, one line long: the courier refuses to send until the guest has spoken first
+
+`sendFdCourierToGuest` and `sendFdCourierBundleToGuest` are the same function, so reading it answers §101's
+question directly:
+
+```c
+uint64_t DarlingServer::Server::sendFdCourierBundleToGuest(pid_t pid, uint32_t kind, int fd) {
+    if (fd < 0) { return 0; }
+    _drainFdCourierMessages();
+    ... pick the connection for the pid (prefer the non-loader one) ...
+    if (socket < 0) { Metrics::...fdCourierFallbackCmsg++; return 0; }
+
+    auto gen = _fdCourierGeneration.find(pid);
+    uint64_t generation = (gen != _fdCourierGeneration.end()) ? gen->second : 0;
+    if (generation == 0) {
+        // ... the server does not know its generation yet, and a bundle stamped 0 is REFUSED by the
+        // guest's staleness check (gen=0 != its own) -- which closed the doorbell and stopped the boot.
+        Metrics::...fdCourierFallbackCmsg++;
+        return 0;
+    }
+    ...
+}
+```
+
+And the only place that generation is ever learned:
+
+```c
+auto gen = _fdCourierGeneration.find(pid);
+if (gen == _fdCourierGeneration.end()) {
+    _fdCourierGeneration[pid] = envelope.process_generation;   // <-- incoming guest envelope only
+} else if (gen->second != envelope.process_generation) { ... }
+```
+
+So the server learns a process's generation **only when that process sends it a courier envelope**, and until
+then every descriptor it wants to send is silently dropped. The `bundle-to ... conns=1 isLoader=1` line sits
+**above** the generation check, which is why it looked like a connection was found and used.
+
+shellspawn on the boot path is exactly the process that has never sent one: the management page carries its
+requests, and the first thing it wants is a descriptor **from** the server. So `kqchan_mach_port_open` gets
+`status=0`, no token, and `body_len=16` -- not because any of the transport plumbing is wrong, but because the
+courier has a **chicken-and-egg rule**: it will not talk to a process that has not talked to it.
+
+This is one line to fix and it is the actual blocker for the socket-disabled boot: the generation the server
+already receives on the management page (and on the attach path) must be recorded in `_fdCourierGeneration`
+when it is learned from **any** channel, not only from a courier envelope.
+
+Everything upstream of it -- the page route, the opcode, the reply status, the guest's token resolution -- is
+measured working. This is the last thing standing between the call and a usable descriptor.
