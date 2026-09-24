@@ -6531,3 +6531,42 @@ So the next change is the one §59 described: **the guest releases the mailbox s
 the server on publish**. It is a protocol change across the server's page tail and the three guest publishers,
 and its acceptance is both the socket count going to zero and the checkin census's `uds` column falling to the
 loader's permanently-datagram site.
+
+
+### 68. The mailbox slot ownership change: correct, GREEN, and NOT the cause of the 27
+
+§67 predicted that the 27 thread-create checkins which fall back and create a per-thread socket would stop once the
+guest owns the mailbox slot until it has read its answer. That change was implemented -- the protocol header gains
+`DSERVER_PROCESS_CONTROL_RELEASE`, the server publishes the serviced state instead of releasing, and all seven
+guest publishers release after reading -- and it is measured GREEN:
+
+```
+HELLO=1  FINAL=1  passes: pass=1 pass=1 pass=1 pass=1
+ool 44/uds=0   basic 204/uds=0   r2 206/uds=0   stress 644/uds=0
+shellspawn-not-ready: 0
+rpc-socket creations: 27
+```
+
+**27, unchanged.** So the sequence race was not the cause, and §67's prediction is refuted. The change is kept
+because it removes a real race (the slot is now owned until read, which is what "one outstanding request" must
+mean), but it is not the fix for the socket count and must not be recorded as one.
+
+One RED was measured and repaired on the way, and it is worth recording because it is a trap in the design: with
+the server no longer releasing the slot, `request_state` stayed `PENDING` after servicing, and the service loop
+**re-services any page it reads as PENDING** -- so the server re-ran the same request and published its old
+sequence again, and the next bootstrap write read a foreign `reply_seq` and failed:
+
+```
+Failed to tell darlingserver about our executable path
+Rootless shellspawn did not become ready within 30000ms
+```
+
+The serviced state is therefore `DONE` (the loop no longer re-services it) and only the guest's release sets
+`IDLE`. That distinction -- "serviced" is not "free" -- is now in the code with the measurement that produced it.
+
+What this leaves: the 27 fall back for a reason that is **not** the mailbox race. The candidates are now the ones
+that were never excluded: the page pointer or `transport_ready` being unset for a thread's first call, the claim
+bound expiring under 16-way contention, or a non-zero `reply_status` for the thread-create checkin specifically.
+The instrument that separates them is the one already used for the checkin question -- the server's
+`checkin-reply status=` line, read on a run that also counts the socket creations, so that the 27 can be matched
+to the statuses the server published for them.
