@@ -6432,34 +6432,33 @@ heatmap already splits by callnum, so a server-side line per UDS `pthread_cancel
 that tid has a lane -- would answer it in one run, the way the checkin attribution of §56 did).
 
 
-### 65. The same duplicate defect on `pthread_canceled`: every call arrives twice, once on the lane and once on the datagram
+### 65. CORRECTED: `pthread_canceled` is not duplicated -- it simply does not use the lane
 
-The guest reason histogram is silent for this callnum (§64), so the attribution was moved to the server, which
-can see the transport directly. The first version of that line logged every invocation without separating the
-transports -- 193 lines for a run whose heatmap shows far fewer datagrams -- which is the "instrument that cannot
-answer" class recorded twice already. Adding the transport (a call taken off the lane carries a ring context)
-gives:
+The first version of this section claimed the call arrives twice, once on the lane and once on the datagram, on
+the strength of a histogram reading `189 lane=0` and `189 lane=1`. **That reading was an artifact of the
+counting**: `has_lane=1` contains the substring `lane=1`, so a `grep 'lane=1'` matches every line. Counted with a
+token boundary the same log reads:
 
 ```
-pthread_canceled pid=1172252 tid=1172252 has_lane=1 lane=1 action=0
-pthread_canceled pid=1172252 tid=1172252 has_lane=1 lane=0 action=0
-...
-lane histogram:  189 lane=0      189 lane=1      total=189
-has_lane:        213 of 213 = 1
+ lane=0: 210      lane=1: 0      has_lane=1: 210
 ```
 
-**Exactly as many datagram invocations as lane invocations**, and every one of them from a thread that HAS a lane.
-So `lane=0` here does not mean "the lane was missing" -- it means the call was made twice.
+So every invocation in that run arrived on the **datagram**, from a thread that **has a lane**. There is no
+duplication here, and the §57/§58 mechanism does not apply to this callnum on the evidence available.
 
-That is the §57/§58 mechanism on a second callnum: the call is sent on the lane, its answer is not accepted, and
-the caller repeats the same operation on the datagram. It is the same shape as the checkin duplicates, which were
-caused by a wrong architecture byte in the page payload; the difference is that `pthread_canceled` already uses
-the lane and the datagram, so the repetition doubles the traffic rather than masking a route that never ran.
+The corrected statement is narrower and still interesting: this call is not taking the lane even though one
+exists for its thread. Two candidates remain, and they are distinguishable:
 
-The instrument for the reason is therefore the same one that answered the checkin question: the server's reply
-status for the lane-side invocation. If it is non-zero for the same class of reason, the two defects share a
-cause and the checkin fix may not have been the whole of it; if it is zero, the guest is repeating a call it
-accepted, which is a different and more serious defect (an operation performed twice).
+* the callnum is not lane-eligible at all (a generator policy question -- `pthread_canceled` may not be in
+  `RING_GENERATED_SIMPLE`), in which case the full-run heatmap's `ring=496` must come from a different
+  code path or a different run's traffic, and this is by design rather than a defect;
+* the call is lane-eligible and the guest declines the lane for it.
 
-That distinction is the next measurement, and it is cheap: one gated line next to the existing attribution,
-printing the reply code the lane invocation produced.
+The measurement that separates them is the same line read on the FULL regression, where the heatmap showed
+`pthread_canceled total=571 uds=75 ring=496`: if `lane=1` appears there, the call is eligible and the run above
+was simply one where no lane was in use for those threads; if `lane=1` never appears, the callnum is not
+lane-eligible and the `ring` column of the heatmap is counting something else.
+
+This correction is recorded rather than quietly overwritten because the error is the third of its kind in this
+document -- a number produced by an instrument that could not answer the question asked -- and because the
+`has_lane=1` / `lane=1` substring collision is exactly the sort of thing that will recur.
