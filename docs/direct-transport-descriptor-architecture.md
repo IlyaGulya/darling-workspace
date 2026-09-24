@@ -7852,3 +7852,43 @@ descriptor the handler returned.
 This is a better place to stop than §99's conclusion, because it is a statement about a specific missing field
 with a measurement that will show it appear, rather than a statement about a semantics function that turned out to
 be correct.
+
+
+### 101. The generator already emits the token fill -- so both paths return 0 and the connection is what is missing
+
+§100 concluded the `fd_token` field was absent from the reply body and pointed at the generator. Reading the
+generator's emit condition corrects the direction of that:
+
+```python
+reply_kind = REPLY_FD_COURIER_KINDS.get(call_name)
+...
+if is_fd(param) and reply_kind is not None:
+    internal_header.write("\t\t\tif (" + param_name + " >= 0) { \\\n")
+    internal_header.write("\t\t\t\tuint64_t __fd_courier_token = sendFdCourierToGuest(_header.pid, " + reply_kind + ", " + param_name + "); \\\n")
+    internal_header.write("\t\t\t\tif (__fd_courier_token != 0) { \\\n")
+    ... replyStruct->body.fd_token = __fd_courier_token; ...
+```
+
+With `kqchan_mach_port_open` added to `REPLY_FD_COURIER_KINDS` and its reply parameter list carrying
+`('fd_token','@fd_token')`, that condition **is** satisfied, and the generated `rpc.internal.h` does contain a
+`_sendReply(int resultCode, int32_t socket)` for it alongside `kqchan_proc_open`'s. So the generated reply path
+already sends the descriptor and fills the token -- and my hand-written server case, which also tries to send it,
+is a **second** path doing the same job.
+
+That makes the measurement read differently: `body_len=16` is not a missing field, it is a token fill that **did
+not fire at runtime**, which happens only when
+
+* `param_name < 0` (the handler's socket), or
+* `sendFdCourierToGuest(...) == 0`.
+
+The handler produces a valid descriptor (both `setup()` implementations throw on failure and return `fds[1]` on
+success, §100), so the second is what is happening: **the courier send finds no connection**. That is the same
+function family my own `sendFdCourierBundleToGuest` call uses, and in the same runs the server log shows
+`conns=1 isLoader=1` -- a single connection, tagged as the loader's.
+
+So the defect is now in one place and one question: why does the descriptor send find no usable connection for
+this process, given that a connection exists? That is narrow, and it is the last thing between this call and a
+descriptor the guest can actually use.
+
+Correction recorded rather than overwritten, because §100 sent the investigation at the generator and the generator
+was already right.
