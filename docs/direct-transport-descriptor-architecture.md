@@ -7688,3 +7688,39 @@ State, unchanged and stated as measurement:
 | shellspawn reaches `main` | **no** -- stops in pre-main initialization |
 | boot completes under the hatch | no |
 | regression under the hatch / FD slope | not run / not measured |
+
+
+### 97. The kqchan descriptor is delivered only sometimes: status 0 with no descriptor
+
+Instrumenting the steps after the kqchan call produced a measurement that changes the picture:
+
+```
+[kqchan-plane] status=0 token=0 fd=-1 out=0        (this run)
+[kqchan-plane] status=0 token=5431114203572406296 fd=8 out=8   (earlier runs)
+```
+
+**`status=0` with `token=0` and `fd=-1`.** The call reports success and the descriptor never arrives, so the
+caller's out parameter keeps whatever it had -- and whatever the caller does next with a bogus descriptor is where
+the process dies. In earlier runs the same call produced a real token and a resolved fd, so this is
+**intermittent**, not a constant: the kqchan route sometimes delivers and sometimes does not.
+
+That also explains why the defect looked like "pre-main initialization" from the outside (§96): the failing step is
+a call that *succeeds*, so nothing prints a failure, and the process dies later using a descriptor it never got.
+
+Two further facts from the same runs:
+
+* the marks added inside `libkqueue`'s `machport.c` (`before-rpc`, `after-rpc`, `after-fcntl`) **never print**,
+  so `kqchan_mach_port_open` is reached through a **different caller** than the one that file implements -- the
+  route in `for-libkqueue.c` is what prints, and its caller is elsewhere;
+* `reply_payload[1]` is now cleared on publish (§91), so a `token=0` reading is not a stale value: it is the
+  server genuinely not having put a token there, which means the server's own send did not happen for that
+  request (`returnedFd < 0`) while the call still completed with status 0.
+
+So the next question is precise and narrow: why does the server complete this call with status 0 when it has no
+descriptor to return, and under what condition does the descriptor exist? The server case has both branches
+(suppressed-reply wake fd, and the reply body) and one of them is producing nothing on the runs that fail -- a
+condition that is now known to alternate rather than be constant.
+
+State, unchanged: the per-thread socket is requested by nothing on the boot path, the urgent pool services
+everything published to it, and the courier delivers what it is given -- the defect is in what this one call
+produces, not in a transport.
