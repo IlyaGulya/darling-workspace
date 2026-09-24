@@ -7120,3 +7120,37 @@ The next step is therefore small and specific, and it is the first migration of 
 This is also the first case where the directive's ordering and the codebase's own design agree: the call is
 destroy-capable, so the duplex lane is its correct home, and the only reason it is not there is that the
 experiment was left switched off.
+
+
+### 82. First migration done: `mach_port_deallocate` off the per-thread socket, and the hatch names `vchroot` next
+
+The deallocate duplex route was made **default-on** (the hatch inverted to `DARLING_GUEST_DUPLEX_DEALLOCATE_OFF=1`,
+and the unreadable-environment case now keeps it on), rebuilt, and the socket-disabled boot re-run:
+
+```
+before:  [rpc-socket-DENIED] call=mach_port_deallocate
+after:   [rpc-socket-DENIED] call=vchroot
+         [rpc-socket-DENIED] call=interrupt_enter
+```
+
+**`mach_port_deallocate` no longer creates a per-thread socket.** The duplex lane carries it, which is what the
+source's own rule ("wrong lane, not bad op") prescribed, and the warm-server caution the old contract encoded is
+answered by measurement rather than by keeping the route switched off.
+
+The directive's loop is therefore working as designed: fail, migrate, re-run, and the hatch names the next call.
+The next two are:
+
+* **`vchroot`** -- not `vchroot_path`: this is the loader-class call of §14, so its home is the process management
+  plane (`VCHROOT_PATH_BOOTSTRAP` or the reuse of the semantic handler behind the management dispatcher), not the
+  lane. The loader has no lane by design, and the management plane already exists and is already used for the
+  checkin.
+* **`interrupt_enter`** -- still the reentrancy question of §19-21: it must not be dropped into the single
+  management slot if it can re-enter while the same thread holds it, and if it is published from signal context it
+  may only use atomics, raw syscalls and preallocated memory.
+
+Both were also named by the earlier boot; what is new is that the call before them is gone, so the loop has a
+measured step rather than a plan.
+
+One honest note on the measurement: the deallocate migration was verified by the **absence** of its denial in the
+next socket-disabled boot, not by a full GREEN run. The boot still fails at `vchroot`, so the socket-disabled
+regression is not yet GREEN and the directive's stop condition is not met -- the loop continues from here.
