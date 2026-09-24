@@ -7241,3 +7241,37 @@ does not yet have on this route. That is a bounded addition to the reusable publ
 What remains named by the hatch is **`interrupt_enter`** (and presumably its `interrupt_exit`), which is the
 reentrancy class of directive §19-21 and the one case that must **not** simply be dropped into the single
 management slot. It is the last thing standing between this loop and a GREEN socket-disabled boot.
+
+
+### 85. `interrupt_enter` audit: signal context AND S2C -- so duplex, not the management slot
+
+The last call the hatch names was audited as directive §19 requires, and the two facts are:
+
+```
+callers:   sigexc.c:165, sigexc.c:306, sigaction.c:206      <- signal paths
+decl:      ('interrupt_enter', [], [], PUSH_UNKNOWN_REPLIES)
+```
+
+**It is reached from signal context** (`sigexc` is the signal-exception path, and `sigaction` installs the
+handler), and it is declared with `PUSH_UNKNOWN_REPLIES`, which means the **server may push a caller-side S2C
+while this call is in flight**.
+
+Those two together decide its transport, and neither of the directive's first two candidates is right:
+
+* the **single management slot** is wrong, and not for the reason §19 anticipated: the problem is not only
+  re-entrancy but that a parked caller must be able to service an S2C, which a one-outstanding blocking mailbox
+  cannot express -- the same reason the codebase's own rule sends `deallocate`/`mod_refs` to a duplex lane;
+* an **urgent subchannel** (§20) is only needed if the operation is reentrant against the same slot; a duplex lane
+  removes that need, because the lane is per-thread and can carry the S2C while the caller waits.
+
+So `interrupt_enter` (and `interrupt_exit`) belong with `mach_port_deallocate` on the **duplex lane**, and the
+signal-context constraint of §21 becomes the lane's own constraint: publish with atomics and raw syscalls only,
+touch no lazily-initialised state, allocate nothing. That is a real constraint -- the lane's publish path must be
+usable from a signal handler -- and it is the next thing to verify rather than assume.
+
+This is also the first call in the loop whose correct home is the duplex lane rather than the management plane, and
+it was found the same way the other three were: by making the socket fail and naming the caller.
+
+State of the loop after three migrations and this audit: the socket-disabled boot names exactly one remaining
+class (`interrupt_enter`/`interrupt_exit`), whose transport is now decided by evidence, and the descriptor-order
+MISS from §84 is a bounded addition to the reusable publisher. Neither is a blocker; both are the next steps.
