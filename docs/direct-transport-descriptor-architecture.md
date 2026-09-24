@@ -7426,3 +7426,41 @@ its own courier bundles.
 Two things this measurement does not yet establish, stated plainly: the boot does not complete, so
 `socket-disabled boot GREEN` is not claimed; and the urgent pool's correctness under the bounded poll is
 established only by this boot, not by the mutation suite the directive asks for. Both are next.
+
+
+### 90. The courier MISS is an image-addressing bug: one pid, several connections
+
+§89 left one line standing between the socket-disabled boot and completion: the courier MISS. It is located, and
+it is not a timing problem:
+
+```c
+uint64_t Server::sendFdCourierBundleToGuest(pid_t pid, uint32_t kind, int fd) {
+    ...
+    int socket = -1;
+    for (auto& [sock, conn] : _fdCourierConns) {
+        if (conn.peerPid == pid) { socket = sock; break; }   // <- the FIRST connection for that pid
+    }
+```
+
+A process has **more than one** courier connection: the loader and the guest image each carry their own, from the
+same pid -- the source says so explicitly in the doorbell's own comment ("the loader and the guest image carry
+SEPARATE connections and the guest-side slot is per IMAGE"). This loop picks whichever connection the map happens
+to yield first, so a bundle for the guest image can be sent on the loader's connection, where the guest will never
+see it. That is exactly the observed `[fd-courier-recv] MISS ... stored=0 dropped=0`: nothing was lost and nothing
+was dropped -- it was delivered to the other image.
+
+So the fix is an addressing fix, not a retry: the bundle must name the image it is for. The information needed to
+do that already exists on the guest side -- the guest knows which image it is (the same `VARIANT_DYLD` /
+kernel split the reason lines print) and the connection carries the peer pid -- so the natural shape is for the
+guest to identify its own connection when it opens it (or for the request to carry the image identity the server
+already uses for the process-control page), and for the send to select that connection rather than the first with
+a matching pid.
+
+This is the last piece before a socket-disabled boot can complete, and it is also the piece §17 asks for in its
+general form ("need both arrival orders ... no leak"): once the connection is addressed correctly, both orders
+work, because the guest's bounded receive already retries.
+
+State after five migrations: zero socket denials and zero urgent timeouts on the socket-disabled boot, with this
+single addressing bug as the remaining failure. The directive's stop condition is not met -- the boot does not
+complete and no regression has been run under the hatch -- but the socket itself is no longer what stands in the
+way.
