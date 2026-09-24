@@ -6430,3 +6430,36 @@ So the next step for these three is not another conversion but an attribution ch
 recorded where these calls actually decide, or the server names the transport of each of them directly (the
 heatmap already splits by callnum, so a server-side line per UDS `pthread_canceled` -- with the tid and whether
 that tid has a lane -- would answer it in one run, the way the checkin attribution of §56 did).
+
+
+### 65. The same duplicate defect on `pthread_canceled`: every call arrives twice, once on the lane and once on the datagram
+
+The guest reason histogram is silent for this callnum (§64), so the attribution was moved to the server, which
+can see the transport directly. The first version of that line logged every invocation without separating the
+transports -- 193 lines for a run whose heatmap shows far fewer datagrams -- which is the "instrument that cannot
+answer" class recorded twice already. Adding the transport (a call taken off the lane carries a ring context)
+gives:
+
+```
+pthread_canceled pid=1172252 tid=1172252 has_lane=1 lane=1 action=0
+pthread_canceled pid=1172252 tid=1172252 has_lane=1 lane=0 action=0
+...
+lane histogram:  189 lane=0      189 lane=1      total=189
+has_lane:        213 of 213 = 1
+```
+
+**Exactly as many datagram invocations as lane invocations**, and every one of them from a thread that HAS a lane.
+So `lane=0` here does not mean "the lane was missing" -- it means the call was made twice.
+
+That is the §57/§58 mechanism on a second callnum: the call is sent on the lane, its answer is not accepted, and
+the caller repeats the same operation on the datagram. It is the same shape as the checkin duplicates, which were
+caused by a wrong architecture byte in the page payload; the difference is that `pthread_canceled` already uses
+the lane and the datagram, so the repetition doubles the traffic rather than masking a route that never ran.
+
+The instrument for the reason is therefore the same one that answered the checkin question: the server's reply
+status for the lane-side invocation. If it is non-zero for the same class of reason, the two defects share a
+cause and the checkin fix may not have been the whole of it; if it is zero, the guest is repeating a call it
+accepted, which is a different and more serious defect (an operation performed twice).
+
+That distinction is the next measurement, and it is cheap: one gated line next to the existing attribution,
+printing the reply code the lane invocation produced.
