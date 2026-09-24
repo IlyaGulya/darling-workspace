@@ -6269,3 +6269,40 @@ been repaired is not evidence against the route; it is evidence about the repair
 So the next change is small and has a specific acceptance: with the page established before the checkin, the
 `checkin-route` lines must read `ready=1 page=<non-null>`, the `fork=0` datagram count must fall to the handful
 of genuinely pre-page cases, and the regression must stay GREEN with `machmsg_uds=0`.
+
+
+### 61. The checkin cannot be fixed by establishing the page at its site -- the round-49i RED was about POSITION
+
+§60 ended with a plan: establish the page before the checkin site, and accept it if `checkin-route` reads
+`ready=1`. That was implemented and measured, **after** the architecture defect of §58 was fixed, so the
+architecture can be excluded as the cause of the earlier RED. The result:
+
+```
+HELLO=0  FINAL=0  passes: (none)
+checkin-route: ready=0 x2, page=(nil) x2
+uds-checkin=2   checkin-reply=2   Uncaught exception: 0
+Rootless shellspawn did not become ready within 30000ms (/proc/self/fd/6/shellspawn.sock)
+```
+
+**The round-49i RED reproduces exactly.** The boot stops after two checkins and never reaches the shell. So that
+RED was caused by the POSITION of the establishment, not by the architecture byte (§58), not by the inherited
+page after fork (§45) and not by the missing transaction model (§44) -- all three of which were fixed before this
+measurement, and the RED came back unchanged.
+
+This is a clean negative and it also corrects §60's conclusion. The route cannot be reached by creating the page
+at the checkin site, because the establishment block in `main` has a position constraint of its own that the
+source already recorded: the loader's bootstrap writes must precede it, and this site is earlier still. The
+correct shape is the other direction -- **move the checkin later in the path, after the establishment** -- rather
+than the establishment earlier.
+
+Reverted, and the revert was verified GREEN on the full regression:
+
+```
+HELLO=1  FINAL=1  passes: pass=1 pass=1 pass=1 pass=1
+ool 44/uds=0   basic 204/uds=0   r2 206/uds=0   stress 644/uds=0
+Uncaught exception: 0
+```
+
+The checkin route therefore keeps its measured state from §58 (164 of 174 on the page, 10 datagrams), and the
+remaining `fork=0` traffic stays attributed to the loader site having no page at that point -- which is now a
+statement about ORDERING, not about a missing capability.
