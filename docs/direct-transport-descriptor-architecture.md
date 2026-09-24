@@ -7069,3 +7069,54 @@ That reorders the migration the directive laid out, and the order now comes from
 census: `mach_port_deallocate` (duplex lane) first, then `interrupt_enter` (which the hatch also named, and which
 §19-21 require to be reentrancy-audited rather than dropped into the single management slot), and only then the
 rare lifecycle calls the census listed.
+
+
+### 81. `mach_port_deallocate` already has a duplex route -- it is gated OFF by contract, not missing
+
+§80 found the first socket-disabled blocker and the source's rule that it belongs on a duplex lane. The duplex
+route for it **already exists**:
+
+```c
+int __dserver_ring_mach_port_deallocate_duplex(uint32_t target, uint32_t name, int* out_code) {
+    if (!gr_dealloc_via_duplex_enabled()) {
+        return -1; // hatch off -> UDS (the default path)
+    }
+    gr_lane_t* L = gr_lane_for_this_thread_named(...);
+    if (!L) { return -1; }
+    __atomic_store_n(&gr_cb(L)->duplex_caps,
+        DSERVER_RING_DUPLEX_CAP_SELFTEST | DSERVER_RING_DUPLEX_CAP_DEALLOCATE, __ATOMIC_RELEASE);
+    ... publish ...
+}
+```
+
+with the contract stated next to it:
+
+```
+ROUTING: the guest sends deallocate on the duplex lane ONLY behind a per-command hatch
+(DARLING_GUEST_DUPLEX_DEALLOCATE=1, default OFF, warm-server discipline) AND only after advertising
+DSERVER_RING_DUPLEX_CAP_DEALLOCATE at attach. This routing decision is made BEFORE the request is
+published (pre-dispatch) -- so a decline is always pre-mutation and there is never a
+partial-mutation-then-UDS double-effect. On ANY transport miss the caller returns -1 and the trap impl
+UDS-falls-back, which is safe because the server declines BEFORE dispatching the op.
+```
+
+So the reason `mach_port_deallocate` creates a per-thread socket is not a missing route, a missing capability or a
+semantic obstacle. It is that the route is **switched off by contract**, deliberately: `default OFF, warm-server
+discipline, set ONLY per-command on a warm server, never at boot`.
+
+That is precisely the shape of thing the directive asks to end. The duplex lane, the capability bit, the
+pre-dispatch decline and the S2C pump for the munmap shape are all built and were measured in earlier rounds; what
+remains is to make the route the **default** rather than a warm-server experiment, and to answer the question the
+contract was protecting against: whether the server is ready for a duplex deallocate **during boot**.
+
+The next step is therefore small and specific, and it is the first migration of the socket-disabled loop:
+
+1. turn the deallocate duplex route on by default (the hatch becomes a disable, not an enable);
+2. run the socket-disabled boot;
+3. if it is GREEN, `mach_port_deallocate` is migrated and the hatch names the next call;
+4. if it is RED, the failure is now a specific question about the server's readiness for a duplex parent during
+   bootstrap -- which is a real architectural finding, not another callnum to chase.
+
+This is also the first case where the directive's ordering and the codebase's own design agree: the call is
+destroy-capable, so the duplex lane is its correct home, and the only reason it is not there is that the
+experiment was left switched off.
