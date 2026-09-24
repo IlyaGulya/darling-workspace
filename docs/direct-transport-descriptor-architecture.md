@@ -6233,3 +6233,39 @@ and "one outstanding" has to mean "until the requester has read it", not "until 
 
 The measurement that would confirm it is a guest-side count of `reply_seq != mine` at the completion check --
 which must be a page counter, not a print, for the reasons §47 and §48.1 recorded twice.
+
+
+### 60. The remaining checkin datagrams: the loader's checkin site never has a page
+
+§59 proposed a mailbox-ordering defect. That is **refuted by measurement**, and the real cause is simpler and was
+already written down in this document once:
+
+```
+checkin-route pid=1144427 tid=1144427 ready=0 page=(nil) lifetime=-1 image=mldr!/.../vchroot
+checkin-route pid=1144427 tid=1144427 ready=0 page=(nil) lifetime=-1 image=mldr!/.../launchd
+checkin-route pid=1144433 tid=1144433 ready=0 page=(nil) lifetime=-1 image=mldr!/.../shellspawn
+checkin-route pid=1144435 tid=1144435 ready=0 page=(nil) lifetime=-1 image=mldr!/.../bash
+checkin-route pid=1144435 tid=1144435 ready=0 page=(nil) lifetime=-1 image=mldr!/.../sh
+checkin-route pid=1144436 tid=1144436 ready=0 page=(nil) lifetime=-1 image=mldr!/.../ring_mach_msg_test
+checkin-route pid=1144537 tid=1144537 ready=0 page=(nil) lifetime=-1 image=mldr!/.../sleep
+count=7    ready=0 x7    page=(nil) x7
+```
+
+The loader's main checkin site finds `page == NULL` on **every** image, without exception. The bounded
+`__mldr_process_control_wait_ready(200)` added in §55 therefore waits for a page that has not been created yet:
+the checkin is earlier in this path than the establishment block, which the source itself already records from
+round 49i. Every one of these falls to the datagram, and they are the bulk of the remaining `fork=0` traffic.
+
+That also explains why §59's candidate cannot be the whole story: these requests never reach the page, so no
+`reply_seq` can be mismatched for them.
+
+The fix is to establish the page **before** the checkin site -- move the establishment earlier in the path, or
+create it at the site itself. Round 49i tried the latter and measured RED, and that RED is why the route was left
+switched off for so long. Its causes are now known and fixed: the inherited page after fork (§45), the missing
+transaction/ownership model (§44), and -- decisively -- the wrong architecture byte (§58), which made the page's
+checkin answer -EINVAL for 102 of 108 requests. A page route that was measured RED for a reason that has since
+been repaired is not evidence against the route; it is evidence about the repair.
+
+So the next change is small and has a specific acceptance: with the page established before the checkin, the
+`checkin-route` lines must read `ready=1 page=<non-null>`, the `fork=0` datagram count must fall to the handful
+of genuinely pre-page cases, and the regression must stay GREEN with `machmsg_uds=0`.
