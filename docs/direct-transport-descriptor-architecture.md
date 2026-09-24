@@ -7203,3 +7203,41 @@ Next in the loop:
 
 The socket-disabled regression is still not GREEN -- the boot fails at `kqchan_mach_port_open` -- so the
 directive's stop condition is not met and the loop continues.
+
+
+### 84. Third migration done: `kqchan_mach_port_open` -- and the descriptor-order question it exposed
+
+The kqueue-channel class was migrated as directive §16 prescribes: the semantic half on the management plane, the
+descriptor on the process courier, in either arrival order.
+
+* `DSERVER_PROCESS_CONTROL_OP_KQCHAN_MACH_PORT_OPEN 9u`;
+* a server case that builds `dserver_rpc_call_kqchan_mach_port_open_t`, runs the ordinary Call, and returns the
+  descriptor the call produced through `sendFdCourierBundleToGuest(pid, DSERVER_FD_COURIER_KIND_KQCHAN_FD, fd)` with
+  the token published in `reply_payload[1]` -- the same split `ATTACH_LANE` uses for the doorbell;
+* the publisher gained a variant that also returns the reply payload
+  (`__dserver_plane_request_ex`), with the payload snapshotted **before** the release like every other answer
+  field (the ordering §67/§70/§71 measured);
+* `for-libkqueue.c` tries the plane, resolves the token with `__dserver_fd_courier_receive`, and falls back to the
+  datagram only on -1.
+
+**Socket-disabled boot after the migration:**
+
+```
+before:  [rpc-socket-DENIED] call=kqchan_mach_port_open
+after:   [rpc-socket-DENIED] call=interrupt_enter
+         [fd-courier-recv] MISS pid=1331789 token=3314306943482007862 stored=0 dropped=0
+```
+
+`kqchan_mach_port_open` no longer creates a per-thread socket, so the loop has now run **three** times end to end
+(`mach_port_deallocate`, `vchroot`, `kqchan_mach_port_open`) -- and **all three were invisible to the earlier
+censuses**, which is the case for having built the hatch before any further census work.
+
+The courier MISS is the next detail and it is exactly the case directive §17 names: the token arrived on the page
+before the descriptor was in the guest's courier queue, so the receive found nothing (`stored=0 dropped=0` -- it was
+not a loss, it was a timing). The plane route still carried the call (no socket was created), but the descriptor
+resolution needs the parked-waiter path the existing `resolveFdCourierBundle` has on the server side and the guest
+does not yet have on this route. That is a bounded addition to the reusable publisher, not a new protocol.
+
+What remains named by the hatch is **`interrupt_enter`** (and presumably its `interrupt_exit`), which is the
+reentrancy class of directive §19-21 and the one case that must **not** simply be dropped into the single
+management slot. It is the last thing standing between this loop and a GREEN socket-disabled boot.
