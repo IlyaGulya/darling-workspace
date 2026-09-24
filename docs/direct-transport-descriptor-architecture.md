@@ -8149,3 +8149,40 @@ Progress, as the hatch's own complaint:
 | 5 | `sigprocess` | urgent pool + completion |
 | 6 | `mach_msg_overwrite` | mach-msg ring (`DARLING_GUEST_RING_MACH_MSG=1`) |
 | 7 | `mach_port_move_member` | **lane -- to be measured** |
+
+
+### 108. `mach_port_move_member` on the lane: MEASURED RED -- and its home is the management plane
+
+The lane route was added to `RING_GENERATED_SIMPLE`, every consumer was rebuilt and deployed with matching
+sha256, and the boot was measured:
+
+```
+[rpc-socket-DENIED] pid=1428914 tid=1428914 call=mach_port_move_member
+```
+
+The same call, the same failure. So the NO_REPLY lane route does not carry it either -- which is exactly what the
+table already recorded for `pthread_canceled`:
+
+> MEASURED RED: routing it on the lane stops the boot -- ... It is reached early enough (the libpthread
+> cancellation handshake) that the lane cannot be relied on to exist, and its result must be visible to the
+> thread's other traffic.
+
+Two independent NO_REPLY calls now fail identically on the lane, so "NO_REPLY" is not the property that decides:
+**being reached before the lane can be relied on** is. The entry was removed and the reason written beside the
+table, so the next reader sees why rather than re-deriving it.
+
+The directive is explicit that this is not an answer (§2): "not lane-eligible" must not mean "stays on UDS". The
+transport such a call needs is the **process management plane**, which is what `vchroot`, `sigprocess` and
+`kqchan_mach_port_open` already use. Implemented as the same shape, with §15's rule kept (one semantic core,
+transport adapters only):
+
+* `DSERVER_PROCESS_CONTROL_OP_MACH_PORT_MOVE_MEMBER 13u`, the three port names in `request_payload[0..2]`, the
+  architecture byte in `[3]`;
+* a server case that builds `dserver_rpc_call_mach_port_move_member_t` and runs the **ordinary**
+  `MachPortMoveMember` Call with `suppressReplyDelivery()` -- no second implementation of the semantics;
+* a guest route in `_kernelrpc_mach_port_move_member_trap_impl` that tries the plane first and falls back to the
+  datagram **only** on -1 (not published), so nothing is retried after publication.
+
+The student of the previous two attempts is worth stating: the guest's `mach_traps.c` needed
+`<darlingserver/rpc-supplement.h>` explicitly -- `rpc.h` does not pull the operation enum in -- which is the kind
+of omission that costs a build cycle and no more.
