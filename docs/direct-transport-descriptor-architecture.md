@@ -8211,3 +8211,32 @@ implemented rather than a new mechanism:
 Note the sentinel is the plane's own return, not the status: a legitimate status can be any errno including -1, so
 keying the fallback on the returned status would retry a call that had already been published. That distinction is
 the whole content of §5-§7's "no UDS retry after publication".
+
+
+### 110. The ninth consumer: `mach_port_construct` -- and the payload budget it exposes
+
+`pthread_canceled` was measured green (the hatch stopped naming it) and the boot moved on:
+
+```
+[rpc-socket-DENIED] pid=1434863 tid=1434863 call=mach_port_construct
+```
+
+This one exposes a constraint the earlier migrations did not: `mach_port_construct` takes **four** parameters
+(`target`, `options`, `context`, `name`), and the management page's `request_payload` is exactly four words wide --
+with the architecture byte previously squeezed into payload[3]'s low byte by the earlier operations.
+
+The convention `kqchan_mach_port_open` already uses solves it: a pointer's **high byte is zero**, so the
+architecture byte rides in the top byte of payload[3] and the low 56 bits carry the real value. `options` is a
+pointer, so it takes payload[3] and the architecture comes from `payload[3] >> 56` -- no page change, no widened
+struct, no second convention.
+
+Implemented as the same shape as the previous three:
+
+* `DSERVER_PROCESS_CONTROL_OP_MACH_PORT_CONSTRUCT 14u`;
+* server case: `target` in payload[0], `context` in [1], `name` in [2], `options` in [3], architecture from
+  `[3] >> 56`; the server runs the **ordinary** `MachPortConstruct` Call with `suppressReplyDelivery()`;
+* guest route in `_kernelrpc_mach_port_construct_trap_impl`, plane first, datagram only on `planeStatus == -1`.
+
+The pattern is now stable enough to state as a rule for the remaining consumers: a Mach operation reached before
+the lane can be relied on is a **management-plane operation**, its parameters go in the payload words, its
+semantics are the existing Call, and its guest route falls back only when the plane did not publish.
