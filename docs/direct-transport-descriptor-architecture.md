@@ -7541,3 +7541,42 @@ Four real defects were found and fixed on the way here, each by measurement: the
 management guard (every urgent publication silently unserviced), the courier bundle read from the wrong reply
 field, the inherited reply token, and -- earlier in the same loop -- the contract-gated duplex route. Each one was
 invisible to the censuses.
+
+
+### 93. Where the socket-disabled boot now stops, named from the server's own trace
+
+The boot log with the hatch on is short and it reads cleanly up to a point:
+
+```
+process-control  region pid=1359571 size=488 page=0x7b83c4baf000
+process-control  request op=1 (PING) seq=1
+process-control  request op=4 (SET_DYLD_INFO) seq=2      -> dyld-info-op status=0
+process-control  request op=5 (SET_EXECUTABLE_PATH) seq=3
+mldr-seed        attach ... attach-rc rc=0 reject=0 wake=8
+mldr-seed        doorbell-in/out ... seeded
+dring-adopt      post-claim ok
+courier-send-image bundle-to kind=6 (KQCHAN_FD) socket=14
+fd-courier       sent-to-guest token=15507764019810476574 kind=6
+Rootless shellspawn did not become ready within 30000ms
+```
+
+So the whole bootstrap transport sequence completes -- the page is established, the ping, dyld-info and
+executable-path run on it, the seed attach rides the lane, the doorbell is delivered, the lane is adopted, and the
+kqchan descriptor is now **sent and received** (no MISS). The boot then stops with **no further line at all**,
+which places the remaining defect immediately after the kqchan descriptor is delivered.
+
+That is a different kind of defect from everything this loop has fixed so far: not a missing transport, not a
+misaddressed bundle, not an unserviced publication, but something in what happens to the call **after** its
+descriptor arrives. The next instrument is the same technique that produced every step: a guest-side line at that
+call site naming what it does with the result and what it waits for next.
+
+Recorded as the current stop condition of this loop, with the honest summary of what is established:
+
+| class | state |
+|---|---|
+| per-thread RPC socket requests | **0** on the boot path |
+| urgent publications unserviced | **0** |
+| courier bundles missing | **0** |
+| boot completes under the hatch | **no** -- stops after the kqchan descriptor, no diagnostic |
+| regression under the hatch | not run |
+| FD slope | not measured |
