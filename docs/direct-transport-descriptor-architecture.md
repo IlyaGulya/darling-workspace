@@ -6818,3 +6818,46 @@ What this closes: the socket target has a measured shape now. Zero requires that
 datagram, and since the calls that need one are the three that cannot use the lane (and the early
 `pthread_canceled`), the transport for those calls has to change. That is the design change §71 and §73 both
 pointed at, and it is the honest form of the remaining work on this axis.
+
+
+### 75. The complete residual inventory: every call still on the datagram, with its transport split
+
+The final census of non-lane UDS traffic, taken live on the full regression (GREEN, `pass=1` x4):
+
+```
+console_open           total=3    uds=3    ring=0
+fork_wait_for_child    total=9    uds=5    ring=4
+interrupt_enter        total=5    uds=5    ring=0
+interrupt_exit         total=5    uds=5    ring=0
+kqchan_proc_open       total=2    uds=2    ring=0
+pthread_canceled       total=571  uds=75   ring=496
+thread_self_trap       total=198  uds=11   ring=187
+vchroot_path           total=32   uds=10   ring=22
+
+residual_uds_despite_lane: { vchroot_path: 10, thread_self_trap: 10 }
+```
+
+Two things this settles.
+
+**First**, `residual_uds_despite_lane` still names exactly the two candidates §32.10 located -- `vchroot_path` and
+`thread_self_trap`, 10 each -- so that gap is unchanged by everything this round fixed, and it is measured rather
+than assumed. The fix remains the one §32.10 described: the image-adoption / one-lane-per-tid ownership change
+(the borrowed-view family), which is a design change and not a routing change.
+
+**Second**, the inventory is larger than §32's two entries and was never written down as a whole: `console_open`
+(3), `kqchan_proc_open` (2), `interrupt_enter` / `interrupt_exit` (5 each) and `fork_wait_for_child` (5 of 9) are
+also on the datagram and were not in that list. They are small, but they are what a "Ring is the default
+transport" claim has to account for, and a claim that names only the two large ones is not the whole picture.
+
+Read together with §73 and §74, the shape of the remaining work is now explicit:
+
+| class | calls | what it needs |
+|---|---|---|
+| cannot use the lane (measured) | `pthread_canceled`, `interrupt_enter/exit` | a transport other than the per-thread socket |
+| lane-eligible but falling back | `vchroot_path` (10), `thread_self_trap` (10) | the image-adoption / one-lane-per-tid ownership change |
+| genuinely one-shot | `console_open`, `kqchan_proc_open`, `fork_wait_for_child` | attribution first: why each is on the datagram |
+| permanently datagram by design | the loader main checkin (§63), fork children (§69) | nothing -- it is the design |
+
+That table is the honest state of the goal: Ring is the default transport for everything it can carry, three of
+the four lifecycle operations are off AF_UNIX, and what is left is enumerated with a reason for each class rather
+than left as a count.
