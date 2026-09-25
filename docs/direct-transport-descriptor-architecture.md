@@ -8840,3 +8840,46 @@ The method lesson is now the seventh instance in this cycle of the same class, a
 **a probe must be able to fire in the state it is probing for.** Five of those seven were probes whose silence was
 explained by the probe itself. The rule that fixes it: in pre-runtime code, print with a raw syscall and a fixed
 length -- no libc, no `getenv`, no stdio, no `strlen`.
+
+
+### 126. dyld is NOT the barrier: it completes its whole main successfully
+
+With the probes finally able to fire, the sequence for each image is complete and successful:
+
+```
+dyld-boot-ENTRY -> AFTER_REBASE -> AFTER_GUARD -> AFTER_SIGEXC -> AFTER_SUBSYS
+dyld-ENTRY -> INIT_BEGIN -> INIT_END -> AFTER_NOTIFY -> LC_MAIN_RESOLVED
+```
+
+Every one of them prints, for both images the loader starts. So dyld:
+
+* rebases correctly at its load address;
+* sets up the stack guard;
+* **completes `sigexc_setup()`** -- the signal machinery where the urgent-pool and management-plane signal routes live;
+* initialises the subsystem;
+* enters `dyld::_main`;
+* runs **all initializers** (`INIT_BEGIN` → `INIT_END`, i.e. `initializeMainExecutable()` returns normally);
+* notifies monitoring;
+* **resolves the main image's `LC_MAIN` entry**.
+
+It does not stop, and it does not halt: the `halt()` probe (`dyld-HALT`) never fires, so `libdyld.dylib support
+not present for LC_MAIN` is not the path taken. The guest therefore dies **after** dyld has done its whole job,
+in the transfer to the main image's entry.
+
+**One of the probes was itself wrong and is corrected here.** `BEFORE_MAIN` was inserted *after*
+`return dyld::_main(...)` in `dyldbootstrap::start`, so it can only print if `_main` **returns** -- it measures the
+comeback, not the entry, and its silence was never evidence about entering `_main`. That is the eighth instance of
+the same class in this cycle and the reason the other probes now have to be read as a **sequence** rather than as
+presence/absence of any one line.
+
+What this buys, stated as the boundary that moved:
+
+| earlier conclusion | now |
+|---|---|
+| "death in pre-main init" (§119) | measured, but located wrong |
+| "death before `dyld::_main`" (§121/122) | an artifact of libc-based probes |
+| "death inside the entry stub" (§124) | also an artifact |
+| **measured now** | dyld completes fully; the bare handoff to the main image is where it ends |
+
+The transport work is untouched by anything in that sequence -- and `sigexc_setup`, the one step that does touch
+signal-context transport, is measured **passing**.
