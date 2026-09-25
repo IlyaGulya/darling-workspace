@@ -10335,3 +10335,36 @@ Two facts worth separating, because they matter for the acceptance criteria:
 The next step is therefore narrow and named: the second invocation creates, sends and has mapped its page, then
 publishes nothing. That is one function boundary (`__mldr_process_control_create` succeeded, the deferred checkin's
 publish did not happen), not a design question.
+
+
+### 167. The stall is localized to one invocation and one request
+
+With the hook's PING removed (it was measured to stall the second incarnation, because it waits for a completion
+that never arrives for a freshly created page), the loader trace is unambiguous:
+
+```
+[mldr-ctl] bootstrap BEGIN      image=mldr!.../vchroot            <- 1st invocation
+[mldr-ctl] deferred-checkin     status=0 ready=1                  <- its checkin, on the plane
+[mldr-ctl] bootstrap SKIPPED    (already done)                    <- main's call, no-op by design
+[mldr-ctl] seq=2..6             after-dyld / after-execpath / before+after-threadself / after-seed
+[mldr-ctl] bootstrap BEGIN      image=.../mldr!.../sbin/l...      <- 2nd invocation: the exec of launchd
+[mldr-ctl] page pid=... size=528 sent=1                           <- its page created and sent
+<silence>
+```
+
+So the second incarnation establishes its page (created, sent, and -- measured in the earlier run -- mapped by the
+server), and then its `deferred-checkin` line never appears: the `OP_CHECKIN` request it makes does not complete.
+The stall is therefore in one invocation and one request, not in the reordering as a whole: the first invocation
+completes establishment -> checkin -> bootstrap writes in exactly the intended order, and the second stops at its
+own checkin.
+
+Two hypotheses remain for that single request and both are cheap: either the server never services the replacement
+page for a pid that already had one (the `_processControl` map is keyed by pid and the second region replaces the
+first), or the guest's slot claim on the newly created page does not reach PENDING. The instrument for both already
+exists (`process-control` request lines and the page's own state), so the next run with
+`DARLING_SERVER_COURIER_LOG=1 DSERVER_LOG_STDERR=true` distinguishes them at the point of the second
+`bootstrap BEGIN`.
+
+What is already true and measured, for the record: `[rpc-socket] created reason=checkin` is **0** in this boot, the
+dyld dependency cycle is resolved (the guest dyld opens successfully because the process is registered before the
+dylinker load), and the first incarnation's whole sequence runs on the plane.
