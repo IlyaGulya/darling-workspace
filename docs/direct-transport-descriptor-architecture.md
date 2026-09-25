@@ -11383,3 +11383,42 @@ An incarnation that is not current must not take another incarnation's page with
 Everything else measured this cycle stands: the deferred checkin is published after establishment, woken, and
 serviced within about a millisecond of the page's registration; the page is one file by `(dev, ino)` read at service
 time; the wake byte arrives; the slot-ownership race is fixed; and per-thread RPC socket creations are 0.
+
+
+### 201. MILESTONE: the crash is gone and BOTH incarnations' checkins complete over the plane
+
+The fix at the destruction site (the region is no longer unmapped or erased by the outgoing incarnation's
+destructor; only its descriptor is closed, because closing does not unmap) is measured:
+
+```
+crash probe lines:            0                     (was 2 per run: SIGSEGV at page->reply_seq)
+server requests / stores:     8 / 8                 (was 8 / 7 -- every serviced request now completes)
+completion-mark B lines:       8
+reply-stored op=2 seq=1 readback=2 reply_seq=1     (the post-exec checkin stores, and reads back DONE)
+
+guest: deferred-checkin seq=1 status=0             (first incarnation)
+       deferred-checkin seq=1 status=0             (second incarnation, 14 s later in the same run)
+```
+
+So the deferred loader checkin now works for **both** incarnations of the process: published after the process-control
+establishment, woken, serviced, completed with status 0, and observed by the guest, with per-thread RPC socket
+creations at **0** and all four transport counters at 0.
+
+The remaining barrier moved to a later point in the loader, and it is the dyld cycle reached at last because the
+server no longer dies before it:
+
+```
+[mldr-ctl] deferred-checkin ... status=0 image=.../mldr!.../sbin/launchd
+Cannot open /usr/lib/dyld: No such file or directory
+```
+
+`load()` fails at its own `open(path, O_RDONLY)` (mldr.c:519-522) for the nested dylinker image, i.e. the guest path
+`/usr/lib/dyld` is not being translated to the prefix at that moment for the **second** incarnation -- the same class
+of ordering problem this cycle started with (the first incarnation reaches its `after-dyld` step fine). The next step
+is to read that translation path: which value it uses for the root, where that value is set for the second image, and
+whether the hook's `finish_space_after_checkin` has run before the nested load in this incarnation (the hook wraps
+that load, so the ordering is right by construction -- which points at the value, not the order).
+
+Everything in the per-thread-socket class that this cycle set out to move is now measured working end to end: the
+loader's checkin is deferred and plane-serviced for both incarnations, the wake arrives, the slot-ownership race is
+fixed, the region lifetime is incarnation-safe, and no per-thread RPC socket is created.
