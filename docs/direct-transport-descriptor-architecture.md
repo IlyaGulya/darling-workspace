@@ -10583,3 +10583,40 @@ handler resolves the descriptor bundle (absent here, the token is 0), builds the
 publishes the completion. A line after each of those stages -- dispatch entered, dispatch returned, completion
 written -- says which one does not return, and the same handler's comments already name the two things that differ
 for a re-checkin: the Process already exists, and the Thread for `request_payload[1]`'s tid does not.
+
+
+### 176. The plane completes the post-exec checkin; the guest does not observe the completion
+
+Two facts from the same runs, in order:
+
+* The server's side of the second (post-exec) incarnation's checkin is **complete and successful**:
+  `request pid=2681946 op=2 seq=1 payload0=2 payload1=2681946 payload2=0` then
+  `checkin-op ... call=1 thread=2681946 process=2681946 nsid=1` then
+  `checkin-attrib [P:2681946(1)][T:2681946(2681946)] uds-checkin pid=2681946 tid=2681946 fork=0 lifetime=-1
+  page=1 page_ready=1` then **`checkin-reply pid=2681946 seq=1 status=0`**. For the first incarnation the guest's
+  next line (`deferred-checkin seq=1 status=0`) followed exactly this; for the second it never does.
+* The guest's silence is **not** a redirected stream. The same line was duplicated onto fd 1 as well as fd 2, and
+  the run shows `deferred-checkin` (fd 2) for the first incarnation and `deferred-checkin-stdout` for a later call,
+  while the second incarnation prints **neither**. So the loader does not reach the line at all, and the
+  "the stderr was redirected by launchd" explanation (doc section 150's `/dev/null`) is ruled out by measurement.
+
+Everything else on the class is now measured and clean in these runs: the move is in place and the first
+incarnation proves the intended order on the plane; the server registers, marks ready and **completes** the second
+incarnation's checkin with status 0; the guest's per-thread socket creations are **0** and the harness's own
+`socket denials`, `urgent timeouts` and `courier misses` are all 0.
+
+### 177. What is left, stated as one question with one instrument
+
+The guest publishes into a page it created, the server completes an identical-looking request on the page it holds
+for that pid, and the guest's reply loop does not see `DONE`. The remaining question is therefore not semantic but
+**identity**: are the two sides looking at the same memory? Two `region` lines appear for one pid in every run, with
+different server-side addresses and, in the earlier run where they were compared, the **same inode** -- which is
+consistent with the guest sending the same page twice and the server re-mapping it, but it is not proof, and the
+addresses cannot be compared across address spaces.
+
+The instrument that answers it is one line per side and it is cheap: the guest prints the inode of
+`__mldr_process_control_memfd` (an `fstat`, no new syscall class, and the loader already holds that descriptor), the
+server prints `ino`/`dev` for the region it services (already present), and the two are compared **in one run**. If
+they differ, the guest is waiting on a page the server does not hold and the fix is to make one page per process
+incarnation real rather than assumed; if they match, the completion is written into the memory the guest is reading
+and the defect is in the read (the sequence or the `reply_state` the guest tests).
