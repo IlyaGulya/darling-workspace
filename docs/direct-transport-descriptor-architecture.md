@@ -11495,3 +11495,49 @@ are the reason:
   silent datagram fallback it caused are gone);
 * the vchroot **query** has its own plane op (27), distinct from the setter (8), with the architecture byte correct;
 * and per-thread RPC socket creations are **0**, with socket denials, urgent timeouts and courier misses all 0.
+
+
+### 204. MILESTONE: the boot PASSES, and exactly two socket creations remain
+
+The root-provisioning barrier was the vchroot helper, and the fix is one block:
+
+```c
+/* src/vchroot/vchroot.c */
+	// The root is needed by the LOADER for the image this helper is about to exec ...
+	{ const char* dyld_root = getenv("DYLD_ROOT_PATH");
+	  if (dyld_root != NULL && dyld_root[0] != '\0') { setenv("__mldr_DYLD_ROOT_PATH", dyld_root, 1); } }
+	unsetenv("DYLD_ROOT_PATH");
+```
+
+`vchroot <dir> <binary>` enters the vchroot and `execv`s the image, and it **unset** `DYLD_ROOT_PATH` with the comment
+"this is only needed for this binary and shouldn't be passed down". That is exactly the value the loader needs to
+prefix the guest's own paths, and stripping it is what left every image started through this helper with no root --
+measured as `root=(null)` and `Cannot open /usr/lib/dyld`. The variable is now renamed to the loader's private form
+before it is removed from the guest's view, which keeps the original intent and gives the loader what it needs.
+
+Measured, same build, first run after the change:
+
+```
+VERDICT: PASS        (markers: HELLO=1, FINAL=1)      3917 log lines, no failure line
+bootstrap-root root=/tmp/dr-on-matched/libexec/darling rootlen=34     (six entries, every incarnation)
+sockets created: 2   socket denials: 0   urgent timeouts: 0   courier misses: 0
+```
+
+and the two remaining creations are named exactly:
+
+```
+rpc-socket] created pid=3175090 tid=3175092 n=1 reason=checkin
+rpc-socket] created pid=3175090 tid=3175093 n=2 reason=checkin
+```
+
+Both are **thread** checkins of one process, which is the one class the design already assigns elsewhere: the
+generator's own note says checkin's **fd** instance is the pre-attach bootstrap checkin that stays on the datagram
+path until the bootstrap header exists, while its **thread** instances (no fd) ride the lane. So the remaining work
+is that those two thread checkins did not take the lane, and it is now measurable inside a **green** boot rather
+than in a run that dies before the shell is up.
+
+The whole per-thread-socket class is now in this state: the loader's checkin (both incarnations) goes over the
+management plane with status 0; the region lifetime is incarnation-safe and the SIGSEGV is gone; the slot-ownership
+race is fixed; the vchroot query has its own plane op; the boot passes with zero socket denials, zero urgent
+timeouts and zero courier misses; and the two remaining creations are both named `reason=checkin` with their pids
+and tids.
