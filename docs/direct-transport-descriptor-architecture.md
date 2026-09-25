@@ -9929,3 +9929,35 @@ One denial, and launchd is never reached at all -- where the hatch-OFF runs do r
 `[launchd-CONSOLE_OPEN_BEGIN]`. So `mach_msg_overwrite` is the next transport that must move, and it is reached
 before the console. This is the class the directive names, not a new one: a call whose home is not the datagram
 must stop asking for one.
+
+
+### 156. The console barrier, localized by an attributed bisection
+
+The probes now carry a **per-thread** identity (rule 10 in `docs/tooling.md`), and with it the launchd thread's
+own last minutes are readable in order. Thread `9e8c0`, which printed all seven launchd tags:
+
+```
+[launchd-CONSOLE_OPEN_BEGIN sp=9e8c0]
+[open-entry      sp=9e8c0]      <- reached sys_open
+[pc-entry        sp=9e8c0]      <- CANCELATION_POINT -> sys_pthread_canceled
+[pc-threads-ok   sp=9e8c0]
+[pc-postplane-8  sp=9e8c0]      <- the plane COMPLETED with status -8: not -1 (unpublished), not 0 (success)
+[pc-return-0     sp=9e8c0]      <- ret taken from the PAYLOAD (0), while the status was -8
+```
+
+Then `[open-postcancel]` never appears. So the death is strictly between the macro's call returning and the next
+statement in `sys_open` -- i.e. inside `CANCELATION_POINT` immediately after `sys_pthread_canceled` returned.
+
+Two facts from that, both actionable and neither previously visible:
+
+* the plane is **working** for this call: it published, waited, and got a completion -- the reply is simply
+  **negative** (`-8`), which is a real answer from the server and not the "no transport" case (`-1`) that is
+  supposed to fall back to the datagram;
+* `sys_pthread_canceled` reads the **payload** (`reply0`) rather than the completion **status**, so a server
+  failure of `-8` is turned into a return value of `0` -- and `0` is exactly the value that makes
+  `CANCELATION_POINT` return `-EINTR` from `open()`. A server error is thus reported to launchd as "interrupted".
+
+The same misreading was fixed in the console route (op 26u), where the status now decides and the payload carries
+the descriptor; `pthread_canceled` still needs the same treatment. The next measurement is why the server answers
+`-8` for op 7u at this moment, and whether the thread dies on that answer or on the return itself -- the point is
+now a single statement wide, which is a much better question than "launchd dies in open()".
