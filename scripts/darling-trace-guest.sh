@@ -75,6 +75,11 @@ def sample(pids_of_interest):
             # this field -- and "bounded waits cannot park forever" was exactly the assumption that did not
             # survive contact with the run.
             "syscall": read(d + "/syscall") or "",
+            # PER THREAD with ids: /proc/<pid>/syscall reports one thread, so a process whose loop thread is
+            # parked while a helper thread polls looks identical to one that is cycling. MEASURED need: the
+            # sampled 1 ms sleeps and the loop's own stopped progress could not both belong to one thread.
+            "threads": sorted(os.listdir(d + "/task")) if os.path.isdir(d + "/task") else [],
+            "page_bytes": None,
             "exe": os.readlink(d + "/exe") if os.path.exists(d + "/exe") else "<ENOENT>",
             "maps": maps,
             # the RAW lines as well: the ranges are what a pc is resolved against, and a set of paths cannot
@@ -96,6 +101,13 @@ def main():
                     help="guest process name to watch (default: mldr launchd vchroot shellspawn)")
     ap.add_argument("--env", action="append", default=[])
     ap.add_argument("--cmd", default="echo HELLO=1")
+    # Read a shared page out of a parked guest process, from OUTSIDE: a process blocked in its first wait cannot
+    # print, so the only way to see whether the server's completion reached ITS page is to read that page's memory
+    # here. --page is the guest-virtual base, --page-offsets the byte offsets to report.
+    ap.add_argument("--page", default=None)
+    # ...or discover it from a file the guest itself writes (its address cannot be guessed across runs: ASLR).
+    ap.add_argument("--page-file", default=None)
+    ap.add_argument("--page-offsets", default="0,4,8,16,24")
     ap.add_argument("--log", default=None)
     args = ap.parse_args()
 
@@ -147,6 +159,30 @@ def main():
             # Resolve the parked pc against THIS sample's maps: an address is meaningless across runs (ASLR) and
             # "the wait is in libc" versus "the wait is in the loader" is the whole remaining question, so the
             # answer has to be produced where the maps are still readable.
+            _page_addr = args.page
+            if args.page_file:
+                try:
+                    _txt = open(args.page_file).read().strip()
+                    if _txt.startswith("0x"):
+                        _page_addr = _txt
+                except OSError:
+                    _page_addr = None
+            if _page_addr:
+                try:
+                    with open(os.path.join("/proc", str(pid), "mem"), "rb", 0) as _mf:
+                        _mf.seek(int(_page_addr, 16))
+                        info["page_bytes"] = _mf.read(128)
+                except (OSError, ValueError):
+                    info["page_bytes"] = None
+            for tid in (info.get("threads") or []):
+                try:
+                    sc_t = read(os.path.join("/proc", str(pid), "task", tid, "syscall")) or ""
+                except OSError:
+                    sc_t = ""
+                if not sc_t:
+                    continue
+                rec.setdefault("per_thread", {})
+                rec["per_thread"][tid] = sc_t.split(" ")[0]
             if info.get("syscall"):
                 parts = info["syscall"].split(" ")
                 if len(parts) >= 9:
@@ -164,6 +200,16 @@ def main():
                             tmo = int(parts[4], 16)
                         except ValueError:
                             tmo = 0
+                        # The timespec is a different argument per syscall: FUTEX_WAIT takes it in arg3, and
+                        # clock_nanosleep/nanosleep in arg2. MEASURED: reading arg3 for clock_nanosleep read the
+                        # REMAIN pointer, whose contents are garbage, which is exactly what the first version
+                        # of this reader reported.
+                        num = parts[0]
+                        if num in ("230", "35"):
+                            try:
+                                tmo = int(parts[3], 16)
+                            except (ValueError, IndexError):
+                                tmo = 0
                         if tmo > 0x10000:
                             try:
                                 with open(os.path.join("/proc", str(pid), "mem"), "rb", 0) as mf:
@@ -190,6 +236,17 @@ def main():
                                     key = "%s+0x%x" % (f[5], fo + (pc - lo))
                                     rec["pc_where"][key] = rec["pc_where"].get(key, 0) + 1
                                     break
+            if info.get("page_bytes"):
+                _b = info["page_bytes"]
+                _fields = {}
+                for _off in (int(_x) for _x in args.page_offsets.split(",")):
+                    if _off + 4 <= len(_b):
+                        _fields[_off] = int.from_bytes(_b[_off:_off + 4], "little")
+                rec.setdefault("page_reads", {})
+                # the RAW bytes, so a marker written by either side can be seen without guessing offsets
+                rec["page_hex"] = _b[:128].hex()
+                _key = " ".join("%d:%d" % (o, v) for o, v in sorted(_fields.items()))
+                rec["page_reads"][_key] = rec["page_reads"].get(_key, 0) + 1
                 # keep the union, and count repeats: "the same syscall in every sample" is what says parked.
                 # The FULL line is kept too, because the number alone says which syscall and not what it was
                 # asked to do -- and for futex the arguments (op, compare value, timespec pointer, stack
@@ -218,6 +275,17 @@ def main():
         if rec.get("timeouts"):
             for k, v in sorted(rec["timeouts"].items(), key=lambda kv: -kv[1])[:3]:
                 print("  timeout-arg: %s  (x%d)" % (k, v))
+        if rec.get("per_thread"):
+            main_sc = rec["per_thread"].get(str(pid), "<none>")
+            others = [(t, sc) for t, sc in rec["per_thread"].items() if t != str(pid)]
+            print("  main-thread(%s) last syscall: %s" % (pid, main_sc))
+            if others:
+                print("  other threads: %s" % ", ".join("tid %s sc%s" % (t, sc) for t, sc in others[:4]))
+        if rec.get("page_hex"):
+            print("  page-hex: %s" % rec["page_hex"])
+        if rec.get("page_reads"):
+            for _k, _v in sorted(rec["page_reads"].items(), key=lambda kv: -kv[1])[:3]:
+                print("  page: %s  (x%d)" % (_k, _v))
         if rec.get("pc_where"):
             for k, v in sorted(rec["pc_where"].items(), key=lambda kv: -kv[1])[:3]:
                 print("  pc-where: %s  (x%d)" % (k[:110], v))
