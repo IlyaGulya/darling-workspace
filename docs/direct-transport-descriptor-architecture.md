@@ -11127,3 +11127,31 @@ so that an **exception** -- the only way control leaves that block silently in C
 `what()`, and fix whatever it reports for a **post-exec** incarnation (the one case that differs: the Process
 already exists, and the Thread named by the request's tid does not). That is a small, bounded change, and it is the
 only remaining item between this class and the directive's boot criterion.
+
+
+### 194. The exception hypothesis is disproved by its own instrument, and the store has THREE sites, not one
+
+The checkin dispatch was wrapped so that an exception -- the only silent way out of a C++ block -- would be caught,
+named with its `what()`, and turned into a status. The run produced **no** `checkin-exception` line and the page
+still showed the second incarnation's request `PENDING` with `reply_state=0`, so:
+
+* `Call::callFromMessage` for a post-exec incarnation does **not** throw;
+* and the completion store for that request still does not run.
+
+What that leaves is visible in the source rather than in the run: `page->reply_state = DONE` is written in **three**
+places, and the read-back instrument was added to only **one** of them (the shared completion at the end of the
+servicing loop). So a completion that goes through either of the other two sites stores correctly and silently with
+respect to the instrument, which is exactly the shape of this observation -- and it also means the conclusion of
+section 193 ("the store never runs") has to be stated more carefully: the *instrumented* store never runs; a store
+in another path is not excluded.
+
+The next step is therefore mechanical and small: put the same read-back logging on **every** site that writes
+`reply_state = DSERVER_PROCESS_CONTROL_DONE`, with the pid, op, seq, the map pointer and the value read back, and
+re-run. That single change makes "which path completed this request" readable instead of inferred, and it is the
+last instrument this class needs before the fix -- because the candidates are now: a completion through an
+uninstrumented path, or no completion at all, and those two are one log line apart.
+
+Everything measured before it stands: the plane's deferred checkin is published after establishment, woken, and
+serviced; the guest's page and the server's region are the same file at service time by `(dev, ino)`; registration
+writes (`futex`, `transport_ready`) are visible to an outside reader and to the guest; the first incarnation's whole
+sequence stores and reads back correctly; and per-thread RPC socket creations are 0.
