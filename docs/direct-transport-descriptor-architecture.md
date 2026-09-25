@@ -10620,3 +10620,51 @@ server prints `ino`/`dev` for the region it services (already present), and the 
 they differ, the guest is waiting on a page the server does not hold and the fix is to make one page per process
 incarnation real rather than assumed; if they match, the completion is written into the memory the guest is reading
 and the defect is in the read (the sequence or the `reply_state` the guest tests).
+
+
+### 178. CORRECTION to 176, and the defect is the WAKE (the directive's sections 8/9/10/16)
+
+Two runs with the same code and the same page identities settle it, and section 176's "the guest does not observe
+the completion" was wrong about the cause:
+
+| run | bound | first incarnation | second incarnation |
+|---|---|---|---|
+| 140455 (bg_100) | ~11 s | `deferred-checkin seq=1 status=0` on fd 2 **and** fd 1 | enters the loop, prints **nothing** on either fd |
+| 140659 (bg_101) | ~2 s | same | `deferred-checkin status=-4` on fd 2 **and** fd 1 |
+
+and the server's own line order in the second run shows why:
+
+```
+712: region pid=2690217 passes=46       (the second incarnation's page)
+715: sees-pending pid=2690217 op=2 seq=1 reply_state=0 transport_ready=1
+719: checkin-reply pid=2690217 seq=1 status=0
+721: plane-request TIMEOUT               (the guest)
+722: deferred-checkin status=-4          (the guest)
+```
+
+The page identities are the same memory on both sides (`ino=14604313` from the guest's `fstat` on its memfd and from
+the server's region line), so this is not aliasing; the server **does** complete the request, and it completes it
+**late** -- one line before the guest's two-second timeout, and only inside a pass that some *other* event woke. In
+the run with the real eleven-second bound the guest prints nothing at all, so the late pass either did not happen
+within the window or happened after the guest's own window closed.
+
+The cause is therefore exactly the rule the directive states in sections 8, 9, 10 and 16: the process-control wake
+must be the **process doorbell** and must not be courier bytes. `ring_doorbell_fd` is `-1` in the loader at this
+point (`planewake` prints nothing in either incarnation), so `__mldr_process_control_request` sends the documented
+pre-doorbell fallback -- a one-byte, descriptor-less `MSG_DONTWAIT` message on the courier connection -- and that
+byte does not produce a server pass. The first incarnation's requests were serviced promptly because its wake path
+worked (46 passes before the second page was even registered); the second incarnation's is serviced only when
+something unrelated wakes the loop.
+
+The two candidate fixes, both already named by the directive, in the order they should be tried:
+
+1. **Doorbell before the first management op** (directive sections 10-11): the loader must have a process doorbell
+   before it publishes its checkin, so the wake is the doorbell the server already watches. This is the prescribed
+   shape and it makes the courier strictly a descriptor courier, which is section 16's purity rule.
+2. **Make the courier byte actually wake the server** if it is meant to be the pre-doorbell fallback: a pass is what
+   services the page, so if the byte is delivered on a connection the loop does not watch for readability, the
+   fallback is not a fallback.
+
+The diagnostic that confirms either is the pass counter already in place: after the fix, a `sees-pending` line for
+the second incarnation must appear within a few passes of its `region` line, not 3 passes and two seconds later at
+the very end of the run.
