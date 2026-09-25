@@ -55,13 +55,21 @@ echo "size:     $(stat -c%s "$FILE")"
 if [ -n "$TAG" ]; then
 	# A tag assembled at runtime from two literals cannot be found this way -- that is exactly why the probe
 	# header requires a SINGLE literal. Offsets are given so the tag can be located relative to the code region.
-	n=$(LC_ALL=C grep -a -c -- "$TAG" "$FILE" 2>/dev/null || echo 0)
+	# -F is mandatory here: a tag contains '[' and ']', so as a regex it is a bracket expression and grep
+	# rejects it with "Invalid range end" -- which, wrapped in `|| echo 0`, reads as "not in this artifact".
+	out=$(LC_ALL=C grep -a -c -F -- "$TAG" "$FILE" 2>&1)
+	rc=$?
+	if [ "$rc" -ge 2 ]; then
+		echo "grep ERROR (rc=$rc): $out" >&2
+		exit 1
+	fi
+	n=$out
 	echo "tag:      $TAG"
 	if [ "$n" = 0 ]; then
 		echo "tag count: 0  <-- NOT IN THIS ARTIFACT: a probe on this tag cannot fire, whatever the source says"
 	else
 		echo "tag count: $n"
-		LC_ALL=C grep -a -b -o -- "$TAG" "$FILE" 2>/dev/null | while IFS=: read -r off _; do
+		LC_ALL=C grep -a -b -o -F -- "$TAG" "$FILE" 2>/dev/null | while IFS=: read -r off _; do
 			printf 'tag at file offset 0x%x\n' "$off"
 		done
 	fi

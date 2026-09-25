@@ -140,8 +140,18 @@ if [ -n "$PREFIX" ] && [ -n "$PROBES" ]; then
 			dest_paths "$c" | while read -r rel; do
 				dst="$PREFIX/$rel"
 				[ -f "$dst" ] || continue
-				n=$(LC_ALL=C grep -a -c -- "$t" "$dst" 2>/dev/null || echo 0)
-				[ "$n" -gt 0 ] && echo "  PRESENT x$n  $rel"
+				# -F is mandatory: a tag contains '[' and ']', so as a regex it is a bracket expression and
+				# grep rejects it outright ("Invalid range end"). An earlier version wrote
+				# `|| echo 0` around this, which turned that ERROR into the finding "the probe is not in the
+				# artifact" -- a silent false negative, the exact failure mode this tool exists to remove.
+				out=$(LC_ALL=C grep -a -c -F -- "$t" "$dst" 2>&1)
+				rc=$?
+				# rc=1 means "no match" (not an error); rc>=2 means grep could not do its job.
+				if [ "$rc" -ge 2 ]; then
+					echo "  grep ERROR on $rel (rc=$rc): $out" >&2
+					exit 1
+				fi
+				[ "$rc" -eq 0 ] && echo "  PRESENT x$out  $rel"
 			done
 		done
 	done
