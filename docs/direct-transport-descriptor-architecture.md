@@ -10404,3 +10404,32 @@ For the record, this is the state of the directive's success items at this point
 | `reason=checkin` socket count = 0 | **0** in this boot (the criterion's literal form) |
 | hard socket-disable full suite | not yet -- a failing boot would fail it for an unrelated reason |
 | thread transport FD slope = 0 | not yet |
+
+
+### 169. The second incarnation EXITS; it does not hang
+
+`scripts/darling-trace-guest.sh` -- the tool built earlier in this cycle for exactly this question -- answers it:
+
+```
+guest processes observed: 1
+pid=2629839 comm=mldr samples=916 states=SZ exit_code=
+  exe:     <prefix>/libexec/darling/usr/libexec/darling/mldr
+  cmdline: <prefix>/libexec/darling/usr/libexec/darling/mldr!<prefix>/sbin/launchd /sbin/la...
+  maps:    <prefix>/libexec/darling/usr/libexec/darling/mldr
+           <prefix>/sbin/launchd
+```
+
+`states=SZ` means the process was seen **Sleeping** across the samples and ended as a **Zombie**: it exited. It had
+already mapped the `launchd` image, so the failure is during the load of launchd -- after the hook created and sent
+its page, and before its checkin. That is why no diagnostic appeared: the bounded waits would have reported, and
+they were not reached; an exit produces no line of its own.
+
+So the remaining question is no longer "where" but "why it exited", and the instrument for that already exists too:
+the signal probe written into `launchd` earlier in this cycle (a raw-syscall async-signal-safe handler that prints
+the signal number) worked for a process that died from an exception, and the same technique applies to `mldr`'s
+bootstrap path -- so the next step is to name the exit (its own `exit(1)` path, or a signal) rather than to change
+the ordering again.
+
+This is the second time this cycle that the deciding measurement came from the guest-process tracer rather than from
+the code under investigation: a guest process has `comm`, an empty `cmdline` and an `ENOENT` `exe`, and only its
+`maps` and its state say what it really is and what became of it.
