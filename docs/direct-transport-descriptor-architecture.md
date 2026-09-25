@@ -10127,6 +10127,14 @@ envelope (18 management `planeTid`, 3 urgent `urgentTid`).
 | `PING` | PROCESS | direct, no Call |
 | urgent `INTERRUPT_ENTER/EXIT`, `SIGPROCESS` | THREAD | synthesized Call on the **publisher's** `urgent_tid[u]` |
 
+**CORRECTION, measured.** Applying the envelope tid to ALL 21 sites was wrong and broke the boot immediately
+(`Failed to tell darlingserver about our dyld info`, 2 log lines): the PROCESS_SCOPED handlers must execute on the
+**process's own thread**, which is what `pid` names, and sending the requester's tid for them moved ATTACH_LANE --
+the loader's socket registration -- onto a different thread, so the loader's socket was never established. Eighteen
+sites are therefore back on the process thread with that reason stated at the site, and the envelope identity is
+used exactly where the requester's own thread IS the subject: the urgent pool (`urgentTid`) and the direct
+`pthread_canceled`. The envelope field itself stays -- it is what makes a THREAD-scoped request expressible at all.
+
 No op is `THREAD_REQUIRES_TARGET_EXECUTION` in the plane: nothing in it needs guest-thread execution, which is why
 none of them needed the lane. `pthread_canceled` is the only `THREAD_DIRECT_SAFE` and the only one whose target is
 the caller, and its direct servicing is deliberately NOT generalized.
