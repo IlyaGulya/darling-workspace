@@ -9222,3 +9222,40 @@ the crt nor `main` of that image runs while the process ends 0. The remaining ex
 Hypothesis 1 is the one that would connect this back to the migrations, which is exactly why it must be measured
 rather than assumed. The test is a run with the guest's lane/signal diagnostics and the server's stderr enabled,
 looking for any fault, signal delivery, or `sigprocess`/`sigexc` activity at that point in the sequence.
+
+
+### 135. No fault, correct address, jump executed -- and the image's own code still does not run
+
+The last hypothesis that would connect this back to the transport work was a swallowed fault, since
+`sigexc_setup`/`sigprocess` carry signal delivery and are in scope for this cycle. The run looking for it found
+none:
+
+```
+signal/fault traces: the only SIGEXC hit was my own [dyld-boot-AFTER_SIGEXC] milestone -- a grep false positive
+[dyld-main-entry-addr 0x0000000100000b30]     <- the entry, matching the deployed binary's entryoff
+[dyld-lnew]                                    <- the jump instruction is reached
+HELLO=0
+```
+
+So the forward-motion facts are all established and none of them is a defect:
+
+* the resolved entry is the deployed binary's own entry (`0x100000b30`, matching `entryoff 0xb30`);
+* the entry is inside `__TEXT` (`filesize 0x1000`);
+* dyld executes the jump;
+* **no fault, no signal, no `sigprocess`/`sigexc` activity** appears anywhere in that window.
+
+And yet **two independent instruments inside the running binary are silent**: `csu-call-main` (a single literal in
+`start.S`, verified present in the shipped binary) and `[vchroot-MAIN]` (compiled into `vchroot.c`). Two separate
+probes in one binary failing for the same reason is unlikely; the much likelier reading is the one the evidence
+already supports -- control does not actually arrive in that image's code.
+
+This is stated as the honest limit of what instrumentation without a debugger can decide here. The one remaining
+direct measurement that would settle it is small and specified: have the guest read the **bytes at the entry
+address** and print them, and compare with `vchroot`'s on-disk code at `LC_MAIN entryoff` -- which answers "is the
+image's code there at all, and is it the code we think" without another layer of inference.
+
+**Framing for the directive, unchanged and now on firmer ground.** The socket-disabled transport work is not
+implicated: its instruments are quiet, its counters are zero, and this window contains no RPC, no management plane,
+no courier and no Ring. What is measured is a loader→dyld→image **control-transfer** defect: the address is right,
+the jump happens, and the image's code never runs. That is outside the transport, and it is not a reason to reopen
+any migration.
