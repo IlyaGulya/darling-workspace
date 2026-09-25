@@ -8755,3 +8755,48 @@ For pre-runtime code that means no libc, no `getenv`, no stdio -- raw syscalls o
 
 The bootstrap milestones are now unconditionally printing, which is the measurement that decides whether §121/§122
 were conclusions or artifacts.
+
+
+### 124. Confirmed, not an artifact: the `call` from `__dyld_start` never reaches `dyldbootstrap::start`
+
+The bootstrap probe was made **unconditional** (no `getenv`, raw `write`), which removes the gate as an
+explanation. The result is unchanged:
+
+```
+[dyld_start]    1 line      <- the stub executes
+dyld-boot-*     0 lines     <- start() is still never entered
+HELLO=0
+```
+
+So §121/§122 were **conclusions, not artifacts**, and the defect is now localized to a single instruction. Between
+the working raw `write` and the unreached `call` there are nine instructions of pure frame setup, none of which can
+fail without a visible fault:
+
+```asm
+__dyld_start:
+	movq $1,%rax; movq $2,%rdi; leaq msg(%rip),%rsi; movq $16,%rdx; syscall   # FIRES
+	popq	%rdi
+	pushq	$0
+	movq	%rsp,%rbp
+	andq    $-16,%rsp
+	subq	$16,%rsp
+	movl	8(%rbp),%esi
+	leaq	16(%rbp),%rdx
+	leaq	___dso_handle(%rip),%rcx
+	leaq	-8(%rbp),%r8
+	call	__ZN13dyldbootstrap5startEPKN5dyld311MachOLoadedEiPPKcS3_Pm    # NEVER REACHED
+```
+
+The only step that can fail silently here is the `call`: `leaq ___dso_handle(%rip)` and the call target are
+resolved against dyld's own load address, so if the entry address the loader jumps to is not the real load address
+of that dyld -- a slide/base disagreement -- the stub executes its first instructions and then transfers control to
+an address that is not `dyldbootstrap::start`. A process that ends in `exit 0` rather than a fault is consistent
+with landing on the wrong byte sequence and simply returning.
+
+That narrows the remaining question to one comparison, and it is answerable from the loader side where printing is
+safe: whether `lr->entry_point` (measured `0x7395fe5f1000`) is the deployed dyld's `LC_MAIN` entry resolved
+against the **same** base the loader mapped the image at. Everything above the call is now proven to execute;
+everything below it is proven unreached; the disagreement, if there is one, is in the address.
+
+Boundary for the migration claim, unchanged and now on firmer ground: this is entirely inside dyld's entry stub,
+which no transport change touches. The plane, courier, urgent pool and Ring routing all run later or elsewhere.
