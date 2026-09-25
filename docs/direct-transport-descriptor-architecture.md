@@ -9672,3 +9672,49 @@ Everything upstream is fixed and proven, the transport work is measured quiet on
 remaining defect is inside the guest's init: what makes launchd return instead of staying up and starting the
 daemons it is configured for. The next measurement is a trace of launchd's own exit (its return path, or its
 startup logging), which is a guest-runtime question with no transport content.
+
+
+### 147. The barrier is inside launchd, between `launchd_runtime_init()` and `jobmgr_init()`
+
+`launchd` was instrumented with register-safe raw-syscall probes at the steps of its `main`, and the sequence stops
+inside a narrow window:
+
+```
+[launchd-MAIN]
+[launchd-PREFLIGHT_OK]
+[launchd-ROOTLESS_PREPARE_OK]
+[launchd-RUNTIME_INIT_DONE]
+(and then nothing)
+```
+
+So launchd passes its runtime-mode preflight, passes `rootless_runtime_prepare()`, completes
+`launchd_runtime_init()`, and dies before `jobmgr_init(sflag)` -- i.e. inside this block:
+
+```c
+	launchd_runtime_init();
+	if (NULL == getenv("PATH")) { setenv("PATH", _PATH_STDPATH, 1); }
+	if (pid1_magic) {
+		pid1_magic_init();
+		int cfd = -1;
+		if ((cfd = open(_PATH_CONSOLE, O_WRONLY | O_NOCTTY)) != -1) { ... }
+		... launchd_syslog(LOG_NOTICE | LOG_CONSOLE, "*** launchd[1] has started up%s. ***", extra); ...
+	}
+	monitor_networking_state();
+	jobmgr_init(sflag);
+```
+
+Two facts worth recording alongside it:
+
+* **the earlier "launchd exits silently" was not a measurement.** `launchd`'s `main` redirects `STDIN`/`STDOUT`/
+  `STDERR` to `/dev/null` a few lines in (`testfd_or_openfd(STDERR_FILENO, _PATH_DEVNULL, O_WRONLY)`), so any
+  message it prints is destroyed before anyone can see it. Its silence told us nothing -- the probes, which write
+  with raw syscalls before the redirect matters, are what actually localized this.
+* `rootless_runtime_prepare()` **succeeds**, so the rootless contract launchd checks is satisfied and the defect is
+  deeper: in `pid1_magic_init()` or the console/syslog setup in that block.
+
+The next probe set is inside exactly that block (`pid1_magic` entry, `pid1_magic_init` return, the console open,
+`monitor_networking_state`), which is a single narrowing step away from naming the failing call.
+
+For the directive: this is the guest's service manager failing during its own startup. There is no RPC, no
+management plane, no courier and no Ring anywhere in this window; the per-thread RPC socket count on every path
+exercised remains zero with the hatch on and off.
