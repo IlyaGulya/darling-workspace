@@ -23,7 +23,11 @@ skill; this file is the durable index it points at.
 
 1. **Probe contract.** One literal tag (so presence is checkable), one syscall,
    every ABI register saved and restored besides `%rcx`/`%r11`. A probe that
-   clobbers `%rax` or `%rdi` returns a **wrong result**, not silence.
+   clobbers `%rax` or `%rdi` returns a **wrong result**, not silence. This applies
+   to every string a probe emits, not just its tag: an identity marker assembled
+   character by character (as one version did for `" sp="`) exists nowhere in the
+   artifact, so the presence check reports the feature missing and the next round
+   is spent on the wrong suspect.
 2. **The raw `syscall` number in a Darling guest is Linux-numbered**: `write` is
    `1`. A probe using `4` runs as Linux `stat` and prints nothing.
 3. **A probe must be in the artifact under test, and in the copy that runs.**
