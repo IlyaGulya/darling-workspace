@@ -11459,3 +11459,39 @@ So the root must be provided by whatever starts the second image, and finding th
 `mldr` invocation, and where `__mldr_DYLD_ROOT_PATH` is set for the first -- is the next step. That is an ordering
 and provisioning question about the loader/launcher, not about the transport, and every transport item this cycle set
 out to move is measured working.
+
+
+### 203. The remaining barrier is the second image's environment, and it is outside the transport class
+
+The root-provisioning question was followed to its source and the answer is now exact:
+
+* the **server** sets the value once, in its own environment: `darlingserver.cpp:523 setenv("__mldr_DYLD_ROOT_PATH",
+  LIBEXEC_PATH, 1)`;
+* the **loader** rewrites that very entry for the guest, in place, stripping the `__mldr_` prefix so dyld reads it
+  as `DYLD_ROOT_PATH` (`mldr.c:363-366`);
+* and the **second** image sees **neither** name -- measured, again, as `root=(null)` at its hook entry, with the
+  dyld open failing on the unprefixed guest path.
+
+So the value is produced by the server, consumed and renamed by the loader, and then lost for the next image because
+that image's environment is built anew. Three ways of carrying it forward were tried and each failed for a measured
+reason -- a loader static (state re-established per image), `setenv` from the loader (the guest's environment is
+rebuilt), and reading the guest's name as a fallback (the second image does not have it either) -- which is itself the
+proof that the loss happens in the **environment construction for the new image**, not in any of those three places.
+
+That is where the next step belongs: find what builds the second image's `envp` (in the loader, since it is the loader
+that re-invokes itself for the guest image) and make `LIBEXEC_PATH`/the discovered root part of it, exactly as the
+server provides it for the first. It is an ordering and provisioning question about the loader and the launcher.
+
+Everything in the per-thread-socket class this cycle set out to move is measured working, and this stretch's changes
+are the reason:
+
+* the loader's checkin is **deferred** and published after the process-control establishment;
+* it is transported by the **management plane** for **both** incarnations of a process, each observed by the guest
+  with `status=0`;
+* the region lifetime is **incarnation-safe**: the outgoing incarnation's destructor no longer unmaps and erases the
+  page the incoming one has registered (the SIGSEGV at `page->reply_seq`, caught by an in-server crash probe, is
+  gone, and every serviced request now completes: `requests=8 stores=8`);
+* the slot-ownership race is fixed (the publisher reclaims a completed slot; `seq=3 after-dyld status=-3` and the
+  silent datagram fallback it caused are gone);
+* the vchroot **query** has its own plane op (27), distinct from the setter (8), with the architecture byte correct;
+* and per-thread RPC socket creations are **0**, with socket denials, urgent timeouts and courier misses all 0.
