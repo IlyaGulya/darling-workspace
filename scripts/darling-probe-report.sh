@@ -38,7 +38,9 @@ DEFAULT_PAIRS = [
     ("pc-threads-ok", "pc-postplane-"),
     ("console-rpc-begin", "console-rpc-"),
 ]
-TAG_RE = re.compile(r"\[([A-Za-z0-9_-]+)(?:\s+sp=([0-9a-f]+))?\]")
+# Two shapes exist and both must parse: "[tag sp=hex]" (dylib probes) and "[tag] sp=hex]" (a probe whose
+# macro already closed the bracket). Reading only the first made every launchd tag look unattributed.
+TAG_RE = re.compile(r"\[([A-Za-z0-9_-]+)\](?:\s+sp=([0-9a-f]+))?|\[([A-Za-z0-9_-]+)\s+sp=([0-9a-f]+)\]")
 
 
 def parse(path):
@@ -49,7 +51,8 @@ def parse(path):
     for i, line in enumerate(lines):
         found = False
         for m in TAG_RE.finditer(line):
-            tag, sp = m.group(1), m.group(2) or "<no-identity>"
+            tag = m.group(1) or m.group(3)
+            sp = (m.group(2) or m.group(4)) or "<no-identity>"
             per[sp][tag] += 1
             events.append((i, sp, tag))
             found = True

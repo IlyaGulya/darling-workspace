@@ -10808,3 +10808,48 @@ is which one each side uses. But the two hatches **interact**: with `DARLING_SER
 and with them disabled it reaches the loop and prints its heartbeat. That is itself the next thing to explain -- the
 guest's progress must not depend on whether the server logs -- and until it is explained, a single run cannot hold
 both sides' identity, which is exactly what the comparison needs.
+
+
+### 183. The reply-loop wait does not return, with a one-millisecond timeout, and three instrument defects found on the way
+
+Three defects in the instruments, each found by using them, and then the measurement that matters.
+
+**A diagnostic must not be able to block.** Writing the loader's diagnostics to *both* fd 2 and fd 1 made the
+guest's progress depend on whether the **server** was logging: guest and server share one pipe for the run log, the
+server's logging fills it, and a blocking raw `write` from inside the publish path parks the loader exactly where
+the observer reads "the second incarnation stops before `planeloop BEGIN`". The sink is now `MLDR_DIAG_LOG` (a
+regular file, which does not block on a pipe and survives the launchd image installing `/dev/null` as its stderr),
+falling back to fd 2 as before. With that, the second incarnation reaches `planeloop BEGIN` with the server's log
+enabled as well.
+
+**The environment is replaced mid-boot, so a gate must be read once.** The loader installs the next image's
+environment while it is being set up, so `getenv("MLDR_COURIER_DIAG")` consulted from inside the reply loop stopped
+answering: the process sat in its loop with **every diagnostic suppressed**. The decision is now taken on first use
+into a static and never re-read. The first attempt at that fix rewrote the `getenv` **inside the helper itself**, so
+`mldr_diag_on()` called itself and the boot died with a single log line -- a reminder that an edit by string
+substitution must assert the surviving body, not only the call sites.
+
+**A guest process parked in futex says nothing about which futex.** `scripts/darling-trace-guest.sh` now records
+`/proc/<pid>/syscall` and prints the top parked syscalls, which is what turned "it is blocked somewhere" into "it is
+blocked in futex" (`202 x46` of ~48 readings).
+
+**And the measurement.** With the sink and the gate fixed, the second incarnation's loop is instrumented on both
+sides of its wait, and the result is:
+
+```
+[mldr-ctl] planeloop BEGIN pid=... op=2 mine=1 state=1
+[mldr-ctl] planeloop-heartbeat waited=1000 reply_state=0 reply_seq=0 request_state=1 mine=1 memfd=8 dev=1 ino=14601704
+[mldr-ctl] futex-wait BEGIN waited=1000 seen=1 timeout_ns=1000000
+-- no `futex-wait DONE` follows, for the rest of the run --
+```
+
+So the loop runs, `waited_ms` reaches 1000, the wait is entered with a **one-millisecond** relative timeout, and it
+does not return. A `FUTEX_WAIT` with a valid relative timeout returning ETIMEDOUT is not something a caller can
+observe as a hang, so the next measurement is not another hypothesis about this loop: it is the **arguments the
+kernel sees** -- `/proc/<pid>/syscall` prints the futex op, the compare value, the timespec pointer and the stack
+pointer, and the tracer now records that line for a parked guest process. That decides whether the kernel is being
+asked for a bounded wait at all, and whether the thread is the same one that printed.
+
+What remains measured and clean is unchanged: the checkin is deferred, plane-serviced, woken, completed with status
+0 within about 1.2 ms of its page registration, with zero per-thread RPC sockets created and all four of the
+harness's transport counters at 0.
