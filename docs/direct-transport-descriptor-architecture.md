@@ -9145,3 +9145,48 @@ exactly once shows it never happens. No exec, no second image, no `shellspawn`.
 So the remaining question is sharp and single: **why does control not reach `vchroot`'s `main` when dyld has just
 jumped to its image entry?** The next measurement is the one that answers it -- instrument `vchroot` itself, the
 binary that is actually running, which is exactly what the two preceding sections failed to do.
+
+
+### 133. Root established: dyld jumps to a correct-looking address and the image's crt never runs
+
+Instrumenting `vchroot` itself -- the binary that actually runs -- closes the loop:
+
+```
+[vchroot-MAIN]      not printed
+[csu-call-main]     not printed   (the string IS in the shipped binary)
+[dyld-lnew]         printed       (dyld executed its jump)
+dyld-ENTRY count    1             (no second load: execv never runs)
+HELLO=0
+```
+
+One correction against my own verification method, recorded because it nearly caused a wrong conclusion: `strings`
+does **not** find `vchroot-MAIN` in the binary, and that is **not** evidence the probe is absent -- the tag is passed
+as `"[vchroot-"` plus `"MAIN"`, two literals concatenated at runtime by the loop, so no such single string exists.
+The probe is compiled in and it is silent. `csu-call-main`, by contrast, **is** a single literal in `start.S`; it is
+present in the shipped binary and also silent.
+
+So the chain is now:
+
+| fact | evidence |
+|---|---|
+| dyld resolves `fMachOData + entryoff` = `0x100000c60` | `[dyld-main-entry-addr]` |
+| `vchroot`'s `LC_MAIN entryoff` is `0xc60`, and the image base is `0x100000000` | Mach-O parse + the loader's `mh` |
+| dyld executes `jmp *%rax` to that address | `[dyld-lnew]` |
+| `vchroot`'s crt `start` runs | **no** -- `csu-call-main` silent, present in the binary |
+| `vchroot`'s `main` runs | **no** -- `[vchroot-MAIN]` silent, compiled in |
+| `execv` re-enters the loader for `shellspawn` | **no** -- one `dyld-ENTRY`, no second sequence |
+| exit status | **0**, which `vchroot` cannot return from any path |
+
+The address arithmetic looks self-consistent (`0x100000000 + 0xc60`), dyld's jump executes, and yet neither the crt
+nor `main` of the image at that address runs, and the process ends 0. That is only consistent with the **entry
+address not being the address of that image's code in the mapping** -- i.e. dyld's idea of the image's base
+(`fMachOData`) and the loader's actual mapping disagree -- or with the jump landing on bytes that simply return.
+
+That is the root statement this investigation can make from the evidence, and the measurement that would settle it
+is exact and small: read the bytes at the entry address from inside the process and compare them with
+`vchroot`'s on-disk code at `LC_MAIN entryoff`, or print the loader's mapping base for that image alongside dyld's
+`fMachOData`.
+
+For the directive: every stage of this is **outside** the transport work -- it is the loader→dyld→image address
+agreement. The socket-disabled migrations are measured quiet with hatch ON and OFF, and the per-thread RPC UDS is
+unreachable on every path actually exercised.
