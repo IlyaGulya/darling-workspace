@@ -9773,3 +9773,84 @@ Two working rules also came out of this and belong in any runbook for this codeb
 * **decide with content, not with names.** A sha256 manifest per component, an `exe`-based process match, and a
   log path owned by one run are all instances of the same rule; every one of them replaced a silent failure with a
   loud one.
+
+
+### 149. Tooling, implemented and then used: four defects found in the tools themselves
+
+The three tools from section 148 were written, and then each was **used**, which is where the value and the
+embarrassment are. Four defects surfaced, and every one of them was the same failure mode the tools exist to
+remove -- an instrument that quietly does less than it claims:
+
+| defect | how it presented | how it was caught |
+|---|---|---|
+| `grep` without `-F` on a tag | `[launchd-MAIN]` is a bracket expression; grep answered `Invalid range end`, and `|| echo 0` turned that **error** into the finding "the probe is not in the artifact" | by reading the error instead of the count |
+| `grep -c` return code | rc=1 means "no match", not failure; treating it as failure made every absent tag an error | by distinguishing rc 1 from rc>=2 |
+| `--component` assigned instead of accumulating | `--component a --component b` deployed only `b`, printed `ok` for it, and left `a` stale -- so a whole boot run was made against an old `libsystem_kernel` without the probes under test | by comparing the built artifact against every deployed copy |
+| the run harness matching its own command line | it is invoked **with** `--prefix <prefix>`, so its own cmdline (and its pipeline subshells') contained the prefix and the kill loop killed the loop doing the killing | by reading its own output |
+
+The fourth rule follows from the first three and is now in the tools: **check the premise before blaming the
+result.** The one-byte manifest test initially reported "no change" and the manifest tool was right -- the `dd`
+had written a byte that was already zero. The `--probe` gate initially reported absence and grep was right -- the
+tag really was absent, because `launchd`'s probe wrote its tag **one byte at a time** and no tag existed as a
+string anywhere.
+
+That probe is now rewritten to the discipline the header states: `LAUNCHD_PROBE(name)` expands to a
+compile-time-concatenated **single literal** written in one syscall, with every ABI register saved and restored
+(the old form clobbered `%rax`/`%rdi`, the two defects that produced wrong results earlier). 22 call sites
+rewritten; each tag is now found **exactly once** in the built binary, so presence is a checkable fact rather
+than an inference.
+
+### 150. The console barrier, and what the SERVER's view says about it
+
+`launchd` stops after `[launchd-CONSOLE_OPEN_BEGIN]`, the tag immediately before
+`open(_PATH_CONSOLE, O_WRONLY | O_NOCTTY)`. The guest source explains why a failure there is silent rather than
+reported: `/dev/console` is not a file in the guest at all, it is an RPC --
+
+```c
+else if (strcmp(filename, "/dev/console") == 0) {
+	int err = dserver_rpc_console_open(&ret);
+	if (err < 0) { __simple_printf("dserver_rpc_console_open failed internally: %d", err); __simple_abort(); }
+	...
+}
+```
+
+-- and `dserver_rpc_console_open` returns `dserver_rpc_hooks_get_broken_pipe_status()`, which is **`-EPIPE`**,
+whenever `dserver_rpc_hooks_get_socket()` yields no socket. `openat.c` reads only `err < 0` as an internal
+failure, so a missing socket becomes `__simple_abort()` **inside open()**: neither the `else` branch nor any tag
+after it can run, and `__simple_printf` goes to the `/dev/null` `launchd` installed for its own stderr a few lines
+earlier. That is a complete mechanical explanation of "launchd exits silently".
+
+**But the server's view does not confirm it is the path taken.** A run with `DARLING_SERVER_MSG_CENSUS=1` shows
+**no `console_open` reaching the server at all** -- the only occurrence of the word in the whole log is launchd's
+own tag. So the guest dies **before** any console RPC is issued, and the `-EPIPE` -> abort chain, while it is the
+documented code path, is not what this run measured. It stands as a hazard to fix, not as this failure's cause.
+
+### 151. A guest process is not identifiable the way a host process is
+
+Chasing that, a live scan of every process created during a run produced this, and it invalidates an assumption
+the cleanup tooling is built on:
+
+```
+  x296  <unreadable> | mldr |            <-- guest processes: comm=mldr, empty cmdline
+```
+
+and for a captured `mldr`:
+
+```
+  owner uid/gid of /proc/<pid>: 1000/1000   our uid=1000
+  exe      ERRNO 2 (ENOENT)      <-- not EACCES: the image file is GONE (unlinked or memfd)
+  cmdline  readable              <-- but EMPTY for these processes
+  maps     readable
+  status   readable
+```
+
+Three consequences, all of them measured rather than reasoned:
+
+* `/proc/<pid>/exe` is **unreadable with ENOENT** for a guest process, so a cleanup that matches by `exe` -- the
+  arm that was added precisely because guest `cmdline` carries no prefix -- **cannot see them either**. A guest
+  process is findable by `comm` (`mldr`, `launchd`, `vchroot`) and by its readable `maps`, not by its paths.
+* `cmdline` for these processes is empty, not merely prefix-free, so the prefix-substring arm matches nothing.
+* their `maps` **is** readable, which is the one instrument that can answer "which `libsystem_kernel` is this
+  process actually executing" -- the question that matters, because probes placed in both deployed copies of that
+  dylib did not fire while messages from the same dylib's other code paths (`[dring-*]`, `[rpc-socket-DENIED]`)
+  do appear in the run log.
