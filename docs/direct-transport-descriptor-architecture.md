@@ -9011,3 +9011,50 @@ plausible.
 For the directive's question, the boundary is now stated as tightly as the evidence allows: **every transport code
 path is outside this window**. The window is between dyld's jump and the image's crt, and it contains no RPC, no
 management plane, no courier and no Ring.
+
+
+### 130. THE ROOT, numerically: the image being run is `vchroot`, not `shellspawn`
+
+§129 left one question -- what value dyld resolves for the main image's entry. A hex probe (raw syscall) answers it:
+
+```
+[dyld-main-entry-addr 0x0000000100000c60]
+```
+
+and the deployed `shellspawn`'s own `LC_MAIN entryoff` is `0x13a0` (verified in both the build tree and the prefix,
+thin x86_64, sha256-identical), so the entry for it would be `base + 0x13a0 = 0x1000013a0`. The resolved address is
+**not** that. `getEntryFromLC_MAIN()` computes `fMachOData + entryoff` and returns it only if the result is inside the
+image, so the address means the main image's `entryoff` is `0xc60`, and the base is `0x100000000`.
+
+Scanning the prefix for a Mach-O whose `LC_MAIN entryoff` is exactly `0xc60` gives a unique answer:
+
+```
+/tmp/dr-on-matched/libexec/darling/usr/libexec/darling/vchroot
+/tmp/dr-on-matched/usr/libexec/darling/vchroot
+```
+
+**`vchroot`.** The image being loaded as the main executable is the `vchroot` helper, not the requested program.
+`vchroot` with no arguments prints its path and exits 0 -- which is precisely the observed outcome: no output, no
+fault, `exit 0`, process gone.
+
+That also closes a thread that was misread five sections ago: `[mldr-ctl] ... image=vchroot` in the loader's
+diagnostics was treated as a label (`__mldr_diag_image(argv[0])` was assumed to classify by name) when it was
+**literal** -- the main image really was `vchroot` all along, printed by the loader's own instrument.
+
+What this means for the whole investigation, and it should be stated plainly because most of it was spent
+elsewhere:
+
+* the transport work is **not involved**: every instrument of it is quiet and every counter is zero;
+* `shellspawn` is not reached because it is **never the image being run** -- not because dyld, the crt, `sigexc`, the
+  lane, the plane or the courier failed;
+* the earlier readings -- "pre-main exit 0", "dyld is not the barrier", "the crt does not fire", "`main` is never
+  entered" -- were all **true** and all **consistent** with this; they were describing the wrong program's lifecycle
+  exactly as measured, and none of them was about `shellspawn` at all.
+
+The next action is therefore narrow and has nothing to do with any transport: find where the main image's path is
+chosen and why it becomes `vchroot` instead of the requested program (`argv[0]` handling in the launcher, or the
+loader's `dyld_path`/main-image selection).
+
+Correction of record: the claim in §120 that "the remaining failure is pre-existing and unrelated to this work" was
+right in substance and wrong in detail; §119-129 localized a **symptom of the wrong image**, which is why every
+probe of `shellspawn` was silent from the very first one.
