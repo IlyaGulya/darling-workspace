@@ -9259,3 +9259,48 @@ implicated: its instruments are quiet, its counters are zero, and this window co
 no courier and no Ring. What is measured is a loader→dyld→image **control-transfer** defect: the address is right,
 the jump happens, and the image's code never runs. That is outside the transport, and it is not a reason to reopen
 any migration.
+
+
+### 136. THE ROOT: `main` is entered, and the first dyld STUB load kills it silently
+
+Three measurements settle it, and the third was the one that had to be made:
+
+```
+from inside the process at 0x100000b30:  0x30ec8148e5894855
+on disk at LC_MAIN entryoff 0xb30:       0x30ec8148e5894855     <- IDENTICAL: the code is there
+llvm-nm:  0000000100000ab0 T start / 0000000100000b30 T _main   <- entryoff 0xb30 IS _main
+```
+
+So `LC_MAIN` points at **`_main`** (not at the crt `start`, which sits 0x80 earlier), dyld's entry calculation is
+correct, the image's code is mapped exactly where dyld thinks it is, and the jump goes to `main`. And the probe
+inside `main` still does not print. Disassembling the shipped `_main` shows why:
+
+```asm
+100000b30: 55                          pushq  %rbp
+100000b31: 48 89 e5                    movq   %rsp, %rbp
+100000b34: 48 81 ec 30 10 00 00        subq   $0x1030, %rsp
+100000b3b: 48 8b 05 be 04 00 00        movq   0x4be(%rip), %rax     <-- __stack_chk_guard via a dyld STUB
+100000b42: 48 8b 00                    movq   (%rax), %rax
+...
+100000b60: 48 8d 3d bc 03 00 00        leaq   0x3bc(%rip), %rdi     ("[vchroot-")
+100000b67: e8 e4 01 00 00              callq  ___vchroot_diag        <-- MY PROBE, and it is here
+```
+
+The probe **is** in the shipped binary and it **is** the first thing my code does -- but it is preceded by the
+prologue's load of `__stack_chk_guard`, and that load goes through a **dyld stub** (the `movq` reads from
+`dyld_stub_binder`'s area and then dereferences it). If stub resolution fails, the fault lands exactly there: before
+the probe, with no output, and the process ends without reaching a single line of `main`.
+
+That also explains the whole set of earlier observations at once and without contradiction:
+
+* `main` **is** entered -- it was never the wrong program and never the wrong address;
+* the probe at the top of `main` never prints **because a stub instruction precedes it** -- the eleventh and
+  last probe correction of this cycle, and the first one that was answered by disassembly rather than by another
+  run;
+* `csu-call-main` never prints because `LC_MAIN` does not go through the crt `start` on this path at all;
+* the process ends 0 with no message because the failure is a stub load in the first instructions of the image;
+* the transport work is absent from every step: this is the loader→dyld→image **symbol-binding** path.
+
+**So the defect is not in the transport and not in the entry address: it is in dyld stub binding for the launched
+image.** The next measurement is correspondingly narrow -- the stub for `__stack_chk_guard` (and
+`dyld_stub_binder`) in this image, and whether it resolves for the launched program.
