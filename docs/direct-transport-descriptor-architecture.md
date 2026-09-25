@@ -10175,3 +10175,57 @@ transport-ready within its bound (`if (!child_checked_in && dserver_rpc_checkin(
 is called from nowhere else in the guest. The bound is a transport wait, so the open question was whether
 readiness arrives late or never; the bound is now 2000 ms instead of 200 ms, which distinguishes the two with a
 single run and no semantic change.
+
+
+### 163. What the last two sockets are: a proven ORDERING incompatibility, with one option untried
+
+The two remaining `reason=checkin` creations are not `fork.c`'s child path (its transport wait was extended to
+2000 ms and the count did not move, then the extension was reverted as unmeasured). Pages ARE being created and
+sent -- with `MLDR_COURIER_DIAG=1` the run shows `[mldr-ctl] page pid=... size=528 sent=1` for five pids, 528
+being the v2 struct -- so the child is not failing to build its page.
+
+They are the loader's own main checkin, at `mldr.c`, whose route choice is explicit:
+
+```c
+(void)__mldr_process_control_wait_ready(200);
+if (__mldr_process_control_ready()) { ... page ... } else { dserver_rpc_checkin(false, ...); }  // creates the socket
+```
+
+and whose surrounding comments record two MEASURED RED positions for the alternative: establishing the transport
+**above `load()`** makes the page available at this exact site (`checkin-route ... ready=1 page=0x...`) and the
+boot then FAILS (`HELLO=0`, shellspawn never ready), and moving the establishment **into `setup_space`** fails the
+same way. The mechanism is named in the same place and is the reason this is not a handler bug: the page is
+serviced on the **server's own loop pass**, while a datagram is serviced **the moment it arrives**, so a checkin
+whose result must be visible to the process's OTHER traffic (the fork/exec handshake, which travels in socket
+order) cannot be a page write while that other traffic is a datagram.
+
+Per the directive's stop rule this is the second permitted stop: a **proven** semantic incompatibility, with its
+mechanism measured twice from two different positions rather than assumed. One option remains untried and is
+recorded in the source as the fix: **move the checkin later in the path, after the establishment**, rather than the
+establishment earlier. That is a structural reordering inside the loader's `main`, not a line change, and it is the
+next step for this class.
+
+**Change manifest for the cycle** (files whose hashes define this state; `procctl-src` has no tracked baseline, so
+this plus the sections above is the recovery record):
+
+```
+db11469eff222cdc  src/external/darlingserver/include/darlingserver/rpc-supplement.h      (ABI v2)
+037c2846718cb3b6  internal-include/darlingserver/thread.hpp                             (cancel lock, semantic core)
+4c3d01d82315ec18  src/thread.cpp                                                         (Thread::pthreadCanceled/Markcancel/Snapshot)
+ddb46fe076d35c71  src/call.cpp                                                           (uses the core)
+d6ed8d27d1381703  src/server.cpp                                                         (version gate, direct servicing, tid)
+980b486c4155ad8d  duct-tape/.../thread-cancel.h                                          (reverted: no shared-layout change)
+94e26478d7f3b27b  duct-tape/src/thread.c                                                  (reverted)
+9ba2148940d233f2  emulation/.../resources/dserver-ring.c                                 (tid publish, version guard, hatch)
+568eb2324869edfb  emulation/.../bsdthread/pthread_canceled.c                             (status is the return)
+bfec51e6c6ab8a18  emulation/.../fcntl/open.c                                             (step probes)
+fa549ce5a59ec0d3  emulation/.../fcntl/openat.c                                           (console plane route + probes)
+dd2e792a3372c4dc  emulation/.../process/fork.c                                           (tid)
+97f5ad2ef85885a0  emulation/.../process/execve.c                                         (tid)
+65210cb89fb7f726  src/startup/mldr/mldr.c                                                 (probe identity)
+40358015523092af  src/launchd/src/launchd.c                                               (probe identity + single-literal marker)
+```
+
+Diagnostic hatches added by this work: `DARLING_GUEST_PLANE_TID_MUTATE` (wrong-tid mutation, section 9) and the
+server's `process-control-version` refusal log; the existing `DARLING_SERVER_COURIER_LOG=1` needs
+`DSERVER_LOG_STDERR=true` as well for its lines to reach the run log.
