@@ -10776,3 +10776,35 @@ it is one, whether the value the guest reads is the value the server wrote.
 What is *not* in question, and is the reason this section is a correction rather than a setback: the loader checkin
 is deferred, published through the plane, woken, serviced and completed by the server with status 0, within
 milliseconds of boot, with **zero per-thread RPC sockets created**.
+
+
+### 182. Everything measured on the loader-checkin class, and the one comparison still owed
+
+**Closed.** The loader's checkin is deferred by design, published only after the process-control establishment,
+serviced through the management plane, woken by the documented pre-doorbell courier byte, and completed by the
+server with **status 0 inside about 1.2 ms** of its page registration (section 180's table). The guest's own
+timeline puts the second incarnation's `bootstrap BEGIN` 14 ms after the first's, and the server's regions the same
+15 ms apart, so nothing is late. Per-thread RPC socket creations are **0** (the harness's own counter), and socket
+denials, urgent timeouts and courier misses are all 0 as well. The `Cannot open /usr/lib/dyld` failure that the
+first placement produced is gone.
+
+**Instrument defects found in this stretch, each by using the tool:**
+
+* the plane reply wait was the only unbounded wait in the loader and could not say where it gave up -- now bounded,
+  and the bound is what proved the loop body executes (`state=0 claimed=0 transport_ready=1`);
+* comparing **inode numbers** as an identity (section 181): an inode is unique only within a filesystem, and the
+  server's own line carries `dev=` for that reason;
+* the signal probe reported only on **fd 2**, which by the second incarnation is the launchd image's `/dev/null` --
+  now on both streams;
+* the loader's diagnostics likewise went only to fd 2; all 21 sites now go to both streams through one raw-write
+  helper, which is what made the first incarnation's full sequence (including `after-seed`) visible at all.
+
+**The one comparison still owed, and why it has not been taken.** The guest's heartbeat now reports what it reads:
+`planeloop-heartbeat waited=1000 reply_state=0 reply_seq=0 request_state=1 mine=1 memfd=6 dev=1 ino=14604317`, with
+no signal and no completion in that memory. Two different memfds appear on the server side in the runs where its
+log is enabled (`ino=...696` and `ino=...698`, `dev=1`), so more than one page exists per process and the question
+is which one each side uses. But the two hatches **interact**: with `DARLING_SERVER_COURIER_LOG` and
+`DSERVER_LOG_STDERR` enabled the second incarnation stops inside the publish (no `planeloop BEGIN` line at all),
+and with them disabled it reaches the loop and prints its heartbeat. That is itself the next thing to explain -- the
+guest's progress must not depend on whether the server logs -- and until it is explained, a single run cannot hold
+both sides' identity, which is exactly what the comparison needs.
