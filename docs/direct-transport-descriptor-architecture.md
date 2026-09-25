@@ -10706,3 +10706,42 @@ process can be registered -- before the expensive part of the load -- because la
 inside that load. The measurement that sizes it is one line: wall-clock timestamps on the loader's own
 `bootstrap BEGIN` / `page sent` / `checkin-publish` / `deferred-checkin` lines, so the position can be chosen
 against the deadline instead of against a pass number.
+
+
+### 180. MILESTONE: the loader checkin class is CLOSED -- 1.2 ms round trip over the plane, zero sockets
+
+With guest monotonic timestamps and server timestamps in one run, both sides of the deferred checkin are now
+measured on the same event:
+
+| side | evidence |
+|---|---|
+| guest | first incarnation: `bootstrap BEGIN t=...309`, `checkin-publish t=...310`, `deferred-checkin t=...310 status=0`; second incarnation: `bootstrap BEGIN t=...323`, `checkin-publish t=...324` -- **14 ms** apart |
+| server | `region passes=0` at 654.108398 for the first page, `region passes=46` at 654.123046 for the second -- **15 ms** apart, matching the guest |
+
+and the whole of the second incarnation's checkin, from page registration to completion, is done inside **1.2 ms**:
+
+```
+654.123046 region pid=... passes=46
+654.124165 wake-received
+654.124179 pass=49 sees-pending op=2 seq=1 reply_state=0 transport_ready=1
+654.124182 request pid=... op=2
+654.124292 checkin-reply pid=... seq=1 status=0
+```
+
+So the loader's checkin now (1) is published after the process-control establishment, (2) is serviced through the
+management plane, (3) wakes the server on the courier byte the code documents as the pre-doorbell fallback, and
+(4) completes with status 0, all within ~15 ms of boot and with **0 per-thread RPC sockets created** (the harness's
+own counter). Sections 165-179's "the second incarnation stops" was, in its final form, an artifact of **the log
+having nothing more to say**: the checkin completes and then nothing happens for thirty seconds.
+
+What that means for the next barrier, and why the earlier reading was wrong: the completion is not late and the
+plane is not slow -- the boot stalls **after** a successful registration, and the second incarnation's own progress
+after that point is invisible because by then the loader's fd 2 is the guest's `/dev/null` (section 150), which is
+the same instrument defect this work keeps recording. The `deferred-checkin-stdout` line added in section 176 is the
+proof that this is a stream problem and not a control problem: the same call prints on fd 1 and not on fd 2.
+
+The next step is therefore an instrument, not a transport change: route the loader's boot diagnostics to a stream
+that survives the launchd image's stdio setup (fd 1, or a file the harness collects), so the post-checkin path of
+the second incarnation -- `after-dyld`, `after-execpath`, `thread_self`, the seed, and the entry into the loaded
+image -- becomes visible and names the next barrier. Everything in the per-thread-socket class that this cycle set
+out to move is now measured working: establishment, wake, servicing, identity, completion, and zero socket creation.
