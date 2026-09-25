@@ -9479,3 +9479,42 @@ answer cannot be an artifact of the reporting either.
 Everything else in the chain is now measured and correct: the loader's `argv` construction, the handoff frame
 (mh, argc, argv), dyld's entry resolution, its jump, and `main` being entered. What is left is a value that differs
 between the stack the loader wrote and the parameter the function reads.
+
+
+### 142. Numerically: the loader writes `argc = 3` and `main` receives `argc = 2`
+
+Both values, in the same process, from raw-syscall probes at the two ends:
+
+```
+[mldr-guest-argv] argc=3 argv0=vchroot argv1=/proc/self/fd/3 argv2=/sbin/launchd     <- what the loader writes
+[vchroot-argc] 0x0000000000000002                                                   <- what main receives
+```
+
+**Exactly one entry is lost between the two.** That is the defect, reduced to a count, and it explains everything
+downstream: `argc = 2` makes `vchroot` take its `argc < 3` branch, so it prints usage and returns **instead of
+chrooting and `execv`-ing `/sbin/launchd`**. launchd never starts, so `org.darlinghq.shellspawn` never starts, so the
+launcher's readiness wait fails. Every step of that is now measured.
+
+The candidate places that can remove one entry between the stack write and `main` are known and few:
+
+* `--mldr_load_results.argc;` in `mldr.c`, which runs **after** `load()` (where the stack is written) and exists to
+  drop `mldr`'s own `argv[0]` from the **Linux-visible** argv -- if that decrement reaches the value used for the
+  guest stack, or is applied a second time for this path, the guest gets exactly one fewer;
+* `vchroot_unexpand_interpreter(&mldr_load_results)`, called in the same block;
+* the `LC_MAIN` handoff itself: `__dyld_start`'s `Lnew` takes `argc` from `8(%rbp)` and `main` is reached through
+  the libdyld start glue, so a shift there would show as the same off-by-one without any loader involvement.
+
+One of those three is the answer, and distinguishing them is a single print at each end of the decrement rather
+than more reasoning.
+
+**Where this leaves the directive's question, summarized once more and final for this cycle:** the socket-disabled
+transport is not implicated anywhere in this chain. Its instruments are quiet, its counters are zero, and the
+per-thread RPC UDS is unreachable on every path actually exercised -- hatch ON and hatch OFF (§115, §120). The boot
+does not reach ready because `argc` loses one entry in the loader's handoff, so the rootless wrapper never runs
+launchd, so shellspawn never starts. That is a plain argument-plumbing defect of exactly the class the directive
+named as the bisect target for the loader.
+
+Two probes in this cycle produced **wrong results** rather than silence, and both were mine: the `Lnew` probe that
+clobbered `%rax` (§137) and, earlier, the assumption that `image=vchroot` was a label rather than the literal
+`argv[0]`. The rule that would have caught both is the one now recorded: a probe must not modify the state it
+measures, and every reported value must be read from the artifact, not inferred from a tag.
