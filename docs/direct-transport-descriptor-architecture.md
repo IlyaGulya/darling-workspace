@@ -10259,3 +10259,42 @@ That closes the acceptance set the directive named:
 | courier misses = 0 | 0 |
 | launchd past the barrier | `JOBMGR_INIT_DONE` -> `BOOTSTRAPPER_SCHEDULED` -> `NETWORKING_DONE`, shellspawn ready, guest command executed |
 | remaining per-thread sockets | 2, `reason=checkin`, shown in section 163 to be an ordering incompatibility with one untried option |
+
+
+### 165. The untried option, implemented: the loader checkin now precedes the dylinker load
+
+The ordering the directive asked for is in the tree, and the first measurement already shows both of its effects.
+
+**What was changed.** `setup_space` no longer performs the checkin: it records what a deferred checkin needs
+(`struct mldr_pending_checkin`: the lifetime read fd, the stack hint as a VALUE -- the recording frame returns
+before the deferred call runs, so a pointer into it would dangle -- and the architecture bits). The suffix that
+DEPENDS on the checkin, the vchroot-path lookup, became `finish_space_after_checkin`. The checkin itself became
+`mldr_do_pending_checkin`, and the three steps are performed once, in order, by
+`mldr_bootstrap_before_dylinker_load(lr)`.
+
+**Where it runs, and why that position.** The first attempt put establishment -> checkin -> vchroot only in `main`,
+after `load()` returns, and the boot died with `Cannot open /usr/lib/dyld: No such file or directory`. That exposed
+a dependency that had been invisible: the guest DYLD is loaded by the nested `load()` inside `load64`
+(`LC_LOAD_DYLINKER`, `loader.c`), and opening the guest's `/usr/lib/dyld` resolves through the guest's vchroot,
+which needs this process REGISTERED. So the dylinker load cannot precede the checkin, and the checkin cannot precede
+the establishment. The hook is therefore called immediately before that nested load -- a position that is LATER
+than the two measured RED ones (above `load()`, and inside `setup_space`) because the outer image is already mapped
+there -- and `main` calls the same hook again, which the guard makes a no-op, so the order is established once and
+cannot drift.
+
+**Measured effects.** `Cannot open /usr/lib/dyld` is gone, and the loader trace shows the intended sequence with the
+checkin first:
+
+```
+[mldr-ctl] page pid=... size=528 sent=1
+[mldr-ctl] deferred-checkin pid=... seq=1 status=0 ready=1
+[mldr-ctl] ready pid=... state=1 ...          <- the establishment, now also reachable from the hook
+[mldr-ctl] seq=2 after-dyld ... status=0 ready=1
+[mldr-ctl] seq=3 after-execpath ... status=0 ready=1
+[mldr-ctl] seq=4/5 before/after-threadself ...
+[mldr-ctl] seq=6 after-seed ...
+```
+
+and, decisively for this class, **`[rpc-socket] created reason=checkin` is now ZERO** in a boot that still fails
+later. The remaining barrier is a new one (no `launchd` tags in that run at all), which is investigated next; the
+socket criterion of the directive is met at the boot level, and the runtime workloads still have to confirm it.
