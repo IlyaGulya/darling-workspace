@@ -10020,3 +10020,49 @@ process (console open, and vchroot-like lookups) does not need it and is a candi
 
 Recorded as a decision to take, not as a bug to fix: the current throw is an assertion that the invariant holds,
 and the plane route is what violates it.
+
+
+### 159. The design decision, with the evidence that forces it
+
+The barrier is now NAMED rather than described: the server dies with
+
+```
+Thread has both a pending call and a pending continuation (pending_call=31 tid=2498369 suspended=1 interrupts=0)
+```
+
+`31` is `dserver_callnum_pthread_canceled`. So the plane route for `pthread_canceled` synthesizes a call on the
+thread that is **itself blocked waiting for that answer** -- the thread issued `CANCELATION_POINT` from inside
+`open()`, is suspended in the call, and the servicing model attaches a second request to it. That is a deadlock by
+construction, not a race, and `thread.cpp` refuses it loudly.
+
+Two decisions have to be taken together, because the second needs the first.
+
+**D1 -- thread identity on a process-scoped plane.** `struct dserver_process_control` has no thread field
+(`version`, `request_state/op/seq`, `request_payload[4]`, the reply fields, `futex`, `server_seen`, and appended
+transport/attach counters). Every thread-scoped handler therefore sets `call->header.tid = pid`, which is a
+different number from the guest's tid.
+
+* **(a) append a `request_tid` field** and bump `DSERVER_PROCESS_CONTROL_VERSION` (currently `1u`, and it is
+  checked nowhere -- a gap worth closing in the same change). Explicit, cheap, but it grows the shared page, so
+  every consumer must be rebuilt and redeployed together.
+* **(b) carry the tid in a payload word** reserved for it. No ABI growth, but `request_payload[3]` already holds
+  the architecture byte and the remaining words are op-specific, so a spare word has to be allocated and
+  documented.
+* **(c) keep thread-scoped ops on the datagram** and use the plane only for process-scoped ones. No new ABI, but
+  it keeps a per-thread socket alive for exactly the calls (cancellation) that are reached earliest -- the class
+  this work exists to remove.
+
+**D2 -- servicing an op whose target thread is blocked waiting for the answer.**
+
+* **(a) defer until the thread is idle**: correct only when the target is not the caller. For
+  `pthread_canceled` the caller IS the target and is suspended in the call, so deferral deadlocks.
+* **(b) service without attaching to the microthread**: run the semantics directly. The implementation stays
+  single because the `Call` body is one function (`dtape_thread_canceled`) already called from `call.cpp`, so this
+  is a second *transport* to the same semantic core, not a second semantics.
+
+**Recommendation: D1(a) + D2(b) for thread-blocked ops, keeping D2(a) for ops whose target is another thread.**
+The reasoning is the one directive section 15 already states -- one semantic core -- combined with what the
+measurement shows: an op that the target thread is waiting on cannot be delivered *to* that thread, and a plane
+that cannot say which thread issued a request cannot serve any thread-scoped op correctly. Doing (b) without (a)
+would run the cancellation check against whichever thread `pid` happened to resolve to, which is a correctness
+bug that the current `tid = pid` substitution is already hiding.
