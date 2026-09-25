@@ -10668,3 +10668,41 @@ The two candidate fixes, both already named by the directive, in the order they 
 The diagnostic that confirms either is the pass counter already in place: after the fix, a `sees-pending` line for
 the second incarnation must appear within a few passes of its `region` line, not 3 passes and two seconds later at
 the very end of the run.
+
+
+### 179. The plane works end to end; the checkin now lands on the launcher's deadline
+
+The wake was instrumented on the server, because the counter alone cannot be read after a run ends and "did the
+byte arrive at all" is exactly what separates a wake sent into a connection nobody reads from a wake that arrives
+and is not acted on. The byte is handled correctly by the code (`n == 1` increments `processControlWakes` and
+continues the drain), and the log shows it arriving:
+
+```
+711: wake-received socket=6 passes=43      (the second incarnation's wake)
+718: region pid=2698641 passes=47          (its page registered)
+721: wake-received socket=6 passes=49      (the wake for its checkin)
+722: sees-pending pid=2698641 op=2 seq=1 reply_state=0 transport_ready=1
+726: checkin-reply pid=2698641 seq=1 status=0     <-- the LAST line of the run
+```
+
+So for the post-exec incarnation: the page is registered, the wake arrives, a pass runs, the request is seen, the
+call is dispatched, and the completion is written with **status 0**. Nothing in the plane is missing.
+
+What the same order shows is **when**: the page is registered at pass 47 and the checkin is serviced at pass 49, and
+that servicing is the final line of a run that ends on the launcher's own
+`Rootless shellspawn did not become ready within 30000ms`. Passes are event-driven, so a gap of two passes is a gap
+of however long it takes for the next event -- and the guest's publish is the event that produces pass 49. So the
+guest publishes its checkin **at the end of the window**, which is precisely what the reordering made possible: the
+checkin now happens after the loader has done its work, and the process registration -- the thing launchd needs
+before it can bring up shellspawn -- therefore completes at the moment the deadline expires.
+
+That also explains the two earlier observations without contradiction: with the two-second bound the guest gave up
+just before the completion arrived, and with the eleven-second bound it printed nothing because the completion
+arrived after the launcher's window had closed.
+
+The remaining work is therefore not a transport defect and not a wake defect but a **positioning** consequence of
+the move: establishment must stay where it works, and the semantic checkin must be published as early as the
+process can be registered -- before the expensive part of the load -- because launchd's bring-up budget is spent
+inside that load. The measurement that sizes it is one line: wall-clock timestamps on the loader's own
+`bootstrap BEGIN` / `page sent` / `checkin-publish` / `deferred-checkin` lines, so the position can be chosen
+against the deadline instead of against a pass number.
