@@ -9854,3 +9854,78 @@ Three consequences, all of them measured rather than reasoned:
   process actually executing" -- the question that matters, because probes placed in both deployed copies of that
   dylib did not fire while messages from the same dylib's other code paths (`[dring-*]`, `[rpc-socket-DENIED]`)
   do appear in the run log.
+
+
+### 152. The probe ABI: a silent wrong syscall number, and why it looked like "code not reached"
+
+Every probe silently placed in `libsystem_kernel` never appeared in any run log, while probes in `launchd` -- same
+technique, raw `syscall`, fd 2 -- appeared every time. The difference is the syscall NUMBER. The raw `syscall`
+instruction in a Darling guest is **Linux-numbered** in this context: `write` is **1**. The libsystem probes were
+written with `rax = 4`, which is Linux `stat`: they executed, did something else entirely, and printed nothing.
+Corrected to `rax = 1`, the calibration probe placed at the entry of `sys_openat_nocancel` fired **6 times** in a run
+where it had fired **0** before. The rule is now stated in `scripts/guest-probe.h`, next to the register rule, so the
+mistake is not repeated; the other cause of a silent probe -- "the tag is not in the artifact" -- is ruled out
+separately by `scripts/darling-describe-artifact.sh`, which is why both checks exist.
+
+### 153. Which artifact a guest ACTUALLY executes, and a cross-prefix hazard the log hides
+
+A guest process cannot be identified by path. Measured for a live guest:
+
+```
+comm     = mldr                 <-- the one stable name
+cmdline  = ""                   <-- empty, not merely an in-guest path
+exe      = ENOENT               <-- the image file is gone (unlinked or memfd)
+maps     = readable             <-- names the prefix its libraries come from
+```
+
+`scripts/darling-trace-guest.sh` samples those processes at 30 ms (a shell loop that forks a reader misses them
+entirely -- they live under two seconds) and reports the files they **actually map**. The first version of it
+reported a stale `shellspawn` of a **second prefix** as if it belonged to the run under measurement -- the
+new-since-launch filter that the throwaway prototype had, the tracer had lost. With the filter restored, the answer
+for launchd is unambiguous: it maps
+
+```
+/tmp/dr-on-matched/usr/lib/system/libsystem_kernel.dylib
+```
+
+-- the right prefix and the right path, so "the probe is in the wrong copy of the library" is ruled out as the
+explanation for a silent probe, leaving the ABI (section 152) as the cause.
+
+A run can also be served by another prefix's live runtime, and then every conclusion is about the wrong artifacts
+while the log looks entirely normal: a stale `shellspawn` of a second prefix was alive across a whole series of
+runs. `scripts/darling-prefix-map.sh` names the prefix a process is rooted in from its `maps` (there is no path to
+read), and `darling-boot-run.sh --assert-prefix-maps` refuses to start in that state.
+
+### 154. console_open moved to the process management plane: op 26u
+
+The guest source says exactly what kills launchd and why it is silent: `/dev/console` is not a file, it is the
+ordinary `ConsoleOpen` Call reached through `dserver_rpc_console_open`, whose wrapper takes the per-thread RPC
+socket first and returns `-EPIPE` from `dserver_rpc_hooks_get_broken_pipe_status` when there is none -- and
+`openat.c` reads **any** negative value as an INTERNAL failure and answers with `__simple_abort()`, inside `open()`,
+with launchd's own stderr already redirected to `/dev/null`. Per directive sections 2/16/17 the call's home is the
+plane, so it now has one, built on the KQCHAN_MACH_PORT_OPEN (9u) template:
+
+* `DSERVER_PROCESS_CONTROL_OP_CONSOLE_OPEN 26u`, appended last in `rpc-supplement.h`;
+* a server case that runs the ordinary `ConsoleOpen` Call (`callFromMessage` -> `doWork`, reply suppressed) and
+  sends the descriptor it returns on the process courier, token in `reply_payload[1]`, with the completion status
+  in `reply_status` -- so a real failure is reported as a failure and a missing transport is never mistaken for one;
+* guest-side plane-first in `openat.c`, falling back to the datagram only when the plane returned `-1`
+  ("not published"), because a published call is never retried.
+
+Two of the three includes needed for it were found by the compiler rather than by reading (`dserver-ring.h` for
+`__dserver_fd_courier_receive`, `elfcalls_wrapper.h` for `__dserver_plane_request_ex`), which is the ordinary cost
+of a generated-header build.
+
+### 155. A second barrier, earlier, in the socket-disabled path
+
+With the migration hatch ON (`DARLING_DISABLE_THREAD_RPC_UDS=1`) the boot now stops **earlier** than the console:
+
+```
+[rpc-socket-DENIED] pid=... tid=... call=mach_msg_overwrite
+Rootless shellspawn did not become ready within 30000ms
+```
+
+One denial, and launchd is never reached at all -- where the hatch-OFF runs do reach
+`[launchd-CONSOLE_OPEN_BEGIN]`. So `mach_msg_overwrite` is the next transport that must move, and it is reached
+before the console. This is the class the directive names, not a new one: a call whose home is not the datagram
+must stop asking for one.
