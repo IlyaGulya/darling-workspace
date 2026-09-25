@@ -9518,3 +9518,39 @@ Two probes in this cycle produced **wrong results** rather than silence, and bot
 clobbered `%rax` (§137) and, earlier, the assumption that `image=vchroot` was a label rather than the literal
 `argv[0]`. The rule that would have caught both is the one now recorded: a probe must not modify the state it
 measures, and every reported value must be read from the artifact, not inferred from a tag.
+
+
+### 143. SECOND instrument defect: the `Lnew` probe clobbered `%rdi`, which holds `argc`
+
+Disassembling the shipped dyld settled the 3-vs-2 contradiction in one look:
+
+```asm
+10f0: 48 8b 7d 08        movq   0x8(%rbp), %rdi     <- argc into %rdi: DIAGNOSTICALLY CORRECT
+10f4: 48 8d 75 10        leaq   0x10(%rbp), %rsi    <- argv
+10f8: 48 8d 54 fe 08     leaq   0x8(%rsi,%rdi,8), %rdx
+...
+110c: 49 89 c2           movq   %rax, %r10          <- MY FIRST PROBE: saves only %rax
+110f: 48 c7 c0 01 ...    movq   $0x1, %rax
+1116: 48 c7 c7 02 ...    movq   $0x2, %rdi         <- DESTROYS argc
+...
+1130: 50                 pushq  %rax                <- my second probe
+1135: 4c 8b 55 08        movq   0x8(%rbp), %r10     <- reads 3 from the frame
+```
+
+`%rdi` holds `argc` from `10f0` onward. My transfer probe (added for §127 to show the jump happening) loaded `2`
+into `%rdi` for its `write` syscall and **restored only `%rax`**. So the register carrying `argc` reached `main` as
+**2**. Every downstream symptom follows from that: `vchroot` took its `argc < 3` branch, printed usage, never
+chrooted, never `execv`-ed `/sbin/launchd`, launchd never started, shellspawn never started.
+
+This is the **second** instrument of mine that broke the thing it measured -- §137 clobbered `%rax` (the jump
+target), this one clobbered `%rdi` (the argument). Both were caught by disassembling the artifact rather than by
+another run, and both produced **wrong results** rather than silence.
+
+The corrective rule, now with two concrete instances behind it: **a probe touching a live register must save and
+restore every register the surrounding contract depends on, not just the one the author had in mind.** In this
+stub that means `%rax` (entry), `%rdi` (argc), `%rsi` (argv), `%rdx` (env), `%rcx` (apple) -- `syscall` clobbers
+`%rcx` and `%r11` regardless, and the other three are the ABI arguments the `jmp` consumes.
+
+The fix pushes and pops all five around the write. The measurement to confirm it is the same four values, and the
+expectation is now specific: `%rdi` should read **3** at the jump, `vchroot` should receive **3**, and it should
+proceed to `execv` rather than print usage.
