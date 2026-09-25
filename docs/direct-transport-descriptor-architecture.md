@@ -8800,3 +8800,43 @@ everything below it is proven unreached; the disagreement, if there is one, is i
 
 Boundary for the migration claim, unchanged and now on firmer ground: this is entirely inside dyld's entry stub,
 which no transport change touches. The plane, courier, urgent pool and Ring routing all run later or elsewhere.
+
+
+### 125. The C probes were never usable: libc is not initialised at dyld bootstrap
+
+§123 suspected the gate; the gate was not the whole problem. Making the probe unconditional still printed nothing,
+because the probe itself was still **libc**: `write`, `strlen`, `getenv` are the guest's libc, and dyld's bootstrap
+runs **before** any runtime that makes them work. The asm stub's raw `syscall` was the only probe in the set that
+could fire, and it did -- which is precisely the control that exposed the others.
+
+Rewriting the C probe as a **raw `syscall`** (fixed-length writes, no libc at all) immediately made it speak:
+
+```
+dyld-boot-ENTRY
+dyld-boot-AFTER_REBASE
+dyld-boot-AFTER_GUARD
+dyld-boot-AFTER_SIGEXC
+dyld-boot-AFTER_SUBSYS
+dyld-boot-BEFORE_MAIN        <- NOT printed
+```
+
+Five milestones, and the sixth is absent. That single change turned seven rounds of "the code is not reached"
+into a precise statement:
+
+**the death is between `_subsystem_init(apple)` and the `dyld::_main(...)` call.**
+
+What that rules out is more valuable than what it shows:
+
+* `rebaseDyld` completes -- so the image is correctly rebased at its load address;
+* `__guard_setup` completes;
+* **`sigexc_setup()` completes** -- and this is the step that mattered most, because `sigexc.c` is where the
+  signal-context transport routes (`interrupt_enter`/`interrupt_exit`, `sigprocess`) were wired to the urgent pool
+  and the management plane. It runs cleanly, so those migrations do not break the guest's earliest signal setup;
+* `_subsystem_init` completes.
+
+The remaining gap is one call and its argument setup (`appsMachHeader->getSlide()`), not any transport code.
+
+The method lesson is now the seventh instance in this cycle of the same class, and it is the one worth keeping:
+**a probe must be able to fire in the state it is probing for.** Five of those seven were probes whose silence was
+explained by the probe itself. The rule that fixes it: in pre-runtime code, print with a raw syscall and a fixed
+length -- no libc, no `getenv`, no stdio, no `strlen`.
