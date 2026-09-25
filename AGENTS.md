@@ -100,6 +100,22 @@ refs, PR drafts, and agent handoff.
   start` and inspect the recorded state. In `CODEX_CI` that contract refuses a
   direct launch before it can create nested test processes; `west-job` supplies
   the required explicit transport context.
+- Guest/runtime measurement has its own tooling; use it instead of ad-hoc shell.
+  The tools are `scripts/darling-boot-run.sh` (one measured run: clean start,
+  unique log, the workload's own duration, markers plus counters, cleanup, one
+  `VERDICT`), `scripts/darling-deploy-verify.sh` (sha256 over EVERY runtime copy
+  of a component), `scripts/darling-artifact-manifest.sh` (content baseline
+  without git history, and probe-tag presence), `scripts/darling-describe-artifact.sh`
+  (LC_MAIN, symbol and tag location, and whether the loaded copy is the built
+  file), `scripts/darling-trace-guest.sh` (what a short-lived guest process
+  actually maps), `scripts/darling-prefix-map.sh`, and `scripts/prefix-cleanup.sh`
+  (prefix-scoped, with the guest-process arm). The rules each one enforces and
+  the incidents behind them are in `docs/tooling.md` and the `darling-diagnostics`
+  skill; read them before instrumenting guest code. In particular: a probe must
+  be a single literal tag written in one syscall with every ABI register
+  preserved; the raw `syscall` number in a guest is LINUX-numbered (`write` is 1);
+  a silent probe is not evidence until its presence in the DEPLOYED artifact is
+  confirmed; and a run can be served by another prefix's live runtime.
 - Use `west patch verify|apply|clean|list` for local integration profiles.
 - Use `west darling-prefix-repair --prefix <prefix>` when guest tests report
   missing prefix prerequisites such as `private/var/tmp`, canonical
