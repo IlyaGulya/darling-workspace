@@ -11422,3 +11422,40 @@ that load, so the ordering is right by construction -- which points at the value
 Everything in the per-thread-socket class that this cycle set out to move is now measured working end to end: the
 loader's checkin is deferred and plane-serviced for both incarnations, the wake arrives, the slot-ownership race is
 fixed, the region lifetime is incarnation-safe, and no per-thread RPC socket is created.
+
+
+### 202. After the crash fix: both checkins, plane vchroot, and the root of the SECOND image
+
+The crash fix (section 200) plus the plane work moved the class to a new and much later barrier. What is fixed and
+measured now:
+
+* **no crash**: the crash probe reports nothing, where it used to report a SIGSEGV at `page->reply_seq` every run;
+* **every serviced request completes**: `requests=8 stores=8`, with `completion-mark B` and `reply-stored
+  readback=2 reply_seq=1` for the post-exec checkin;
+* **both incarnations' deferred checkins complete** with `status=0` and are observed by the guest;
+* **`Cannot open /usr/lib/dyld` disappeared** once the loader's vchroot query went over the plane: `path` in
+  `loader.c` was also **uninitialized**, so an image with no root built the unprefixed guest path (fixed), and the
+  plane gained `DSERVER_PROCESS_CONTROL_OP_VCHROOT_PATH 27u` -- an adapter that runs the ordinary `vchroot_path`
+  call, appends last per the standing rule, and is distinct from op 8, which is the **setter** (`setVchrootPath`
+  from a guest string) and answers `-EINVAL` for a zeroed query buffer. The architecture byte is part of that
+  envelope and must be `2` (x86_64), not `0` (`invalid`);
+* per-thread RPC socket creations are **0**; socket denials, urgent timeouts and courier misses are 0.
+
+What remains is no longer in the transport at all. The **second** image of the process starts with no root:
+
+```
+bootstrap-root root=/tmp/dr-on-matched/libexec/darling rootlen=34     (first image, from __mldr_DYLD_ROOT_PATH)
+bootstrap-root root=(null) rootlen=0                                  (second image)
+```
+
+and the server cannot answer for it either, because it answers from `process->vchrootPath()`, which is set by the
+**setter** (op 8) that the guest image issues later in its own startup -- asking earlier is asking a question whose
+answer does not exist yet. Two ways of carrying the root forward were tried and both fail for a measured reason:
+a loader **static** (its state is re-established per image: the page is created anew and the sequence counter
+restarts) and `setenv` (**the guest's environment is rebuilt** for the new image, so a value published by the loader
+does not reach it).
+
+So the root must be provided by whatever starts the second image, and finding that path -- the launcher's second
+`mldr` invocation, and where `__mldr_DYLD_ROOT_PATH` is set for the first -- is the next step. That is an ordering
+and provisioning question about the loader/launcher, not about the transport, and every transport item this cycle set
+out to move is measured working.
