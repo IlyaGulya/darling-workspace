@@ -10108,3 +10108,40 @@ retained as a synchronization mechanism.
 **What remains in this class:** the two per-thread socket creations are both `reason=checkin`; the concurrency
 gate `dar-gles` (`pthread_create` above ~50 live threads) is separate and unchanged. The next loop step is the
 checkin instances, then the acceptance sweep with the socket hatch ON.
+
+
+### 161. The §11 classification of every management handler, and the §9 mutation hatch
+
+Audited by source (server.cpp): 23 handlers, 21 of them synthesize a Call, and every one of those 21 substituted
+`call->header.tid = pid` -- a different number from the guest's tid. All 21 now take the thread from the transport
+envelope (18 management `planeTid`, 3 urgent `urgentTid`).
+
+| op | scope | servicing |
+|---|---|---|
+| `PTHREAD_CANCELED` | THREAD, target is the caller | **THREAD_DIRECT_SAFE**: direct on `Thread::pthreadCanceled`, no Call, no `doWork` |
+| `CHECKIN`, `CHECKOUT`, `ATTACH_LANE` | PROCESS / lifecycle | synthesized Call, envelope tid |
+| `SET_DYLD_INFO`, `SET_EXECUTABLE_PATH`, `VCHROOT` | PROCESS | synthesized Call, envelope tid |
+| `CONSOLE_OPEN`, `KQCHAN_MACH_PORT_OPEN` | PROCESS, descriptor-returning | synthesized Call, envelope tid; descriptor on the courier |
+| `MACH_PORT_ALLOCATE/EXTRACT_MEMBER/GUARD/INSERT_MEMBER/INSERT_RIGHT/MOD_REFS/TYPE/UNGUARD/CONSTRUCT/DESTRUCT/MOVE_MEMBER` | PROCESS (task port space) | synthesized Call, envelope tid |
+| `SEMAPHORE_SIGNAL`, `SEMAPHORE_SIGNAL_ALL` | PROCESS (IPC) | synthesized Call, envelope tid |
+| `PING` | PROCESS | direct, no Call |
+| urgent `INTERRUPT_ENTER/EXIT`, `SIGPROCESS` | THREAD | synthesized Call on the **publisher's** `urgent_tid[u]` |
+
+No op is `THREAD_REQUIRES_TARGET_EXECUTION` in the plane: nothing in it needs guest-thread execution, which is why
+none of them needed the lane. `pthread_canceled` is the only `THREAD_DIRECT_SAFE` and the only one whose target is
+the caller, and its direct servicing is deliberately NOT generalized.
+
+Three hand-rolled publishers (`execve.c` checkout, `fork.c` checkin, `dserver-ring.c` attach_lane) initially kept
+sending no identity, and every request they published was refused with `-ESRCH` -- measured immediately as
+`Failed to tell darlingserver about our dyld info`. That is the enforcement working: a request without an identity
+is refused rather than serviced against a guess. All three now publish the tid.
+
+One correction to the first implementation worth recording: the cancellation state was first synchronized INSIDE
+the shared duct-tape structure by adding a lock field, and that changed a struct several images link -- a stale
+consumer of a changed shared layout is silent memory corruption. The synchronization now lives in the server's
+`Thread` (`_cancelLock`, taken by `pthreadCanceled`, `pthreadMarkcancel` and `cancelStateSnapshot`), so the shared
+structure is untouched and the server owns its own concurrency.
+
+`DARLING_GUEST_PLANE_TID_MUTATE=1` is the §9 mutation: the guest publishes `gettid() + 7919` with an otherwise
+correct request. The server must answer `-ESRCH` and must not move the real thread's cancellation state; a tid
+owned by another process is refused and counted (`pthread_canceled-refused`).
