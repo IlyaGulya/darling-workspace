@@ -8973,3 +8973,41 @@ Counted honestly, this is the **tenth** instrument in this cycle corrected for t
 pattern is stable enough to state as a rule: an instrument must be (a) able to fire in the state it probes, and
 (b) actually part of the artifact under test. Four of the ten were libc-in-early-boot, and this one was
 linked-into-nothing.
+
+
+### 129. The probes in the image's own crt do not fire either -- so the jump does not land in it
+
+The asm probes were placed in `start.S` immediately before and after `call _main`, and the probe string is
+**verified present in the shipped binary** (`strings` finds `csu-call-main`, and the sha changed when they were
+added). The run prints none of them:
+
+```
+[csu-call-main] / [csu-main-ret]     0 lines
+[dyld-lnew]                          1 line      <- dyld's jump executed
+[shellspawn-step] main-entry         0 lines     <- the image's main never runs
+HELLO=0
+```
+
+So the image's own C runtime `start` does not execute either, and the boundary is now:
+
+| stage | status |
+|---|---|
+| dyld completes `_main`, all initializers, notify, LC_MAIN resolution | proven |
+| dyld executes `jmp *%rax` into the main image | **proven** |
+| the main image's crt `start` runs | **no** |
+| the main image's `main` runs | **no** |
+
+Combined with the earlier facts, that is a contradiction with any reading in which the resolved entry is the
+image's crt: if `jmp *%rax` landed in `start`, the probes in `start` would fire, and if it landed in `main`, the
+probe in `main` would fire. Neither does. The remaining explanation is the one thing not yet measured: **the value
+dyld resolved and jumped to is not the main image's crt entry at all.**
+
+That is a single measurement -- print `%rax` at `Lnew` before the jump, and compare it with the deployed
+`shellspawn`'s `LC_MAIN` entry resolved against the base the loader mapped it at -- and it is the next action. It
+is also the first point in this whole chain where the loader's and dyld's ideas of the image's address could
+disagree, which is exactly the class of defect the earlier `slide` handling (`entryPoint += slide`) makes
+plausible.
+
+For the directive's question, the boundary is now stated as tightly as the evidence allows: **every transport code
+path is outside this window**. The window is between dyld's jump and the image's crt, and it contains no RPC, no
+management plane, no courier and no Ring.
