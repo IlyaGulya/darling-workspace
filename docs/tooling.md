@@ -58,6 +58,15 @@ skill; this file is the durable index it points at.
    kind** in every component: a launchd tag without one cannot be lined up with a
    dylib probe that has one, so the thread whose `open-entry` has no
    `open-postcancel` cannot be confirmed as launchd's.
+   It must also be **per-thread, not per-frame**. An identity taken from the
+   address of the probe's own local buffer changes at every call, so it cannot
+   correlate a caller with a callee (`sys_open` and `sys_openat_nocancel` have
+   different frames), and "does this guest reach the syscall layer at all" becomes
+   unanswerable by identity. Use the TCB self-pointer (`%fs:0` on x86_64,
+   `%gs:0` on i386): per-thread, stable across the whole call chain, no syscall,
+   and no TLS runtime requirement. That is what made it possible to confirm that
+   launchd's thread prints its own seven tags and **no** probe from
+   `libsystem_kernel` at all after `CONSOLE_OPEN_BEGIN`.
 
 ## Why these exist
 
