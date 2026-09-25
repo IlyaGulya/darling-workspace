@@ -11208,3 +11208,46 @@ Everything else is measured: the deferred checkin is published after the process
 serviced and completed with status 0 within about a millisecond of its page registration; the guest's page and the
 server's region are the same file at service time by `(dev, ino)`; registration writes are visible both to the guest
 and to an outside reader; and per-thread RPC sockets are 0 with all four transport counters at 0.
+
+
+### 197. The completion stops between two statements, and the leading explanation is the same defect class already fixed in the loader
+
+Per-statement markers around the completion narrowed it to two statements:
+
+```
+request pid=3037247 op=2         (incarnation 1's checkin)
+checkin-reply seq=1 status=0
+completion-mark A op=2
+completion-mark B op=2
+reply-stored op=2 seq=1 readback=2 reply_seq=1 map=0x777d0fab6000 region_map=0x777d0fab6000   <-- incarn 1: complete
+
+request pid=3037247 op=2         (incarnation 2's checkin)
+checkin-reply seq=1 status=0
+completion-mark A op=2
+                                 <-- and nothing: no mark B, no store
+```
+
+and the timestamps put the whole server log inside **15 ms** -- `region passes=0` at 099.719507, `region passes=46`
+at 099.733532, `wake-received passes=48` at 099.734622, `request op=2` at 099.734643 -- after which the server emits
+**nothing at all** and, thirty seconds later, the launcher reports that shellspawn never became ready. So the second
+incarnation's checkin is **serviced promptly** (1.1 ms after its page registration) and the server then **stops
+inside the completion**, between two plain stores to shared memory.
+
+A plain store cannot block, and the address guard immediately above (`region.map != page`) had just passed, so the
+leading explanation is not the store: it is the **log line that precedes it**, `DarlingServer::Log ... << endLog`,
+whose output goes to the run log's pipe when `DSERVER_LOG_STDERR` is enabled -- and a blocking write on a full pipe
+is exactly the defect this work already found and fixed in its own loader diagnostic ("a diagnostic that takes a libc
+lock / blocks on a pipe is a diagnostic that changes what it measures"). The server is single-threaded, so a blocking
+write there stops servicing entirely: no further passes, no completions, and the boot dies at the launcher's deadline
+with the guest parked on a request that was already taken off the page.
+
+That fits every observation in this stretch, including the intermittency: how much the server logs, and how fast the
+reader drains the pipe, decide whether the write blocks, so the same build can complete a checkin on one run and stall
+on the next.
+
+The next step is therefore the same fix, applied to the server: its diagnostic logging must not be able to block -- a
+file sink, or a non-blocking/owned buffer -- and then the measurement is simply whether the second incarnation's
+checkin reaches `completion-mark B` and `reply-stored` while the guest observes `DONE`, and whether the boot passes
+the shellspawn deadline. The transport itself has been measured working at every layer: the page is one file at
+service time, the wake arrives, the request is serviced within about a millisecond, the slot ownership race is fixed,
+and per-thread RPC socket creations are 0.
