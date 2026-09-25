@@ -30,6 +30,7 @@ CMD="echo HELLO=1; echo FINAL=1"
 MARKERS=""
 HATCH=0
 LOG=""
+VERIFY_PROBES=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -38,6 +39,8 @@ while [ $# -gt 0 ]; do
 		--marker) MARKERS="$MARKERS $2"; shift 2 ;;
 		--cmd) CMD="$2"; shift 2 ;;
 		--hatch) HATCH=1; shift ;;
+		--verify-probe) VERIFY_PROBES="$VERIFY_PROBES
+$2"; shift 2 ;;
 		--log) LOG="$2"; shift 2 ;;
 		-h|--help) sed -n '2,22p' "$0"; exit 0 ;;
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -49,6 +52,7 @@ done
 [ -x "$PREFIX/bin/darling" ] || { echo "no launcher at $PREFIX/bin/darling" >&2; exit 2; }
 
 [ -n "$LOG" ] || LOG="/tmp/darling-boot-$(date +%H%M%S)-$$.log"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 # Enumerate prefix-owned processes. Two traps, both measured: a guest process's cmdline is the IN-GUEST path
 # and contains no prefix (so exe is the arm that finds it), and THIS SCRIPT's own cmdline contains the prefix when
@@ -99,6 +103,27 @@ if [ "$left" -gt 0 ]; then
 	exit 1
 fi
 echo "clean: 0 prefix-owned processes, starting"
+
+# A probe that is not in the artifact cannot fire, and a probe that is in the artifact but not in the log cannot
+# be concluded from either. Verify presence in the DEPLOYED copies first, so a silent run is never read as "the code
+# path is not taken" when the real cause is that the probe was compiled into a unit the image does not link.
+if [ -n "$VERIFY_PROBES" ]; then
+	echo "== probe presence in deployed artifacts =="
+	missing=0
+	echo "$VERIFY_PROBES" | while IFS= read -r t; do
+		[ -n "$t" ] || continue
+		if "$SCRIPT_DIR/darling-artifact-manifest.sh" --prefix "$PREFIX" --probe "$t" | grep -q "PRESENT"; then
+			"$SCRIPT_DIR/darling-artifact-manifest.sh" --prefix "$PREFIX" --probe "$t" | sed 's/^/  /'
+		else
+			echo "  $t: ABSENT FROM EVERY DEPLOYED ARTIFACT"
+			exit 3
+		fi
+	done || missing=$?
+	if [ "$missing" = 3 ]; then
+		echo "probe presence FAILED: a probe on this tag cannot fire (see above)" >&2
+		exit 1
+	fi
+fi
 
 echo "== run =="
 echo "log: $LOG"
