@@ -9374,3 +9374,38 @@ command line, the loader's stack construction, or the point where the wrapper is
 
 This also retires the "hard blocker" framing that had become tempting: the failure was not an unknowable dyld
 branch. It was a register clobbered by my own probe, and behind it a plain argument-plumbing defect.
+
+
+### 139. THE REAL ROOT: the guest's `argv` is empty, and the launch line that should fill it is known
+
+The barrier §138 found (`argc < 3` in `vchroot`) now has its cause, in the server's own code:
+
+```c
+/* darlingserver.cpp */
+execl(DarlingServer::Config::defaultMldrPath.data(),
+      "mldr!" LIBEXEC_PATH "/usr/libexec/darling/vchroot",   /* argv[0] for mldr: names the program to load */
+      "vchroot", prefix, initPath, NULL);                    /* the GUEST argv mldr must pass through */
+```
+
+So the server asks for: load `vchroot` and give **the guest** `argv = ["vchroot", prefix, initPath]`, i.e. `argc == 3`.
+`vchroot`'s own contract is `vchroot <dir> <binary>` -- `argv[1]` is the directory to chroot into and `argv[2]` is the
+program to `execv`. The guest instead sees `argc < 3`, prints usage, and returns. **That is why `shellspawn` never
+starts**: the wrapper is never told what to start.
+
+Two side-effects of the same fact explain observations that had been misread earlier:
+
+* `[mldr-ctl] image=vchroot` in the loader's diagnostics (§127 onward) came from `argv[0]` being the literal string
+  `"vchroot"` -- the loader's own "image" label, exactly as first assumed, and it was a symptom of the launch line,
+  not of the loaded image;
+* the loaded image really is `vchroot` (its `LC_MAIN entryoff` and symbol table match), which is correct -- the
+  wrapper is supposed to run and then `execv` the real program. Only its **arguments** are missing.
+
+This is the defect the directive predicted when it named "argv/env/stack/load_results modifications" as a bisect
+target for the loader. It is **not** a transport defect, it is not in dyld, and it is not in the entry address: the
+guest's argument vector is empty between `mldr` and the image it loads.
+
+The next measurement is correspondingly direct: print the guest `argc`/`argv[0..3]` as the loader builds them for
+this exact launch (`mldr ... vchroot <prefix> <initPath>`), and compare with what `stack.c` should have written.
+
+Recorded honestly: the previous eleven sections of localization were chasing a symptom of this, and the twelfth
+(a probe that clobbered `%rax`) actively obscured it.
