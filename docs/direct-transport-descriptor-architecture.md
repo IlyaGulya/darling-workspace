@@ -11093,3 +11093,37 @@ completion path never reached because the store itself is the thing in question)
 Everything else in the class remains measured: the loader's checkin is deferred, published through the plane, woken,
 serviced and completed with status 0 within about a millisecond of registration, with zero per-thread RPC sockets
 created and all four transport counters at 0.
+
+
+### 193. The class resolves to ONE missing completion store: the request is serviced and the store never runs
+
+The read-back instrument settles the contradiction of the previous sections, and it settles it in the only way that
+fits **one** shared page: the server's completions are stored and read back correctly, and the one that matters here
+never runs.
+
+```
+reply-stored pid=2996357 op=1 seq=2 readback=2 reply_seq=2 map=0x79692e5a8000 region_map=0x79692e5a8000
+reply-stored pid=2996357 op=4 seq=3 readback=2 ...     (and op=5, op=3, op=8, op=6, op=2 of the FIRST incarnation)
+                                                                  -- seven stores, every one read back as DONE(2)
+request pid=2996357 op=2 seq=1        <-- the SECOND incarnation's checkin, serviced
+                                      <-- and NO `reply-stored` line for it, anywhere in the run
+```
+
+with the totals over the same log: `requests=8  stored=7`. So the second incarnation's request **is** taken off the
+page and serviced, and the completion store that follows the servicing **does not happen**. The page then keeps
+`request_state=1 (PENDING) reply_state=0` for the rest of the run, the guest -- whose wait in this build has no
+timeout -- parks on it, and the launcher's thirty-second shellspawn deadline is what finally fails.
+
+This also explains every intermittent observation across sections 165-192 without further hypothesis: in the runs
+where the completion **did** store, the outside reader caught the page in exactly the answered state
+(`reply_state=2 reply_seq=1 request_state=0`, the `#0` sample of section 192), and in the runs where it did not, the
+same page stayed PENDING and the guest never returned. The transport, the identity (verified at service time), the
+wake, the ABI and the offset layout are all measured working; the request is even serviced. What is missing is the
+one store, and nothing between the servicing log and that store is conditional except control leaving the block --
+and the late-reply guard, which is the only `continue` there, prints when it fires and never printed.
+
+The next step is therefore exactly one instrument and then one fix: wrap the checkin dispatch in the servicing path
+so that an **exception** -- the only way control leaves that block silently in C++ -- is caught and logged with its
+`what()`, and fix whatever it reports for a **post-exec** incarnation (the one case that differs: the Process
+already exists, and the Thread named by the request's tid does not). That is a small, bounded change, and it is the
+only remaining item between this class and the directive's boot criterion.
