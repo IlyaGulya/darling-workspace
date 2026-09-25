@@ -10930,3 +10930,35 @@ what the loop does around it.
 Everything else in the class is unchanged and measured: deferred checkin, plane-serviced, woken, completed with
 status 0 within about 1.2 ms of page registration, zero per-thread RPC sockets created, four transport counters
 at 0.
+
+
+### 186. The primitive change: the process now cycles in `clock_nanosleep`, and the heartbeat still never prints
+
+The wait in the loader's reply loop was switched from `FUTEX_WAIT` on the page's word to `clock_nanosleep`, in the
+same position, keeping the futex wake as an optimisation whose loss costs latency only. Measured:
+
+```
+syscalls:   230 x48, 202 x1
+pc-where:   /usr/lib/x86_64-linux-gnu/libc.so.6+0xecb7a        (x48)  -- clock_nanosleep (230)
+pc-where:   <prefix>/usr/lib/system/libsystem_kernel.dylib+0x59209  (x1)  -- the one futex is a GUEST library frame
+parked:     230 0x1 0x0 0x7ffc5136ed80 0x0 0x75 0x0 ...        (x48)
+```
+
+So the process **does** cycle -- the wait it is in returns, and it returns 48 times out of 49 readings, which is what
+a polling loop looks like -- and it cycles for the ~27 s the tracer watches it. Two consequences:
+
+* the futex wait was not the only blocker: the same behaviour (no heartbeat, no completion line) survives its
+  removal, so the loop runs and the **prints inside it do not happen**, or the loop is a different loop;
+* the only futex left in the window is in `libsystem_kernel.dylib`, the **guest** library, waiting on the same
+  `page` word -- so the guest image's own code takes part in a plane wait, and "the loader's loop" and "the guest's
+  loop" are both live in the same process.
+
+`clock_nanosleep` is also what glibc's `nanosleep` issues, and the loader has a `nanosleep` in the slot-claim loop
+and in the bounded readiness wait, so the syscall number alone cannot say which of the three the samples caught --
+which is the same lesson as the pc: a shared wrapper is not an identity.
+
+The next instrument is therefore not another wait: it is an **unconditional stage counter** written to
+`MLDR_DIAG_LOG` (a number that advances at each step of the reply function, with no environment gate at all, since the
+gate itself was measured to be a hazard), so the last step the loader actually executed is readable instead of
+inferred from which prints appeared. That, and not a hypothesis about the wait, is what the next run needs to say
+whether the failure is after the loop or inside it.
