@@ -10853,3 +10853,39 @@ asked for a bounded wait at all, and whether the thread is the same one that pri
 What remains measured and clean is unchanged: the checkin is deferred, plane-serviced, woken, completed with status
 0 within about 1.2 ms of its page registration, with zero per-thread RPC sockets created and all four of the
 harness's transport counters at 0.
+
+
+### 184. The kernel is asked for a bounded wait on the right address, and the caller does not return from it
+
+`scripts/darling-trace-guest.sh` now prints the full `/proc/<pid>/syscall` line for a parked guest process, and for
+this run it is:
+
+```
+parked: 202 0x7e4a99736060 0x0 0x1 0x7ffef7553930 0x0 0x0 0x7ffef7553898 0x7e4a9952752d   (x47 of 48 readings)
+         nr  uaddr         op  val  timeout        uaddr2 val3  sp           pc
+```
+
+Read against the guest's own page identity (`page` base ...`6000`, `off=104` for `transport_ready`), `uaddr` is
+`page + 0x60` -- the page's `futex` word -- `op = 0` (`FUTEX_WAIT`), `val = 1` (the value the caller read), and the
+timeout is a stack pointer, exactly what the code passes:
+
+```c
+struct timespec ts = {0, claimed ? 2000000L : 1000000L};
+syscall(SYS_futex, &page->futex, FUTEX_WAIT, (int)seen, &ts, NULL, 0);
+```
+
+So the request reaching the kernel is a bounded wait on the right address with the right compare value, and the
+loader's own instrumentation prints `futex-wait BEGIN waited=1000 seen=1 timeout_ns=1000000` and **never**
+`futex-wait DONE` for the rest of the run. The same `sp` and `pc` appear across 47 samples, so the thread is not
+cycling through the loop.
+
+A `FUTEX_WAIT` with a valid relative timeout returning after that timeout is not a request a caller can observe as a
+hang, so the remaining question is **where the pc is**: `0x7e4a9952752d` resolves against the process's own maps to
+either the `mldr` image (and then this is the loop's wait, and the kernel is not doing what the arguments say) or to
+another image -- `libc` in particular, where a `futex` appears in mutex/condition waits and in `vsnprintf`'s own
+locking. The tracer already carries the process's maps; resolving that single address is the next measurement and it
+is one command, not another hypothesis.
+
+Everything else in the class remains as measured in section 183: deferred checkin, plane-serviced, woken, completed
+with status 0 within about 1.2 ms of page registration, zero per-thread RPC sockets, all four transport counters at
+0.

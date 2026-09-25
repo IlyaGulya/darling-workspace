@@ -141,9 +141,15 @@ def main():
             if info["cmdline"]:
                 rec["cmds"].add(info["cmdline"])
             if info.get("syscall"):
-                # keep the union, and count repeats: "the same syscall in every sample" is what says parked
+                # keep the union, and count repeats: "the same syscall in every sample" is what says parked.
+                # The FULL line is kept too, because the number alone says which syscall and not what it was
+                # asked to do -- and for futex the arguments (op, compare value, timespec pointer, stack
+                # pointer) are the whole question. MEASURED: a FUTEX_WAIT with a one-millisecond relative
+                # timeout that does not return cannot be diagnosed from the syscall NUMBER.
                 sc = info["syscall"].split(" ")[0]
                 rec["syscalls"][sc] = rec["syscalls"].get(sc, 0) + 1
+                rec.setdefault("syscall_full", {})
+                rec["syscall_full"][info["syscall"]] = rec["syscall_full"].get(info["syscall"], 0) + 1
             if info["exit_code"] != "":
                 rec["exit_code"] = info["exit_code"]
             rec["exe"] = info["exe"] if rec.get("exe", "<ENOENT>") == "<ENOENT>" else rec["exe"]
@@ -160,6 +166,9 @@ def main():
         if rec.get("syscalls"):
             tops = sorted(rec["syscalls"].items(), key=lambda kv: -kv[1])[:4]
             print("  syscalls: %s" % ", ".join("%s x%d" % (k, v) for k, v in tops))
+        if rec.get("syscall_full"):
+            for line, n in sorted(rec["syscall_full"].items(), key=lambda kv: -kv[1])[:2]:
+                print("  parked:   %s  (x%d)" % (line[:120], n))
         if rec["cmds"]:
             for c in sorted(rec["cmds"]):
                 print("  cmdline: %s" % c[:100])
