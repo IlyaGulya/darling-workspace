@@ -11155,3 +11155,56 @@ Everything measured before it stands: the plane's deferred checkin is published 
 serviced; the guest's page and the server's region are the same file at service time by `(dev, ino)`; registration
 writes (`futex`, `transport_ready`) are visible to an outside reader and to the guest; the first incarnation's whole
 sequence stores and reads back correctly; and per-thread RPC socket creations are 0.
+
+
+### 195. ROOT CAUSE FOUND: the slot state races, and the server's store leaves it stuck at DONE
+
+The completion store's sites were instrumented one by one, and the source showed what the runs could not: the
+server writes `page->request_state = DONE` on completion, **while the slot belongs to the publisher**. The guest's
+own `RELEASE` sets `IDLE`; the two race, and when the server's store wins, the slot stays at `DONE` **forever** --
+and the publisher's claim only accepted `IDLE`, so every later request was refused:
+
+```
+[mldr-ctl] seq=3 after-dyld pid=... status=-3 ready=1 image=vchroot
+Failed to tell darlingserver about our dyld info
+[release-drops-pending] site=mldr.c:1347          (the instrumentation added for a different question, firing here)
+```
+
+`-3` is this file's own "no mailbox slot" result, whose comment says the caller then falls back to its datagram
+route -- so one lost race silently moved every subsequent call to the legacy transport, and the boot's success or
+failure depended on that fallback.
+
+**The fix is a pair, and the pair matters.** Removing the server's store entirely broke the boot much worse (four log
+lines), so the store is needed; what is wrong is that the publisher could not reclaim a completed slot. The claim
+now accepts `DONE` as claimable as well as `IDLE`. The publisher reads its ANSWER from `reply_state`, never from this
+flag, so reusing a completed slot is exactly what "the publisher owns the slot until it has read its answer" already
+means.
+
+Measured after the pair:
+
+* `seq=3 after-dyld status=0` and `seq=4 after-execpath status=0` (both were `-3`);
+* the whole `seq=1..7` loader sequence completes on the plane, including `after-seed`;
+* `release-drops-pending` fires **zero** times;
+* no `Failed to tell darlingserver ...` line at all;
+* per-thread RPC socket creations remain **0**.
+
+### 196. What is left: one missing completion store, and the exception is thrown later than the wrap
+
+With the slot defect fixed, the remaining item is unchanged and precise: the second (post-exec) incarnation's checkin
+is **serviced** and its completion store never runs.
+
+```
+requests=8  stores=7        -- exactly one serviced request without a stored completion
+guest page: request_state=PENDING request_op=2 (CHECKIN) reply_state=0 reply_seq=0
+```
+
+The try/catch added around `Call::callFromMessage` in the checkin case logged **nothing**, so the dispatch itself does
+not throw; the wrap does not yet cover the rest of the block, which is where an exception can still leave it silently:
+`suppressReplyDelivery`, `noteServicedFromProcessControl` and **`doWork()`**. That is the next instrument -- the same
+try/catch around that remainder, naming `what()` -- and it is the last gap between this class and a boot that does not
+depend on the datagram fallback.
+
+Everything else is measured: the deferred checkin is published after the process-control establishment, woken,
+serviced and completed with status 0 within about a millisecond of its page registration; the guest's page and the
+server's region are the same file at service time by `(dev, ino)`; registration writes are visible both to the guest
+and to an outside reader; and per-thread RPC sockets are 0 with all four transport counters at 0.
