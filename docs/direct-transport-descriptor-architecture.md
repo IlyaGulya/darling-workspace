@@ -9554,3 +9554,39 @@ stub that means `%rax` (entry), `%rdi` (argc), `%rsi` (argv), `%rdx` (env), `%rc
 The fix pushes and pops all five around the write. The measurement to confirm it is the same four values, and the
 expectation is now specific: `%rdi` should read **3** at the jump, `vchroot` should receive **3**, and it should
 proceed to `execv` rather than print usage.
+
+
+### 144. The fix works: the launch chain is restored -- `vchroot` gets its arguments, `execv`s launchd
+
+With `%rdi` preserved, the same four-probe sequence changes completely:
+
+```
+[vchroot-argc]  0x0000000000000003        <- vchroot receives 3 (was 2)
+[vchroot-EXECV]                            <- it reaches the exec
+[mldr-guest-argv] argc=1 argv0=/sbin/launchd  <- and launchd is loaded
+usage lines: 0                             <- the argc<3 branch is no longer taken
+```
+
+So the entire launch chain the server asked for now happens: `mldr` loads `vchroot` with
+`["vchroot", /proc/self/fd/3, /sbin/launchd]`, `vchroot` chroots and `execv`s `/sbin/launchd`, and the loader is
+re-entered for launchd. **Two stages of the boot that never ran before now run.**
+
+The defect was never in the loader, dyld's entry arithmetic, the crt, `argv` construction, or any transport path: it
+was **my own probe clobbering `%rdi`** -- the register carrying `argc` -- exactly as §137's probe clobbered `%rax`.
+Two wrong results, both mine, both found by disassembling the artifact instead of re-running.
+
+The boot does not yet reach ready: launchd starts and shellspawn still does not become ready. That is now a
+**different** and genuinely later barrier -- inside the guest's init/daemon startup rather than in the argument
+handoff -- and it is the next thing to look at.
+
+Summary of where the chain stands, all measured:
+
+| stage | status |
+|---|---|
+| server requests `mldr vchroot <prefix> <launchd>` | yes |
+| loader writes correct guest `argv` (argc=3) | yes |
+| dyld entry stub, `dyldbootstrap::start`, `dyld::_main`, initializers | yes |
+| LC_MAIN resolution, `Lnew`, jump into the image | yes |
+| `vchroot` receives argc=3 and `execv`s launchd | **yes (fixed)** |
+| launchd loaded (`argv0=/sbin/launchd`) | **yes** |
+| shellspawn becomes ready | **no -- the remaining barrier** |
