@@ -11010,3 +11010,43 @@ doorbell**, and the loader has none at this point (`ring_doorbell_fd` is -1, so 
 courier byte). The courier byte is delivered and does produce a pass -- that was measured -- so the work is to find
 why a pass that is known to happen does not service this page promptly, with the pass counter and the region
 registration timestamps already in place as the instruments.
+
+
+### 191. The page read from outside: the two sides agree on (dev, ino) and the server's write is still not in the page
+
+One run, both hatches, the guest's page read from outside while it is parked:
+
+```
+guest incarnation 1: memfd=6 ino=14600984   server region #1: ino=14600984 dev=1     MATCH
+guest incarnation 2: memfd=7 ino=14605331   server region #2: ino=14605331 dev=1     MATCH
+server services incarnation 2:  request op=2 seq=1 ... checkin-reply seq=1           (1.2 ms)
+page read from outside at incarnation 2's address:
+  4 (request_state) = 1 (PENDING)   48 (reply_state) = 0
+  56 (reply_seq) = 0                64/68 (reply_payload[0..1]) = 0/0
+  96 (futex) = 1                    104 (transport_ready) = 1
+```
+
+and the server's own two-way marker -- `reply_payload[1] = 0xF00DF00D` written through the same mapping immediately
+before the state store, under the courier hatch -- **never appears in that page**. In another run of the same build
+the same address first read `reply_state=2 (DONE) reply_seq=1 request_state=0 (IDLE)` for one sample and then the
+PENDING state above for the rest, which is the two-memfd-at-one-address situation (the first incarnation's page,
+already answered and released, then the second incarnation's page at the same virtual address).
+
+So the state of this question is now a pair of facts that cannot both hold under the model so far:
+
+* the guest and the server hold descriptors whose `(dev, ino)` are equal, which was believed to mean one file;
+* the server services the request and writes its completion (and a marker) into "the page", and the guest's page --
+  read from outside, with the offsets taken from the header -- does not contain it.
+
+The halves of this that the instruments can settle in one run each, and which is therefore the next step:
+
+1. **guest to outside**: the guest writes a value at a known offset and the outside reader must see it. This proves
+   the outside reader is reading the guest's live page at all, and not a stale/private copy.
+2. **server to guest**: the server reads back a value the guest wrote (it already logs the request payloads, so the
+   guest can put a marker in `request_payload[3]`, which the `request` line prints) -- this proves the descriptor
+   the server mapped is the guest's page in the direction that matters, before any conclusion is drawn about the
+   other direction.
+
+Between them, the question "same memory or not" is answered by measurement rather than by an identity that two
+mount namespaces can defeat. Everything else in the class is unchanged: the move is implemented, the plane services
+the deferred checkin promptly with status 0, and per-thread RPC socket creations are 0.
