@@ -10229,3 +10229,33 @@ dd2e792a3372c4dc  emulation/.../process/fork.c                                  
 Diagnostic hatches added by this work: `DARLING_GUEST_PLANE_TID_MUTATE` (wrong-tid mutation, section 9) and the
 server's `process-control-version` refusal log; the existing `DARLING_SERVER_COURIER_LOG=1` needs
 `DSERVER_LOG_STDERR=true` as well for its lines to reach the run log.
+
+
+### 164. The identity enforcement, proven in both directions
+
+Run with `DARLING_GUEST_PLANE_TID_MUTATE=1` (the guest publishes `gettid() + 7919` with an otherwise correct
+request), server logging enabled:
+
+```
+pthread_canceled-direct pid=2587768 request_tid=2595687 ... status=-3    (x82, every one)
+delta = 7919                                                           (exactly the injected mutation)
+VERDICT: PASS    HELLO=1   FINAL=1
+```
+
+`-3` is `-ESRCH`: the request was **refused**, not serviced, and because the refusal happens before any state
+transition the real thread's cancellation bits were not touched. The boot still completes, because the guest treats
+a negative status as an error and `CANCELATION_POINT` then proceeds (`ret != 0`), which is the correct outcome for
+"the plane could not answer". Compare with the unmutated run: 82 lines, **all `status=-22`** (`-EINVAL`, XNU's
+normal "no cancellation pending"), so the two directions are distinguishable in the same instrument.
+
+That closes the acceptance set the directive named:
+
+| item | result |
+|---|---|
+| no `Thread has both a pending call and a pending continuation` | 0 occurrences, and it was the boot barrier before |
+| `pthread_canceled` direct-plane observed | 82 servicings, with distinct `request_tid` values for one pid (two threads), which `tid = pid` could never express |
+| correct `request_tid` observed | yes; wrong `request_tid` refused with `-ESRCH` and no state change |
+| urgent timeouts = 0 | 0 |
+| courier misses = 0 | 0 |
+| launchd past the barrier | `JOBMGR_INIT_DONE` -> `BOOTSTRAPPER_SCHEDULED` -> `NETWORKING_DONE`, shellspawn ready, guest command executed |
+| remaining per-thread sockets | 2, `reason=checkin`, shown in section 163 to be an ordering incompatibility with one untried option |
