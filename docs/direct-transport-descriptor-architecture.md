@@ -8883,3 +8883,58 @@ What this buys, stated as the boundary that moved:
 
 The transport work is untouched by anything in that sequence -- and `sigexc_setup`, the one step that does touch
 signal-context transport, is measured **passing**.
+
+
+### 127. The handoff HAPPENS: the barrier is inside the main image, before its `main`
+
+The last instruction before the main image's code runs was instrumented in the LC_MAIN branch of `__dyld_start`,
+and it fires:
+
+```
+dyld-ENTRY -> INIT_BEGIN -> INIT_END -> AFTER_NOTIFY -> LC_MAIN_RESOLVED
+[dyld-lnew]                                     <- the LC_MAIN branch, immediately before jmp *%rax
+main-entry:  0
+HELLO:       0
+```
+
+So dyld takes the LC_MAIN path and **executes the jump** into the main image. The chain is now proven end to end on
+dyld's side:
+
+```asm
+Lnew:
+	addq	$16,%rsp
+	pushq	%rdi		# return address into _start in libdyld
+	movq	8(%rbp),%rdi	# argc
+	leaq	16(%rbp),%rsi	# &argv[0]
+	leaq	0x8(%rsi,%rdi,8),%rdx
+	movq	%rdx,%rcx
+Lapple:	movq	(%rcx),%r8
+	add	$8,%rcx
+	testq	%r8,%r8
+	jne	Lapple
+	[probe]                 # FIRES
+	jmp	*%rax		# jump to main(argc,argv,env,apple)
+```
+
+Everything upstream is accounted for and successful; nothing in the transport work appears anywhere in the
+sequence. The remaining question is therefore inside the **main image**, between its `_start` and its `main`.
+
+One caveat recorded against my own instrument, because it changes how much the `main-entry: 0` line proves:
+`main-entry` is a `fprintf` -- **libc**. Unlike dyld's bootstrap, the main image reaches `main` only *after* crt has
+run `__libc_start_main`, so libc **is** initialised by then and the print should work; but that is a reason to
+believe the negative, not a measurement of it. The instrument to trust here is a raw syscall, placed in the main
+image's `_start`/crt and at the top of `main`, which is the next measurement.
+
+Boundary, and this is the important part for the directive's question:
+
+| stage | status |
+|---|---|
+| loader reaches handoff | proven (§122 probe) |
+| dyld entry stub executes | proven (raw syscall, §124) |
+| `rebaseDyld`, guard, **`sigexc_setup`**, subsystem init | proven (§125) |
+| `dyld::_main` entry, **all initializers**, notify, LC_MAIN resolve | proven (§126) |
+| LC_MAIN branch and `jmp *%rax` into the main image | **proven (§127)** |
+| main image's `_start` → `main` | **not reached -- the remaining defect** |
+
+Every transport-code path the migration work touches is either later than this or absent from it, and
+`sigexc_setup` -- the one early step that does carry signal-context transport routes -- is measured passing.
