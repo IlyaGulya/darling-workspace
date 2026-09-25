@@ -11336,3 +11336,50 @@ lands inside the completion's window is a race, so the same build completes a ch
 next. All the layers measured before it stand: the request is serviced within about a millisecond of its page
 registration, the page is one file by `(dev, ino)` read at service time, the wake byte arrives, the slot-ownership
 race is fixed, and per-thread RPC socket creations are 0.
+
+
+### 200. THE ROOT CAUSE, IN CODE: the outgoing incarnation's destructor destroys the incoming one's page
+
+The crash address identified the store; the source identifies why it writes into unmapped memory:
+
+```
+process.cpp:916      Server::sharedInstance()._closeFdCourierForPid(id());      // Process destructor
+server.cpp:2586      void DarlingServer::Server::_closeFdCourierForPid(pid_t pid)
+server.cpp:2629      // perf#30 PROCESS-CONTROL PLANE: the page belongs to the incarnation, so it goes with it.
+server.cpp:2630      auto control = _processControl.find(pid);
+server.cpp:2632          if (control->second.map) { munmap(control->second.map, control->second.size); }
+server.cpp:2635          if (control->second.fd >= 0) { close(control->second.fd); }
+server.cpp:2638          _processControl.erase(control);
+```
+
+The comment says the page belongs to the **incarnation**, and the lookup keys it by **pid**. `_processControl` is
+`std::unordered_map<pid_t, ProcessControlRegion>` and `ProcessControlRegion` carries no incarnation identity at all
+(mapping, size, counters). So when an `execve` starts a new incarnation, the **outgoing** Process is destroyed, its
+destructor calls `_closeFdCourierForPid(pid)`, and that function **unmaps and erases the page the incoming
+incarnation has already registered** -- because the pid is the same. The completion for the incoming incarnation's
+checkin, which is running in the same thread after a nested pump, then stores `page->reply_seq` at a mapping the
+server destroyed a moment earlier: **SIGSEGV at offset 56**, measured, twice, with the fault address landing exactly
+on the new region's page (`region passes=46 page=0x70bdd2c14000`, fault `0x70bdd2c14038`).
+
+That is the root cause of the whole class, and it explains every observation that resisted explanation:
+
+* the crash is only for the **post-exec** incarnation -- the first incarnation's Process is not torn down in the
+  middle of its own checkin;
+* the request is **serviced** and the completion **never lands** -- the store faults, so the server dies and the
+  guest waits on a page nobody will answer;
+* the intermittency that defeated every earlier hypothesis is the ordering of a destructor against a completion;
+* and the "second incarnation stops" narrative of sections 165-190 was this, seen through instruments that could not
+  observe a silent death.
+
+Both changes made in section 199 are still right and stay -- the servicing loop's fields are copied into locals, and
+the old mapping is not unmapped on re-registration -- but neither can help when the mapping is destroyed by a path
+that does not go through the re-registration at all.
+
+The fix belongs at this site and is small: the region must carry the **incarnation** it belongs to (the courier
+envelope's `process_generation`, already logged as `gen=` at registration), `Process` must supply its own generation
+when it closes the courier for its pid, and the erase must happen only when the stored generation is the dying one.
+An incarnation that is not current must not take another incarnation's page with it.
+
+Everything else measured this cycle stands: the deferred checkin is published after establishment, woken, and
+serviced within about a millisecond of the page's registration; the page is one file by `(dev, ino)` read at service
+time; the wake byte arrives; the slot-ownership race is fixed; and per-thread RPC socket creations are 0.
