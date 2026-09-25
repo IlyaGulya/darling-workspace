@@ -10554,3 +10554,32 @@ The measurement to take first is cheap and belongs on the server: count the pass
 region is registered. If that count is zero the wake is the cause and the doorbell option is required; if it is
 non-zero then a pass ran and did not see the request, which points at the page the guest published into rather than
 at the wake.
+
+
+### 175. CORRECTION: the plane delivers the second incarnation's checkin; the SERVER does not complete it
+
+Section 174 concluded that the server never sees the second incarnation's request. The pass counter, made visible
+at registration and in the servicing loop, corrects that conclusion with the run's own line order:
+
+```
+711: region pid=2681946     passes=46    size=528 page=0x7a6d4e74a000 ...   (the second incarnation's page)
+714: sees-pending pid=2681946 op=2 seq=1 reply_state=0 transport_ready=1   (pass 49)
+715: request      pid=2681946 op=2 ...                                     (the last line of the log)
+```
+
+So the server registered the second page at pass 46, saw the request at pass 49, and **took it** -- and that take is
+the final line of the entire log. Nothing follows it: the servicing of a checkin for a POST-EXEC incarnation begins
+and does not complete inside the window.
+
+That makes the barrier concrete and different from the previous three sections: the transport works, the wake works,
+the slot works, the identity works; the semantic servicing of a re-checkin for a process whose pid already exists
+under a new incarnation does not finish. It also explains every earlier observation without contradiction -- the
+guest publishes, enters its reply loop with the slot PENDING, never reads a reply, and its `state=0`-at-timeout
+reading in section 172 was the `IDLE` written by a RELEASE on a DIFFERENT page than the one the instrument read,
+which is what that section already suspected but could not separate.
+
+The next instrument is therefore inside the checkin handler and not around it: after `request op=2` is logged, the
+handler resolves the descriptor bundle (absent here, the token is 0), builds the checkin message, dispatches it, and
+publishes the completion. A line after each of those stages -- dispatch entered, dispatch returned, completion
+written -- says which one does not return, and the same handler's comments already name the two things that differ
+for a re-checkin: the Process already exists, and the Thread for `request_payload[1]`'s tid does not.
