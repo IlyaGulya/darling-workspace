@@ -9718,3 +9718,58 @@ The next probe set is inside exactly that block (`pid1_magic` entry, `pid1_magic
 For the directive: this is the guest's service manager failing during its own startup. There is no RPC, no
 management plane, no courier and no Ring anywhere in this window; the per-thread RPC socket count on every path
 exercised remains zero with the hatch on and off.
+
+
+### 148. Tooling assessment: what made this investigation expensive, and the tools that remove it
+
+The question asked mid-cycle was whether the tooling is adequate for this kind of work. Measured against one
+investigation cycle, it is not, and the cost is quantifiable. Twelve probes produced **silence or a wrong result**,
+and every one of them had one of four causes:
+
+| cause | instances | what it cost |
+|---|---|---|
+| the probe needed a runtime that was not up (libc `write`/`strlen`/`getenv` in dyld's bootstrap) | 4 | each looked like "the code is not reached" |
+| the probe was not in the artifact (compiled into `crt.c`, while the image links `start.S`) | 1 | a whole round of conclusions about a file nothing runs |
+| the probe measured the wrong end (inserted after `return`, so it measured the comeback) | 1 | a false negative about `_main` |
+| **the probe modified what it measured** (`%rax` -> `jmp 1`; `%rdi` -> `argc` 2 instead of 3) | 2 | **wrong results**, and the second one *was* the boot failure being investigated |
+
+Separately, four operational sinks: launching without shutting down the previous server (a reused server gave a
+one-line log that was briefly read as data); 893 stale guest processes accumulating because cleanup matched
+`/proc/<pid>/cmdline`, which for a guest process is the IN-GUEST path and contains no prefix; two runs writing one
+log path and truncating each other; and reading a diagnostic line as a verdict when the verdict only exists after
+the workload's own completion.
+
+Three tools were added, each aimed at one group of those causes, and each verified by running it:
+
+**`scripts/guest-probe.h`** -- a probe that cannot make the mistakes above. It writes with a raw syscall (works
+before any runtime), uses a **single literal tag** so `strings <artifact> | grep <tag>` is a valid presence check,
+and offers `DARLING_PROBE_SAVED` which preserves `%rax/%rdi/%rsi/%rdx` in addition to the `%rcx/%r11` that `syscall`
+clobbers by definition. The register rule is stated where it will be read, with the two concrete incidents named.
+
+**`scripts/darling-deploy-verify.sh`** -- installs a component into **every** runtime path and compares sha256 of
+the built file against each deployed copy, failing on any mismatch. It exists because "the loader loads dyld from
+`INSTALL_PREFIX/libexec/usr/lib/dyld`" and "several components have two copies" are silent traps: a deploy to the
+obvious path keeps the run on the old file. Verified output for all seven components:
+
+```
+mldr: ok f1fb700a563925eb  libexec/darling/usr/libexec/darling/mldr
+mldr: ok f1fb700a563925eb  usr/libexec/darling/mldr
+dyld: ok bf8e346641acd4b1  usr/lib/dyld
+...  (all copies of all components verified)
+```
+
+**`scripts/darling-boot-run.sh`** -- one measured run with the hygiene a measurement needs: shutdown, then kill
+every prefix-owned process by `/proc/<pid>/exe` **and** `cmdline`, prove zero remains, use a **unique** log path,
+wait the workload's own duration, then print a single VERDICT block with the markers the caller asked for plus the
+counters that matter here (socket creations, denials, urgent timeouts, courier misses), and clean up afterwards
+with a non-zero exit if the prefix is not clean.
+
+Two working rules also came out of this and belong in any runbook for this codebase:
+
+* **disassemble the artifact before believing a probe.** Both wrong-result defects (the `%rax` clobber that made
+  `jmp *%rax` jump to 1, and the `%rdi` clobber that made `argc` 2) were found with `llvm-objdump`/`llvm-nm` on
+  the shipped binary, not by another run. A probe's presence, its position relative to the code it measures, and
+  the registers it touches are all visible there and nowhere else.
+* **decide with content, not with names.** A sha256 manifest per component, an `exe`-based process match, and a
+  log path owned by one run are all instances of the same rule; every one of them replaced a silent failure with a
+  loud one.
