@@ -45,17 +45,47 @@ fi
 
 # Enumerate prefix-owned processes by exe first, then by cmdline. Both are needed: exe catches guest
 # processes whose cmdline is an in-guest path, and cmdline catches a process whose exe is unreadable.
+# Three arms, all three measured as necessary:
+#
+#   exe      catches a process launched from a prefix path.
+#   cmdline  catches a process that names the prefix in its arguments.
+#   comm+maps catches a GUEST process, and it is the arm that was missing. Measured for a live guest
+#            process: comm is "mldr", cmdline is EMPTY (not merely an in-guest path, so the cmdline arm
+#            cannot see it), and /proc/<pid>/exe fails with ENOENT -- the image file is gone (unlinked or
+#            memfd), so the exe arm cannot see it either. Its `maps` IS readable and names the prefix,
+#            which is what makes it identifiable at all. Both conditions are required together, so a
+#            same-named host process cannot be caught by the name alone.
+GUEST_COMMS="mldr launchd vchroot shellspawn"
+
+# SELF_NAME guard: this script is invoked WITH --prefix, so its own cmdline (and its pipeline subshells',
+# which have different PIDs and the same cmdline) contains the prefix and would match the cmdline arm --
+# the loop would kill the loop doing the killing. Measured: without this, a dry run proposed to stop its own
+# shell. The guard is on the name, not on the PID, because a subshell's PID differs but its cmdline does not.
+SELF_NAME=${0##*/}
+SELF_PID=$$
+
 owned_pids() {
 	for d in /proc/[0-9]*; do
 		pid=${d#/proc/}
+		[ "$pid" = "$SELF_PID" ] && continue
+		[ "$pid" = "$PPID" ] && continue
 		exe=$(readlink "$d/exe" 2>/dev/null)
 		case "$exe" in
 			"$PREFIX"|"$PREFIX"/*) echo "$pid"; continue ;;
 		esac
 		cmd=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)
+		case "$cmd" in *"$SELF_NAME"*) continue ;; esac
 		case "$cmd" in
-			*"$PREFIX"*) echo "$pid" ;;
+			*"$PREFIX"*) echo "$pid"; continue ;;
 		esac
+		comm=$(cat "$d/comm" 2>/dev/null)
+		case " $GUEST_COMMS " in
+			*" $comm "*) ;;
+			*) continue ;;
+		esac
+		if grep -q -- "$PREFIX" "$d/maps" 2>/dev/null; then
+			echo "$pid"
+		fi
 	done
 }
 
