@@ -9190,3 +9190,35 @@ is exact and small: read the bytes at the entry address from inside the process 
 For the directive: every stage of this is **outside** the transport work -- it is the loader→dyld→image address
 agreement. The socket-disabled migrations are measured quiet with hatch ON and OFF, and the per-thread RPC UDS is
 unreachable on every path actually exercised.
+
+
+### 134. The address arithmetic is right -- so the code at the entry address does not execute
+
+Parsing the two images settles the address question and narrows the remaining hypothesis:
+
+```
+vchroot:    __TEXT vmaddr=0x100000000 fileoff=0x0 filesize=0x1000   LC_MAIN entryoff=0xb30
+shellspawn: __TEXT vmaddr=0x100000000 fileoff=0x0 filesize=0x4000   LC_MAIN entryoff=0x13a0
+```
+
+Two facts worth stating because they are the kind of thing that silently invalidates reasoning:
+
+* `__TEXT.vmaddr` is `0x100000000`, **not 0**. `getEntryFromLC_MAIN` computes `entryoff + (char*)fMachOData` -- a
+  rule that is only correct when the image's first segment is mapped at 0. With `fileoff = 0`, the arithmetic
+  happens to agree anyway (runtime address = `vmaddr + (entryoff - fileoff)` with zero slide), so `0x100000c60`
+  **is** the right address for that build. The rule is fragile, not wrong here.
+* The `entryoff` measured in an earlier run (`0xc60`) differs from the `entryoff` in the binary now deployed
+  (`0xb30`), because `vchroot.c` was rebuilt with the probe. The two are consistent: the run resolved the address
+  of the binary that was deployed at that moment.
+
+So: the entry address is correct, dyld's `jmp *%rax` is proven executed, the target is inside `__TEXT`, and neither
+the crt nor `main` of that image runs while the process ends 0. The remaining explanations are narrow:
+
+1. a **fault at the jump target** whose delivery ends the process as success -- and `sigexc_setup`/`sigprocess` are
+   the machinery that would carry it, which are in scope for this cycle's transport work;
+2. the jump landing on bytes that return, with `%rax` not being the entry after all;
+3. the image being unmapped or remapped between `getEntryFromLC_MAIN` and the jump.
+
+Hypothesis 1 is the one that would connect this back to the migrations, which is exactly why it must be measured
+rather than assumed. The test is a run with the guest's lane/signal diagnostics and the server's stderr enabled,
+looking for any fault, signal delivery, or `sigprocess`/`sigexc` activity at that point in the sequence.
