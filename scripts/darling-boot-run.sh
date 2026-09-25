@@ -49,12 +49,27 @@ done
 
 [ -n "$LOG" ] || LOG="/tmp/darling-boot-$(date +%H%M%S)-$$.log"
 
+# Enumerate prefix-owned processes. Two traps, both measured: a guest process's cmdline is the IN-GUEST path
+# and contains no prefix (so exe is the arm that finds it), and THIS SCRIPT's own cmdline contains the prefix when
+# it is invoked with --prefix <that prefix> (so the self and the parent must be excluded, or the harness kills
+# itself -- the same class of defect as a probe that modifies what it measures).
+SELF_NAME=${0##*/}
+
 owned_pids() {
+	self=$$
+	parent=$PPID
 	for d in /proc/[0-9]*; do
 		pid=${d#/proc/}
+		[ "$pid" = "$self" ] && continue
+		[ "$pid" = "$parent" ] && continue
 		exe=$(readlink "$d/exe" 2>/dev/null)
 		case "$exe" in "$PREFIX"|"$PREFIX"/*) echo "$pid"; continue ;; esac
-		cmd=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)
+		cmd=$(tr "\0" " " < "$d/cmdline" 2>/dev/null)
+		# The cmdline arm must NOT match this script or its pipeline subshells: they are invoked WITH --prefix,
+		# so their own cmdline contains the prefix, and a `kill` loop then kills the very loop doing the killing
+		# ("Killed" printed by the script itself). A subshell has a different PID but the same cmdline, so the
+		# guard is on the script name, not on the PID.
+		case "$cmd" in *"$SELF_NAME"*) continue ;; esac
 		case "$cmd" in *"$PREFIX"*) echo "$pid" ;; esac
 	done
 }
@@ -64,11 +79,21 @@ echo "== clean start =="
 DPREFIX="$PREFIX" DARLING_PREFIX="$PREFIX" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
 	"$PREFIX/bin/darling" --rootless shutdown >/dev/null 2>&1
 sleep 3
+# Kill, then SETTLE: a process that has just been signalled is still enumerable for a moment (and a zombie whose
+# parent has not reaped it stays visible). Declaring failure on the first count produced a false failure the first
+# time this script was used -- so re-check in bounded rounds instead of racing the kernel.
 owned_pids | while read -r pid; do kill -9 "$pid" 2>/dev/null; done
-sleep 3
-left=$(count_owned)
+left=1
+i=0
+while [ "$i" -lt 10 ]; do
+	sleep 2
+	left=$(count_owned)
+	[ "$left" -eq 0 ] && break
+	owned_pids | while read -r pid; do kill -9 "$pid" 2>/dev/null; done
+	i=$((i + 1))
+done
 if [ "$left" -gt 0 ]; then
-	echo "clean start FAILED: $left prefix-owned processes remain" >&2
+	echo "clean start FAILED: $left prefix-owned processes remain after $i settle rounds" >&2
 	owned_pids | head -5 >&2
 	exit 1
 fi
@@ -111,8 +136,15 @@ DPREFIX="$PREFIX" DARLING_PREFIX="$PREFIX" DARLING_ROOTLESS=1 DARLING_NOOVERLAYF
 	"$PREFIX/bin/darling" --rootless shutdown >/dev/null 2>&1
 sleep 3
 owned_pids | while read -r pid; do kill -9 "$pid" 2>/dev/null; done
-sleep 3
-final=$(count_owned)
+final=1
+i=0
+while [ "$i" -lt 10 ]; do
+	sleep 2
+	final=$(count_owned)
+	[ "$final" -eq 0 ] && break
+	owned_pids | while read -r pid; do kill -9 "$pid" 2>/dev/null; done
+	i=$((i + 1))
+done
 mounts=$(mount 2>/dev/null | grep -c "$PREFIX")
 echo "prefix processes after: $final, mounts: $mounts"
 if [ "$final" -gt 0 ] || [ "$mounts" -gt 0 ]; then
