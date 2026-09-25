@@ -10889,3 +10889,44 @@ is one command, not another hypothesis.
 Everything else in the class remains as measured in section 183: deferred checkin, plane-serviced, woken, completed
 with status 0 within about 1.2 ms of page registration, zero per-thread RPC sockets, all four transport counters at
 0.
+
+
+### 185. The timespec the kernel is handed is exactly one millisecond, read from the process's own memory
+
+Three more instrument repairs, each found by using the tool, and then a result that is no longer a hypothesis:
+
+* resolving the parked `pc` needed the **raw** maps lines -- the tool kept only mapping paths, so the first version
+  of the resolution silently did nothing;
+* the resolution also read the `sp` instead of the `pc` (`parts[-2]` instead of `parts[-1]`), which resolves into
+  the stack, an anonymous mapping the filter skips;
+* the timespec behind `arg3` is now read from `/proc/<pid>/mem` while the process is parked, which is the only field
+  that separates "the kernel was asked for a millisecond and did not honour it" from "the caller passed something
+  else" -- and the reader had to use the pid directory rather than a variable that only exists in the sampling
+  function.
+
+With those fixed, the parked state of the second incarnation is fully described:
+
+```
+parked:      202 0x7f60f5f2b060 0x0 0x1 0x7ffc5ad0b620 0x0 0x0 0x7ffc5ad0b588 0x7f60f5d2752d   (x48)
+timeout-arg: sec=0 nsec=1000000                                                              (x48)
+pc-where:    /usr/lib/x86_64-linux-gnu/libc.so.6+0x12752d
+cmdline:     <prefix>/libexec/darling/usr/libexec/darling/mldr!<prefix>/sbin/launchd /sbin/la...
+maps:        <prefix>/libexec/darling/usr/libexec/darling/mldr, <prefix>/sbin/launchd
+```
+
+So: `uaddr` is the page's `futex` word, `op` is `FUTEX_WAIT`, the compare value is 1 -- the value the caller read --
+the timeout **as the kernel reads it** is `{0, 1000000}` (one millisecond, relative), and the wait does not return
+for the whole observation window (~27 s of samples). The `pc` is libc's `syscall` wrapper, which every `syscall()`
+call shares and which therefore cannot distinguish this wait from any other.
+
+A `FUTEX_WAIT` with a valid one-millisecond relative timeout that does not expire is not something the caller can
+cause from the arguments, and the arguments are now measured rather than assumed. The next experiment is therefore a
+change of **primitive**, not another reading: the loop's wait moves off `page->futex` onto something the kernel can
+always time out on its own -- `clock_nanosleep` for the polling case, with the futex kept only as an optimisation
+where a wake demonstrably arrives. If the loader resumes with `clock_nanosleep` in the same position, the anomaly is
+the shared-word wait and the fix is exactly that; if it does not, the wait was never the blocker and the fault is in
+what the loop does around it.
+
+Everything else in the class is unchanged and measured: deferred checkin, plane-serviced, woken, completed with
+status 0 within about 1.2 ms of page registration, zero per-thread RPC sockets created, four transport counters
+at 0.

@@ -77,6 +77,10 @@ def sample(pids_of_interest):
             "syscall": read(d + "/syscall") or "",
             "exe": os.readlink(d + "/exe") if os.path.exists(d + "/exe") else "<ENOENT>",
             "maps": maps,
+            # the RAW lines as well: the ranges are what a pc is resolved against, and a set of paths cannot
+            # answer "which file is this address in" (measured: the first version of this resolution silently
+            # did nothing because only the paths were kept).
+            "maps_raw": raw or "",
             "state": fields[0] if fields else "?",
             "exit_code": fields[50] if len(fields) > 50 else "",
         }
@@ -140,7 +144,52 @@ def main():
             rec["states"].append(info["state"])
             if info["cmdline"]:
                 rec["cmds"].add(info["cmdline"])
+            # Resolve the parked pc against THIS sample's maps: an address is meaningless across runs (ASLR) and
+            # "the wait is in libc" versus "the wait is in the loader" is the whole remaining question, so the
+            # answer has to be produced where the maps are still readable.
             if info.get("syscall"):
+                parts = info["syscall"].split(" ")
+                if len(parts) >= 9:
+                    try:
+                        pc = int(parts[-1], 16)  # the LAST field is the pc; parts[-2] is the sp (stack, anonymous)
+                    except ValueError:
+                        pc = None
+                    # READ THE ARGUMENTS THE KERNEL WAS HANDED, not just their addresses. A FUTEX_WAIT with a
+                    # one-millisecond relative timeout that does not return cannot be diagnosed from the call
+                    # itself -- the timeout POINTER is what the kernel reads, and /proc/<pid>/mem holds the
+                    # bytes. MEASURED: this is the only field that separates "the kernel was asked for one
+                    # millisecond and did not honour it" from "the caller passed something else".
+                    if len(parts) >= 5:
+                        try:
+                            tmo = int(parts[4], 16)
+                        except ValueError:
+                            tmo = 0
+                        if tmo > 0x10000:
+                            try:
+                                with open(os.path.join("/proc", str(pid), "mem"), "rb", 0) as mf:
+                                    mf.seek(tmo)
+                                    raw16 = mf.read(16)
+                                if len(raw16) == 16:
+                                    sec, nsec = int.from_bytes(raw16[:8], "little", signed=True), int.from_bytes(raw16[8:], "little", signed=True)
+                                    rec.setdefault("timeouts", {})
+                                    key = "sec=%d nsec=%d" % (sec, nsec)
+                                    rec["timeouts"][key] = rec["timeouts"].get(key, 0) + 1
+                            except (OSError, ValueError):
+                                pass
+                    if pc is not None:
+                        for line_ in (info.get("maps_raw") or "").splitlines():
+                            f = line_.split()
+                            if len(f) >= 6 and f[1] not in ("r--p", "---p"):
+                                try:
+                                    lo, hi = (int(x, 16) for x in f[0].split("-"))
+                                except ValueError:
+                                    continue
+                                if lo <= pc < hi:
+                                    fo = int(f[2], 16)
+                                    rec.setdefault("pc_where", {})
+                                    key = "%s+0x%x" % (f[5], fo + (pc - lo))
+                                    rec["pc_where"][key] = rec["pc_where"].get(key, 0) + 1
+                                    break
                 # keep the union, and count repeats: "the same syscall in every sample" is what says parked.
                 # The FULL line is kept too, because the number alone says which syscall and not what it was
                 # asked to do -- and for futex the arguments (op, compare value, timespec pointer, stack
@@ -166,6 +215,12 @@ def main():
         if rec.get("syscalls"):
             tops = sorted(rec["syscalls"].items(), key=lambda kv: -kv[1])[:4]
             print("  syscalls: %s" % ", ".join("%s x%d" % (k, v) for k, v in tops))
+        if rec.get("timeouts"):
+            for k, v in sorted(rec["timeouts"].items(), key=lambda kv: -kv[1])[:3]:
+                print("  timeout-arg: %s  (x%d)" % (k, v))
+        if rec.get("pc_where"):
+            for k, v in sorted(rec["pc_where"].items(), key=lambda kv: -kv[1])[:3]:
+                print("  pc-where: %s  (x%d)" % (k[:110], v))
         if rec.get("syscall_full"):
             for line, n in sorted(rec["syscall_full"].items(), key=lambda kv: -kv[1])[:2]:
                 print("  parked:   %s  (x%d)" % (line[:120], n))
