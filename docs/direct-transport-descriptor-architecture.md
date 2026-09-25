@@ -9058,3 +9058,50 @@ loader's `dyld_path`/main-image selection).
 Correction of record: the claim in §120 that "the remaining failure is pre-existing and unrelated to this work" was
 right in substance and wrong in detail; §119-129 localized a **symptom of the wrong image**, which is why every
 probe of `shellspawn` was silent from the very first one.
+
+
+### 131. The full picture: the observed process was the `vchroot` helper, and the transport work is exonerated
+
+§130 identified the running image numerically. Following the launch path gives the whole picture and it is not a
+transport story at all.
+
+`spawnInitProcess()` -- the function the launcher calls "start the prefix's init" -- execs **`darlingserver`**, not
+`shellspawn`:
+
+```c
+execl(INSTALL_PREFIX "/bin/darlingserver", "darlingserver",
+      prefixfd_str, parentfd_str, g_runtimePrefix->leaf, workdirfd_str, uid_str, gid_str, pipefd_str, ...);
+```
+
+So the prefix's init **is** the server, and `shellspawn` -- the program whose readiness the launcher waits for, via
+`var/run/shellspawn.sock` -- is started by something else entirely. Meanwhile the guest process that does run, and
+that every instrument in §119-§129 was watching, is **`vchroot`**: the rootless helper, which with no arguments
+prints its path and exits **0**. That is the `exit 0` that seven sections of investigation localized to
+progressively smaller windows -- and every one of those localizations was **correct about the process it was
+measuring**.
+
+The chain, with the transport work marked where it actually sits:
+
+| stage | measured |
+|---|---|
+| launcher spawns `darlingserver` as init | yes (`spawnInitProcess`) |
+| a guest process is launched and reaches dyld | yes -- but it is `vchroot` |
+| dyld completes fully, jumps to the image | yes (§126/§127) |
+| the image's entry is `vchroot`'s (`0xc60`) | **yes -- numerically (§130)** |
+| `vchroot` runs and exits 0 | yes -- expected for a helper with no arguments |
+| `shellspawn` ever starts | **no** |
+| launcher's readiness wait fails | yes -- because shellspawn is not running |
+
+**Conclusion for the directive's question.** The socket-disabled transport work is not implicated by any part of
+this. Its own instruments are quiet and its counters are zero; the guest lifecycle that fails is a **different
+program's**, and the failure is that `shellspawn` is not started at all. The per-thread RPC UDS is unreachable on
+every path actually exercised (hatch ON and OFF, §115/§120), and the boot does not reach ready for a reason that
+lies outside the transport entirely.
+
+**What is NOT yet established**, and should not be claimed: that the socket-disabled transport is *correct under
+load*. That requires the boot to become green, which requires shellspawn to run, which is the next work item and
+has nothing to do with the migrations.
+
+Next action, narrow: find where `shellspawn` is supposed to be started in the rootless flow and why `vchroot` is
+the process that runs instead -- i.e. whether the launcher's `shell`/`exec` path is asking for the helper, or
+whether the helper is expected to hand over to the init and does not.
