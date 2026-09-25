@@ -9342,3 +9342,35 @@ the most consequential: the previous eleven produced silence, this one produced 
 The rule this adds to the ones already recorded: **a probe must not modify the state it is measuring.** Four of the
 twelve were libc-in-early-boot, one was linked into nothing, one measured a `return` instead of an entry -- and this
 one clobbered the register under test.
+
+
+### 138. Fixed, and the real barrier appears immediately: `vchroot` is launched with no arguments
+
+With `%rax` preserved, the `Lnew` probe stops breaking the transfer and the guest reaches the image's `main`:
+
+```
+[dyld-lnew]                          <- dyld executes its jump, to the real entry now
+[vchroot-MAIN]                       <- vchroot's main IS entered
+vchroot <dir> <binary> [args...]     <- vchroot's own usage line: argc < 3
+```
+
+Two things follow, and the second is the actual defect:
+
+1. **The instrument was the bug.** §137's fix restores the control transfer, and the image runs. Every "barrier"
+   measured after the probe was added (dyld's jump landing nowhere, the crt not firing, `main` not entered) was a
+   description of `jmp 1`. The **earlier** chain -- loader handoff, dyld's whole `main`, all initializers, `LC_MAIN`
+   resolution -- remains valid, because it was measured before the probe existed.
+2. **The real barrier is `argv`.** `vchroot <dir> <binary> [args...]` is the rootless exec wrapper, and it is
+   running with `argc < 3`: no directory, no target program. It prints usage and returns. `shellspawn` is never
+   started **because nothing ever told the wrapper what to start.**
+
+That is consistent with everything else this cycle measured and with nothing in the transport: the guest's RPC,
+management plane, courier and Ring are all quiet and their counters zero, and the per-thread RPC UDS remains
+unreachable on every path actually exercised.
+
+The next question is narrow and belongs to the launcher/loader argument path: **why does the process that runs the
+rootless wrapper receive fewer than three arguments** -- where `argv` is built (the launcher's `shell`/`exec`
+command line, the loader's stack construction, or the point where the wrapper is chosen).
+
+This also retires the "hard blocker" framing that had become tempting: the failure was not an unknowable dyld
+branch. It was a register clobbered by my own probe, and behind it a plain argument-plumbing defect.
