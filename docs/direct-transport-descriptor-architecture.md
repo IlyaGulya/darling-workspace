@@ -10066,3 +10066,45 @@ measurement shows: an op that the target thread is waiting on cannot be delivere
 that cannot say which thread issued a request cannot serve any thread-scoped op correctly. Doing (b) without (a)
 would run the cancellation check against whichever thread `pid` happened to resolve to, which is a correctness
 bug that the current `tid = pid` substitution is already hiding.
+
+
+### 160. MILESTONE: the management-plane class is passed, with the ABI and servicing model the directive fixed
+
+Implemented as directed, and the class is closed:
+
+```
+VERDICT: PASS    MARKER ok FINAL=1 (and HELLO=1)
+sockets created: 2 (both reason=checkin)   denials: 0   urgent timeouts: 0   courier misses: 0
+log lines: 3884 (was 103)
+shellspawn did not become ready: 0 occurrences
+"Thread has both a pending call and a pending continuation": 0 occurrences
+launchd: ... -> RUNTIME_INIT2_DONE -> PID1_BLOCK_END -> JOBMGR_INIT_DONE -> BOOTSTRAPPER_SCHEDULED
+            -> NETWORKING_END -> NETWORKING_DONE
+```
+
+**D1 -- thread identity in the transport envelope (`DSERVER_PROCESS_CONTROL_VERSION 2u`).** `request_tid` and
+`urgent_tid[]` are APPENDED, so no existing offset moves. The version is now a real check: the server publishes
+`transport_ready` only after size AND version match, and a mismatch leaves the plane UNAVAILABLE rather than
+partially interpreted (the guest's bounded wait expires and its datagram fallback runs); the guest refuses to
+publish into a page whose version it does not recognise. The tid is published with the request, before the release
+store, and for an urgent slot by the same raw-syscall rule that pool already follows. All 21 synthesized-Call sites
+now take the thread from the envelope: 18 in the management slot (`call->header.tid = planeTid`) and 3 in the urgent
+loop (`urgentTid`), replacing `tid = pid`, which named a different thread entirely. A request that carries no
+identity is `-ESRCH`, never a guess.
+
+**D2 -- direct servicing for `pthread_canceled`.** The plane resolves the exact Thread from `request_tid` **inside
+the requesting process** (`threadRegistry().lookupEntryByNSID` plus an owner check on `process()->id()`), and a tid
+belonging to another process is refused and counted (`pthread_canceled-refused`) rather than serviced. It does NOT
+call `Call::callFromMessage()` or `doWork()`. The semantics live once, in `Thread::pthreadCanceled(action)`, which
+the ordinary `PthreadCanceled::processCall()` now also calls.
+
+**The synchronization moved with them, because it had to.** `dtape_thread_cancel_state_t` was three plain `bool`s
+written with read-modify-write, and `__pthread_markcancel` arms that state from ANOTHER thread while the target
+observes it at its own cancellation point. Their correctness came only from both running on the same microthread
+fiber -- the serialization direct servicing removes. The state now carries its own lock, taken by `canceled`,
+`markcancel` and the diagnostic snapshot, so direct servicing is correct on its own terms and `doWork()` is not
+retained as a synchronization mechanism.
+
+**What remains in this class:** the two per-thread socket creations are both `reason=checkin`; the concurrency
+gate `dar-gles` (`pthread_create` above ~50 live threads) is separate and unchanged. The next loop step is the
+checkin instances, then the acceptance sweep with the socket hatch ON.
