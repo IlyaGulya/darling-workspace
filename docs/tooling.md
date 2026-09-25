@@ -38,6 +38,18 @@ skill; this file is the durable index it points at.
    after the workload's own completion, and keep one log path per run.
 8. **Check the premise before blaming the result** -- and when a measurement
    contradicts expectation, suspect the instrument first.
+9. **A probe must not add a syscall, and must be portable across the arches the
+   component is built for.** `libsystem_kernel.dylib` is built for `x86_64` *and*
+   `i386`, so `%rsp` is rejected by the 32-bit pass. An earlier probe obtained a
+   thread identity with `gettid`, i.e. an extra EMULATED syscall on a hot path,
+   and the run being measured got **shorter** -- the boot stopped reaching the
+   console at all. Identity comes from the address of a local buffer: free,
+   distinct per thread and per frame, no register, no syscall.
+10. **Attribute a probe, or its counts explain nothing.** Fourteen entries and six
+   returns across several guest processes cannot say which one died; a probe that
+   prints an identity (the buffer address above) turns a histogram into a
+   bisection. Two different guests in one log looked like one inconsistent guest
+   until the probes carried that identity.
 
 ## Why these exist
 
