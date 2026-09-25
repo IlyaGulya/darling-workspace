@@ -8938,3 +8938,38 @@ Boundary, and this is the important part for the directive's question:
 
 Every transport-code path the migration work touches is either later than this or absent from it, and
 `sigexc_setup` -- the one early step that does carry signal-context transport routes -- is measured passing.
+
+
+### 128. Proven with a probe that cannot lie: the main image's `main` is never entered
+
+§127 proved dyld executes `jmp *%rax` into the main image. The open question was whether the image's `main` runs,
+and the earlier evidence for "no" was a `fprintf`. That is not good enough, so the probe at the top of
+`shellspawn.c`'s `main` was rewritten as a **raw syscall** -- and it still does not fire:
+
+```
+[dyld-lnew]             1        <- dyld executed its jump
+[shellspawn-step]       0        <- main-entry never printed (raw syscall now)
+HELLO=0
+```
+
+That settles it: the main image's `main` is **not entered**, and the instrument can no longer be the explanation.
+
+**Two crt corrections came out of chasing it, and both were needed to get here:**
+
+1. `src/external/csu/crt.c` looks like the guest entry and carries a `_start` that ends in
+   `exit(main(argc, argv, envp, apple))` -- exactly the shape that produces an `exit 0`. Instrumenting it changed
+   **nothing** in the shipped binary (identical sha256 after the rebuild), which is how it was discovered that
+   `shellspawn` is linked `-nostdlib` with `crt1.10.6/start.S.o` and does **not** take that C `_start` on this
+   path. The probes were in a file nothing links.
+2. The real entry is the **assembly** `start` in `src/external/csu/start.S`, whose x86_64 path sets up
+   `argc`/`argv`/`envp`, computes the `apple` pointer, and goes straight to `call _main` -- `OLD_LIBSYSTEM_SUPPORT`
+   is off, so `__start` is not involved at all.
+
+The probes are therefore now in `start.S`, immediately before and after `call _main`, as raw syscalls. That is the
+last instruction boundary before the image's own code, and it is the only remaining place the `exit 0` can come
+from.
+
+Counted honestly, this is the **tenth** instrument in this cycle corrected for the same class of mistake, and the
+pattern is stable enough to state as a rule: an instrument must be (a) able to fire in the state it probes, and
+(b) actually part of the artifact under test. Four of the ten were libc-in-early-boot, and this one was
+linked-into-nothing.
