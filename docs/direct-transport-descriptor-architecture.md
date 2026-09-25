@@ -9409,3 +9409,43 @@ this exact launch (`mldr ... vchroot <prefix> <initPath>`), and compare with wha
 
 Recorded honestly: the previous eleven sections of localization were chasing a symptom of this, and the twelfth
 (a probe that clobbered `%rax`) actively obscured it.
+
+
+### 140. Where the guest's `argc` is decided -- and the two candidate explanations
+
+The launch is `mldr vchroot <prefix> <initPath>` (server, §139), so `mldr`'s own `argv` is
+`["mldr!.../vchroot", "vchroot", prefix, initPath]` and its `argc` is 4. The loader copies both verbatim:
+
+```c
+mldr_load_results.argc = argc;
+mldr_load_results.argv = argv;
+...
+load(filename, 0, false, argv, &mldr_load_results);      /* the guest stack is built inside load() */
+...
+--mldr_load_results.argc;                                /* AFTER load() */
+orig_argv0_len = strlen(mldr_load_results.argv[0]) + 1;
+orig_argv1 = mldr_load_results.argv[1];
+for (size_t i = 0; i < mldr_load_results.argc; ++i) { ... }
+mldr_load_results.argv[mldr_load_results.argc] = NULL;
+memmove(mldr_load_results.argv[0], orig_argv1, arg_strings_total_size_after);
+```
+
+The adjustment drops `mldr`'s own `argv[0]`, which is a Linux-visible change to the **process's** argv (`/proc/self/cmdline`)
+and must not be what the guest sees. Two facts decide which of two explanations holds, and they are worth stating
+precisely because they differ by a phase:
+
+* if the guest stack is built **inside `load()`** (before the adjustment), the guest should see `argc = 4` and
+  `argv = ["mldr!.../vchroot", "vchroot", prefix, initPath]`;
+* if it is built **after** the adjustment, the guest should see `argc = 3` and `argv = ["vchroot", prefix, initPath]`
+  -- which is exactly what `vchroot` wants, and then `argc < 3` would be false and the usage line would not print.
+
+The guest observes `argc < 3`, which is **neither** of those. So the defect is not merely a phase ordering: the
+value the image receives is shorter than any correct construction of this launch line, which means the array or its
+count is being built from something other than `mldr_load_results.argv`/`argc` for this path -- or reduced more than
+once.
+
+The next measurement is exact and small: print the guest `argc` and `argv[0..3]` at the moment the stack is
+constructed in `stack.c`, and again in `vchroot`'s `main`, and see which of the three values it is.
+
+This is, finally, a plain argument-plumbing defect in the loader, of exactly the class the directive named as the
+bisect target ("argv/env/stack/load_results modifications"), and it is outside the transport work entirely.
