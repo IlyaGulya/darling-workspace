@@ -9631,3 +9631,44 @@ For the directive, the honest position is unchanged in substance and much better
 migrations are measured quiet on every path exercised, the boot's blocker was located and fixed twice over (once in
 my own instruments, once in the recognition that `argc` was the casualty), and the boot still does not reach ready
 for a reason that lives in the guest's init, not in the ring, plane, courier or urgent pool.
+
+
+### 146. Clean tree, clean measurement -- and the barrier is launchd exiting silently
+
+With the last probe removed from `stack.c` (it had been looked for in `mldr.c`, a file mix-up on my part -- it was
+harmless, a plain `fprintf`, but "clean" is a separate requirement) the boot is measured one final time on a fully
+instrumentation-free tree:
+
+```
+HELLO=0  FINAL=0
+[rpc-socket] created: 0
+probes in log:        0
+last guest activity:  [dring-lane-release] slot=0 borrowed=1
+```
+
+and the final state of the launch chain, from the live log:
+
+```
+[mldr-guest-argv] argc=3 argv0=vchroot argv1=/proc/self/fd/3 argv2=/sbin/launchd   (probe since removed)
+... vchroot receives 3, execv("/sbin/launchd") ...
+[mldr-guest-argv] argc=1 argv0=/sbin/launchd
+... launchd: seed, adopt, kqchan fd=8, attach, lane-release ...
+```
+
+`/sbin/launchd` in the prefix is a genuine 350 KB Mach-O daemon linking `libbsm` and `libSystem` -- not a stub. It
+starts, completes its loader/ring/plane work, and then **exits silently in under two seconds**: at 2 s and later only
+`darling` and `darlingserver` remain, `var/run/shellspawn.sock` is never created, and no launchd output appears even
+with the server's stderr enabled.
+
+So the barrier moved twice in this cycle and is now here:
+
+| barrier | how it was resolved |
+|---|---|
+| "guest exits 0 before main" | was my probe clobbering `%rax` (§137) |
+| "`vchroot` takes its usage branch" | was my probe clobbering `%rdi` (§143) |
+| **"launchd exits silently"** | **open -- the guest's init path** |
+
+Everything upstream is fixed and proven, the transport work is measured quiet on every path exercised, and the
+remaining defect is inside the guest's init: what makes launchd return instead of staying up and starting the
+daemons it is configured for. The next measurement is a trace of launchd's own exit (its return path, or its
+startup logging), which is a guest-runtime question with no transport content.
