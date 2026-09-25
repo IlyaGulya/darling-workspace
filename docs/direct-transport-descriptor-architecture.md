@@ -10461,3 +10461,49 @@ What this class now has, all measured: the loader checkin is deferred by design 
 order on the plane (`deferred-checkin status=0` before `after-dyld`/`after-execpath`); `[rpc-socket] created
 reason=checkin` is **0**; the guest dyld opens successfully because the process is registered before the dylinker
 load; the second incarnation stops at one point that is now named to a single function boundary.
+
+
+### 171. The loop runs; the request is PENDING; the server never services it
+
+Three instruments on the same path, each proving its premise first, moved this from "a hang somewhere" to one
+sentence:
+
+* `planeloop BEGIN pid=... op=2 mine=1 state=1` -- the second incarnation **enters the reply loop** and its request
+  slot is `PENDING` (1).
+* With the bound lowered to about 0.2-2 s, `plane-request TIMEOUT op=2 seq=1 state=0 claimed=0 transport_ready=1`
+  -- the loop body **does execute** and `transport_ready` is 1, so the server did map the page and publish the
+  transport promise; `claimed` is 0, so the server never even took the transaction.
+* With the bound at its real ~11 s the timeout never fires, and the run ends at the launcher's own
+  "shellspawn did not become ready within 30000ms": **the invocation is torn down 2-10 s after it publishes**, which
+  is why the earlier "no timeout line" was not evidence that the loop does not run.
+
+The server-side negative is the decisive one: the `request pid=... op=...` line is emitted for **every** serviced
+request, and it is emitted for the FIRST incarnation's four requests and for **none** of the second's. So the page
+of the second incarnation is registered, mapped, and marked ready, and its request is never serviced.
+
+### 172. The release-drop hypothesis is disproved by its own instrument
+
+The state was `IDLE` (0) at the lowered-bound timeout while `PENDING` is 1 and the server only ever writes `DONE`
+(2) -- so the only writer of `IDLE` is `DSERVER_PROCESS_CONTROL_RELEASE`, and there are eight call sites in the
+guest (two in the loader, in the exec checkout, the fork checkin, the ring attach, two in the elfcall thread paths).
+The hypothesis that some other publisher's `RELEASE` clears this request is attractive and **false**: every one of
+those eight sites was instrumented to print a raw-syscall line only when it clears a slot that is `PENDING`, and the
+run produced **zero** such lines. So the slot was not dropped by a concurrent publisher, and the remaining
+explanation for the `IDLE` reading is the page the request was published into, not the slot's owner -- which the
+next instrument has to separate by reading `request_seq` alongside `request_state`.
+
+### 173. What the server registration does, and the wake that is left
+
+`_processControl[pid] = region` is replaced in place on re-registration: the old descriptor is closed, the old
+mapping is unmapped, and `transport_ready` is published on the **new** page (which is why the guest's `wait_ready`
+succeeds). So the map does hold the new page, and `_serviceProcessControl()` -- which iterates that map and is
+called after the server's epoll returns -- would see it.
+
+The wake is then the remaining difference, and it is exactly what the directive's section 8/9/16 names: for the
+second incarnation `ring_doorbell_fd` is `-1` (no `planewake` line appears for either incarnation, so the courier
+byte is the wake), the wake is sent with `MSG_DONTWAIT` on the courier connection, and the courier connection of the
+second incarnation is a **new** one -- the one that delivered its page and on which `conn.isLoader` was set. Whether
+the server's loop runs a pass after that byte is therefore the next measurement, and it belongs on the server:
+one line in `_serviceProcessControl` recording that a pass ran and what it saw for a page whose `request_state` is
+`PENDING`, next to the existing `region`/`request` lines. That is a pass counter, not a per-page flood, and it
+answers "did the loop run" and "did it see the request" separately.
