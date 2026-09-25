@@ -245,8 +245,12 @@ def main():
                 rec.setdefault("page_reads", {})
                 # the RAW bytes, so a marker written by either side can be seen without guessing offsets
                 rec["page_hex"] = _b[:128].hex()
+
                 _key = " ".join("%d:%d" % (o, v) for o, v in sorted(_fields.items()))
                 rec["page_reads"][_key] = rec["page_reads"].get(_key, 0) + 1
+                rec.setdefault("page_timeline", [])
+                if not rec["page_timeline"] or rec["page_timeline"][-1][1] != _key:
+                    rec["page_timeline"].append((len(rec["page_timeline"]), _key))
                 # keep the union, and count repeats: "the same syscall in every sample" is what says parked.
                 # The FULL line is kept too, because the number alone says which syscall and not what it was
                 # asked to do -- and for futex the arguments (op, compare value, timespec pointer, stack
@@ -281,6 +285,9 @@ def main():
             print("  main-thread(%s) last syscall: %s" % (pid, main_sc))
             if others:
                 print("  other threads: %s" % ", ".join("tid %s sc%s" % (t, sc) for t, sc in others[:4]))
+        if rec.get("page_timeline"):
+            for idx, key in rec["page_timeline"][:6]:
+                print("  page-seq #%d: %s" % (idx, key))
         if rec.get("page_hex"):
             print("  page-hex: %s" % rec["page_hex"])
         if rec.get("page_reads"):
