@@ -11286,3 +11286,53 @@ independently -- "was the request serviced" and "did the completion store" -- af
 one the directive has named since the beginning: the wake must be the process **doorbell** (sections 8, 9, 10),
 because the loader's pre-doorbell fallback has now been measured to deliver the byte and still leave the request
 outstanding in a run where nothing else wakes the loop.
+
+
+### 199. THE CRASH IS CAUGHT: SIGSEGV at `page->reply_seq`, and the mechanism is a dangling region reference
+
+A crash probe was installed in the server (SA_SIGINFO, raw writes only, `_exit(91)` after reporting -- a server that
+dies silently is the instrument-that-cannot-answer class again). It reports exactly one thing, twice (both streams):
+
+```
+dserver-CRASH sig=b addr=0x7c69aa4d1038
+```
+
+`sig=b` is **SIGSEGV**, and the fault address ends in **0x38 = 56**, which by the header's own offsets is
+`reply_seq` (`reply_state=48`, `reply_status=52`, `reply_seq=56`). So the crash is exactly at the statement
+
+```c
+page->reply_seq = seq;      /* offset 56 */
+```
+
+which sits one line below `completion-mark A` -- the last line the server ever writes -- and two lines below the guard
+
+```c
+if (region.map != page) { ... continue; }
+```
+
+A plain store into a valid mapping cannot fault, so at that instant `page` is **not mapped**, while the guard one
+statement earlier compared it with `region.map` and found them equal. That combination has one shape: `region` is a
+**reference into `_processControl`** (and `page` was captured from `region.map`), and the entry was **modified** --
+its old mapping unmapped by a re-registration -- while the reference was held. The guard then reads a stale/garbage
+`region.map`, can compare equal by accident, and the completion writes into a mapping the server itself has already
+destroyed.
+
+The server is not as single-threaded as this code assumes: the build has an **async writer** thread, and the courier
+handling that performs the (unmap + map) registration is separate from the servicing pass. Nothing in the registering
+path takes a lock against the servicing path, and the servicing path holds a pointer/reference across statements
+that can race with it.
+
+The fix has two parts and both are small:
+
+* the servicing loop must **copy** what it needs from the region (`map`, `fd`, `size`) into locals before it uses
+  it, instead of holding a reference to a map element for the whole body;
+* the (unmap, map) replacement of a region for a pid and the servicing of that region must be **mutually excluded**
+  -- a lock, or a rule that only one of them may run at a time -- because a completion that races a replacement is
+  exactly the observed crash, and its consequence (no completion store, the guest parked on its request, the boot
+  ending at the launcher's deadline) is exactly the stall the whole class has been chasing.
+
+This also retroactively explains the intermittency that defeated every earlier hypothesis: whether the replacement
+lands inside the completion's window is a race, so the same build completes a checkin on one run and crashes on the
+next. All the layers measured before it stand: the request is serviced within about a millisecond of its page
+registration, the page is one file by `(dev, ino)` read at service time, the wake byte arrives, the slot-ownership
+race is fixed, and per-thread RPC socket creations are 0.
