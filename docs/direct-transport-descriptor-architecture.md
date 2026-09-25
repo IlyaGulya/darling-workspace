@@ -9105,3 +9105,43 @@ has nothing to do with the migrations.
 Next action, narrow: find where `shellspawn` is supposed to be started in the rootless flow and why `vchroot` is
 the process that runs instead -- i.e. whether the launcher's `shell`/`exec` path is asking for the helper, or
 whether the helper is expected to hand over to the init and does not.
+
+
+### 132. `vchroot` is the right image -- and its own code cannot produce `exit 0`
+
+§130 identified the image as `vchroot` and §131 called it a helper. Reading it corrects the second half:
+
+```c
+int main(int argc, const char** argv) {
+    if (argc < 3) { fprintf(stderr, "vchroot <dir> <binary> [args...]\n"); return 1; }
+    sprintf(buf, "%s%s", argv[1], argv[2]);
+    if (access(buf, F_OK) != 0) { ...; return 5; }
+    int dfd = open(argv[1], O_RDONLY | O_DIRECTORY);
+    if (dfd == -1) { perror("open"); return 1; }
+    if (fchdir(dfd) == -1) { perror("fchdir"); return 2; }
+    if (__darling_vchroot(dfd) < 0) { perror("vchroot"); return 3; }
+    unsetenv("DYLD_ROOT_PATH");
+    execv(argv[2], (char * const *) argv+2);
+    perror("execv");
+    return 4;
+}
+```
+
+`vchroot <dir> <binary> [args...]` is the rootless **exec wrapper**: chroot into the prefix and `execv` the real
+program. So `vchroot` being the image dyld runs is **correct** -- not a wrong-program bug. And every return path in
+that function is **non-zero** (1, 5, 1, 2, 3, 4), with `execv` not returning at all on success. **None of them is 0.**
+
+The boot produces `exit 0` with no output. Therefore `vchroot`'s `main` did not execute its body -- no usage line,
+no `open`/`fchdir`/`vchroot` error, no `execv` failure. The boundary is now between dyld's `jmp *%rax` (proven
+executed) and this `main` -- the same place §129 measured as "the image's crt does not fire", except that §129 was
+instrumenting **`shellspawn`'s** crt, and the running image is **`vchroot`**. The instrument was in the wrong binary
+again -- the eleventh instance of the class, and the same root cause as the tenth: two programs are involved and the
+one measured was not the one running.
+
+That also explains why a second load is never seen. `execv(argv[2], argv+2)` would re-enter the loader and produce a
+**second** full sequence (dyld entry, initializers, LC_MAIN for `shellspawn`), and a run with `dyld-ENTRY` counted
+exactly once shows it never happens. No exec, no second image, no `shellspawn`.
+
+So the remaining question is sharp and single: **why does control not reach `vchroot`'s `main` when dyld has just
+jumped to its image entry?** The next measurement is the one that answers it -- instrument `vchroot` itself, the
+binary that is actually running, which is exactly what the two preceding sections failed to do.
