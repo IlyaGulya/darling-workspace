@@ -8724,3 +8724,34 @@ Progress of isolation, stated as the boundary each step proved:
 The comparison that matters for the migration claim: this boundary lies **entirely before** any transport code path
 the migrations touch (the plane/courier/urgent/Ring work all runs later or elsewhere), which is consistent with
 §120's hatch-ON/hatch-OFF identity without depending on it.
+
+
+### 123. `__dyld_start` DOES run -- and the gated probes may have been lying
+
+The asm stub was instrumented with a **raw `write(2)` syscall** as its first instruction, because that is the only
+output available before any C code has run. It fires:
+
+```
+[dyld_start]        1 line
+dyld-boot-*         0 lines
+HELLO=0
+```
+
+So `__dyld_start` **executes** -- the guest reaches the Mach-O entry stub -- and `dyldbootstrap::start` is still not
+observed. Between the two lies the stub's own frame setup and one `call`.
+
+That result also invalidates the method used for §121/§122, and the correction matters more than the result:
+
+**the gated probes call `getenv()` before libc is initialised.** `__dyld_boot_diag` and `__dyld_diag` both open with
+`if (on < 0) { on = (getenv("MLDR_DYLD_DIAG") != NULL) ? 1 : 0; }`, and dyld's bootstrap runs before any runtime that
+would make `getenv` meaningful. A silent gated probe therefore proved nothing about whether the function was
+entered -- it may have died at the gate. The asm probe had no gate, and it worked, which is exactly the control
+that shows the difference.
+
+This is the fifth instrument in this cycle that had to be corrected for the same reason in spirit -- a probe whose
+silence could be explained by the probe itself rather than by the code under test (§103, §105, §106, §116, and now
+§121/§122). The invariant worth carrying forward: **a probe must be able to fire in the state it is probing for.**
+For pre-runtime code that means no libc, no `getenv`, no stdio -- raw syscalls only.
+
+The bootstrap milestones are now unconditionally printing, which is the measurement that decides whether §121/§122
+were conclusions or artifacts.
