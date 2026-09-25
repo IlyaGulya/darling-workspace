@@ -22,13 +22,16 @@ set -u
 
 PREFIX=""
 BUILD=""
-COMPONENTS="mldr dyld libsystem_kernel darlingserver shellspawn vchroot launchd"
+COMPONENTS=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--prefix) PREFIX="$2"; shift 2 ;;
 		--build) BUILD="$2"; shift 2 ;;
-		--component) COMPONENTS="$2"; shift 2 ;;
+		# --component ACCUMULATES. It used to assign, so `--component a --component b` silently deployed
+		# only b -- the tool quietly doing less than it was asked, which is the same class of defect as a
+		# probe that is not in the artifact.
+		--component) COMPONENTS="$COMPONENTS $2"; shift 2 ;;
 		-h|--help) sed -n '2,20p' "$0"; exit 0 ;;
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac
@@ -37,6 +40,7 @@ done
 [ -n "$PREFIX" ] && [ -n "$BUILD" ] || { echo "usage: $0 --prefix PATH --build DIR [--component NAME]..." >&2; exit 2; }
 [ -d "$PREFIX" ] || { echo "not a directory: $PREFIX" >&2; exit 2; }
 [ -d "$BUILD" ] || { echo "not a directory: $BUILD" >&2; exit 2; }
+[ -n "$COMPONENTS" ] || COMPONENTS="mldr dyld libsystem_kernel darlingserver shellspawn vchroot launchd"
 
 built_path() {
 	case "$1" in
