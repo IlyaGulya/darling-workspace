@@ -31,6 +31,8 @@ MARKERS=""
 HATCH=0
 LOG=""
 VERIFY_PROBES=""
+EXTRA_ENV=""
+ASSERT_MAPS=0
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -39,6 +41,8 @@ while [ $# -gt 0 ]; do
 		--marker) MARKERS="$MARKERS $2"; shift 2 ;;
 		--cmd) CMD="$2"; shift 2 ;;
 		--hatch) HATCH=1; shift ;;
+		--env) EXTRA_ENV="$EXTRA_ENV $2"; shift 2 ;;
+		--assert-prefix-maps) ASSERT_MAPS=1; shift ;;
 		--verify-probe) VERIFY_PROBES="$VERIFY_PROBES
 $2"; shift 2 ;;
 		--log) LOG="$2"; shift 2 ;;
@@ -48,6 +52,31 @@ $2"; shift 2 ;;
 done
 
 [ -n "$PREFIX" ] && [ -n "$WAIT" ] || { echo "usage: $0 --prefix PATH --wait SECONDS [--marker NAME]..." >&2; exit 2; }
+
+# A run can be served by another prefix's runtime, and then every conclusion drawn from it is about the wrong
+# artifacts -- silently, because the log looks normal. MEASURED: a stale shellspawn from a second prefix was
+# alive through a whole series of runs, and a probe deployed into this prefix's libsystem_kernel never fired.
+# The guard is cheap and refuses before any state is consumed.
+if [ "$ASSERT_MAPS" = 1 ]; then
+	foreign=""
+	for d in /proc/[0-9]*; do
+		comm=$(cat "$d/comm" 2>/dev/null)
+		case "$comm" in mldr|launchd|vchroot|shellspawn|darlingserver) ;; *) continue ;; esac
+		pid=${d#/proc/}
+		for m in $("$SCRIPT_DIR/darling-prefix-map.sh" "$pid" 2>/dev/null); do
+			case "$m" in
+				"$PREFIX"|"$PREFIX"/*) ;;
+				/tmp/dr-*)
+					foreign="$foreign pid=$pid comm=$comm from=$m"
+					;;
+			esac
+		done
+	done
+	if [ -n "$foreign" ]; then
+		echo "REFUSING: another prefix's runtime is alive and may serve this run:$foreign" >&2
+		exit 1
+	fi
+fi
 [ -n "$MARKERS" ] || MARKERS="HELLO=1 FINAL=1"
 [ -x "$PREFIX/bin/darling" ] || { echo "no launcher at $PREFIX/bin/darling" >&2; exit 2; }
 
@@ -134,8 +163,9 @@ else
 fi
 : > "$LOG"
 # shellcheck disable=SC2086
+# shellcheck disable=SC2086
 env DPREFIX="$PREFIX" DARLING_PREFIX="$PREFIX" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
-	$HATCH_ENV \
+	$HATCH_ENV $EXTRA_ENV \
 	nohup timeout "$((WAIT + 60))" "$PREFIX/bin/darling" --rootless shell /bin/sh -c "$CMD" >> "$LOG" 2>&1 &
 
 echo "waiting ${WAIT}s (the workload's own duration; diagnostic lines before this are not verdicts)"

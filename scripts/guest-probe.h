@@ -24,6 +24,20 @@
  */
 
 #ifndef DARLING_GUEST_PROBE_H
+
+/*
+ * THE SYSCALL NUMBER IS LINUX-NUMBERED, AND GETTING IT WRONG IS SILENT.
+ *
+ * The raw `syscall` instruction in a Darling guest takes a LINUX syscall number in this context: write is 1,
+ * not 4. A probe written with rax=4 therefore EXECUTES and does something else entirely (Linux `stat`), printing
+ * nothing -- which is indistinguishable from "the code under test was never reached". This was measured: probes
+ * placed on a hot path in libsystem_kernel never appeared in any run log while a probe in launchd, written with
+ * rax=1, appeared every time, and both were raw `syscall` writes to fd 2.
+ *
+ * So: write is __NR_write == 1 here. If a probe is silent, verify the NUMBER before concluding anything about the
+ * code path. The tag's presence in the artifact (see darling-describe-artifact.sh) rules out the other cause.
+ */
+
 #define DARLING_GUEST_PROBE_H
 
 #if defined(__x86_64__)
