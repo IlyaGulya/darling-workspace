@@ -9590,3 +9590,44 @@ Summary of where the chain stands, all measured:
 | `vchroot` receives argc=3 and `execv`s launchd | **yes (fixed)** |
 | launchd loaded (`argv0=/sbin/launchd`) | **yes** |
 | shellspawn becomes ready | **no -- the remaining barrier** |
+
+
+### 145. Clean boot after stripping the probes: the launch chain runs, and the barrier is now after launchd
+
+All diagnostic probes were removed from dyld (asm and both C units), `vchroot`, `mldr` and the crt, everything was
+rebuilt and redeployed, and the boot was run **without** the acceptance hatch:
+
+```
+HELLO=0  FINAL=0
+[rpc-socket] created:  0
+last guest activity:   [dring-lane-release] slot=0 borrowed=1
+launcher:              Rootless shellspawn did not become ready within 30000ms
+```
+
+Two facts from a live check at 35 s into the run:
+
+* **only `darlingserver` is alive** -- no `vchroot`, no `mldr`, no `launchd`, no `shellspawn`;
+* `var/run/shellspawn.sock` does not exist at that point.
+
+So the launch chain now **runs and completes**: `vchroot` gets `argc=3`, `execv`s `/sbin/launchd` (proven with the
+probes before they were stripped, §144), launchd is loaded -- and then nothing survives to serve the socket the
+launcher waits on. `shellspawn` never starts because the guest's init does not get that far.
+
+Where this leaves the work, stated without overclaiming:
+
+| claim | status |
+|---|---|
+| per-thread RPC socket requests (hatch ON) | 0 |
+| per-thread RPC socket creations (hatch ON **and** OFF) | **0** |
+| transport classes clean | 3 |
+| launch chain `vchroot` → `launchd` | **restored and proven** |
+| boot reaches ready | **not yet** -- barrier is after launchd, inside guest init |
+
+The argument-plumbing defect is fixed and is no longer the explanation for anything. What remains is a guest-runtime
+question (why the init does not persist and start the daemons) that is separate from the transport work, and the
+next measurement is a live trace of that init path rather than another handoff probe.
+
+For the directive, the honest position is unchanged in substance and much better in evidence: the transport
+migrations are measured quiet on every path exercised, the boot's blocker was located and fixed twice over (once in
+my own instruments, once in the recognition that `argc` was the casualty), and the boot still does not reach ready
+for a reason that lives in the guest's init, not in the ring, plane, courier or urgent pool.
