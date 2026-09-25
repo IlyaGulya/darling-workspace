@@ -27,7 +27,7 @@ set -u
 PREFIX=""
 WAIT=""
 CMD="echo HELLO=1; echo FINAL=1"
-MARKERS="HELLO=1 FINAL=1"
+MARKERS=""
 HATCH=0
 LOG=""
 
@@ -45,6 +45,7 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$PREFIX" ] && [ -n "$WAIT" ] || { echo "usage: $0 --prefix PATH --wait SECONDS [--marker NAME]..." >&2; exit 2; }
+[ -n "$MARKERS" ] || MARKERS="HELLO=1 FINAL=1"
 [ -x "$PREFIX/bin/darling" ] || { echo "no launcher at $PREFIX/bin/darling" >&2; exit 2; }
 
 [ -n "$LOG" ] || LOG="/tmp/darling-boot-$(date +%H%M%S)-$$.log"
