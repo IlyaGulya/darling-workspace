@@ -8676,3 +8676,51 @@ is the mechanism by which 893 guest processes accumulated unnoticed (§119).
 
 Next step, precisely: verify what `[mldr-handoff] entry=0x7ff8293f1000` actually points at (the `LC_MAIN` entry
 of the deployed Mach-O `dyld`) and instrument `__dyld_start`, because `dyld::_main` is now proven unreached.
+
+
+### 122. The death is inside `__dyld_start`'s contract -- `dyldbootstrap::start` is never reached either
+
+§121 proved `dyld::_main` is never entered. There is exactly one function between the handoff and it, so it was
+instrumented next -- and it also never runs:
+
+```
+[dyld-boot-ENTRY] / AFTER_REBASE / AFTER_GUARD / AFTER_SIGEXC / AFTER_SUBSYS / BEFORE_MAIN :  0 lines
+HELLO=0
+```
+
+So `dyldbootstrap::start` is never entered, and the death is inside the **assembly stub** `__dyld_start` -- or at
+the address the loader jumps to, before any instruction of the chain the C++ milestones can observe runs.
+
+Reading that stub gives the contract that must hold, and it is not the jump address:
+
+```asm
+__dyld_start:
+	popq	%rdi		# param1 = mh of app        <-- READ FROM THE STACK
+	pushq	$0
+	movq	%rsp,%rbp
+	andq    $-16,%rsp
+	subq	$16,%rsp
+	movl	8(%rbp),%esi	# param2 = argc              <-- FROM THE FRAME
+	leaq	16(%rbp),%rdx	# param3 = &argv[0]          <-- FROM THE FRAME
+	leaq	___dso_handle(%rip),%rcx
+	leaq	-8(%rbp),%r8
+	call	__ZN13dyldbootstrap5startEPKN5dyld311MachOLoadedEiPPKcS3_Pm
+```
+
+The entry stub takes its Mach-O header from the **stack the loader builds**, and `argc`/`argv` from the frame above
+it. `mldr`'s `start_thread` sets `rsp` to `lr->stack_top` and jumps, so the whole handoff is the **frame contents**
+at `stack_top`, not the address. That is now the thing to print -- from the loader, in a context where printing is
+safe -- rather than another guest-side instrument.
+
+Progress of isolation, stated as the boundary each step proved:
+
+| instrument | result | boundary |
+|---|---|---|
+| `[mldr-handoff]` entry/stack | fired | loader reaches the handoff |
+| `dyld::_main` milestones | silent | death is before dyld's C++ main |
+| `dyldbootstrap::start` milestones | silent | death is inside `__dyld_start` or at the jump |
+| loader handoff **frame** | printed next | whether the stub's inputs are well-formed |
+
+The comparison that matters for the migration claim: this boundary lies **entirely before** any transport code path
+the migrations touch (the plane/courier/urgent/Ring work all runs later or elsewhere), which is consistent with
+§120's hatch-ON/hatch-OFF identity without depending on it.
