@@ -11251,3 +11251,38 @@ checkin reaches `completion-mark B` and `reply-stored` while the guest observes 
 the shellspawn deadline. The transport itself has been measured working at every layer: the page is one file at
 service time, the wake arrives, the request is serviced within about a millisecond, the slot ownership race is fixed,
 and per-thread RPC socket creations are 0.
+
+
+### 198. Two failure modes for the same request, and the step that separates them
+
+The same build, run with the server's diagnostics **off** (so nothing on the server side can block on the run log's
+pipe), still does not complete the second incarnation's checkin:
+
+```
+guest diag file:  deferred-checkin seq=1 status=0          <-- the FIRST incarnation only
+                  seq=3 after-dyld status=0
+                  seq=4 after-execpath status=0
+                  seq=5..7 (before/after-threadself, after-seed)
+```
+
+So the first incarnation is now completely healthy on the plane -- seven requests, every one answered with status 0,
+the slot-ownership race fixed and `release-drops-pending` silent -- and the second (post-exec) incarnation's checkin
+is still outstanding, with the page showing it `PENDING` and unanswered.
+
+Together with section 197 that gives two distinct modes for the same request:
+
+* **with** the server's diagnostics enabled, the request **is** serviced (log line `request op=2` 1.1 ms after its
+  page registration) and the server then stops between two plain stores, immediately after a log statement whose
+  output goes to the run log's pipe;
+* **without** them, the request is left outstanding, and no log exists to say whether a pass serviced it at all.
+
+Both modes end the same way: no completion store, the guest parked on a request it published, and the launcher's
+thirty-second shellspawn deadline as the only thing that ends the run.
+
+The step that separates them is therefore mechanical and belongs to the tooling rather than to the transport: the
+**server's** diagnostic logging must be as unable to block as the loader's now is (a file sink, not the run log's
+pipe). With that, the hatch can be on while the server keeps servicing, and the two questions become answerable
+independently -- "was the request serviced" and "did the completion store" -- after which the remaining item is the
+one the directive has named since the beginning: the wake must be the process **doorbell** (sections 8, 9, 10),
+because the loader's pre-doorbell fallback has now been measured to deliver the byte and still leave the request
+outstanding in a run where nothing else wakes the loop.
