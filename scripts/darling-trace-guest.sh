@@ -68,6 +68,13 @@ def sample(pids_of_interest):
         out[pid] = {
             "comm": comm,
             "cmdline": read(d + "/cmdline", binary=True) or "",
+            # WHAT it is blocked in, not merely THAT it is blocked: /proc/<pid>/syscall gives the syscall
+            # number, its arguments and the stack pointer for a sleeping process, and for a running one it
+            # gives -1. MEASURED need (doc section 183): a guest process that prints nothing, takes no
+            # signal and never returns cannot be distinguished from one parked in a bounded wait without
+            # this field -- and "bounded waits cannot park forever" was exactly the assumption that did not
+            # survive contact with the run.
+            "syscall": read(d + "/syscall") or "",
             "exe": os.readlink(d + "/exe") if os.path.exists(d + "/exe") else "<ENOENT>",
             "maps": maps,
             "state": fields[0] if fields else "?",
@@ -126,13 +133,17 @@ def main():
                 continue
             if pid not in seen:
                 order.append(pid)
-                seen[pid] = dict(info, maps=set(info["maps"]), samples=0, states=[], cmds=set())
+                seen[pid] = dict(info, maps=set(info["maps"]), samples=0, states=[], cmds=set(), syscalls={})
             rec = seen[pid]
             rec["maps"] |= info["maps"]
             rec["samples"] += 1
             rec["states"].append(info["state"])
             if info["cmdline"]:
                 rec["cmds"].add(info["cmdline"])
+            if info.get("syscall"):
+                # keep the union, and count repeats: "the same syscall in every sample" is what says parked
+                sc = info["syscall"].split(" ")[0]
+                rec["syscalls"][sc] = rec["syscalls"].get(sc, 0) + 1
             if info["exit_code"] != "":
                 rec["exit_code"] = info["exit_code"]
             rec["exe"] = info["exe"] if rec.get("exe", "<ENOENT>") == "<ENOENT>" else rec["exe"]
@@ -146,13 +157,20 @@ def main():
               % (pid, rec["comm"], rec["samples"], "".join(sorted(set(rec["states"]))),
                  rec.get("exit_code", "")))
         print("  exe:     %s" % rec.get("exe", "<ENOENT>"))
+        if rec.get("syscalls"):
+            tops = sorted(rec["syscalls"].items(), key=lambda kv: -kv[1])[:4]
+            print("  syscalls: %s" % ", ".join("%s x%d" % (k, v) for k, v in tops))
         if rec["cmds"]:
             for c in sorted(rec["cmds"]):
                 print("  cmdline: %s" % c[:100])
         else:
             print("  cmdline: (empty -- measured for guest processes)")
+        # Include ANY path under a Darling prefix, not just ones whose name contains "darling": the exec'd
+        # image itself (`<prefix>/sbin/launchd`) does not, and excluding it hid the answer to "which binary is
+        # this process actually running" -- the question this tool exists for.
         libs = sorted(p for p in rec["maps"]
-                      if "libsystem" in p or p.endswith("/dyld") or "mldr" in p or "/darling" in p)
+                      if "libsystem" in p or p.endswith("/dyld") or "mldr" in p or "/darling" in p
+                      or "/sbin/" in p or "/usr/libexec/" in p or p.startswith("/tmp/dr-"))
         others = sorted(set(rec["maps"]) - set(libs))
         if libs:
             print("  the files it actually maps:")
