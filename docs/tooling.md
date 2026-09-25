@@ -49,7 +49,10 @@ skill; this file is the durable index it points at.
    returns across several guest processes cannot say which one died; a probe that
    prints an identity (the buffer address above) turns a histogram into a
    bisection. Two different guests in one log looked like one inconsistent guest
-   until the probes carried that identity.
+   until the probes carried that identity. And the identity must be the **same
+   kind** in every component: a launchd tag without one cannot be lined up with a
+   dylib probe that has one, so the thread whose `open-entry` has no
+   `open-postcancel` cannot be confirmed as launchd's.
 
 ## Why these exist
 
