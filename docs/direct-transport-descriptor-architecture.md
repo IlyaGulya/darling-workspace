@@ -10745,3 +10745,34 @@ that survives the launchd image's stdio setup (fd 1, or a file the harness colle
 the second incarnation -- `after-dyld`, `after-execpath`, `thread_self`, the seed, and the entry into the loaded
 image -- becomes visible and names the next barrier. Everything in the per-thread-socket class that this cycle set
 out to move is now measured working: establishment, wake, servicing, identity, completion, and zero socket creation.
+
+
+### 181. The identity test in section 177 was invalid, and the contradiction it hid is real
+
+Section 177 compared the guest's memfd inode with the server's region inode and concluded "same memory". That
+comparison is **not an identity test**: an inode number is unique only within a filesystem, and the guest's memfd
+(`/dev/shm`-backed) and the server's mapping of a descriptor that arrived over the courier need not be the same
+filesystem. The server's own region line carries `dev=` next to `ino=` for exactly this reason, and the test used
+only half of the pair. That is the same class of defect as every other instrument error this work has recorded: the
+instrument was believed because it answered, not because it was capable of answering.
+
+With that removed, the state of the class is a genuine contradiction that the next instrument has to resolve:
+
+* the server completes the second incarnation's checkin, measured inside 1.2 ms of its page registration
+  (section 180's table), with `seq=1` and `status=0`;
+* the guest enters its reply loop for that request (`planeloop BEGIN op=2 mine=1 state=1`), prints nothing more on
+  **either** stream even though the bound is eleven seconds, and in the two-second-bound run reads
+  `reply_state = 0` (its `state=` field) at the timeout.
+
+Both cannot describe one shared page. So either the two sides hold different memory (and the identity test has to be
+redone with `(dev, ino)`, or better with the memfd's own file descriptor and a value written at a known offset), or
+the guest does observe `DONE` and does not proceed -- which the periodic observation below separates.
+
+The instrument is therefore: the guest prints, inside the reply loop, the `reply_state`/`reply_seq` it currently
+sees (a heartbeat every N iterations, not only at the timeout), together with its `(dev, ino)`; the server already
+prints `dev=` and `ino=` for every region it registers. One run then says whether the memory is one or two, and if
+it is one, whether the value the guest reads is the value the server wrote.
+
+What is *not* in question, and is the reason this section is a correction rather than a setback: the loader checkin
+is deferred, published through the plane, woken, serviced and completed by the server with status 0, within
+milliseconds of boot, with **zero per-thread RPC sockets created**.
