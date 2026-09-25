@@ -9304,3 +9304,41 @@ That also explains the whole set of earlier observations at once and without con
 **So the defect is not in the transport and not in the entry address: it is in dyld stub binding for the launched
 image.** The next measurement is correspondingly narrow -- the stub for `__stack_chk_guard` (and
 `dyld_stub_binder`) in this image, and whether it resolves for the launched program.
+
+
+### 137. The instrument itself was breaking the boot: the `Lnew` probe destroyed `%rax`
+
+§136 had one contradiction left: `main` is entered (entry verified against the binary's own symbol table and byte
+identity) and its first probe never prints. The answer is in my own probe:
+
+```asm
+Lnew:	...
+	movq	$1, %rax            <-- MY PROBE, and this is the register holding the entry point
+	movq	$2, %rdi
+	leaq	L__dyld_lnew_msg(%rip), %rsi
+	movq	$12, %rdx
+	syscall
+	jmp	*%rax               <-- jumps to 1, not to main
+```
+
+`__dyld_start`'s `Lnew` branch leaves the main image's entry in `%rax` and jumps to it. The diagnostic I added for
+§127 loads `1` (the write syscall number) into `%rax`, does the write, and then executes `jmp *%rax` -- **jumping to
+address 1**. That is not a suspicious "the image does not run"; that is the image never being reached because the
+instrument destroyed the control transfer it was measuring.
+
+Consequences, stated honestly because they invalidate a stretch of this investigation:
+
+* every measurement taken **after** the `Lnew` probe was added described a boot that **my probe had broken**;
+* the "no fault, correct address, jump executed, image code not entered" chain (§129, §133, §135, §136) is a
+  description of `jmp 1`;
+* the *earlier* results stand, because they predate the probe: dyld completing its whole `main`, all initializers,
+  `LC_MAIN` resolution, and the loader handoff;
+* the transport work was never involved at any point, and is still not.
+
+The fix is two instructions -- save `%rax` in `%r10` (which `syscall` does not clobber; it clobbers `%rcx` and
+`%r11` only) and restore it before the jump -- and it is the **twelfth** probe correction of this cycle and by far
+the most consequential: the previous eleven produced silence, this one produced a **wrong result**.
+
+The rule this adds to the ones already recorded: **a probe must not modify the state it is measuring.** Four of the
+twelve were libc-in-early-boot, one was linked into nothing, one measured a `return` instead of an entry -- and this
+one clobbered the register under test.
