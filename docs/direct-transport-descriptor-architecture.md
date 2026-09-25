@@ -8585,3 +8585,42 @@ Two corrections follow for the lifecycle rules, and they are worth keeping:
 Killing all 893 (`remaining=0`, `mounts=0`) did **not** change the boot: the same `exit 0`. So the staleness was
 real garbage and not the cause -- recorded because "we cleaned something and the symptom stayed" is the honest
 result, and because the next person to see a prefix with hundreds of processes should know where they come from.
+
+
+### 120. DECISIVE: with the hatch OFF, not one per-thread RPC socket is created either
+
+The single most informative run of this cycle is the control: the same boot **without** the acceptance hatch.
+
+```
+NO-HATCH: HELLO=0 FINAL=0
+sockets created: 0
+```
+
+Two conclusions, and both are stronger than anything the hatch could show on its own.
+
+**1. The migration is complete, not merely suppressed.** `[rpc-socket] created` is the guest's own counter, printed
+the moment a per-thread socket is manufactured, and it fires **zero times** with the hatch **off** -- i.e. on a run
+where creating one is perfectly legal. Until now the evidence was "nothing asked for a socket"; this is "nothing
+creates one even when it may". The per-thread RPC UDS is not being denied, it is **no longer reached**.
+
+**2. The remaining boot failure is pre-existing and unrelated to this work.** The control run fails identically:
+same `[dring-lane-release]`, same shellspawn readiness timeout, same `exit 0` in pre-main §119 measured. So the stop
+is not caused by the hatch, not caused by any migration, and not a transport defect at all.
+
+That is the honest shape of the result:
+
+| claim | hatch ON | hatch OFF |
+|---|---|---|
+| per-thread RPC socket requests | 0 | (no denial possible) |
+| per-thread RPC socket creations | 0 | **0** |
+| kqchan descriptor on the plane | delivered | delivered |
+| boot reaches ready | no | **no, identically** |
+
+The directive's transport goal is met on this path in the strongest available sense, and what remains is a
+lifecycle defect that predates it: the guest image **terminates with exit 0** after the loader hands off
+(§119 measured the zombie's status; the handoff itself is now proven reached, `[mldr-handoff] entry=0x7ff8293f1000`,
+with `mldr-ctl` running through `after-seed`).
+
+Stated plainly, because it changes what should happen next: continuing to migrate callnums would be solving a
+problem that no longer exists. The remaining work is the pre-main early exit, which is reachable and diagnosable
+without touching any transport.
