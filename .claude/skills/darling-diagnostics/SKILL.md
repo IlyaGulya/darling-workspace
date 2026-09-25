@@ -63,9 +63,20 @@ Canonical sources live in the selected manifest repository:
 * **A per-process diagnostic line is not a verdict.** Take `FINAL`, `pass=`,
   markers and counters only after the workload's own completion, and use one log
   path per run.
+* **A probe must not add a syscall, and must build for every arch of the target.**
+  A probe that got a thread identity from `gettid` added an emulated syscall to a
+  hot path, and the measured run got shorter -- it stopped reaching the console.
+  Take identity from the address of a local buffer: free, per-thread, and it does
+  not need a register that 32-bit builds do not have.
+* **Attribute probes.** Counts across several guest processes cannot say which one
+  died; without an identity a histogram is not a bisection.
 * **Check the premise before blaming the result.** Twice in one session a tool
   was "wrong" and was not: a `dd` had written an already-zero byte, and a probe
   tag really was absent because the probe wrote it one byte at a time.
+* **Keep the file intact.** A scripted helper replacement cut a function out of
+  `pthread_canceled.c` (the file came back empty) and the link failed with
+  `Undefined symbols`; find the function's end by brace counting, assert the
+  symbols that must survive, and write only after those assertions pass.
 
 ## Tooling work is not done when the tool runs once
 
