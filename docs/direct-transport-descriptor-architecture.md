@@ -10507,3 +10507,50 @@ the server's loop runs a pass after that byte is therefore the next measurement,
 one line in `_serviceProcessControl` recording that a pass ran and what it saw for a page whose `request_state` is
 `PENDING`, next to the existing `region`/`request` lines. That is a pass counter, not a per-page flood, and it
 answers "did the loop run" and "did it see the request" separately.
+
+
+### 174. The server never SEES the second incarnation's request: the wake, not the slot
+
+The pass instrument fires eight times, and every one of them is about the FIRST incarnation:
+
+```
+pass=3  sees-pending pid=2666158 op=2 seq=1 reply_state=0 transport_ready=1     (checkin)
+pass=5  sees-pending pid=2666158 op=1 seq=2 ...                                (ping)
+pass=7  sees-pending pid=2666158 op=4 seq=3 ...                                (set_dyld_info)
+pass=9  sees-pending pid=2666158 op=5 seq=4 ...                                (set_executable_path)
+pass=13 sees-pending pid=2666158 op=3 seq=1 ...                                (attach_lane)
+pass=41 sees-pending pid=2666158 op=8 seq=1 ...                                (vchroot)
+```
+
+Two regions were registered for the same pid, at pages `0x77409d8de000` and `0x77409d8dc000`, so the second
+incarnation really does own a second page, the map entry was replaced, and `transport_ready` was published on it.
+Its request, however, is never seen: there is no `sees-pending` line for it, and no `request` line in the whole run
+mentions anything it could be. So the failure is not the slot, not the ownership, not the version, and not the
+registration -- it is that **the server stops running passes for this process**, which is exactly the wake question
+the directive's sections 8, 9 and 16 raise, now measured rather than argued.
+
+The wake at that moment is the one the code documents as the pre-doorbell fallback: `ring_doorbell_fd` is `-1` in
+the loader (`planewake` printed nothing for either incarnation), so `__mldr_process_control_request` sends a
+one-byte, descriptor-less `MSG_DONTWAIT` message on the courier connection -- and that connection is the NEW one
+that just delivered the second page. The first incarnation's wake went the same way and worked; the second
+incarnation's does not produce a pass.
+
+A second fact from the same run narrows it further: the second incarnation's `mine` is 1 again, not 5, so
+`__mldr_process_control_request`'s `static uint32_t seq` was reinitialised -- the loader's state is re-established
+per guest image, which is also why `g_process_control_page` was NULL and a second page was created at all. So the
+second incarnation is not a continuation of the first; it is a fresh loader state with a fresh page, and its wake
+is the first thing that does not work.
+
+What this leaves as the next decision, with both options already named by the directive and by the code:
+
+* make the doorbell available on this path, which is what sections 8/9/16 require -- the loader has no doorbell
+  until a lane attach, and the checkin precedes the first attach by design, so this means the doorbell must exist
+  earlier (or the process must have one before the plane is used);
+* or make the plane not depend on a wake at all for a bounded bootstrap window -- the server services the page on
+  every pass it makes, so a pass that is guaranteed to happen is equivalent to a wake that is received, and it is
+  transport-independent.
+
+The measurement to take first is cheap and belongs on the server: count the passes that happen after the second
+region is registered. If that count is zero the wake is the cause and the doorbell option is required; if it is
+non-zero then a pass ran and did not see the request, which points at the page the guest published into rather than
+at the wake.
