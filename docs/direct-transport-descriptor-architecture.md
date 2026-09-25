@@ -10153,3 +10153,25 @@ structure is untouched and the server owns its own concurrency.
 `DARLING_GUEST_PLANE_TID_MUTATE=1` is the §9 mutation: the guest publishes `gettid() + 7919` with an otherwise
 correct request. The server must answer `-ESRCH` and must not move the real thread's cancellation state; a tid
 owned by another process is refused and counted (`pthread_canceled-refused`).
+
+
+### 162. The plane is doing the work, and the classification is settled
+
+Measured on the restored GREEN boot (3871 log lines, VERDICT PASS, HELLO=1 and FINAL=1, shellspawn ready, no
+pending-call/continuation exception, denials and urgent timeouts and courier misses all 0):
+
+* `[pc-postplane st=...]` **79 times** and `[pc-datagram]` **0**: every cancellation check in this boot went
+  through the process plane and **none** fell back to the datagram. That is the direct servicing working, and it
+  is the acceptance fact section 9 wanted -- the guest-side route is unambiguous even before the server's own
+  logging is enabled (which needs `DSERVER_LOG_STDERR=true`, not just `DARLING_SERVER_COURIER_LOG=1`).
+* `[console-plane-fd]` **3 times**: the console route runs on the plane with the descriptor arriving on the
+  courier.
+* The classification correction (section 161) is confirmed by boot: with the envelope tid on all 21 sites the boot
+  died in 2 lines; with PROCESS_SCOPED handlers back on the process thread it is GREEN.
+
+**What remains in the per-thread-socket class is exactly two `reason=checkin` creations**, and the audit narrows
+them to one site: `fork.c`'s child checkin falls back to the datagram when the child's page is not
+transport-ready within its bound (`if (!child_checked_in && dserver_rpc_checkin(...))`), and `dserver_rpc_checkin`
+is called from nowhere else in the guest. The bound is a transport wait, so the open question was whether
+readiness arrives late or never; the bound is now 2000 ms instead of 200 ms, which distinguishes the two with a
+single run and no semantic change.
