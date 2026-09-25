@@ -9961,3 +9961,62 @@ The same misreading was fixed in the console route (op 26u), where the status no
 the descriptor; `pthread_canceled` still needs the same treatment. The next measurement is why the server answers
 `-8` for op 7u at this moment, and whether the thread dies on that answer or on the return itself -- the point is
 now a single statement wide, which is a much better question than "launchd dies in open()".
+
+
+### 157. The console barrier is GONE, and the plane contract it exposed
+
+The fix was one line in `sys_pthread_canceled`, and it moved the boot from "dies at the first console open" to
+"launchd is running its job manager and networking". Thread `9e8c0`'s tags now read, in order:
+
+```
+CONSOLE_OPEN_BEGIN -> CONSOLE_OPENED -> CONSOLE_FDOPEN_OK -> SYSLOG_BEFORE -> SYSLOG_AFTER
+-> RUNTIME_ENTER -> RUNTIME_INIT2_DONE -> PID1_BLOCK_END -> JOBMGR_INIT_DONE
+-> BOOTSTRAPPER_SCHEDULED -> NETWORKING_END -> NETWORKING_DONE
+```
+
+and the console route itself is proven: `[console-rpc-begin]` once and `[console-plane-fd]` once, i.e. the
+semantic half ran on the plane (op 26u) and the descriptor arrived on the courier.
+
+What the one line was: `sys_pthread_canceled` took its return from the reply **payload**, which the server does
+not populate for op 7u, instead of from the completion **status**. The server's normal answer for "no cancellation
+pending" is `-EINVAL` (XNU: `0` means cancel this thread, `EINVAL` means do not), so the payload's cleared zero
+was read as "cancel me" -- and `CANCELATION_POINT` answers that with `-EINTR` from inside `open()`, after which the
+cancellation machinery tears the thread down. A server error was being delivered to launchd as an interruption.
+
+**The contract this establishes, and the audit it forces.** `__dserver_plane_request_ex` returns the completion
+status; `outReply0`/`outReply1` are extras (descriptor tokens). The status IS the call's return. Every route that
+reads `reply0` as a return value is wrong unless the server publishes something there for that op -- and only
+three places in `server.cpp` write `reply_payload[0]` at all. The routes that still read the payload as a return
+are `semaphore_signal`, `semaphore_signal_all`, `mach_port_mod_refs`, `mach_port_move_member` and their siblings
+in `mach_traps.c`; each needs either `ret = planeStatus` or an explicit payload publication, decided per op and
+recorded.
+
+### 158. DESIGN DECISION REQUIRED: servicing a plane op on a thread that is already suspended
+
+The next barrier is server-side and it is a structual one:
+
+```
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  Thread has both a pending call and a pending continuation
+```
+
+`thread.cpp` enforces that a microthread can have a continuation callback (a suspended call) or a pending call,
+never both. A plane op is serviced by synthesizing a Call on the target thread (`callFromMessage` -> `doWork`),
+so if that thread is suspended mid-call, the plane request is the second of the two. The plane's design says one
+outstanding serialized request per process; it does not say what happens when the target has a continuation.
+
+Two ways to resolve it, and they are not equivalent:
+
+* **(a) Defer**: if the thread has a continuation, hold the plane request until it is idle, then service it. This
+  keeps one servicing path and preserves ordering, at the cost of a bounded wait and a queue that must survive
+  suspension.
+* **(b) Service without the guest thread**: run the call's semantics directly (they are already implemented once
+  in the `Call`), without attaching it to the microthread. This removes the collision by construction, at the
+  cost of a second servicing path for exactly those ops whose semantics need no guest thread state.
+
+The choice should follow from what the ops in question actually need: an op that reads or mutates the target
+thread's own state (cancellation bits, port space) needs the thread and therefore (a); an op that only needs the
+process (console open, and vchroot-like lookups) does not need it and is a candidate for (b).
+
+Recorded as a decision to take, not as a bug to fix: the current throw is an assertion that the invariant holds,
+and the plane route is what violates it.
