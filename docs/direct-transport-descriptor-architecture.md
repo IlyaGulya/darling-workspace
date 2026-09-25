@@ -8624,3 +8624,55 @@ with `mldr-ctl` running through `after-seed`).
 Stated plainly, because it changes what should happen next: continuing to migrate callnums would be solving a
 problem that no longer exists. The remaining work is the pre-main early exit, which is reachable and diagnosable
 without touching any transport.
+
+
+### 121. The guest dies BEFORE `dyld::_main` -- and the substitution matrix is exhausted
+
+Two results, both narrowing the defect to a place no transport change reaches.
+
+**The dyld milestones never fire.** Gated milestones were added at `dyld::_main`'s entry and around
+`initializeMainExecutable()`, and the run produced **not one of them** -- not even `ENTRY`:
+
+```
+dyld-ENTRY / dyld-INIT_BEGIN / dyld-INIT_END:   0 lines
+HELLO=0
+```
+
+So `dyld::_main` is never entered. The guest dies **before** it, i.e. inside `__dyld_start` (the Mach-O entry
+stub) or at the handoff address itself: `[mldr-handoff] entry=0x7ff8293f1000`. This supersedes §119's "pre-main
+initialisation" with something narrower: it is not *during* dyld's main, it is *before* it.
+
+**The component substitution matrix has no usable GOOD arm.** §3/§4 of the directive ask for the last known
+GREEN build and a GOOD/CURRENT substitution matrix. That is not available in this tree, and the reason is a fact
+about the repository rather than a choice:
+
+```text
+procctl-src: git log -> a single EMPTY commit "init"; git status -> every path untracked
+```
+
+There is no tracked baseline, so no GOOD source and no GOOD diff. The only other build tree found
+(`/home/ilyagulya/work/procctl-build`, artifacts dated 09-18) was substituted in full for
+`darlingserver` + `mldr` + `dyld` + `libsystem_kernel` and **also failed** (`HELLO=0`), so it is not the GREEN
+reference either. Only one `shellspawn` binary exists anywhere in the tree, so that component cannot be
+substituted at all -- which means the matrix can never be completed as specified, whatever build is used.
+
+What the matrix did establish, and it is worth keeping:
+
+| substitution | result |
+|---|---|
+| GOOD(09-18) server+mldr+dyld+lsk, current shellspawn | RED, same readiness timeout |
+| `--rootless exec` instead of `shell` | RED, same point (guest never runs) |
+| current, all components | RED |
+| current, hatch OFF | RED, identically |
+
+The `exec` result matters independently: the failure is not the launcher's shell mode, shellspawn readiness
+being a red herring for a broken loader chain.
+
+**Reusable cleanup helper added** (directive §10), in the manifest repository because it is workspace tooling:
+`scripts/prefix-cleanup.sh --prefix ABS [--settle N] [--dry-run]`. It enumerates prefix-owned processes by
+`/proc/<pid>/exe` **and** `cmdline`, shuts the runtime down, kills, re-checks, escalates once, and exits non-zero
+if any process or mount remains -- so it is usable as a gate rather than advice. The `exe` arm is the point: this
+is the mechanism by which 893 guest processes accumulated unnoticed (§119).
+
+Next step, precisely: verify what `[mldr-handoff] entry=0x7ff8293f1000` actually points at (the `LC_MAIN` entry
+of the deployed Mach-O `dyld`) and instrument `__dyld_start`, because `dyld::_main` is now proven unreached.
