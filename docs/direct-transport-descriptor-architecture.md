@@ -10433,3 +10433,31 @@ the ordering again.
 This is the second time this cycle that the deciding measurement came from the guest-process tracer rather than from
 the code under investigation: a guest process has `comm`, an empty `cmdline` and an `ENOENT` `exe`, and only its
 `maps` and its state say what it really is and what became of it.
+
+
+### 170. No signal and no message: the remaining candidates for the second incarnation's stop
+
+The signal probe installed in the loader's `main` (raw-syscall async-signal-safe handler for SEGV/SYS/ILL/BUS/ABRT/FPE,
+`_exit(91)` after reporting) produced **zero** lines, so the second incarnation's stop is not a signal. The loader's
+own failure paths all `fprintf(stderr, ...)` and those lines do reach the run log -- the same stream carries its
+`[mldr-ctl]` diagnostics -- so a printed failure would have appeared. Nothing did.
+
+That leaves, for the exact point between "page created and sent" and "checkin published":
+
+* an `exit`/`_exit` on a path that does not print (there are such paths in the loader -- e.g. a bare `exit(1)` after
+  a condition, or an early return that unwinds to one);
+* the process being **replaced** rather than stopped (an exec of the same binary keeps the pid and produces no
+  line of its own), which is plausible here because this is precisely the invocation that execs launchd;
+* a stop inside code with no instrumentation, which the bounded waits would have to be reached to be ruled out --
+  and they were not.
+
+A correction to the previous section's reasoning, stated so it is not built on: the tracer's `states=SZ` was
+observed on a **different** launch (the tracer runs its own command), so it describes the incarnation that its own
+run produced, not necessarily this one. The conclusion that survives is the one the two runs agree on -- the
+`launchd` image is mapped, and the invocation stops before its checkin -- and the tracer must be left attached to
+**this** boot (same command, same environment) before the "exited versus replaced" question is answered.
+
+What this class now has, all measured: the loader checkin is deferred by design and the FIRST incarnation proves the
+order on the plane (`deferred-checkin status=0` before `after-dyld`/`after-execpath`); `[rpc-socket] created
+reason=checkin` is **0**; the guest dyld opens successfully because the process is registered before the dylinker
+load; the second incarnation stops at one point that is now named to a single function boundary.
