@@ -11050,3 +11050,46 @@ The halves of this that the instruments can settle in one run each, and which is
 Between them, the question "same memory or not" is answered by measurement rather than by an identity that two
 mount namespaces can defeat. Everything else in the class is unchanged: the move is implemented, the plane services
 the deferred checkin promptly with status 0, and per-thread RPC socket creations are 0.
+
+
+### 192. The page carries the server's REGISTRATION writes and not its COMPLETION write
+
+Reading the guest's page from outside, with the offsets taken from the header (`request_state=4 request_op=8
+request_seq=12 reply_state=48 reply_seq=56 futex=96 transport_ready=104`), one run gives the whole picture:
+
+```
+#0 (first incarnation's page):  request_state=0 (IDLE)  request_op=3 (ATTACH_LANE)  request_seq=1
+                                reply_state=2 (DONE)   reply_seq=1  futex=1  transport_ready=1
+#1 (second incarnation's page): request_state=1 (PENDING) request_op=2 (CHECKIN)   request_seq=1
+                                reply_state=0          reply_seq=0  futex=1  transport_ready=1
+```
+
+and the server's own service-time log for the same run names the descriptor it wrote through:
+
+```
+service pid=2986406 op=2 region_fd=15 ino=14600025 dev=1 size=528
+guest incarnation-2 request: memfd=7 ino=14600025 dev=1
+```
+
+So this is the sharpest form of the question, and it is no longer about identity, timing, wakes, ABI or aliasing:
+
+* the server serviced `op=2` on a descriptor whose `(dev, ino)` **read at service time** equals the guest's page;
+* the same page, read from the guest's own address space, **does** contain the server's registration writes --
+  `futex=1` and `transport_ready=1`;
+* it does **not** contain the completion: `reply_state=0` where the completion path stores `DONE(2)`, and the
+  completion path's own log line is emitted **between** the late-reply guard (`if (region.map != page) continue`) and
+  the stores, so the log printing means the guard passed and the stores were reached;
+* and the second incarnation's request is still `PENDING` with `reply_state=0` for every sample of the observation
+  window, i.e. the guest is parked on a request it published and that nothing answered visibly.
+
+Two log lines settle this without any further hypothesis, and they are the next step: the server prints
+`page->reply_state` immediately **after** its store, and it prints when `processControlLateReplyRetired` fires. If
+the store's value reads back as `DONE` in the server's own mapping while the guest's mapping and the outside reader
+both see `0`, then two shared mappings of one file are not coherent -- which contradicts what a shared mapping is,
+and means the file identity has to be re-established yet again with something that cannot coincide (a value written
+at a known offset by one side and read by the other, which the existing marker was meant to be and which the
+completion path never reached because the store itself is the thing in question).
+
+Everything else in the class remains measured: the loader's checkin is deferred, published through the plane, woken,
+serviced and completed with status 0 within about a millisecond of registration, with zero per-thread RPC sockets
+created and all four transport counters at 0.
