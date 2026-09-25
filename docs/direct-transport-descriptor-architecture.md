@@ -10298,3 +10298,40 @@ checkin first:
 and, decisively for this class, **`[rpc-socket] created reason=checkin` is now ZERO** in a boot that still fails
 later. The remaining barrier is a new one (no `launchd` tags in that run at all), which is investigated next; the
 socket criterion of the directive is met at the boot level, and the runtime workloads still have to confirm it.
+
+
+### 166. Where the reordered boot stops now, precisely
+
+With the hook in place the boot still fails, and the failure is bounded to one place rather than described in
+general. The server's own trace, with timestamps, for pid 2606909:
+
+```
+.165061  rpc-register-process   (a checkin over the DATAGRAM, fork=0, lifetime=-1)
+.165300  uds-checkin            page=1 page_ready=1
+.166180  attach-lane-op         status=0 token=...
+.176072  request op=8           (VCHROOT) seq=1
+.176402  request op=6           seq=1
+.177460  region pid=... size=528          <- page mapped
+.178542  request op=1           (PING)   seq=1
+.178600  request op=2           (CHECKIN) seq=2
+.178713  checkin-reply status=0
+```
+
+Both pages for the incarnation are created, sent and **mapped** (`region` twice, different inodes), the plane
+services PING, CHECKIN, SET_DYLD_INFO, SET_EXECUTABLE_PATH and VCHROOT, and the checkin completes with status 0.
+The guest's last events are an in-progress `openat` followed by a **new** page creation for the same pid -- that is
+an exec -- and then silence: the second page is mapped by the server, but **no plane request follows it**, so the
+new invocation stops between its own establishment and its first publish. No launchd image is reached at all.
+
+Two facts worth separating, because they matter for the acceptance criteria:
+
+* **`[rpc-socket] created reason=checkin` is 0**, which is the literal criterion of the directive's success item.
+* A checkin still **arrives over the datagram** for the incarnation's first registration (`uds-checkin ... fork=0`).
+  The datagram route is still *used*; it simply no longer *creates* a socket, because one already exists. The hard
+  socket-disable run (`DARLING_DISABLE_THREAD_RPC_UDS=1`) is exactly the instrument that distinguishes usage from
+  creation, and it is the next gate -- after this stall is resolved, since a failing boot would fail the disable
+  run for an unrelated reason.
+
+The next step is therefore narrow and named: the second invocation creates, sends and has mapped its page, then
+publishes nothing. That is one function boundary (`__mldr_process_control_create` succeeded, the deferred checkin's
+publish did not happen), not a design question.
