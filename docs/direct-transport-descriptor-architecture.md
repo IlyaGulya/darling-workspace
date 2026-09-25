@@ -10962,3 +10962,51 @@ The next instrument is therefore not another wait: it is an **unconditional stag
 gate itself was measured to be a hazard), so the last step the loader actually executed is readable instead of
 inferred from which prints appeared. That, and not a hypothesis about the wait, is what the next run needs to say
 whether the failure is after the loop or inside it.
+
+
+### 187-190. Reading the guest's own page from outside: the completion DOES land, and it lands LATE
+
+Instruments repaired in this stretch, each found by using it:
+
+* `mldr_diagf` no longer uses **any libc**: the formatting is done in the loader (raw writes only). The reason is
+  measured -- `vsnprintf` takes libc's internal locks and the loader forks while other threads exist, so the
+  diagnostic could deadlock the code it was instrumenting. This is the same rule the file already states for
+  pre-runtime code: raw syscalls, no libc.
+* the loop's `reply_state` reads are **atomic on every iteration**, and the wait is taken on a value read *before*
+  the state check -- the canonical order for a wait whose wake comes from another process.
+* `scripts/darling-trace-guest.sh` gained: the full `/proc/<pid>/syscall` line with every argument, per-thread
+  syscalls with thread ids, the timespec read out of `/proc/<pid>/mem` with the **right argument per syscall**
+  (`FUTEX_WAIT` takes it in arg3, `clock_nanosleep`/`nanosleep` in arg2 -- reading arg3 for the latter reads the
+  *remain* pointer, which is garbage), the parked `pc` resolved against the process's **raw** maps, and finally the
+  ability to read a **shared page out of a still-parked guest process** (`--page-file`, discovered from a hint the
+  guest writes, because ASLR makes the address unguessable across runs).
+
+With the page readable from outside, and its field offsets taken from the header
+(`version=0 request_state=4 request_op=8 request_seq=12 reply_state=48 reply_status=52 reply_seq=56
+reply_payload=64 futex=96 transport_ready=104`), the same run shows:
+
+```
+48 samples:  request_state=1 (PENDING)  reply_state=0  reply_seq=0  futex=1  transport_ready=1
+ 1 sample:   request_state=0 (IDLE)     reply_state=2 (DONE)  reply_seq=1  futex=1  transport_ready=1
+```
+
+Both readings are the **same address in the same run**, and the single DONE reading carries a released request slot
+-- i.e. the guest published, was answered, left its loop, and released the slot. So:
+
+* the server's completion is written into **the page the guest polls** -- the transport, the identity and the ABI are
+  all correct (this is the two-way proof that the earlier `(dev, ino)` comparison could not give);
+* the guest **does** observe it and does release the slot;
+* the dominant state across the observation window is `PENDING`, so the servicing arrives **late** -- by the time it
+  lands, the launcher's 30-second shellspawn deadline is the thing that fails.
+
+That is a different class of problem from everything in sections 165-186: not a lost wake, not a stale page, not a
+missing handler, but **when** the second incarnation's request is serviced. It also explains this stretch's whole
+sequence of observations: with a two-second bound the guest gave up first, with an eleven-second bound nothing
+printed because the completion came after the window, and with no timeout the guest sat in its wait until the
+completion finally arrived at the end of the run.
+
+The remaining question is therefore the one the directive names in sections 8-11: the wake must be the **process
+doorbell**, and the loader has none at this point (`ring_doorbell_fd` is -1, so it sends the documented pre-doorbell
+courier byte). The courier byte is delivered and does produce a pass -- that was measured -- so the work is to find
+why a pass that is known to happen does not service this page promptly, with the pass counter and the region
+registration timestamps already in place as the instruments.
