@@ -9449,3 +9449,33 @@ constructed in `stack.c`, and again in `vchroot`'s `main`, and see which of the 
 
 This is, finally, a plain argument-plumbing defect in the loader, of exactly the class the directive named as the
 bisect target ("argv/env/stack/load_results modifications"), and it is outside the transport work entirely.
+
+
+### 141. The loader builds the guest `argv` correctly -- and `main` still takes the `argc < 3` branch
+
+The loader's own print, taken at the moment it writes the guest stack, is unambiguous:
+
+```
+[mldr-guest-argv] argc=3 argv0=vchroot argv1=/proc/self/fd/3 argv2=/sbin/launchd argv3=(null)
+```
+
+That is exactly what the launch line requires: the wrapper, the directory to chroot into (`/proc/self/fd/3`, the
+prefix fd already used elsewhere in this design), and the program to `execv` -- which is **`/sbin/launchd`**, not
+`shellspawn` directly. So the intended chain is `vchroot` → `launchd` → (launchd daemon) →
+`org.darlinghq.shellspawn`, and the loader's part of it is correct.
+
+And yet, in the same single process:
+
+```
+[vchroot-MAIN]                 1 line      <- main entered, once
+vchroot <dir> <binary> [args...]  1 line   <- the argc<3 branch was taken
+```
+
+One process, `argc = 3` written to the stack by the loader, and the usage branch that requires `argc < 3` taken
+afterwards. That contradiction is now the whole remaining question, and it is a single value: **what `argc` does
+`main` actually receive.** That is what is being measured -- printed from inside `main` with a raw syscall, so the
+answer cannot be an artifact of the reporting either.
+
+Everything else in the chain is now measured and correct: the loader's `argv` construction, the handoff frame
+(mh, argc, argv), dyld's entry resolution, its jump, and `main` being entered. What is left is a value that differs
+between the stack the loader wrote and the parameter the function reads.
