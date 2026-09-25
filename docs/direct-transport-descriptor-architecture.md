@@ -10368,3 +10368,39 @@ exists (`process-control` request lines and the page's own state), so the next r
 What is already true and measured, for the record: `[rpc-socket] created reason=checkin` is **0** in this boot, the
 dyld dependency cycle is resolved (the guest dyld opens successfully because the process is registered before the
 dylinker load), and the first incarnation's whole sequence runs on the plane.
+
+
+### 168. The second incarnation stops BEFORE its publish, and the next instrument is already built
+
+The wait for a plane reply was unbounded while every other wait in the loader is bounded, so it could not report
+where it gave up -- an unbounded wait whose failure is invisible is the "instrument that cannot answer" class. It
+now expires after about ten seconds, prints the page state, the op, the sequence, `claimed`, `transport_ready` and
+the image, and returns a distinct code so the caller's datagram route runs.
+
+That instrument did not fire, which is itself the finding: the second incarnation never reaches the reply wait at
+all. With the loader diagnostics, its trace is exactly
+
+```
+[mldr-ctl] bootstrap BEGIN      image=.../mldr!.../sbin/l...   (the exec of launchd)
+[mldr-ctl] page pid=... size=528 sent=1                        (its page created and sent)
+<no deferred-checkin line, no plane-request TIMEOUT line>
+```
+
+so it stops between creating and sending its page and publishing its checkin. Both waits on that path are bounded
+(`wait_ready` 200 ms, the slot claim 2000 ms), and neither reports; the checkin's courier token step is skipped
+because the loader has no lifetime pipe in this run. So the process is either alive and stuck somewhere the
+instrumentation does not cover, or gone -- and the tool that distinguishes those has existed since this cycle
+began: `scripts/darling-trace-guest.sh` reports, for a short-lived guest process, its `comm`, its readable `maps`
+and its exit state, and `scripts/darling-prefix-map.sh` names the prefix it is rooted in. The next measurement is
+therefore not a code change but that trace, on this exact boot, to decide between "hung" and "exited" and to get
+the process's own view instead of the loader's.
+
+For the record, this is the state of the directive's success items at this point:
+
+| item | state |
+|---|---|
+| moved loader checkin after establishment | **done**, and the first incarnation proves the order |
+| boot GREEN | no: the second incarnation stops before its checkin |
+| `reason=checkin` socket count = 0 | **0** in this boot (the criterion's literal form) |
+| hard socket-disable full suite | not yet -- a failing boot would fail it for an unrelated reason |
+| thread transport FD slope = 0 | not yet |
