@@ -11585,3 +11585,61 @@ carries a blocking `mach_msg`. Both are lanes, neither is a per-thread socket.
 State of the class: the boot PASSES with both markers; creations are 1 with the mach-msg lane hatch and 2 without it;
 socket denials, urgent timeouts and courier misses are 0 in every run; the loader's checkin for both incarnations
 rides the plane with status 0; and the single remaining per-thread socket is attributed to one call on one thread.
+
+
+### 206. The blocking family rides the Ring, mach_msg is Ring by default, and the denial oracle is the instrument
+
+This section records a chain in which every step was decided by a measurement, and two of those measurements corrected an
+instrument or a conclusion.
+
+**The oracle is the hard hatch, not a counter.** `DARLING_DISABLE_THREAD_RPC_UDS=1` aborts inside
+`mach_driver_get_fd()` and prints pid, tid and the call name. The earlier `last_fd`-change detector was **not** an
+accurate creation detector across threads, so no architectural claim was built on it.
+
+**Denial 1 -- `mach_port_request_notification`** (main thread, first use). An early Mach port operation, the same class
+as `mach_port_type` / `mach_port_mod_refs` / `mach_port_unguard` / `vchroot`, whose home is the process management
+plane. Added `DSERVER_PROCESS_CONTROL_OP_MACH_PORT_REQUEST_NOTIFICATION 28u`, appended last: the server builds the
+**ordinary** Call (one semantic core) with two 32-bit request words per payload word, and the OUT parameter `previous`
+travels as the guest ADDRESS the Call writes through `writeMemory`. Denial gone.
+
+**mach_msg Ring by default** (directive section 2). `gr_machmsg_enabled()` required
+`DARLING_GUEST_RING_MACH_MSG=1`; it now reads the same variable as a **diagnostic opt-out** (`=0`), so an unset
+environment selects the Ring. Denial gone -- but only after the **image** question was settled, see below.
+
+**The instrument was running stale, twice.** The denial printed a format string with **no** image field after the field
+had been added, which meant the denying process was not running the binary that had been rebuilt. Two independent
+causes were found and both are now handled: (a) the same source file is compiled **twice** -- `emulation.dir` and
+`emulation_dyld.dir`, the latter for the `dyld` image, which had an object from two days earlier; building
+`libsystem_kernel.dylib` does **not** cover it, so `dyld` must be built and deployed too; (b) `lkm.c` has a second
+**eager** socket request in `mach_driver_init` that guards the main thread's fd, and `mldr`'s copy of the wrappers
+no-ops the call-note macro. The denial report now carries `delta=`, the caller's offset relative to
+`mach_driver_get_fd`, which resolves to a real symbol with `llvm-nm` and is immune to address-space layout.
+
+**Denial 2 -- `fork_wait_for_child`, at `_dserver_rpc_fork_wait_for_child + 0x19`.** The symbol is the **outer**
+generated wrapper, and `+0x19` is its socket line: the outer wrapper requested the socket **before** the explicit
+wrapper could attempt the lane, so the lane attempt could never prevent the request. The generator now leaves
+`server_socket = -1` for a ring-routed call and the explicit wrapper obtains the socket **lazily**, only on the path
+where the lane was not taken; a caller that already has a descriptor (the loader's checkin entry point) keeps it.
+Denial gone, and `semaphore_timedwait` (denied in the same position before it) is gone with it.
+
+**The blocking family** (directive sections 4-8). Audit of the real generated names -- `semaphore_wait`,
+`semaphore_timedwait`, `semaphore_wait_signal`, `semaphore_timedwait_signal`, `fork_wait_for_child`: every one has a
+**fixed inline request**, a **header-only reply**, **no descriptor**, **no destroy** and **no caller-S2C**, and every one
+**waits**. They are therefore canon-safe for a closed request->reply lane and unsafe for the single-slot management
+plane, where a blocking request would occupy the one slot and stall every other management operation. Added
+`DSERVER_RING_CLASS_BLOCKING 0x40u`, classified the five explicitly (not as SIMPLE) and added them to the opcode set of
+record and to the generator's ring set. No new guest primitive was needed: the existing wait is already the required
+one -- spin, advertise as a waiter, **`FUTEX_WAIT` with no transport deadline**, re-check, treating `EAGAIN`/`EINTR`
+as a re-check rather than as a result -- which is exactly section 7's shape, and the semantic timeout continues to
+travel in the request body and be decided by the server's Call (section 8).
+
+**Denial 3 -- `kqchan_proc_open`**, at the outer generated wrapper again. It is a **descriptor-bearing** early call;
+its planned home is the management plane with the descriptor on the SCM_RIGHTS courier, exactly as `console_open`
+(26u) and `kqchan_mach_port_open` (9u) already do.
+
+**Also fixed here**: the child after `fork` created a per-thread RPC socket **with no RPC behind it** (to reset and
+guard the loader's cached descriptor), which the oracle denied while reporting a stale call label. The loader now
+**invalidates** the cached descriptor in `__mldr_postfork_child` (and the main-thread shortcut applies only while the
+process socket exists), and the child neither creates nor guards one. The reason-emission budget for a declined lane
+attempt was raised from 8 to 96 lines per process: MEASURED, the miss that mattered arrived at log line 1356, far past
+the point where eight earlier misses had spent the budget.
