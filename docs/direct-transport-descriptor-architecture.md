@@ -12076,3 +12076,35 @@ rule of thumb: an op that must be serviced **while the guest cannot run anything
 thread to run it. Ops whose semantics are a state change on the server's own objects (dyld info, executable path,
 thread registration) can be reached through their core directly; ops whose semantics genuinely need a target thread
 executing (signal delivery into a thread's state) already have their own direct path.
+
+
+### 219. Attempted and measured: direct servicing of CHECKIN is NOT equivalent -- and the revert had to be verified like any other change
+
+Following section 218, the plane's CHECKIN (op=2) was serviced directly: the registration still happened inside
+`callFromMessage` (the Call object is still built), and its **semantics** ran on the plane pass through the same core
+`Call::Checkin::processCall` runs -- `Process::notifyCheckin(architecture, isMainThread(...), is_fork)` -- instead of
+`t->doWork()`.
+
+**Result: the failure moved, it did not disappear.** The loader got **past** the stall this section set out to remove
+(the boot no longer stopped on `SET_DYLD_INFO`) and failed at the next one:
+
+```
+[release-drops-pending] site=mldr.c:1347
+Failed to tell darlingserver about our executable path
+Rootless shellspawn did not become ready within 30000ms
+```
+
+So the substitution is not an equivalence: `Checkin::processCall`'s body is small, but the Call path around it is not --
+the ingest block in `callFromMessage` handles the lifetime descriptor's CMSG index, the stack hint, the fork flag and the
+fork-latency metric, and the thread it returns is created and armed by that block. Running the visible few lines on the
+plane while leaving that machinery to a Call whose work never runs is exactly the "second convention" this work forbids.
+
+The change was therefore **reverted**, and the revert is itself recorded as a measurement: a first attempt at undoing it
+by byte span glued a brace onto a `catch` and broke the translation unit, and the artifact was only believed after it
+compiled **and** ran. Restored baseline, confirmed by run: `sem_ready` PASS (denied 0, created 0) and `sem_block 2000 1`
+HANG exactly as before the attempt, with section 217's direct `SET_DYLD_INFO` servicing retained.
+
+**The shape of the real fix is therefore now clear**: the checkin's registration and arming must be reached by the plane
+**without** a Call at all -- which means extracting that ingest block into a helper both the datagram path and the plane
+call, rather than substituting the tail of one for the other. That is a refactor of the registration, and it is the next
+step; it is not a new transport.
