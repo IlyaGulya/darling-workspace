@@ -11853,3 +11853,50 @@ path.
 
 `basic 20` and `ool 10` create threads and do not print, while `basic 1` does; that is the same thread-starvation
 question already recorded for `pthread_create` and is not yet separated from the resume defect above.
+
+
+### 213. The 5-second semaphore hang is NOT the Ring: it reproduces on the legacy datagram arm, and the sweep says race, not timeout
+
+**The A/B the directive asked for.** One workload, `sem_gap 5000 1`, two transports:
+
+```
+Ring      (DARLING_DISABLE_THREAD_RPC_UDS=1):  HANG   denied=0  created=0
+legacy UDS (DARLING_GUEST_RING_BLOCKING=0)  :  HANG   denied=0  created=3
+```
+
+The legacy arm HANGS TOO -- and it creates three per-thread sockets, so it really is the old datagram path. By the
+directive's own rule that settles the attribution: **the Ring is not the cause**, and the bug is in the SEMANTICS the
+two transports share. The diagnostic opt-out that made this measurable is
+`DARLING_GUEST_RING_BLOCKING=0`, which changes the transport and nothing else: the same call, the same request and the
+same semantic timeout. (Adding it also produced a small lesson about the harness: the verdict wrapper stored only the
+VALUE of `--env` and dropped the flag, so the runner rejected the bare `K=V` -- a wrapper bug that would have been read
+as a workload failure.)
+
+**The delay sweep**, one iteration each, UDS arm, host watchdog = requested delay + 10 s, no transport timeout:
+
+```
+sem_block 100   PASS   elapsed=0.101
+sem_block 2000  HANG
+sem_block 3000  PASS   elapsed=3.001
+sem_block 3500  HANG
+sem_block 5000  PASS   elapsed=5.001
+```
+
+**There is no threshold, and that is the result.** A monotone boundary would have pointed at a bounded wait; instead
+2.0 s and 3.5 s hang while 0.1 s, 3.0 s and 5.0 s complete, and `sem_gap 5000` itself has now both hung and passed on
+the same two arms. A delay-dependent monotone failure cannot look like this; a **race** can. The rule the directive
+sets -- search for a timeout only if the sweep shows a threshold -- therefore fires as "do not search for a timeout",
+and the ~3 s figure this document records elsewhere must not be used as evidence here (it belongs to
+`gr_duplex_wait_reply`, a bounded proof helper the semaphore path does not call: the semaphore path is
+`gr_full_trap` -> `gr_wait_reply`, whose `FUTEX_WAIT` has no timeout at all).
+
+**What the race is, stated as the thing to measure rather than a guess.** The shape is a lost wakeup between a waiter
+and a signal that crosses it: the waiter must be registered where the signal can find it -- or the signal must have left
+a state that a later wait observes immediately, which is the XNU `semaphore_signal`-with-no-waiter contract. The
+flakiness says the two orderings are both reachable and one of them loses the signal. The next measurement is the
+transaction-scoped trace the directive specifies (guest publish/enter, server consume/process/suspend, signal thread
+before/after its RPC, server signal enter/result, waiter resume, reply publish, futex bump and consume), run against a
+**hanging** instance so the missing stage is named rather than inferred. Two green results stand unchanged: the boot
+passes under the hard hatch with zero denials and creates zero sockets without it, and the short/medium semaphore parks
+(`sem_block 100`, `sem_timed 300`, `sem_wait_signal`, `sem_timedwait_signal`, `r2` with a 2.995 s park) are exact on
+the Ring.
