@@ -11816,3 +11816,40 @@ plist, or on a futex. The Ring trace and the per-thread guest trace both already
 
 Two green results remain from this cycle and are unaffected by that: the boot passes under the hard hatch with zero
 denials, and it creates zero per-thread sockets without it.
+
+
+### 212. Suite result per mode, and the hang localized to the resume of a suspended Ring Call
+
+Mode by mode, each its own boot, hard hatch on, verdict markers tied to the result line:
+
+```
+RING_MACH_TEST mode=sem_ready            pass=1 kr=0   elapsed=0.000     created=0 denied=0
+RING_MACH_TEST mode=sem_timed            pass=1 kr=49  elapsed=0.300     created=0 denied=0
+RING_MACH_TEST mode=sem_block 100        pass=1 kr=0   elapsed=0.101     created=0 denied=0
+RING_MACH_TEST mode=sem_wait_signal      pass=1 kr=0   elapsed=0.000     created=0 denied=0
+RING_MACH_TEST mode=sem_timedwait_signal pass=1 kr=49  elapsed=0.301     created=0 denied=0
+RING_MACH_TEST mode=r2                   pass=1 parked_parent_ok=1 parked_elapsed=2.995 created=0 denied=0
+RING_MACH_TEST mode=basic 20             NO RESULT LINE                    created=0 denied=0
+RING_MACH_TEST mode=ool 10               NO RESULT LINE                    created=0 denied=0
+RING_MACH_TEST mode=sem_gap 5000 1       NO RESULT LINE                    created=0 denied=0
+```
+
+and individually `basic 1` passes (`pass=1 min_elapsed=0.000603`) with the same hatch.
+
+The two facts together localize it: a park of 101 ms completes and a park of **2.995 s** completes (`r2`, which is the
+mach_msg duplex park) while a park of **5 s** never returns, and the failure is not a fast failure -- it hangs, so the
+wait being used is the **unbounded** one, correctly, and the reply simply never arrives. That names the missing piece
+and it is on the server side: a Ring Call that suspends its fiber for a semaphore wait must be **resumed and its final
+reply published** when the semaphore becomes signalled (by the other thread's `semaphore_signal`, which itself arrives
+on the management plane). The client is waiting exactly as designed; the server is not completing it.
+
+Also recorded, because it names a bound this work must not reuse: the guest has a helper
+`gr_duplex_wait_reply` that is deliberately a **bounded proof primitive** -- 50 ms per `FUTEX_WAIT` times 60 rounds,
+about 3 s before `committed-unknown` -- and its own comment says it is right for a regression proof whose liveness must
+never wedge a boot and **WRONG as the semantics of a real blocking receive**, because it would turn a slow server into a
+fabricated failure. The blocking family's wait is the unbounded one (which is why the 5 s park hangs instead of failing
+after 3 s), so the ~3 s figure seen in this work's earlier notes belongs to the proof primitive, not to the production
+path.
+
+`basic 20` and `ool 10` create threads and do not print, while `basic 1` does; that is the same thread-starvation
+question already recorded for `pthread_create` and is not yet separated from the resume defect above.
