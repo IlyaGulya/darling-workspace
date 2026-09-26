@@ -12108,3 +12108,36 @@ HANG exactly as before the attempt, with section 217's direct `SET_DYLD_INFO` se
 **without** a Call at all -- which means extracting that ingest block into a helper both the datagram path and the plane
 call, rather than substituting the tail of one for the other. That is a refactor of the registration, and it is the next
 step; it is not a new transport.
+
+
+### 220. The registration block is now SHARED (validated), and the plane's first use of it crashes -- with the missing input named
+
+**What was done, and validated.** The ingest block of `callFromMessage` -- which builds and arms the Process and the
+Thread, takes the lifetime descriptor out of the message, registers the thread with its process and records the message
+address -- is now a function both routes can call:
+
+```cpp
+	std::pair<std::shared_ptr<Process>, std::shared_ptr<Thread>>
+	Call::registerPeerForMessage(Message& requestMessage, dserver_rpc_callhdr_t* header, bool replyErrors);
+```
+
+`callFromMessage` calls it, so the datagram path is unchanged **by construction** rather than by inspection, and MEASURED:
+`sem_ready` still PASSes (denied 0, created 0), which exercises checkin on every boot.
+
+**The plane's first use of it crashed the server**, and the crash is recorded rather than worked around:
+
+```
+[dserver-CRASH sig=b addr=0x684
+Rootless shellspawn did not become ready within 30000ms
+```
+
+SIGBUS at `0x684` -- a small offset, i.e. a dereference through an invalid base -- immediately after the plane began
+running the shared registration and the direct `notifyCheckin`. The most probable missing input is named by the helper
+itself: it does `tmp->setAddress(requestMessage.address())`, and a plane `Message` has **no socket address**, whereas
+every message the datagram ingest sees carries one. The plane path therefore has to supply an address (or the helper has
+to tolerate its absence) -- that is the next thing to measure, and it is a small, specific question rather than another
+substitution.
+
+**The plane path was reverted to the Call dispatch** and the baseline re-verified by run (`sem_ready` PASS, `sem_block
+2000 1` HANG as before). The shared-registration refactor is **kept**: it is behaviour-preserving, it compiles, and it is
+what makes the next attempt an equivalence instead of a substitution.
