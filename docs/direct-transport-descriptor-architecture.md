@@ -11677,3 +11677,56 @@ change to the signal number -- a degradation this path accepts and a socket is n
 
 That closes the per-thread-socket class at the boot gate: zero creations, zero denials, both markers, with and without
 the hatch.
+
+
+### 208. The blocking family on the Ring: four modes exact, and `pthread_canceled` returns EBUSY on the plane
+
+**What is measured working** (mode `sem_*` added to `src/tools/ring_mach_msg_test.c`, the durable workload):
+
+```
+RING_MACH_TEST mode=sem_ready            pass=1 kr=0  elapsed=0.000
+RING_MACH_TEST mode=sem_timed            pass=1 kr=49 elapsed=0.300
+RING_MACH_TEST mode=sem_wait_signal      pass=1 kr=0  elapsed=0.000
+RING_MACH_TEST mode=sem_timedwait_signal pass=1 kr=49 elapsed=0.300
+RING_MACH_TEST mode=timeout              pass=1 (0.200386 s)
+```
+
+`kr=49` is `KERN_OPERATION_TIMED_OUT`, and `elapsed=0.300` for a requested 300 ms is the directive's section 8/14 claim
+measured in one line: the SEMANTIC timeout decided the result and the transport invented neither the number nor a
+deadline of its own. With the hard socket-disable on, the same run reports **socket denials 0 and creations 0**.
+
+**One server-side root cause was fixed and it is the D1/D2 envelope rule.** A plane handler stamped `tid = pid`
+("PROCESS_SCOPED"), so `semaphore_signal` -- while another thread was legitimately parked inside a blocking Ring
+`semaphore_wait` whose Call had suspended its fiber -- was executed **on the parked thread**, and the state machine
+refused it:
+
+```
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  Thread has both a pending call and a pending continuation (pending_call=58 tid=4158725 suspended=1)
+```
+
+callnum 58 is `semaphore_signal`. All 21 plane handlers now take the **publisher's tid** from the envelope
+(`page->request_tid`, published before the release store of `request_state`, falling back to `pid`), which is what
+"thread identity is part of the transport envelope" means in code. The throw disappeared from every subsequent run.
+
+**What remains, with its exact cause.** Four modes that create threads (`sem_block`, `basic`, `ool`, `r2`) start and
+never print a verdict, and the process then spins; the log of an isolated `sem_block` names the loop:
+
+```
+[pc-postplane st=16- sp=f18c0]        (72 occurrences)
+[release-drops-pending] site=dserver-ring.c:2752
+```
+
+The marker is `pthread_canceled.c:96`, `st=16` is `EBUSY`, and the site retries: `pthread_canceled` reaches the plane
+and is answered `EBUSY` instead of being serviced, so every thread-creating workload hangs in the cancellation
+handshake. That is not a transport gap -- it is the D1/D2 servicing rule, which says in as many words that
+`pthread_canceled` is serviced **directly against the target `Thread` state, WITHOUT `Call::callFromMessage()` /
+`Thread::doWork()`**, precisely because the naive synthesized-Call-on-a-thread shape collides with a thread that is
+suspended or busy. The publisher's tid is the right envelope for a request that belongs to its issuer, but
+`pthread_canceled`'s **target** is a different thread, and it must be resolved by identity and have its semantic core
+called directly rather than being turned into a Call that has to be dispatched on someone's thread.
+
+Also recorded: `[sigprocess-urgent-uncompleted] no-datagram-retry` appeared in place of the former socket fallback
+(section 207), and the harness marker `mode=sem_block` must be matched on the **verdict** line rather than the
+`[rmmt] start` line -- a marker that matches a start line reports PASS for a workload that never finished, which is
+the "instrument that cannot answer" class again.
