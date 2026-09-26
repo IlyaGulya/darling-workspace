@@ -12039,3 +12039,40 @@ thread-start `semaphore_timedwait` that expires (2 s) instead of being signalled
 name that answers 15 (`bsdthread_terminate` signals the join semaphore it was given, so a zero name means the dying
 thread had none). Both are guest-visible fields the server trace prints, so the next step is a trace-level comparison of
 a PASSING thread creation against a HANGING one, which the existing instrument already supports.
+
+
+### 218. The thread-creation handshake timeout is NORMAL, and the stall is the single plane slot held by a Call-based op
+
+The trace comparison the previous section asked for, PASS vs HANG, same workload shape, UDS arm:
+
+```
+PASS  begin semaphore_timedwait pid=192594 tid=192596 wait_name=5123 sec=0 nsec=100000000
+PASS  reply semaphore_timedwait ... code=49 outcome=timeout            <-- times out and the run still PASSES
+PASS  begin semaphore_signal    pid=192594 tid=192594 signal_name=4867
+PASS  ... (the trace CONTINUES: the workload's own operations follow)
+
+HANG  begin semaphore_timedwait pid=195915 tid=195916 wait_name=2307  sec=2
+HANG  reply semaphore_timedwait ... code=49 outcome=timeout            <-- identical timeout
+HANG  begin semaphore_signal    pid=195915 tid=195915 signal_name=2563
+HANG  ... (the trace STOPS: nothing else is ever recorded for this process)
+```
+
+**The handshake's timeout is not the defect.** It expires in the PASSING run too, and then the correct signal is sent and
+the workload completes. The anomaly I flagged two sections ago is therefore withdrawn: a thread-start
+`semaphore_timedwait` that expires is normal here, and the two runs are identical through that point, including the
+signal that follows.
+
+**What differs is everything after it: the trace stops.** In the HANG the process emits no further semaphore record, and
+the loader of that same process is simultaneously spinning on a plane request of its own
+(`iter=20000 waited=0 reply=0`). Those two facts together are the shape of the single-slot plane holding a request whose
+servicing needs a guest thread, while the guest's threads are waiting on the plane: the slot is occupied by an op that
+was written the way `SET_DYLD_INFO` was -- build a Call, `callFromMessage`, `doWork()` on a guest thread -- and the
+thread-creation path is exactly where that op is reached (the new thread's CHECKIN). The `SET_DYLD_INFO` fix removed
+that dependency for one op; the same classification now has to be applied to the ops on this path, starting with CHECKIN,
+whose semantics are the reason the thread exists at all.
+
+That is the next fix and it is the directive's section-11 classification, now with measurements behind it rather than a
+rule of thumb: an op that must be serviced **while the guest cannot run anything** may not be executed by asking a guest
+thread to run it. Ops whose semantics are a state change on the server's own objects (dyld info, executable path,
+thread registration) can be reached through their core directly; ops whose semantics genuinely need a target thread
+executing (signal delivery into a thread's state) already have their own direct path.
