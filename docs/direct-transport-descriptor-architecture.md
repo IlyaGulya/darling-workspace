@@ -12005,3 +12005,37 @@ the thread that published the request, which is busy by construction. The common
 chosen: it is that the synthesized Call's execution is made to **depend on a guest thread being free**, when the plane's
 whole purpose is to be usable when the guest is exactly not in a state to run anything. That is the next fix, and it is
 a servicing change to the plane handlers that build Calls, not a new transport.
+
+
+### 217. The plane's synthesized Calls no longer depend on a free guest thread (op=4 fixed and measured), and the suite RED is the thread-creation handshake
+
+**Fix applied and measured.** `SET_DYLD_INFO` (op=4) is no longer serviced by building a Call and running `doWork()` in
+the plane pass. It is now serviced **directly**, through `Process::setDyldInfo`, which calls the very core
+`Call::SetDyldInfo::processCall` calls (`dtape_task_set_dyld_info`) -- one semantic core, reached without requiring a
+guest thread to be free, exactly as `pthread_canceled` already reaches `Thread::pthreadCanceled`. The envelope names the
+process by NSID, and MEASURED: that key alone answered `-ESRCH` and the loader reported
+`Failed to tell darlingserver about our dyld info` (the request was answered instead of hanging, which proved the shape),
+while trying NSID and then the process ID found it and the boot returned to GREEN (`sem_ready` PASS, denied 0,
+created 0). That removes the class the previous two sections measured: a plane request whose servicing depended on the
+free time of the thread that was itself waiting for the answer.
+
+**What still hangs, with the evidence that names it.** `sem_block 2000 1` and `basic 20` still HANG (denied 0), and the
+server's own semaphore trace of a `HANG` shows the workload's main thread still occupied with the **thread-creation
+handshake**:
+
+```
+begin  semaphore_timedwait pid=185350 tid=185351 wait_name=5123  sec=2 (the handshake, timed out: code=49)
+begin  semaphore_signal    pid=185350 tid=185350 signal_name=4867   <-- the main thread is HERE, not in its own wait
+```
+
+The workload's own `semaphore_wait` never reaches the server, so the mode cannot print: the main thread is inside
+`pthread_create` -- which is exactly section 214's conclusion, now re-measured after the op-4 fix, and it is why the
+delay is irrelevant to these hangs (the helper thread is created before the wait). The loader's `iter=N waited=0 reply=0`
+spin on its own op=4 is a **downstream symptom** of the process being wedged in that handshake, not an independent
+stall.
+
+So the remaining RED is one handshake, and the two anomalies to explain are already named in the trace: a
+thread-start `semaphore_timedwait` that expires (2 s) instead of being signalled, and a `semaphore_signal` with a ZERO
+name that answers 15 (`bsdthread_terminate` signals the join semaphore it was given, so a zero name means the dying
+thread had none). Both are guest-visible fields the server trace prints, so the next step is a trace-level comparison of
+a PASSING thread creation against a HANGING one, which the existing instrument already supports.
