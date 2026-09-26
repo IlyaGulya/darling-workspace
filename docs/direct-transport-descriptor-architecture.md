@@ -11792,3 +11792,27 @@ That is the state of the gate: the boot passes with the hatch as it is today, th
 create threads do not, and the next measurement must first establish what the hatch was actually enforcing in the
 image where the hang occurred. A conclusion drawn from an instrument whose premise was not checked is exactly what
 this work's rules forbid, and this section records the two readings that were wrong before the third was believed.
+
+
+### 211. The hatch is visible in the guest (measured), and the hang narrows to thread creation's semaphore handshake
+
+**The hatch's premise is now measured rather than assumed.** A boot with `DARLING_DISABLE_THREAD_RPC_UDS=1` ran, inside
+the guest, `printenv DARLING_DISABLE_THREAD_RPC_UDS` and echoed it: the guest printed `HATCHCHECK1`, so the variable the
+gate scans for is present in the environment of the guest image. The worry recorded in the previous section was
+therefore real as a class but does not apply to the guest images here, and "denials 0" stands as measured for them.
+
+**That leaves the hang without its easiest explanation.** If nothing was denied, then the four thread-creating modes did
+not fail because a socket request was refused -- and the difference between them and the four exact semaphore modes is
+that they **create threads**. That points at the handshake `pthread_create` performs, and this work already records what
+that handshake uses: an earlier finding notes that `pthread_create` blocks above roughly fifty live guest threads in the
+server's **callnum 62 (`semaphore_timedwait`) handshake**. Callnum 62 is one of the five calls this cycle moved from
+the per-thread datagram socket to the thread's own Ring lane, so the handshake now runs over a transport it did not run
+over before, and the four exact modes above (which do not create threads) are exactly the ones that pass.
+
+Stated as the next measurement rather than a conclusion: with `basic 1` and the hatch on, read the Ring's own trace for
+callnums 58/60/62 (signal / wait / timed wait) and find the step where the handshake stops -- which request was
+published, whether its reply was delivered, and whether the creating thread was parked on the ring, on the loader's
+plist, or on a futex. The Ring trace and the per-thread guest trace both already exist for this.
+
+Two green results remain from this cycle and are unaffected by that: the boot passes under the hard hatch with zero
+denials, and it creates zero per-thread sockets without it.
