@@ -12141,3 +12141,23 @@ substitution.
 **The plane path was reverted to the Call dispatch** and the baseline re-verified by run (`sem_ready` PASS, `sem_block
 2000 1` HANG as before). The shared-registration refactor is **kept**: it is behaviour-preserving, it compiles, and it is
 what makes the next attempt an equivalence instead of a substitution.
+
+
+### 221. The address hypothesis is weak, and the next instrument is named
+
+Section 220 named the plane message's missing socket address as the most probable input behind `[dserver-CRASH sig=b
+addr=0x684`. That hypothesis does not survive looking at the API: `Message::address()` returns an `Address` **by
+value** and `Thread::setAddress(Address)` stores one, so nothing dereferences a pointer through a missing address, and a
+default-constructed address is a value rather than an invalid base. The crash therefore comes from somewhere else in
+the direct path, and the honest state is that it is **not yet localized**.
+
+The next instrument is small and this work already has the pattern: the crash probe prints the signal and `si_addr`, and
+it is given the `ucontext` and ignores it (`(void)uc`). Printing the **faulting instruction pointer** from that context
+turns "SIGBUS at 0x684" into an address inside the server binary, and `llvm-nm` resolves it to a function and an offset
+exactly as it did for the guest's `_dserver_rpc_fork_wait_for_child + 0x19`. An instrument that reports where a crash
+happened and not just that it happened is the same rule this work has applied to every other failure: name the stage
+before changing the code.
+
+Recorded so the next attempt starts from measurements: the shared registration refactor is in place and validated
+(`sem_ready` PASS); the plane's direct use of it crashes and the plane path is reverted to the Call dispatch; and the
+crash needs one line of instrumentation before it can be attributed.
