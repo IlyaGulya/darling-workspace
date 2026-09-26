@@ -11730,3 +11730,36 @@ Also recorded: `[sigprocess-urgent-uncompleted] no-datagram-retry` appeared in p
 (section 207), and the harness marker `mode=sem_block` must be matched on the **verdict** line rather than the
 `[rmmt] start` line -- a marker that matches a start line reports PASS for a workload that never finished, which is
 the "instrument that cannot answer" class again.
+
+
+### 209. Correction: `st=16-` is `-EINVAL`, not `EBUSY` -- and what the thread-creating hang therefore is not
+
+The previous section read `[pc-postplane st=16-]` as "EBUSY(16) and the site retries". **That reading was wrong**, and the
+probe's own definition says why: `__pc_probe` prints its value in **hexagonally rendered digits followed by `-` for
+negative**, so `st=16-` is `-0x16` = `-22` = **`-EINVAL`**, which for `pthread_canceled` is the *normal* answer meaning
+"no cancellation pending, do not cancel". The 72 repetitions are therefore the ordinary polling of a cancellation
+point, not a retry storm, and `pthread_canceled` is not the cause of the four thread-creating modes failing to print.
+
+The same reading also confirms the semantic core is behaving: `dtape_thread_cancel_state_canceled` returns only `0` or
+`EINVAL`, and the observed value is exactly `EINVAL` (the `action 0` branch when `pending` is not set, or when the
+cancel is disabled or already acted upon). A status that only ever takes two values cannot be reporting a transport
+fault, and saying so required decoding the instrument rather than trusting the shape of its output -- the same rule
+that has caught every other instrument defect in this work: **check the premise before blaming the result**.
+
+**What is therefore still open, stated as the question rather than a guess.** Four modes that create threads
+(`sem_block`, `basic`, `ool`, `r2`) start, never print a verdict, and leave a process whose plane requests keep being
+published and released with the server's reply outstanding:
+
+```
+[pc-entry] [pc-threads-ok] [pc-postplane st=16-] [pc-return-9+]
+[release-drops-pending] site=dserver-ring.c:2752
+```
+
+`release-drops-pending` fires when a plane request is released while its slot state is still PENDING, which means the
+caller gave up on a completion the server had not produced. That is the thread to pull, and the next step is not a
+guess: take a **live** hung process and read what its threads are actually blocked in with
+`scripts/darling-trace-guest.sh` (per-thread syscalls with tids, the full `/proc/<pid>/syscall` line, and the parked
+`pc` resolved against raw maps), which is the tool built for exactly this class and which was extended for it in this
+work. The blocking-family migration itself is what the four exact modes above measure; the hang appears only where a
+thread is *created*, so the suspicion belongs on the thread-creation handshake and on a lane whose owner is suspended,
+not on the semaphore transport.
