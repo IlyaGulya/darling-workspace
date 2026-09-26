@@ -11541,3 +11541,47 @@ management plane with status 0; the region lifetime is incarnation-safe and the 
 race is fixed; the vchroot query has its own plane op; the boot passes with zero socket denials, zero urgent
 timeouts and zero courier misses; and the two remaining creations are both named `reason=checkin` with their pids
 and tids.
+
+
+### 205. The two surviving socket creations are named, and one of them is `mach_msg`
+
+Both of this section's results come from **instruments**, not from reasoning, and one of them corrects an earlier
+conclusion of this same document.
+
+**The `reason=` label was not a reason.** The creation line printed `reason=checkin`, and that was read as "two checkin
+calls still need a socket". A check on the decision itself -- a print on the branch where the plane block is skipped --
+fired **nothing**, while the socket was still created. The label is `t_rpc_socket_reason`, which is set at **thread
+entry** in `darling_thread_entry` and is cleared only when a socket is finally created, so it names the **first
+candidate** of that thread, not the operation that created the socket.
+
+**The precise attribution is the call site.** The guest already knows the exact name at the point of use:
+`__dserver_note_call(name)` sets `__dserver_current_call` immediately before each request. The instrument now reports
+the change of the descriptor returned by `mach_driver_get_fd()` (the same descriptor every call, so a change is
+exactly a creation) together with that name. One correction to the first attempt matters: it was placed in the guest's
+`libsystem_kernel`, and building only `mldr` left it **out of the artifact under test**, so it printed nothing -- the
+probe has to be compiled into the image it measures (`ninja libsystem_kernel.dylib`).
+
+With it in place, the creations are, exactly:
+
+```
+rpc-socket-call] pid=3576418 tid=3576421 call=semaphore_timedwait fd=1048573
+rpc-socket-call] pid=3576418 tid=3576418 call=mach_port_request_notification fd=1048575   (main thread: the process socket)
+rpc-socket-call] pid=3576418 tid=3576418 call=kqchan_proc_open      fd=1048575            (main thread)
+rpc-socket-call] pid=3576423 tid=3576423 call=fork_wait_for_child   fd=1048575            (main thread)
+```
+
+so the two creations were the first `mach_msg_overwrite` of two non-main threads, and `mach_msg`'s lane path is behind
+its own hatch: `gr_machmsg_enabled()` reads `DARLING_GUEST_RING_MACH_MSG=1` and without it the call goes to the
+datagram by default. **Measured with the hatch on**: the boot still PASSES and creations fall from **2 to 1**.
+
+**What is left is one call, named.** `semaphore_timedwait` on a non-main thread. The classification note says exactly
+why it is the last one: the semaphore **signalling** operations are on the management plane (ops 24u/25u) while
+`semaphore_wait` is deliberately excluded, because it **blocks** and the plane is a single serialized slot serviced
+inside the server's own loop pass. So its remaining home is the per-thread socket, and giving it a proper one is the
+directive's §18-§21 shape: a request published non-blockingly whose **wait happens on the guest side** (the server
+wakes a guest futex), which is what keeps the slot free -- or the duplex lane's wait-capable shape, which already
+carries a blocking `mach_msg`. Both are lanes, neither is a per-thread socket.
+
+State of the class: the boot PASSES with both markers; creations are 1 with the mach-msg lane hatch and 2 without it;
+socket denials, urgent timeouts and courier misses are 0 in every run; the loader's checkin for both incarnations
+rides the plane with status 0; and the single remaining per-thread socket is attributed to one call on one thread.
