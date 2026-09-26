@@ -11643,3 +11643,37 @@ guard the loader's cached descriptor), which the oracle denied while reporting a
 process socket exists), and the child neither creates nor guards one. The reason-emission budget for a declined lane
 attempt was raised from 8 to 96 lines per process: MEASURED, the miss that mattered arrived at log line 1356, far past
 the point where eight earlier misses had spent the budget.
+
+
+### 207. MILESTONE: the boot passes under the hard socket-disable, and creates no socket without it
+
+Two runs, same build:
+
+```
+DARLING_DISABLE_THREAD_RPC_UDS=1 :  VERDICT PASS   socket denials 0   DENIED lines 0   HELLO=1 FINAL=1
+without the hatch                :  VERDICT PASS   rpc-socket created 0 (loader counter AND per-call attribution)
+                                                      rpc-socket-DENIED 0   HELLO=1 FINAL=1
+```
+
+The second run is the stronger claim of the two: the per-thread RPC socket is not *forced absent*, it is **naturally
+never requested**, which is what section 20 of the directive asks for.
+
+**Denial 3 -- `kqchan_proc_open`** was migrated the same way as its two siblings (`kqchan_mach_port_open` 9u,
+`console_open` 26u): `DSERVER_PROCESS_CONTROL_OP_KQCHAN_PROC_OPEN 29u`, appended last, the server running the ordinary
+Call (one semantic core) and the descriptor the call RETURNS travelling on the process courier with its token in
+`reply_payload[1]`, resolved guest-side by the courier receive, with `-1` from the plane still meaning "nothing
+published" so the datagram fallback stays safe. Denial gone, and the boot reached its full length (3916 log lines)
+with HELLO and FINAL.
+
+**The last denial was not a missing migration but a rule that was not yet obeyed.** `sigprocess` fell back to the
+datagram after `[urgent-wait-TIMEOUT] op=12 slot=1 state=1`: the bounded, signal-safe poll of the urgent slot gave up
+and returned `-1`, which is the same value the function returns when **nothing was published** -- so the caller read
+"no transport" and took the datagram, creating exactly the socket this work removes. The request HAD been published
+(the slot was PENDING and the doorbell had been rung), so retrying it elsewhere would run the operation twice. The
+timeout now returns a distinct `-2`, releasing its own slot (a late completion carries the caller's sequence and is
+ignored by the seq check), and `sigexc.c` treats `-2` as **published, completion not observed**: no datagram retry, no
+socket, one bounded report (`[sigprocess-urgent-uncompleted]`), and the only thing given up is a possible server-side
+change to the signal number -- a degradation this path accepts and a socket is not.
+
+That closes the per-thread-socket class at the boot gate: zero creations, zero denials, both markers, with and without
+the hatch.
