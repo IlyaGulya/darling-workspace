@@ -11937,3 +11937,35 @@ family is what this cycle moved onto the Ring. The next step is therefore the ha
 `semaphore_signal` that answers `15` is the anomaly to explain first (a signal aimed at a name the server no longer
 recognises), and the trace now prints exactly the fields needed to follow it -- operation, pid, tid, both names, sec/nsec
 and the code.
+
+
+### 215. The suite RED is a plane single-slot stall (`SET_DYLD_INFO`, op=4, never answered), and the tid change was not it
+
+With loader diagnostics on, a HANGING `sem_block 2000 1` (UDS arm) prints its own cause:
+
+```
+[mldr-ctl] request pid=145856 op=4 page=... memfd=12 ino=14604479
+[mldr-ctl] planeloop BEGIN pid=145856 op=4 mine=3 state=1
+[mldr-ctl] iter=6000 waited=0 reply=0 seq=3
+[mldr-ctl] iter=9000 waited=0 reply=0 seq=3
+```
+
+op=4 is `DSERVER_PROCESS_CONTROL_OP_SET_DYLD_INFO`, `state=1` is PENDING, `reply=0` is `reply_state != DONE`, and the
+loop count is unbounded. So the loader published a management request through the plane and the server **never
+answered it**; the workload's own semaphore operations never leave the guest because the thread that would run them is
+still inside image setup. That is consistent with the section-2 A/B -- both transports reach the same stall -- and it
+is the second time this class has appeared (section 207's boot had a plane request that was serviced late; here it is
+not serviced at all).
+
+**The publisher-tid change was tested and is NOT the cause.** MEASURED: reverting all 21 plane handlers to the
+process-scoped `tid = pid` convention (keeping the envelope helper and the D1/D2 classification where an operation's
+meaning is tied to its caller) leaves `sem_block 2000 1` hanging exactly as before. The revert is safe and is kept: the
+classification the directive asks for is now decided by measurement rather than applied uniformly -- process-scoped
+semantics use the process's own thread, and a per-operation choice is made only where the semantics require the caller.
+That also disposes of the hypothesis that the earlier `pending_call=58` abort and this stall share a cause: the first was
+a synthesized Call aimed at a thread that was legitimately parked, and this is a request that is not serviced at all.
+
+The next measurement is on the server's plane pass for op=4: whether it claims the slot at all (`planeloop` on the guest
+side shows the state it sees), whether the synthesized `SetDyldInfo` Call runs, and whether the reply stores
+(`reply_seq`/`reply_status`/`reply_state`) execute -- the same instrument chain section 193 built for the completion
+store, applied to this op. The `iter=N waited=0 reply=0` counter is already the guest-side half of exactly that question.
