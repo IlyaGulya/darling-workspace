@@ -11969,3 +11969,39 @@ The next measurement is on the server's plane pass for op=4: whether it claims t
 side shows the state it sees), whether the synthesized `SetDyldInfo` Call runs, and whether the reply stores
 (`reply_seq`/`reply_status`/`reply_state`) execute -- the same instrument chain section 193 built for the completion
 store, applied to this op. The `iter=N waited=0 reply=0` counter is already the guest-side half of exactly that question.
+
+
+### 216. Server-side half of the stall: direct ops are serviced, the synthesized-Call op is not, and the region has lost its fd
+
+The server half of the same HANG, with `DARLING_SERVER_COURIER_LOG=1 DSERVER_LOG_STDERR=true`, while the loader spun
+through `iter=20000`:
+
+```
+process-control-pass    pass=1890 sees-pending pid=157119 op=7  seq=1 reply_state=0 transport_ready=1
+process-control-service service pid=157119 op=7  region_fd=-1 ino=0 dev=0 size=0 map=0x735a7cdfc000
+process-control-marks   completion-mark A/B pid=157119 op=7
+process-control-store   reply-stored pid=157119 op=7 seq=1 readback=2 reply_seq=1
+process-control-pass    pass=1915 sees-pending pid=157119 op=24 seq=2 reply_state=0 transport_ready=1
+process-control-service service pid=157119 op=24 region_fd=-1 ino=0 dev=0 size=0
+```
+
+Three facts, each measured:
+
+1. **The pass IS running and IS claiming**: `pass=` advances into the thousands and `sees-pending` names op=7
+   (`pthread_canceled`) and op=24 (`semaphore_signal`) -- the two operations whose handlers service their semantics
+   **directly**, without synthesizing a Call. Both complete, both store their reply.
+2. **op=4 (`SET_DYLD_INFO`) is never serviced.** Its handler is one of the ones that builds a `Message`, calls
+   `Call::callFromMessage`, and runs `created->thread()->doWork()` **inside the plane pass**. Nothing about it appears
+   in the server log at all, while the guest spins on it forever.
+3. **The region has lost its descriptor identity**: `region_fd=-1 ino=0 dev=0 size=0`, which is the shape the earlier
+   incarnation-safety fix produces -- the outgoing incarnation's destructor closes the courier fd for the pid while the
+   incoming incarnation keeps its mapping. Servicing survives that (ops 7/24 work), so it is not the stall's cause, but
+   it is the state in which the stall happens and it is worth stating rather than assuming.
+
+**Both publisher choices deadlock, and that is the finding.** With `tid = pid`, the Call is dispatched onto the
+process's own thread -- which for this request is the very thread parked waiting for the reply, so the plane pass waits
+on work that waits on the pass. With `tid = publisher` (the change reverted in the previous section) the Call lands on
+the thread that published the request, which is busy by construction. The common defect is therefore not which tid is
+chosen: it is that the synthesized Call's execution is made to **depend on a guest thread being free**, when the plane's
+whole purpose is to be usable when the guest is exactly not in a state to run anything. That is the next fix, and it is
+a servicing change to the plane handlers that build Calls, not a new transport.
