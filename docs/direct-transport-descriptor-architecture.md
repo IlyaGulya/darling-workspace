@@ -11900,3 +11900,40 @@ before/after its RPC, server signal enter/result, waiter resume, reply publish, 
 passes under the hard hatch with zero denials and creates zero sockets without it, and the short/medium semaphore parks
 (`sem_block 100`, `sem_timed 300`, `sem_wait_signal`, `sem_timedwait_signal`, `r2` with a 2.995 s park) are exact on
 the Ring.
+
+
+### 214. The trace names the missing stage: the hang is in THREAD CREATION, before the test's own wait ever leaves the guest
+
+The server already had the right instrument and it only needed to be switched on: `DSERVER_TEST_TRACE_FILE=<path>` makes
+`test-diagnostics.cpp` append `rpc.semaphore.begin` / `rpc.semaphore.reply` records -- operation, pid, tid, wait/signal
+names, sec/nsec, code and outcome -- without touching the transport. Three attempts of `sem_block 2000 1` on the UDS arm
+gave `NO-RUN`, `PASS (elapsed=2.001)` and `HANG`, and the trace of the HANG says:
+
+```
+begin  semaphore_timedwait pid=141975 tid=141976 wait_name=5123   sec=2 nsec=0
+reply  semaphore_timedwait pid=141975 tid=141976 wait_name=5123   code=49 outcome=timeout
+begin  semaphore_signal    pid=141975 tid=141976 signal_name=4867 code=0  outcome=success
+begin  semaphore_signal    pid=141975 tid=141976 signal_name=0    code=15 outcome=error
+```
+
+and then that process emits **nothing more**.
+
+**The test's own semaphore operations are not in the trace at all** -- no `semaphore_wait` and no
+`semaphore_signal` for the semaphore the workload created. The records that ARE there are the thread-start handshake:
+a two-second `semaphore_timedwait` that times out (`code=49`), a successful signal, and then a signal with a ZERO name
+that returns `code=15`. The workload's main thread never reaches its own wait, because it is inside `pthread_create`
+waiting for a thread that the handshake never finishes delivering.
+
+That is the answer to the whole section: the 5 s / 2 s / 3.5 s "hangs" are not semaphore-wait hangs at all. The delay
+is irrelevant to them because the mode creates its helper thread BEFORE it waits, so a thread-creation that never
+finishes hangs the mode at the same place for every delay -- which is exactly the non-monotone, flaky pattern the sweep
+produced, and it is also why `basic 1` passes (one thread, the race won) while `basic 20` and `ool 10`, which create
+threads repeatedly, do not. And it is why the A/B could not blame the Ring: both transports reach the same stuck
+handshake.
+
+This document already records the handshake's identity: an earlier finding notes that `pthread_create` blocks above
+roughly fifty live guest threads in the server's **callnum 62 (`semaphore_timedwait`)** handshake, and that the blocking
+family is what this cycle moved onto the Ring. The next step is therefore the handshake itself: the zero-name
+`semaphore_signal` that answers `15` is the anomaly to explain first (a signal aimed at a name the server no longer
+recognises), and the trace now prints exactly the fields needed to follow it -- operation, pid, tid, both names, sec/nsec
+and the code.
