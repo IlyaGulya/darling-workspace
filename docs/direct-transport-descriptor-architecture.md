@@ -11763,3 +11763,32 @@ guess: take a **live** hung process and read what its threads are actually block
 work. The blocking-family migration itself is what the four exact modes above measure; the hang appears only where a
 thread is *created*, so the suspicion belongs on the thread-creation handshake and on a lane whose owner is suspended,
 not on the semaphore transport.
+
+
+### 210. Two more instrument premises to check, and the hatch's own visibility
+
+**`[pc-return-9+]` is not a value of 9.** The probe at the end of `sys_pthread_canceled` is
+
+```c
+__pc_probe("[pc-return-", ret < 0 ? 9 : 0);
+```
+
+so the tag is `[pc-return-` and the rendered digit is an **encoding**: `9` means `ret < 0` (the same deliberate encoding
+the probe's comment already explains, where an earlier version used `8`). Reading it as "+9 status" was the second
+misreading of this instrument in two sections, and both were caught by going to the definition instead of the shape of
+the output.
+
+**The hard hatch's premise is not verified per image.** `__dserver_hatch_enabled()` in `lkm.c` decides by scanning
+`/proc/self/environ` for `DARLING_DISABLE_THREAD_RPC_UDS=1`. MEASURED EARLIER in this work and recorded as a rule: the
+loader **replaces the environment** when it sets up the next image, so a value read late is not the value the process
+was started with. `read once` was applied to the loader's own diagnostic gate; it has **not** been applied to this
+hatch, which is therefore verified only in images that read it before the swap. That makes "denials 0" a weaker claim
+than it reads: a socket request in an image whose environment no longer carries the variable would not be denied and
+would not be counted. The check must be made on a value that cannot change -- read once, cached, and carried by the
+loader (an elfcall or a value published with the process, not a fresh `/proc/self/environ` scan per image) -- before
+any further acceptance claim is made on the hatch.
+
+That is the state of the gate: the boot passes with the hatch as it is today, the four blocking-family modes that
+create threads do not, and the next measurement must first establish what the hatch was actually enforcing in the
+image where the hang occurred. A conclusion drawn from an instrument whose premise was not checked is exactly what
+this work's rules forbid, and this section records the two readings that were wrong before the third was believed.
