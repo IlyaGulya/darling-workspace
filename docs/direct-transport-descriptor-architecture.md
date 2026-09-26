@@ -12161,3 +12161,31 @@ before changing the code.
 Recorded so the next attempt starts from measurements: the shared registration refactor is in place and validated
 (`sem_ready` PASS); the plane's direct use of it crashes and the plane path is reverted to the Call dispatch; and the
 crash needs one line of instrumentation before it can be attributed.
+
+
+### 222. The crash is localized: `ipc_port_destroy + 0x3c`
+
+The instrument from the previous section did its job. The probe now prints, with raw writes only, the faulting
+instruction pointer **and** the address of a known symbol in the same image:
+
+```
+dserver-CRASH sig=b addr=0x684,self=6431afb8a060,pc=0x6431afd271bc
+```
+
+`self` is what makes `pc` usable: subtracting it and resolving against the server binary with `llvm-nm -n` gives
+
+```
+faulting pc -> ipc_port_destroy + 0x3c
+```
+
+So the plane's direct registration path dies in **Mach IPC port teardown** -- a duct-tape XNU function -- not in the
+registration code the change touched and not in `notifyCheckin`. That is a strong statement about the input the plane is
+missing: a datagram `Message` carries the peer's address and port context, and the plane's synthesized `Message` has
+neither, so a Mach object is constructed for the plane route in a state that port teardown later cannot handle. The
+address hypothesis of section 220 was wrong in its mechanism and right in its direction: what is missing is the message's
+transport identity, and it is consumed somewhere other than where the helper visibly stores it.
+
+**State, all re-verified by run**: the shared registration refactor is in place (`sem_ready` PASS, denied 0, created 0);
+the crash probe prints `pc` and `self` permanently, so the next crash of any kind is resolvable in one run; the plane
+path is back on the Call dispatch; and the plane's direct checkin remains the next fix, now with its failure localized
+to `ipc_port_destroy` and its missing input narrowed to the message's transport identity rather than the socket address.
