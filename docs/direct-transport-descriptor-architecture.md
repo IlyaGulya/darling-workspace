@@ -12776,3 +12776,32 @@ What that implies for the next instrument is concrete -- it must be non-perturbi
 Everything else this round established stands: the plane's op 5 is serviced directly, the slot's claim accepts `DONE`,
 the signals ride the Ring with the waits, the stall dump answers "who waits on what", and a full mach-msg exchange on the
 Ring under the hard socket hatch completes with `pass=1` -- which is a state this project had not reached before.
+
+
+### 240. Recovery record for this round (the source tree has no git baseline)
+
+`procctl-src` is a working tree with no tracked baseline, so the changes of sections 230-239 are recorded here by
+content hash (sha256, first 16 hex digits). A prefix deployed from these revisions is `/tmp/dr-on-matched` with
+`darlingserver` verified at `c62a90bbe6fe0f17`'s build; the guest libraries and the workload binary were deployed with an
+explicit sha256 equality check over EVERY runtime copy.
+
+| file | sha256[16] |
+|---|---|
+| `src/external/darlingserver/src/server.cpp` | `530cb4ec4bcd823a` |
+| `src/external/darlingserver/internal-include/darlingserver/server.hpp` | `b0df63cd652a7201` |
+| `src/external/darlingserver/internal-include/darlingserver/registry.hpp` | `bc9ad1595801e455` |
+| `src/external/darlingserver/internal-include/darlingserver/thread.hpp` | `ba97d3cf2f8d5686` |
+| `src/external/darlingserver/src/thread.cpp` | `d2f32cc9bf937dd8` |
+| `src/external/darlingserver/internal-include/darlingserver/rpc-supplement.h` | `0cf1c1f7de1f0a94` (edited with the signal class) |
+| `src/external/darlingserver/scripts/generate-rpc-wrappers.py` | `0cd453291b2d79cd` |
+| `.../resources/dserver-ring.c` | `0dc7addbbfa16776` |
+| `src/startup/mldr/mldr.c` | `b6491c014a29c96e` |
+| `duct-tape/src/test-diagnostics.c` | `246823a458f3f677` |
+| `duct-tape/internal-include/.../test-diagnostics.h` | `0a325489dccd5daa` |
+| `duct-tape/xnu/osfmk/ipc/mach_msg.c` | `b08137e2337830bd` |
+| `duct-tape/xnu/osfmk/ipc/ipc_kmsg.c` | `5eacf6fb81e195ff` |
+| `duct-tape/xnu/osfmk/ipc/ipc_mqueue.c` | `dd0bec06ae2e2a4d` |
+| `src/tools/ring_mach_msg_test.c` | `c05597e774f3ffff` |
+
+The `rpc-supplement.h` row is the one hash not taken inline above; it is recorded from the same edit set (the blocking
+family gained `semaphore_signal` and `semaphore_signal_all`) and must be re-taken if the tree is used as a base.
