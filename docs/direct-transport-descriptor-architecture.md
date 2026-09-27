@@ -12366,3 +12366,37 @@ The deferred path is kept **behind its hatch** as a measured negative -- it is t
 is now known not to apply to checkin -- and the next measurement is the loader's own plane request in a hanging
 thread-creating workload (which op it spins on now that `SET_DYLD_INFO` is serviced directly, and whether the server
 services it).
+
+
+### 228. The plane's completions are being written into a STALE mapping: `region_fd=-1` and `reply=0` on the guest side
+
+The measurement the previous section asked for, on a hanging thread-creating workload (UDS hatch on, loader and server
+diagnostics on) names the actual defect, and it is not the slot discipline at all:
+
+```
+loader:  [mldr-ctl] request pid=877379 op=4 ; op=5
+         [mldr-ctl] iter=19000 waited=0 reply=0 seq=3      <-- still waiting
+server:  process-control-service op=4 pid=877379 region_fd=-1 ino=0 dev=0 size=0
+         process-control-service op=5 pid=877379 region_fd=-1 ino=0 dev=0 size=0
+```
+
+The server **serviced** the very requests the loader is still waiting on, and the guest reads `reply=0`. A completion that
+the server wrote and the waiter cannot see is the section-192 class ("the store ran and the other side cannot see it"),
+and here the identity fields say exactly why: **`region_fd=-1 ino=0 dev=0 size=0`** -- the registry entry for that pid has
+lost its descriptor, so the mapping the server writes into is not the page the guest is polling. The earlier
+incarnation-safety fix closed the courier fd for a pid without erasing the entry (correctly -- erasing it unmapped the
+incoming incarnation's page), but the entry now keeps a **stale mapping** across an incarnation change, and every
+completion for the new incarnation lands in the old one.
+
+That single fact explains the whole remaining suite table: a workload that starts a thread (or forks, or execs) carries a
+process through a new incarnation, the plane's registry entry for that pid points at the previous incarnation's mapping,
+the guest's completion wait never fires, and the symptom alternates between "spins forever" (`HANG`) and "the guest gives
+up and takes the datagram" (`denied=1`, which is exactly what the newly-attributed `first-denial=pthread_canceled` in
+this same run is).
+
+**The fix is therefore in the region bookkeeping, and it is specific**: a plane request must be serviced into the page the
+REQUESTER published. The doorbell/attach path already learns that mapping (`ATTACH_LANE`, the `(dev, ino)` identity probe,
+`regionMap`), so the server must **re-adopt** the current mapping when the entry's identity is gone (`fd == -1`, or a
+`(dev, ino)` that differs from what the request's page reports) instead of writing into whatever the entry still holds.
+That is the next change to make, and the instrument for it is already in the log: every `process-control-service` line
+prints `region_fd ino dev size map`, so the re-adoption is verifiable line by line.
