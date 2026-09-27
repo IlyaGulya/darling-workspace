@@ -112,3 +112,16 @@ the architecture document.
   one run of this tool showed `si_addr = 0x684` = `0 + 0x684` right after
   `call current_thread`, i.e. `current_thread()` returned NULL -- the answer that
   explains why the management plane cannot execute Mach semantics directly.
+
+* `scripts/darling-suite-run.sh --prefix P [--env K=V]... [--require-zero-creations] -- 'MODE [ARGS] :: MODE [ARGS]'`
+  runs a SET of guest workloads (one boot each), judges every row by that workload's own
+  `RING_MACH_TEST ... pass=1` line, prints one table with `denied`/`created` next to each
+  row, and exits non-zero on any non-`PASS` row or on any creation when asked. MEASURED
+  defect it exposed, in the class this file exists for: `darling-boot-run.sh`'s cleanup
+  excluded only `$$` and `$PPID`, so a two-level wrapper (suite -> verdict -> runner) was
+  inside the cmdline arm and the runner **killed the process tree that asked for it**
+  (`rc=137`, three seconds in); and after that was fixed by excluding the whole PPID chain,
+  the guard still did nothing because the ancestor list was newline-separated while the
+  membership test needs spaces. Both are fixed here and in `prefix-cleanup.sh`. An
+  instrument whose guard silently does nothing is indistinguishable from one with no
+  guard; run the shape the guard exists for.
