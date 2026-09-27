@@ -12897,3 +12897,57 @@ real defect and not the whole of the remaining one.
 So the remaining work is in the semaphore/pthread-handshake path (`dar-dles`), with the transport's own machinery now
 demonstrated end to end: a full mach-msg exchange on the Ring passes, boot passes, and the plane's slot, the op-5
 servicing, the signal routing and the timer arming have each been fixed and verified by measurement.
+
+
+### 244. Tooling: one command that says which instruments SPOKE, and which stayed silent
+
+A hand-written `grep` over a run log finds the line it looks for and cannot tell you that another instrument never spoke
+at all -- and during this investigation that is exactly what happened twice: a `SEM-SITE` line was in the log while my
+pattern missed it, and two `dserver-CRASH` lines sat in a log I had already read twice as "the server stalled". The fix
+is `dwdiag witness` (`diag witness` in the Rust tool):
+
+```
+$ scripts/dwdiag witness
+WITNESS log=/tmp/dwdiag-verdict-…-basic.log instruments=12 fired=2
+  iter-marks           5  ITER 0 make_port
+  crash                2  [dserver-CRASH sig=b addr=0x0,self=…,ret=…,sp=…
+WITNESS-SILENT sem-site,stall-dump,ring-dump,plane-refuse,dtape-msgq,dtape-timer,rpc-begin,rpc-reply,workload-stall,execpath-after
+```
+
+The registry of instruments is a table in the tool, each entry naming the line it writes and why it exists; `--json`
+gives the same census mechanically. A registered instrument with zero hits is the answer the command exists to produce:
+a guard that silently does nothing cannot be told from no guard, and a census that omits the silent ones repeats the
+mistake. Error found by using it, not by reasoning: it surfaced the two crashes above.
+
+### 245. The plane serves a semaphore signal DIRECTLY, because a Call on the process's own thread aborts the server
+
+`terminal=reply-enqueued` and `pending_call=58` in one trace, and a `terminate called … what(): Thread has both a pending
+call and a pending continuation (pending_call=58 … active_call=38)` in the log, describe one defect: the plane handler
+for `SEMAPHORE_SIGNAL` (and `_ALL`) synthesized an ordinary Call and ran it on **the process's own thread**, and that
+thread is very often legitimately parked in a blocking receive. The state machine refused the assignment, the server
+aborted, and every RPC the guest still had outstanding was never answered -- which from outside is a hang, and was
+chased as one for a long time.
+
+A signal is a state mutation on a semaphore named in the process's space: no thread is involved in the semantics. So the
+plane now performs it directly, through `Process::signalSemaphore` -> `dtape_semaphore_signal_for_task` ->
+`semaphore_signal_name_in_space(space, name, all)` in duct-tape, which resolves the name in **the task's** namespace
+(`ipc_port_translate_send(space, …)`), signals, and returns the trap's own `kern_return_t` (0, or `KERN_INVALID_NAME`
+for the invalid name that the guest routinely sends). No Call, no fiber, no thread state. Measured: boot is GREEN again
+(`sem_ready` PASS) with the plane as the first route and the Ring RPC as the protocol's own fallback.
+
+### 246. Two more defects found on the way, and one still open
+
+* The urgent pool was drained in **slot-index** order while each request carries `urgent_seq`. The guest's signal
+  protocol publishes `INTERRUPT_ENTER` and then `SIGPROCESS`, and `Thread::processSignal` writes through
+  `_interrupts.top()`; `_interrupts` is pushed by the enter, so a SIGPROCESS serviced first writes through an empty
+  stack. The pass now sorts the pending slots by sequence and services them oldest first (no allocation). This is a real
+  ordering defect; it did not by itself remove the crash below.
+* The event-ring trace field that two call sites fill with a **port object pointer** and one with a **receiver thread**
+  was printed as `port_name=`, and a 13-digit value read as a corrupt name instead of the address it is. Renamed to
+  `arg=0x%llx` with the reason at the format string.
+* STILL OPEN, and now precisely bounded: `Thread::processSignal` still faults (`sig=b addr=0x0`, `pc` decodes to
+  `processSignal + 0x6b`, the write `_interrupts.top().signal = 0` with a `top()` of 0) when a `SIGPROCESS` is serviced
+  for a thread whose interrupt context is empty. The crash is a **consequence** the tool named in one command
+  (`dwdiag crash`), and the next measurement is a server-side trace of INTERRUPT_ENTER/SIGPROCESS pairs per thread
+  (rare events, so a line trace is affordable there) to see whether the guest publishes the enter at all for that
+  thread -- i.e. whether the missing enter is a guest bug or a lost slot.
