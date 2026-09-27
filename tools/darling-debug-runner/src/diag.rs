@@ -17,6 +17,7 @@
 //! something the toolchain already answers.
 
 use anyhow::{Context, Result, bail};
+use regex::Regex;
 use clap::Args;
 use std::collections::BTreeMap;
 use std::fs;
@@ -778,6 +779,117 @@ fn summarize_progress(run: &str, guest: &str, mode: &str) -> Progress {
     p
 }
 
+#[derive(clap::Args, Debug)]
+pub struct WitnessArgs {
+    /// The run log to census. Defaults to the newest `dwdiag` verdict log in the temp directory.
+    #[arg(long)]
+    log: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+}
+
+// THE REGISTRY. One entry per instrument this project ships, with the line it writes and why it exists. Adding an
+// instrument without adding it here stops the census from being a census, so the list is the point of the command:
+// `witness` answers "which of these spoke", and names the ones that did not.
+const INSTRUMENTS: &[(&str, &str, &str)] = &[
+    ("sem-site", r"^SEM-SITE op=", "guest: who calls the semaphore family, and with which name/address"),
+    ("iter-marks", r"^ITER [0-9]+ ", "guest workload: per-iteration progress, names the iteration that stopped"),
+    ("stall-dump", r"stall-dump idle_ms=", "server: parked threads, their calls, and their wait-timer state"),
+    ("ring-dump", r"dtape\.ering (dump|seq=)", "server: the in-memory event ring dumped when the counters stop"),
+    ("plane-refuse", r"plane-refuse", "server: a plane request refused at the op that refused it"),
+    ("dtape-msgq", r"dtape\.msgq event=", "server: msgq park/send/post/wake order"),
+    ("dtape-timer", r"dtape\.wait_timer event=", "server: wait-timer prepare/expire/unblock"),
+    ("rpc-begin", r"rpc\.[a-z_0-9]+\.begin", "server: an RPC request the server began"),
+    ("rpc-reply", r"rpc\.[a-z_0-9]+\.reply", "server: an RPC reply the server enqueued (begin without reply is a stall)"),
+    ("crash", r"dserver-CRASH", "server: the crash probe, with its fault address and stack walk"),
+    ("workload-stall", r"RING_MACH_TEST_STALL", "guest workload: its own watchdog fired"),
+    ("execpath-after", r"after-execpath", "server: the post-exec completion-store barrier"),
+];
+
+/// Count each registered instrument's lines in `text`, and keep one sample per instrument for the human to read.
+pub fn witness_census(text: &str) -> Vec<(String, u64, String)> {
+    INSTRUMENTS
+        .iter()
+        .map(|(name, pat, _why)| {
+            let re = Regex::new(pat).expect("instrument pattern is a literal of this file");
+            let mut count = 0u64;
+            let mut sample = String::new();
+            for line in text.lines() {
+                if re.is_match(line) {
+                    count += 1;
+                    if sample.is_empty() {
+                        let mut t: String = line.chars().take(140).collect();
+                        if line.chars().count() > 140 {
+                            t.push('…');
+                        }
+                        sample = t;
+                    }
+                }
+            }
+            ((*name).to_string(), count, sample)
+        })
+        .collect()
+}
+
+fn newest_verdict_log() -> Option<PathBuf> {
+    let dir = std::env::temp_dir();
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in fs::read_dir(&dir).ok()?.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("dwdiag-verdict-") || !name.ends_with(".log") {
+            continue;
+        }
+        let Ok(md) = entry.metadata() else { continue };
+        let Ok(mtime) = md.modified() else { continue };
+        if best.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
+            best = Some((mtime, entry.path()));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+fn run_witness(args: WitnessArgs) -> Result<ExitCode> {
+    let log = match args.log {
+        Some(p) => p,
+        None => newest_verdict_log().context("no `dwdiag-verdict-*.log` in the temp directory; pass --log")?,
+    };
+    let text = fs::read_to_string(&log).with_context(|| format!("reading {}", log.display()))?;
+    let census = witness_census(&text);
+    let fired: Vec<_> = census.iter().filter(|(_, c, _)| *c > 0).collect();
+    let silent: Vec<_> = census.iter().filter(|(_, c, _)| *c == 0).map(|(n, _, _)| n.clone()).collect();
+    if args.json {
+        let mut obj = String::from("{\"log\":\"");
+        obj.push_str(&jesc(&log.display().to_string()));
+        obj.push_str("\",\"instruments\":[");
+        for (i, (name, count, sample)) in census.iter().enumerate() {
+            if i > 0 {
+                obj.push(',');
+            }
+            obj.push_str(&format!(
+                "{{\"name\":\"{}\",\"count\":{},\"sample\":\"{}\"}}",
+                jesc(name),
+                count,
+                jesc(sample)
+            ));
+        }
+        obj.push_str("]}");
+        println!("{obj}");
+    } else {
+        println!("WITNESS log={} instruments={} fired={}", log.display(), census.len(), fired.len());
+        for (name, count, sample) in &census {
+            if *count > 0 {
+                println!("  {name:<14} {count:>7}  {sample}");
+            }
+        }
+        println!(
+            "WITNESS-SILENT {}",
+            if silent.is_empty() { "<none>".to_string() } else { silent.join(",") }
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
     let run = fs::read_to_string(&args.log).unwrap_or_default();
     let guest = args.guest_log.as_ref().map(|p| fs::read_to_string(p).unwrap_or_default()).unwrap_or_default();
@@ -816,6 +928,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Verdict(a) => run_verdict(a),
         DiagCommand::Suite(a) => run_suite(a),
         DiagCommand::Progress(a) => run_progress(a),
+        DiagCommand::Witness(a) => run_witness(a),
     }
 }
 
@@ -832,6 +945,10 @@ pub enum DiagCommand {
     /// Say WHERE a finished run stopped: the workload's own line, the guest loader's last stage, and the last plane op
     /// the server actually serviced. Published-vs-serviced is the diagnosis; this prints both instead of grepping.
     Progress(ProgressArgs),
+    /// Report which INSTRUMENTS fired in a run log, and which stayed SILENT. A registered instrument with zero hits is
+    /// the failure this exists to catch: a guard that silently does nothing cannot be told from no guard at all, and a
+    /// hand-written grep over one log finds a line but cannot tell you which of the other instruments never spoke.
+    Witness(WitnessArgs),
 }
 
 // A tiny helper used by the table so a caller can see the set in a stable order under --json too.

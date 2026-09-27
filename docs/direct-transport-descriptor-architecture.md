@@ -13000,3 +13000,30 @@ One instrument gap remains and is recorded rather than guessed: `ring-dump` stay
 `DSERVER_TRACE_RING=1`, so the ring's last records for the stuck request were not printed, and the next measurement is
 to find why the dump did not fire (the dump writes through the stall path, whose counters DID stop and whose
 `stall-dump` line DID appear) and then read the last publish/reply pair for that request.
+
+
+### 249. The ring dump was ON and its output INVISIBLE, and what the ring now says
+
+The dump was written through `dtape_test_trace_line`, which the LINE trace controls -- so a run with
+`DSERVER_TRACE_RING=1` and no trace file, exactly the combination the ring exists for (the line trace perturbs the hot
+path it observes), produced a stall dump with **no ring records at all**. The instrument was enabled and its output was
+invisible, which is indistinguishable from the instrument being off. It now writes its lines to fd 2 itself (a single
+`write`, declared locally because this XNU-flavoured translation unit cannot include the host `<unistd.h>`) and still
+mirrors them into the line trace when that is on. The tool's registry learned the format in the same change
+(`dtape\.ering (dump|seq=)`), so `dwdiag witness` reports it instead of calling it silent.
+
+What the ring says at the current `basic` hang, with the last events read in order:
+
+```
+dtape.ering seq=441 tag=send_dest  a=… b=0x75a8500032a8 c=0x75a850003280 d=0x121100000003
+dtape.ering seq=442 tag=post_wake  a=… b=…               c=0x0              d=0x300000000
+dtape.ering seq=443 tag=recv_object a=… b=…              c=…3c0            d=0x300000e13
+dtape.ering seq=444 tag=recv_done  a=… b=…               c=0xe13           d=0x300000000
+```
+
+The message queue layer is healthy to its last recorded event: the send found its destination, a receiver was woken, and
+the receive **completed** (`recv_object` followed by `recv_done`, with the expected bits on both). Nothing in the msgq
+ring is parked. So the residual `basic` hang after iteration 0 is not a parked receive and not a lost wake in the
+message layer -- it is a request whose message-layer work is done and whose **RPC completion** never arrives, on the
+second `pthread_create`. The next measurement is therefore on the Call/RPC completion side for that request (the
+dispatch that publishes a Call for the loader's request and the reply that must follow it), not on the msgq layer.
