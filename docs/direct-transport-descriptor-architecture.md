@@ -12582,3 +12582,39 @@ between queueing the call until the continuation completes, serving it on a diff
 protocol keep one outstanding operation per thread; the next instrument is this throw's identity: the message names the
 NEW call (`pending_call=35`) but not the continuation, so the continuation's owner must be printed with it before the
 next run can decide between those three.
+
+
+### 234. The stall dump: the server can now answer "which thread is waiting on what", and the answer is a mutual wait
+
+Every stall this cycle was read from counters ("publish without a reply"). The question a stall actually asks -- which
+thread is parked, on which call, and on what kind of wait -- was unanswerable, because the server had **no way to
+enumerate live threads**: `Registry` offered lookups by key and nothing else. Three pieces were added:
+
+* `Registry::forEachEntry` (snapshot under the lock, visit WITHOUT it, so a visitor may take its own locks);
+* `Thread::hasContinuation()`, the other half of the invariant that section 233 hit, which no counter showed;
+* a timer watchdog in the server loop (`DARLING_SERVER_STALL_DUMP=1`), whose progress signal is the counters that tick
+  only when the server really serves or answers (`ringS2cFull`, `ringServicedSpin`, `ringServicedDoorbell`,
+  `ringProcessDoorbellServiced`), and which makes the blocking `epoll_wait` finite **only** under that hatch. It reports
+  after 5 s without progress and reprints at most every 30 s, so it can neither flood a log nor make a run slow.
+
+Its first run named the deadlock outright:
+
+```
+stall-dump idle_ms=5235 serviced=567 processes=4 threads=8 waiting=2 pending=0 continuations=4 suspended=5
+ detail= pid=1 tid=996851 pending=-1 active=62 suspended=1 continuation=1 waiting=1;
+         pid=1 tid=996848 pending=-1 active=38 suspended=1 continuation=1 waiting=1;
+         pid=0 tid=4194307 active=-1 suspended=1 continuation=0; pid=0 tid=4194306 ... ; pid=0 tid=4194305 ... 
+```
+
+with the call numbers resolved from the generated table: **62 = `semaphore_timedwait`** and **38 = `mach_msg_overwrite`**.
+So two guest threads of the workload are parked **with continuations**, one inside the blocking semaphore family and one
+inside the message receive, and the server has no runnable work left (`pending=0`). This is a *mutual* wait, not a lost
+wake: the standalone semaphore modes pass (`sem_timed kr=49 elapsed=0.300`), so the family completes and replies when it
+is the only thing in flight; here the receive and the semaphore wait are parked at the same time and neither can make
+progress.
+
+The three kernel threads (`pid=0`, `active=-1`) are the idle/daemon ones and are expected to be parked. The next decision
+follows from that: whether the parked `semaphore_timedwait` should have completed on its **own** semantic timeout (the
+server holds the timeout, by design) while something else is parked -- i.e. whether a parked continuation blocks the
+same process's other parked continuation from being resumed, which is a server-side concurrency question and no longer a
+transport question.
