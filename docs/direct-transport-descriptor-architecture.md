@@ -12330,3 +12330,39 @@ repository stays only as a fallback for a checkout that predates the move.
 Every example in all four is an invocation that was actually run. That is deliberate: the failure mode this section keeps
 recording is not "undocumented" but "documented with a command that does not work" -- an instrument that cannot answer is
 indistinguishable from one that is absent.
+
+
+### 227. The deferred plane Call is measured WRONG for checkin: one Call per thread is the invariant that decides
+
+Section 223 concluded that the plane must not hold its single slot while a Call waits for a free guest thread, and that
+the answer is to dispatch the Call and complete the slot asynchronously. The mechanism was built accordingly -- a plane
+completion written by `pushCallReply` when the Call carries a page target, a `Server::_deferredPlaneCalls` queue drained
+by the server loop after the plane pass, and the checkin's inline `doWork()` replaced by that path behind
+`DARLING_SERVER_PLANE_DEFER_CHECKIN=1` so the default path stayed untouched.
+
+**The default path is unaffected** (measured: `sem_ready` PASS, denied 0, created 0, with the new sink and queue present
+but no handler using them). **The deferred path fails, and it fails for a reason that settles the design:**
+
+```
+plane-deferred-exception what=Thread's pending call overwritten while active
+Failed to checkin with darlingserver
+```
+
+`Thread::setPendingCall` refuses a second pending Call on one thread, and the thread being checked in **is the caller** --
+it is parked in the plane request whose answer is exactly the Call being armed. So checkin cannot be dispatched onto its
+own target thread: the inline `doWork()` in the plane pass is not an accident, it is the only form in which this
+operation can run, because it needs to run **on** the caller, whose fiber is otherwise busy waiting for the answer.
+
+That also re-reads section 218: the plane pass does not block for checkin -- checkin is fast -- so the slot is not held
+by checkin in the way that section assumed. What remains for the suite's hangs is the **guest-side thread-creation
+handshake**, which sections 214 and 217 already measured from the other side (the trace of a HANG stops right after the
+thread-start signal while the loader spins on a plane request of its own).
+
+Two instruments were corrected in the process, both of the same class: the drain reported its exception only under a
+courier-log hatch that was **off** in the run that mattered (so a silent failure looked like "checkin failed"), and it
+now reports unconditionally but bounded; and the `--json`/field parsing defects of section 225 were found the same way.
+
+The deferred path is kept **behind its hatch** as a measured negative -- it is the mechanism section 223 asked for, and it
+is now known not to apply to checkin -- and the next measurement is the loader's own plane request in a hanging
+thread-creating workload (which op it spins on now that `SET_DYLD_INFO` is serviced directly, and whether the server
+services it).
