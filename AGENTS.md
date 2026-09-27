@@ -628,6 +628,17 @@ digest check catches; a literal only reports that the derivation ran.
     sections; `west dev context NAME --prefix PATH` selects the prefix a run
     uses; `<topdir>/.west-test/` holds the framework's own caches (runtime
     build, stock stack, verdicts).
+  - Guest/runtime diagnostics: `scripts/dwdiag <symbolize|crash|verdict|suite>`
+    -- one tool (Rust, vendored at `tools/darling-debug-runner`, built on first
+    use) for the four questions this work asks constantly: resolve a reported
+    offset to `symbol + offset` (`symbolize`), turn a `dserver-CRASH` line into
+    a location plus a stack walk and the disassembly around the fault
+    (`crash`), run ONE guest workload and judge it by its own machine-readable
+    line (`verdict`), and run a SET of them into one table with the acceptance
+    counters (`suite`). A verdict is PASS only when the workload's own
+    `... pass=1` line is present; a missing line is FAIL/HANG and never PASS.
+    Use `--json` to compose the result instead of scraping it, and do not
+    hand-roll symbolizing, crash parsing or per-mode verdicts in shell.
 - `west test` treats an empty selection as fatal, including a label filter that
 matches nothing. Never narrow a selection to make a failing test disappear:
 that converts a real signal into silence.

@@ -10,7 +10,14 @@
 #        dwdiag --help
 set -eu
 
-TOOL_REPO=${DWDIAG_TOOL_REPO:-/home/ilyagulya/work/darling-debug-runner}
+# The tool is VENDORED into this workspace so that its source, its README and the instructions that call it live in one
+# tree. The sibling repository it came from stays as a fallback for a checkout that predates the move; which one answered
+# is printed, because "the tool ran" and "the tool you documented ran" are not the same claim.
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+VENDORED="$(dirname "$SELF_DIR")/tools/darling-debug-runner"
+LEGACY=${DWDIAG_TOOL_REPO:-/home/ilyagulya/work/darling-debug-runner}
+if [ -d "$VENDORED/src" ]; then TOOL_REPO="$VENDORED"; elif [ -d "$LEGACY/src" ]; then TOOL_REPO="$LEGACY"; else
+	echo "dwdiag: no tool source found (looked in $VENDORED and $LEGACY)" >&2; exit 3; fi
 BIN="$TOOL_REPO/target/release/darling-debug-runner"
 
 if [ ! -x "$BIN" ]; then

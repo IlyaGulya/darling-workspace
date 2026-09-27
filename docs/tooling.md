@@ -97,7 +97,25 @@ symbolizing an offset, resolving a crash -- is now a subcommand of the Rust tool
 
 ```
 scripts/dwdiag <symbolize|crash|verdict|suite> [OPTIONS]     # build-and-exec shim, stable path
-  = darling-debug-runner diag ...                            # the implementation, in the tool repo
+  = tools/darling-debug-runner/target/release/darling-debug-runner diag ...
+```
+
+The tool is **vendored in this workspace** (`tools/darling-debug-runner`, source + README + `Cargo.lock`), so its code,
+its documentation and every instruction that calls it live in one tree; the sibling repository of the same name is only a
+fallback for an older checkout. Concrete, verified invocations:
+
+```sh
+# offset -> `symbol + offset` (server binary or guest dylib); `--addr` for an absolute address, `--json` to compose
+scripts/dwdiag symbolize --binary ~/work/ringmm-build/src/external/darlingserver/darlingserver \
+  --base-symbol dserver_crash_probe --delta 0x19d54c
+# crash line -> location + stack walk + disassembly around the fault
+scripts/dwdiag crash --binary ~/work/ringmm-build/src/external/darlingserver/darlingserver \
+  --log $(ls -t /tmp/darling-boot-*.log | head -1)
+# one workload, judged by its OWN line, naming the first denial and its caller
+scripts/dwdiag verdict --prefix /tmp/dr-on-matched --mode sem_timed --args "300 1" --wait 60
+# a set of workloads -> one table with denied/created per row (exit 1 if any row is not PASS)
+scripts/dwdiag suite --prefix /tmp/dr-on-matched --wait-base 60 --require-zero-creations \
+  -- 'sem_ready 2 :: sem_block 100 1 :: basic 20'
 ```
 
 Why one tool rather than four scripts: they share two primitives (`llvm-nm` symbolization and reading a run log), they

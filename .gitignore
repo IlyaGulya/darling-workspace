@@ -16,3 +16,6 @@ __pycache__/
 *.py[co]
 testkit/build/
 .west-test/
+
+# vendored tool build output
+tools/darling-debug-runner/target/

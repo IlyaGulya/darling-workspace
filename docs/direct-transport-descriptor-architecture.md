@@ -12306,3 +12306,27 @@ disassembly with the fault marked, and its JSON parses; `verdict` returns `PASS`
 The tool lives in the sibling `darling-debug-runner` repository, so at handoff its keeper bundle
 (`tool-handoff/darling-debug-runner/root.bundle` in the workspace) is now stale and must be refreshed; that is a
 handoff-time obligation, not a product change.
+
+
+### 226. The tool is vendored, and its documentation is where a reader will actually look
+
+The diagnostics were living in a sibling repository, which meant three separate places to keep in step: the source, the
+instructions that call it, and the handoff bundle that carries it between sessions -- and MEASURED, all three had already
+drifted (the workspace's `tool-handoff/darling-debug-runner/root.bundle` was stale the moment the `diag` subcommands were
+added). The tool is now **vendored into this workspace** at `tools/darling-debug-runner` (source, `Cargo.toml`,
+`Cargo.lock` and README; build output is ignored), and `scripts/dwdiag` builds it on first use and execs it, printing
+which copy answered, because "the tool ran" and "the tool you documented ran" are different claims. The sibling
+repository stays only as a fallback for a checkout that predates the move.
+
+**Documentation, in the four places a reader actually looks:**
+
+| Where | What it answers |
+|---|---|
+| `tools/darling-debug-runner/README.md` | what the tool is, every subcommand with a copy-pasteable invocation, `--json`, the exit codes |
+| `docs/tooling.md` (this workspace) | the entry point, why there is ONE tool, the defects each rule exists for, and short verified invocations |
+| `AGENTS.md` (this workspace) | the normative mapping "situation -> command": `scripts/dwdiag <symbolize\|crash\|verdict\|suite>` with the verdict rule and the instruction not to hand-roll symbolizing, crash parsing or per-mode verdicts in shell |
+| this document (§225, §226) | the decisions and the measurements behind them |
+
+Every example in all four is an invocation that was actually run. That is deliberate: the failure mode this section keeps
+recording is not "undocumented" but "documented with a command that does not work" -- an instrument that cannot answer is
+indistinguishable from one that is absent.
