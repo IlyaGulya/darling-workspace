@@ -12745,3 +12745,34 @@ Ring, so the teardown is the first destroy-capable operation after the Ring has 
 **Where the next instrument goes** is therefore not the Ring, the plane or the lanes: it is the MIG request that
 `mach_port_mod_refs` issues (which special port it targets, and whether the server ever sees it) -- the same
 `dtape.msgq` trace already prints it, and its `send_enter`/`trap_recv_wait` pair for that thread is the next line to read.
+
+
+### 239. The remaining failure is a RACE, and the trace perturbs it
+
+Two measurements settle the shape of what is left:
+
+```
+basic 20, no trace, three runs in a row:   HANG / HANG / HANG
+basic  2, msgq trace ON:                   PASS  (iters=2 pass=1, every ITER line including "dropped")
+basic  1, no trace:                        PASS  (pass=1, 283 microseconds)
+basic  2, no trace:                        HANG
+```
+
+So the transport carries a full exchange (and, when the timing allows, several), and the stop is a **timing-dependent**
+failure in the teardown path of section 238 -- not a deterministic state the instruments can read off, because the
+instrument **is** a change in timing: the `dtape.msgq` trace writes a line per event, and that is enough to move the
+race. This is the rule this project keeps re-learning, now with a measurement: **a diagnostic that changes what it
+measures cannot be the instrument that decides a race.**
+
+What that implies for the next instrument is concrete -- it must be non-perturbing:
+
+* the guest and duct-tape traces have to record into a **bounded memory ring buffer** (no syscall, no I/O, no lock on the
+  hot path) and dump it only on a trigger (a stall watchdog, or process exit), so the recorded run and the measured run
+  are the same run;
+* the counter set already in place (`post_wake` found-a-waiter vs not, `trap_recv_wait`/`trap_recv_done`, the stall dump's
+  per-thread `pending`/`active`/`continuation`/`suspended`) is enough to say **which** state the race leaves behind, and
+  the memory ring only has to add **the order** of the events that led to it.
+
+Everything else this round established stands: the plane's op 5 is serviced directly, the slot's claim accepts `DONE`,
+the signals ride the Ring with the waits, the stall dump answers "who waits on what", and a full mach-msg exchange on the
+Ring under the hard socket hatch completes with `pass=1` -- which is a state this project had not reached before.
