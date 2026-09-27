@@ -13027,3 +13027,31 @@ ring is parked. So the residual `basic` hang after iteration 0 is not a parked r
 message layer -- it is a request whose message-layer work is done and whose **RPC completion** never arrives, on the
 second `pthread_create`. The next measurement is therefore on the Call/RPC completion side for that request (the
 dispatch that publishes a Call for the loader's request and the reply that must follow it), not on the msgq layer.
+
+
+### 250. A hypothesis raised and RETRACTED by its own instrument: the timer was never late
+
+The ring gained two records for the timer path (`timer_arm` in the arming hook, `timer_fired` in the loop's timerfd
+branch), because a semaphore timed wait with a 30-second deadline had begun and never received a reply while the server
+was alive, and "armed but never fired" would have separated "the loop never saw the timerfd" from "the timer fired and
+the wake was lost". The first reading of the dump looked decisive:
+
+```
+dtape.ering seq=453 tag=timer_arm a=<deadline> b=0x0   ... and no timer_fired after it
+```
+
+It is NOT evidence of anything, and the reason is worth keeping: the stall dump is written **twice** in a run, five
+seconds apart, and the arm was recorded ~10 seconds before the last dump while its deadline is 30 seconds away -- so the
+absence of `timer_fired` is exactly what a correct timer looks like at that moment. The instrument did its job by making
+the timing legible enough to refute the reading; the conclusion ("the loop stopped reading the timerfd") was withdrawn
+before it reached a fix. The same run shows the loop is NOT stopped: `serviced` advanced between the two dumps
+(562 -> 565) and the ring grew from 447 to 454 records, so the loop keeps servicing while the workload waits.
+
+### 251. Per-thread identity in both instruments, so a sleeper and a stalled caller can be related
+
+`SEM-SITE` and the workload's `ITER` marks now carry the TCB self pointer (`%fs:0`, one register read, no syscall) as
+`tcb=0x...`: the question "is the thread that waits 30 seconds the same thread that is stuck in `pthread_create`, or a
+different one" was not answerable from the log, and the two instruments had no common identity. The workload's marks
+carry `tcb=0x7d3d03e9e8c0` for the main thread in a fresh run. `SEM-SITE` printed nothing in that same run because no
+semaphore call happened in it -- the semaphore family is rare, and the correlation needs a run in which both instruments
+speak, which is the next measurement rather than an inference.
