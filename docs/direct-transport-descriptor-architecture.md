@@ -12548,3 +12548,37 @@ it would have changed semantics to silence a correct signal.
 The instrument itself is also kept, because it is what made the diagnosis mechanical rather than inferential:
 `__dserver_plane_request_ex` now prints one bounded `[plane-refuse] why=… op=… a=… b=… tid=…` line per reason, and the
 loader prints `[mldr-ctl] plane-noslot op=… state=… holder_op=… holder_seq=…`.
+
+
+### 233. The workload starts and the Ring carries it, until one dispatch is refused: continuation + pending call
+
+With the slot fix in place the workload binary runs, and the Ring is measurably carrying its traffic -- 107
+`RING_MACHMSG_PUBLISH` against 104 `RING_MACHMSG_REPLY_CONSUME` in one run, sequences advancing on several lanes -- and
+then it stops with publishes whose reply never arrives:
+
+```
+RING_MACHMSG_PUBLISH lane=0  gen=1 seq=30 tid=976076      <-- no matching REPLY_CONSUME
+RING_MACHMSG_PUBLISH lane=23 gen=1 seq=10 tid=976071      <-- last line of the run
+```
+
+The server side answers why, in one line:
+
+```
+ring C2S dispatch threw: Thread has both a pending call and a pending continuation (pending_call=35 tid=...)
+```
+
+`ringServiceThread` reads a request out of a lane slot and runs it with `call->thread()->doWork()` on the thread that
+published it. `Thread::doWork` refuses -- and throws -- when that thread already carries a `_continuationCallback`,
+because the state machine allows "a pending call" or "a pending continuation", never both. The refusal is correct: a
+thread suspended on a continuation is parked in a specific server-side wait, and dispatching a second operation onto it
+would clobber the state the continuation has to resume. The exception is caught, the request is dropped, and the guest
+waits on a reply that will never be published -- the stall.
+
+That is a **different** conflict from section 227's, and it says what the Ring path still needs. The datagram path never
+meets it because each request arrives on a socket whose thread is parked in a normal RPC wait. A Ring request arrives
+from a thread that publishes and then waits on its own slot, and that thread may already be suspended server-side (a
+continuation is exactly what a caller-S2C raised while its call was parked leaves behind). The choice is therefore
+between queueing the call until the continuation completes, serving it on a different thread, or making the guest's own
+protocol keep one outstanding operation per thread; the next instrument is this throw's identity: the message names the
+NEW call (`pending_call=35`) but not the continuation, so the continuation's owner must be printed with it before the
+next run can decide between those three.
