@@ -89,13 +89,29 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # itself -- the same class of defect as a probe that modifies what it measures).
 SELF_NAME=${0##*/}
 
+# Every ANCESTOR of this shell, transitively. MEASURED DEFECT: excluding only `self` and the immediate parent left a
+# two-level wrapper (suite -> verdict -> runner) inside the cmdline arm, because that wrapper is ALSO invoked with
+# --prefix; the runner then killed its own caller three seconds into the first mode (rc=137, SIGKILL) and the wrapper
+# reported the workload as a failure. A cleanup must never kill the process tree that asked for it, at ANY depth.
+own_ancestors() {
+	p=$$
+	while [ -n "$p" ] && [ "$p" != "0" ] && [ "$p" != "1" ]; do
+		echo "$p"
+		p=$(sed 's/.*) //' "/proc/$p/stat" 2>/dev/null | awk '{print $2}')
+	done
+}
+
 owned_pids() {
 	self=$$
-	parent=$PPID
+	# space-separated: the membership test is `case " $ancestors " in *" $pid "*`, and a NEWLINE-separated list
+	# never matches it -- MEASURED: with `$(own_ancestors)` the guard silently did nothing and the wrapper was killed
+	# anyway (rc=137) three seconds in, which is exactly the kind of "instrument that cannot answer" this file keeps
+	# recording. The separator is part of the test, not a cosmetic detail.
+	ancestors=$(own_ancestors | tr '\n' ' ')
 	for d in /proc/[0-9]*; do
 		pid=${d#/proc/}
 		[ "$pid" = "$self" ] && continue
-		[ "$pid" = "$parent" ] && continue
+		case " $ancestors " in *" $pid "*) continue ;; esac
 		exe=$(readlink "$d/exe" 2>/dev/null)
 		case "$exe" in "$PREFIX"|"$PREFIX"/*) echo "$pid"; continue ;; esac
 		cmd=$(tr "\0" " " < "$d/cmdline" 2>/dev/null)

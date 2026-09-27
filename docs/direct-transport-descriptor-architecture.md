@@ -12236,3 +12236,30 @@ thread and complete the slot asynchronously**". The `ProcessControlTxn` machiner
 
 State: the plane path is reverted to the Call dispatch, the baseline is re-verified by run (`sem_ready` PASS, `sem_block
 2000 1` HANG as before), and the tools above are permanent.
+
+
+### 224. Tooling: a suite runner, and a cleanup that was killing the process tree that asked for it
+
+**`scripts/darling-suite-run.sh`** runs a LIST of guest workloads, one boot each, judges every row by that workload's own
+machine-readable line (through `darling-guest-verdict.sh`), prints one table with the counters next to each row, and exits
+non-zero if any row is not `PASS` or if `--require-zero-creations` is set and any row created one. It exists because the
+directive's acceptance is a SET (`boot + basic + ool + r2 + stress_pool + churn + fork/exec + the semaphore family`), and
+judging a set by hand is where two workloads that never finished were called PASS in one session.
+
+**Using it immediately found a defect in the harness, and the defect was in the class this work keeps recording.** The
+first run died with `rc=137` (SIGKILL) three seconds in, before printing a single row. The cause:
+
+* `darling-boot-run.sh`'s cleanup enumerates prefix-owned processes by `exe` **or** `cmdline`, and excludes only `$$` and
+  `$PPID`. A wrapper is itself invoked with `--prefix` (so its cmdline matches) and a **two-level** wrapper -- suite ->
+  verdict -> runner -- is therefore a *grandparent*, which the exclusion did not cover: the runner killed the process
+  tree that had asked it to run. Fixed by walking the PPID chain with `/proc/<pid>/stat` and excluding **every**
+  ancestor. `scripts/prefix-cleanup.sh` had the same shape and got the same fix.
+* The fixed guard then still did nothing, and the reason is the second half of the defect: `ancestors=$(own_ancestors)`
+  produces a **newline**-separated list while the membership test is `case " $ancestors " in *" $pid "*`, which needs a
+  space on both sides. A newline-separated list can never match it, so the guard silently passed every ancestor through.
+  MEASURED both ways: with the broken separator the wrapper still died (`rc=137`, 15 s in); with the list normalised
+  (`| tr '\n' ' '`) the same two-level wrapper completes and prints `wrapper survived`, `rc=0`.
+
+Recorded in `docs/tooling.md` with the other instrument rules. The lesson is the same one that keeps recurring here: an
+instrument whose guard silently does nothing is indistinguishable from an instrument that has no guard, and the only way
+to tell them apart is to run the shape the guard exists for.
