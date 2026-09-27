@@ -12805,3 +12805,43 @@ explicit sha256 equality check over EVERY runtime copy.
 
 The `rpc-supplement.h` row is the one hash not taken inline above; it is recorded from the same edit set (the blocking
 family gained `semaphore_signal` and `semaphore_signal_all`) and must be re-taken if the tree is used as a base.
+
+
+### 241. The event ring, and what its ORDER says: the stall is the semaphore handshake, not the transport
+
+The instrument section 239 asked for was built: `dtape_test_trace_msgq` now writes into a fixed **memory ring**
+(2048 records, one atomic reservation per event, plain stores, no syscall, no allocation, no lock) whenever
+`DSERVER_TRACE_RING=1`, and only *then* is a file written -- once, by the server's stall watchdog
+(`dtape_test_ring_dump`). The line-based mode is kept for runs that are not chasing a race, so the two modes share the
+same call sites and cannot drift. Two defects of its first version were fixed by measurement: it dropped the
+`bits`/`result` fields (the post's "found a waiter" flag is exactly what must survive) and it classified events by
+**character position**, which is one rename away from silently mislabelling everything -- it now compares the event
+string.
+
+With the hot path in memory and the rare semaphore trace still on a file, `basic 20` under the hard socket hatch says:
+
+```
+ring tail (ordered):  451 send_dest th=…a768 mq=…1828
+                      452 post_wake th=…a768 mq=…1828 c=…e008 d=1     <-- found a waiter, and woke it
+                      453 recv_woken th=…e008 mq=…1800
+                      454 recv_park th=…a768 mq=…50e8 c=1303 d=0x300000600000000
+                      ... and NO post to mq=…50e8 ever follows
+semaphore trace:      rpc.semaphore.begin operation=semaphore_timedwait wait_name=2307 sec=30   <-- and NO reply
+                      rpc.semaphore.begin operation=semaphore_signal     wait_name=0 signal_name=0
+```
+
+Read together, the state is unambiguous:
+
+* the msgq layer is **healthy** to the end -- sends are posted, waiters are found (45 of 45 in the earlier count), receives
+  are woken;
+* the thread that stays parked is waiting on a port (name 1303) that **never receives a send**, i.e. its peer never sends;
+* the peer is the thread the **pthread handshake** never released: `semaphore_timedwait` (callnum 62, the number the stall
+  dump has shown in `active=` all along) is issued with `sec=30` and in this run **its own timeout never fires at all**
+  (no `reply` line), while in another run (section 235) the same wait times out and re-arms every 30 s;
+* the handshake's counterpart signal is `semaphore_signal signal_name=0`, an invalid name (`KERN_INVALID_NAME`, section
+  235), so it releases nothing.
+
+So the remaining failure of `basic N` is the **thread create/join handshake**, i.e. the blocker this project already
+records as `dar-dles` -- not the Ring, not the plane, not the lanes. That is also why the trace perturbs it (the handshake
+is timing-sensitive) and why `basic 1` and even `basic 2` can pass: one exchange needs no handshake rendezvous that this
+race can lose.
