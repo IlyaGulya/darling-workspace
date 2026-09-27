@@ -12845,3 +12845,55 @@ So the remaining failure of `basic N` is the **thread create/join handshake**, i
 records as `dar-dles` -- not the Ring, not the plane, not the lanes. That is also why the trace perturbs it (the handshake
 is timing-sensitive) and why `basic 1` and even `basic 2` can pass: one exchange needs no handshake rendezvous that this
 race can lose.
+
+
+### 242. A real timer defect: a LATER arm was dropped after the earlier deadline had already passed
+
+The stall dump gained the wait-timer state (`dtape_thread_wait_timer_state`, non-perturbing: read at dump time), and
+that one field separated two explanations that look identical from outside:
+
+```
+pid=1 tid=… active=62 semaphore_timedwait suspended=1 continuation=1 waiting=1 timer=1 tactive=1
+pid=1 tid=… active=38 mach_msg_overwrite  suspended=1 continuation=1 waiting=1 timer=0 tactive=0
+```
+
+The semaphore timed wait **had a timer armed** and its 30-second deadline never fired, while the same wait in another run
+timed out and re-armed. The arming hook explains it:
+
+```cpp
+if (!override && _currentTimerDeadline != 0 && deadline_ns >= _currentTimerDeadline) return;   // old rule
+```
+
+The timerfd is **one-shot** (`it_interval = 0`) and `_currentTimerDeadline` is only advanced again by
+`dtape_timer_fired()`, which the server runs **asynchronously** as a microthread once the timerfd is readable. Between
+the timerfd expiring and that microthread running, the recorded deadline is already in the **past** -- and the old rule
+dropped every later arm in that window. A wait whose deadline was armed there had a timer that could never fire, so its
+thread waited forever, with every instrument reporting a correctly armed timer.
+
+The fix is one condition: an earlier deadline that has **already passed** cannot wake anything and must not suppress the
+new arm.
+
+```cpp
+const bool currentStillPending = _currentTimerDeadline != 0 && _currentTimerDeadline > nowNs;
+if (!override && currentStillPending && deadline_ns >= _currentTimerDeadline) return;
+```
+
+Measured effect: the semaphore trace for `basic 20` moved from "one `begin` and **no** reply" to "three begins and two
+replies" on the same wait, and boot stays GREEN. `basic 20` still does not finish (also not within 330 s), so this was a
+real defect and not the whole of the remaining one.
+
+### 243. Where the remaining `basic 20` hang stands, with every instrument agreeing
+
+* the msgq layer is healthy to the end of the recorded order: sends are posted, waiters are found, receives are woken
+  (the in-memory ring gives the order; the line trace was proven to perturb the race);
+* one thread stays parked in `mach_msg_overwrite` (call 38) on a port that **never receives a send**;
+* its peer waits in `semaphore_timedwait` (call 62) on a 30-second deadline -- the thread create/join handshake, which is
+  the blocker this project already records as `dar-dles`;
+* the handshake's counterpart `semaphore_signal` carries `signal_name = 0`, an invalid name, so it releases nothing;
+* the two parked threads have `timer=1` and `timer=0` respectively, i.e. the timed wait is armed and the plain receive is
+  not -- and after the section-242 fix the timed wait's replies do appear, three arms and two replies in one 70-second
+  window.
+
+So the remaining work is in the semaphore/pthread-handshake path (`dar-dles`), with the transport's own machinery now
+demonstrated end to end: a full mach-msg exchange on the Ring passes, boot passes, and the plane's slot, the op-5
+servicing, the signal routing and the timer arming have each been fixed and verified by measurement.
