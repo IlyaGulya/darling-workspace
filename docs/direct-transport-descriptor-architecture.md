@@ -12951,3 +12951,52 @@ for the invalid name that the guest routinely sends). No Call, no fiber, no thre
   (`dwdiag crash`), and the next measurement is a server-side trace of INTERRUPT_ENTER/SIGPROCESS pairs per thread
   (rare events, so a line trace is affordable there) to see whether the guest publishes the enter at all for that
   thread -- i.e. whether the missing enter is a guest bug or a lost slot.
+
+
+### 247. `SEM-SITE` resolves its own symbols, and the guest callers are now NAMED
+
+The instrument printed raw return addresses, and resolving one by hand needs the image's load base -- which is not in
+the log, so the question it existed for ("which guest code waits on a semaphore during `pthread_create`") stayed
+unanswered through several runs. It now calls `dladdr` in the guest, where the images are mapped, and prints four
+frames: the first two are always the trap and its dispatcher, so the guest caller is frame three or four. One run names
+all of it:
+
+```
+SEM-SITE op=timedwait a=0x1403 b=0x1E ra=… sym0=semaphore_timedwait_trap_impl ra2=… sym1=_darling_mach_syscall
+          ra3=… sym2=sys_semwait_signal ra4=… sym3=_darling_bsd_syscall
+SEM-SITE op=signal    a=0x0     b=0x0  ra=… sym0=semaphore_signal_trap_impl ra2=… sym1=sys_bsdthread_terminate
+          ra3=… sym2=_darling_bsd_syscall ra4=… sym3=_pthread_terminate_invoke
+```
+
+* the 30-second wait is `sys_semwait_signal`, i.e. the guest emulation of `__semwait_signal`, and `nanosleep` is its
+  caller in this tree (`libc/gen/nanosleep.c` waits on the global `clock_sem` with a relative timeout) -- so a parked
+  `semaphore_timedwait` with `sec=30` can be an ordinary **sleep**, not a lock;
+* the signal that arrives with an INVALID name (0) comes from `sys_bsdthread_terminate`, reached from
+  `_pthread_terminate_invoke`, and the source says exactly why it can be zero:
+
+```c
+semaphore_t custom_stack_sema = MACH_PORT_NULL;
+if (t->tl_join_ctx) { custom_stack_sema = _pthread_joiner_prepost_wake(t); }
+...
+__bsdthread_terminate((void *)freeaddr, freesize, kport, custom_stack_sema);   // pthread.c:855
+```
+
+  The joiner only sets `ctx.custom_stack_sema` when the thread has a custom stack, so on the ordinary path both sides
+  carry `MACH_PORT_NULL` and the signal is a no-op the server correctly answers with `KERN_INVALID_NAME` (15). That is
+  benign; but it also means an invalid-name signal in the log is NOT by itself evidence of a lost reference, and the
+  earlier reading of it as "the handshake's signal goes nowhere" was too strong.
+
+### 248. State after the fixes: no aborts, iteration 0 completes, the residual is a Ring RPC with no reply
+
+`dwdiag witness` on the current build reports `crash` **silent** (the server no longer dies), boot `sem_ready` PASS, and
+`basic` advancing further than ever before: iteration 0 runs end to end (`make_port`, `port=`, `created`, `received`,
+`joined`, `dropped`) and iteration 1 stops between `port=` and `created`, i.e. **inside `pthread_create`**. The stall
+dump for that moment shows two parked threads: one in `semaphore_timedwait` (the `nanosleep`/`clock_sem` shape above)
+and one in `mach_msg_overwrite` (call 38) -- a thread waiting for a message or an RPC reply -- while the server is alive
+and idle. So the residual is not the transport's message path, not the plane's slot, and not a crash: it is one Ring
+RPC whose reply never arrives, on the second `pthread_create`.
+
+One instrument gap remains and is recorded rather than guessed: `ring-dump` stayed SILENT in these runs even with
+`DSERVER_TRACE_RING=1`, so the ring's last records for the stuck request were not printed, and the next measurement is
+to find why the dump did not fire (the dump writes through the stall path, whose counters DID stop and whose
+`stall-dump` line DID appear) and then read the last publish/reply pair for that request.
