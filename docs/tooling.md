@@ -88,3 +88,27 @@ version quietly did less than it claimed:
 
 When you find another, fix the tool, add the rule here, and record the incident in
 the architecture document.
+
+
+## Guest-workload verdicts and server crashes
+
+* `scripts/darling-guest-verdict.sh --prefix P --mode M [--args 'A B'] [--wait S] [--env K=V]...`
+  runs ONE guest workload mode and judges it by its **own** machine-readable line:
+  the verdict is `RING_MACH_TEST mode=<M> ... pass=1`, and its ABSENCE is
+  `FAIL` or `HANG`, never `PASS`. It exists because the boot harness reports
+  `VERDICT: PASS` when the markers it was given appear anywhere in the log, so
+  naming a marker that matches a workload's **start** line reported PASS for
+  workloads that never finished (`sem_gap 5000 1`, `basic 20`). A wrapper that
+  stores only the value of `--env` and drops the flag is the same class of
+  defect: the runner then rejects a bare `K=V` and the failure looks like a
+  workload failure.
+* `scripts/dserver-crash-resolve.sh --binary PATH (--log LOG | --self 0x.. --pc 0x..)`
+  turns a `dserver-CRASH` line into a location and the code around it: it derives
+  the offset from the probe's own `self=`, resolves it with `llvm-nm`, prints the
+  disassembly with a `FAULT HERE` marker, and resolves the probe's stack words
+  (`w0..w7`) into symbol + offset. Two instrument defects were found by using it:
+  `ret=` was a **stack pointer** (never a caller), and the first stack-word tags
+  were written without `=` or `0x`, so nothing could parse them. MEASURED value:
+  one run of this tool showed `si_addr = 0x684` = `0 + 0x684` right after
+  `call current_thread`, i.e. `current_thread()` returned NULL -- the answer that
+  explains why the management plane cannot execute Mach semantics directly.
