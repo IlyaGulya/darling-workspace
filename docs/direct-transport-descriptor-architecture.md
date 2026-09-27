@@ -12263,3 +12263,46 @@ first run died with `rc=137` (SIGKILL) three seconds in, before printing a singl
 Recorded in `docs/tooling.md` with the other instrument rules. The lesson is the same one that keeps recurring here: an
 instrument whose guard silently does nothing is indistinguishable from an instrument that has no guard, and the only way
 to tell them apart is to run the shape the guard exists for.
+
+
+### 225. One tool instead of a pile of scripts: `dwdiag`, and the defects it found in itself
+
+Asked for reusable, composable tooling, and for the existing debug runner to be part of it rather than a parallel
+thing, the four scripts this cycle had accumulated were folded into the **Rust** tool that already owns the
+guest/runtime execution machinery:
+
+```
+scripts/dwdiag <symbolize|crash|verdict|suite> [OPTIONS]      # build-and-exec shim, stable path
+  = darling-debug-runner diag ...                             # implementation, in the sibling tool repo
+```
+
+`darling-guest-verdict.sh`, `darling-suite-run.sh`, `darling-symbolize.sh` and `dserver-crash-resolve.sh` are **deleted**
+-- four shells with four quoting rules, four exit-code conventions and four chances to disagree about what a verdict is.
+The subcommands are designed to be composed rather than scraped:
+
+* **one verdict rule**: `RING_MACH_TEST mode=<M> ... pass=1`, and the ABSENCE of that line is `FAIL`/`HANG`, never PASS;
+* **`--json` on every subcommand**, so a caller chains `crash` into `symbolize` instead of parsing text;
+* **stable exit codes**: 0 ok/PASS, 1 verdict or acceptance failure, 2 usage, 3 tool error;
+* it **delegates**: prefix start/stop stays the boot harness's (`--boot-runner`), and the symbol table stays
+  `llvm-nm`'s. A second implementation of either would be a second source of truth for something the toolchain answers.
+
+Verified by use, not by inspection: `symbolize` agrees with a hand-computed `llvm-nm` answer on the same address;
+`crash` parses a real `dserver-CRASH` line, resolves the location, walks two stack words into symbols and prints the
+disassembly with the fault marked, and its JSON parses; `verdict` returns `PASS` with `rc=0` for `sem_timed 300 1`; and
+`suite` prints the table for a two-mode set with `SUITE-VERDICT PASS`.
+
+**Four defects the tool found in ITSELF during that verification, each fixed and each recorded as a rule:**
+
+1. the boot harness was invoked as `--cmd "" <command>` -- two arguments -- so it exited instantly and the verdict
+   reported `NO-RUN`, which is exactly what a workload that failed to start looks like;
+2. the JSON escaping handled quotes, backslashes and newlines but not tabs or other control characters, so a crash
+   document containing a disassembly was **unparseable**: a tool that emits "json" a consumer cannot parse is worse than
+   one that emits text, because the consumer trusted it;
+3. crash fields were parsed with a first-match-else chain, so `addr` was silently empty whenever it shared a comma-field
+   with `sig` (`[dserver-CRASH sig=b addr=0x0`) -- a parse that looked right and dropped a field;
+4. a source splice of the parser dropped its trailing expression, which the compiler caught as "mismatched types" -- the
+   same rule this work applies to every other change: an edit is a change and must be compiled **and** run.
+
+The tool lives in the sibling `darling-debug-runner` repository, so at handoff its keeper bundle
+(`tool-handoff/darling-debug-runner/root.bundle` in the workspace) is now stale and must be refreshed; that is a
+handoff-time obligation, not a product change.
