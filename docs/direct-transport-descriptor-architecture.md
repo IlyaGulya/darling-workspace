@@ -12707,3 +12707,41 @@ or the pthread create/join handshake, which the stall dump shows parked in `sema
 The next step is bounded and specific: instrument the workload's own loop progress (one bounded line per iteration) and
 re-read the stall dump for iteration 2, where the same three instruments already say which half is parked and on which
 mqueue and call number.
+
+
+### 238. The remaining hang is `drop_port`: a MIG `mach_port_mod_refs` waiting for a reply that never arrives
+
+The workload's own loop was instrumented (gated by `RING_MACH_TEST_ITER_TRACE=1`, bounded to four iterations, read once
+from the environment) with one line per step of every iteration. Under the hard socket hatch, `basic 2` then says:
+
+```
+ITER 0 make_port
+ITER 0 port=2307 create
+ITER 0 created
+ITER 0 received kr=0 send_failed=0
+ITER 0 joined
+        <-- "ITER 0 dropped" never appears
+```
+
+So the message exchange of iteration 0 completes with `kr=0`, the sender thread joins, and the run stops in
+**`drop_port`** -- which is `mach_port_mod_refs(mach_task_self(), q, MACH_PORT_RIGHT_RECEIVE, -1)`.
+
+Three facts pin it down, and together they rule out the transport machinery this round was about:
+
+* the stall dump taken at that moment names exactly two parked guest threads: `active=62` (`semaphore_timedwait`) and
+  `active=38` (`mach_msg_overwrite`), `waiting=2`, `pending=0` -- the second of which is the shape a **MIG stub waiting for
+  its reply** has;
+* `mach_port_mod_refs` is reached through `_kernelrpc_mach_port_mod_refs_trap_impl` in the guest's mach syscall table, so
+  the call is a MIG request that sends to a special port and blocks for the answer;
+* there is **no** `rpc-socket-DENIED` line and **no** abort in the run (`created=0`, `denied=0`), and the guest stderr
+  shows neither a denial nor a `mach_driver_get_fd` abort -- so the caller never asked for a per-thread socket, and it is
+  not the hard hatch that stopped it: it is waiting for a **reply**.
+
+That also explains why this op was already flagged in the profile's class table as `UDS_ONLY | DESTROY | CALLER_S2C` with the
+note "destroy-capable -> caller-S2C deadlock on the simple ring; the right home is the future duplex lane" -- and why
+`basic 1` can pass while `basic 2` hangs: the port this tears down is one whose receiver and sender have just used the
+Ring, so the teardown is the first destroy-capable operation after the Ring has been used for a full exchange.
+
+**Where the next instrument goes** is therefore not the Ring, the plane or the lanes: it is the MIG request that
+`mach_port_mod_refs` issues (which special port it targets, and whether the server ever sees it) -- the same
+`dtape.msgq` trace already prints it, and its `send_enter`/`trap_recv_wait` pair for that thread is the next line to read.
