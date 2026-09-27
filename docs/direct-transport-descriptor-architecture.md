@@ -12189,3 +12189,50 @@ transport identity, and it is consumed somewhere other than where the helper vis
 the crash probe prints `pc` and `self` permanently, so the next crash of any kind is resolvable in one run; the plane
 path is back on the Call dispatch; and the plane's direct checkin remains the next fix, now with its failure localized
 to `ipc_port_destroy` and its missing input narrowed to the message's transport identity rather than the socket address.
+
+
+### 223. Tooling: a crash resolver, a mini stack walk, and the two instrument defects that were hiding the answer -- which turns out to be architectural
+
+Asked whether it was time to improve the diagnostic tools, the answer was yes and the improvement paid for itself in one
+cycle.
+
+**`scripts/dserver-crash-resolve.sh`.** It takes a `dserver-CRASH` line (or a raw `self`/`pc` pair), derives the offset
+from the probe's own `self=`, resolves it against the server binary with `llvm-nm`, prints the **disassembly around the
+faulting instruction with a `<=== FAULT HERE` marker**, and walks the printed stack words into symbol + offset. Before it,
+every crash was resolved by hand with a throwaway python snippet -- five times in one session, each time re-deriving the
+delta and each time risking a different answer.
+
+**The probe now writes a mini stack walk**: `self=`, `sp=`, `w0..w7=`, `ret=`, `pc=` and `addr=`, all with raw writes
+only, because a server that dies silently is an instrument that cannot answer.
+
+**Two defects in the instrument itself, found by using it.** `ret=` was MEASURED to be a stack pointer and not a code
+address (so it could never name a caller), and the first version of the stack-word tags wrote `,w0` -- three bytes,
+without the `=` and without the `0x` prefix -- so the number ran straight into the next tag and the resolver could not
+parse a single word. Both are fixed; the lesson is the same one this work keeps learning: an instrument that prints its
+values unparseably is the same class as one that cannot print them.
+
+**What the working instrument immediately said.** The faulting instruction is
+
+```
+1b9a5f: call 174970 <current_thread>
+1b9a64: mov  %rax,-0x48(%rbp)
+1b9a68: mov  -0x48(%rbp),%rax
+1b9a6c: cmpl $0x0,0x684(%rax)   <=== FAULT HERE      (si_addr = 0x684)
+```
+
+`si_addr = 0x684` is exactly `0 + 0x684`, so `%rax` is **zero**, and `%rax` came straight out of `current_thread()`.
+**`current_thread()` returned NULL.** The plane pass executes on a server thread that is **not an XNU thread**, so the
+Mach/IPC semantics it was asked to run directly have no current thread to run against and dereference null.
+
+That is not a bug in the registration and not a bug in `notifyCheckin`: it is a property of the execution context. Direct
+servicing works for operations whose semantics are the server's own state (this is exactly why `pthread_canceled`, which
+touches only cancellation state, has worked on the plane all along) and cannot work for operations that touch Mach --
+which is every operation that creates or registers a Thread or a Process.
+
+**So section 218's diagnosis stands and its remedy was wrong**: the plane's single slot must not be *held* while a Call
+waits for a free guest thread, and the answer is not "run the semantics on the plane" but "**dispatch the Call onto an XNU
+thread and complete the slot asynchronously**". The `ProcessControlTxn` machinery already exists for precisely this
+"the other half arrives later" shape, so the fix is to use it for the checkin instead of inventing a third route.
+
+State: the plane path is reverted to the Call dispatch, the baseline is re-verified by run (`sem_ready` PASS, `sem_block
+2000 1` HANG as before), and the tools above are permanent.
