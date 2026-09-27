@@ -12504,3 +12504,47 @@ by testing whether the first whitespace token equals `seq`, while every such lin
 fire and the tool reported an early `planeloop` line as the last one. Lines are now classified by the key **before** the
 `=` and a priority decides which survives (a stage beats a spin, a timeout beats everything). The command is documented
 in the tool README, `docs/tooling.md` and the workspace situation list, and the vendored copy is the canonical one.
+
+
+### 232. The slot was wedged at DONE for the guest's copy of the claim loop: section 195's remedy had been applied to ONE of two copies
+
+The refusal instrument added in the previous section named it in one line, after eight rounds of inference:
+
+```
+[plane-refuse] why=no-slot op=9 a=2 b=21474836484 tid=958809
+```
+
+`a` is `request_state` and the constants are `IDLE 0 / PENDING 1 / DONE 2 / CLAIMED 3`, so the slot was **not** held by an
+in-flight request: it was left at **DONE** by a completion, and `b = (request_op << 32) | request_seq` says the holder was
+the loader's own `SET_EXECUTABLE_PATH` (op 5, seq 4) -- the request whose answer the loader had already read.
+
+Section 195 found exactly this shape and fixed it by making the claim loop accept **IDLE or DONE**, because "the publisher
+reads its ANSWER from `reply_state`, never from this flag". That fix went into the **loader's** copy (`mldr.c`) only. The
+guest library's copy in `dserver-ring.c` still accepted `IDLE` alone, so in a process whose first plane request fell back
+to the datagram -- leaving the server's `request_state = DONE` unreleased -- the slot was unusable **for the life of that
+process**: every later request spun its 2000 ms bound, returned `-1`, took the datagram, and was **denied** by the hard
+socket hatch, so the call never ran at all. That is the stall this whole round was chasing, and it is one line:
+
+```c
+uint32_t expect = (t % 2 == 0) ? DSERVER_PROCESS_CONTROL_IDLE : DSERVER_PROCESS_CONTROL_DONE;
+```
+
+(the same alternation `mldr.c` already used).
+
+**Measured effect, `basic 20` under the hard socket hatch:**
+
+| | before | after |
+|---|---|---|
+| `rpc-socket-DENIED` | 1 (`kqchan_mach_port_open`) | **0** |
+| plane requests serviced | 11 (ops 1-8 only) | **154** (ops 1-7, 26) |
+| images that reached a guest stage | launchd, vchroot, launchctl | + **`/usr/bin/ring_mach_msg_test`**, `/bin/sh`, shellspawn |
+
+So the workload binary now starts. It still does not print its own result line, and the next profile is taken with the
+Ring/lane instruments rather than a plane op -- with one trap already avoided: 81 `[pc-postplane st=16-]` probes (81
+negative returns, if the digit is hex, = `-EINVAL`) look like a failure and are **not** one: `dtape_thread_canceled`
+returns `EINVAL` for `action 0` exactly when no cancellation is pending, which is XNU's documented answer, so "fixing"
+it would have changed semantics to silence a correct signal.
+
+The instrument itself is also kept, because it is what made the diagnosis mechanical rather than inferential:
+`__dserver_plane_request_ex` now prints one bounded `[plane-refuse] why=… op=… a=… b=… tid=…` line per reason, and the
+loader prints `[mldr-ctl] plane-noslot op=… state=… holder_op=… holder_seq=…`.
