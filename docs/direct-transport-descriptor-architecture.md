@@ -12439,3 +12439,51 @@ work has now hit in the descriptor courier, in the region lifetime (section 200)
 
 Two refinements are therefore queued and both are small: the close-guard must try both registry keys, and the service
 path must re-adopt (or re-key) when the requester's page identity differs from the entry's.
+
+
+### 230. CORRECTION of section 229, and the real cause of the stall: a PROCESS_SCOPED plane op dispatched onto the SPINNING requester
+
+**Section 229 is wrong and is corrected here.** It claimed the guest was waiting on a page whose memfd (`ino=14604477`)
+differed from the one the server answered into (`ino=14607480`), and inferred a per-incarnation page identity problem.
+The guest publishes its own identity next to its request and the two agree exactly:
+
+```
+guest : [mldr-ctl] request pid=891922 op=5 page=... memfd=10 ... dev=1 ino=14607480
+server: process-control-service pid=891922 op=5 region_fd=50 ino=14607480 dev=1 size=528
+```
+
+One memory, one page. The `14604477` in section 229 came from a **different pid's** line in the same log; comparing an
+identity from one process with an identity from another is exactly the "an instrument's premise must be proven" defect
+this work keeps recording, and it produced a plausible, wrong root cause. (The `region_fd=-1` refinement stands on its
+own merits and is kept: the close-guard should still try both registry keys.)
+
+**The real cause is the one section 216 already found for `SET_DYLD_INFO`, one op later.** `SET_EXECUTABLE_PATH` (op 5) was
+handled by building an ordinary Call with `header.tid = pid` -- PROCESS_SCOPED, "the process's own thread executes it" --
+and running it with `doWork()`. But the requester of this op is the **loader**, and the loader is not parked in a server
+RPC wait: it is **spinning in the plane loop waiting for exactly this reply**. `doWork()` can therefore never run that
+Call -- it goes into the thread's pending slot and waits for a thread that will not come back -- so no completion is
+stored, and the loader blocks in its unbounded futex wait. The guest log says precisely that: it ends at
+
+```
+[mldr-ctl] iter=20000 waited=0 reply=0 seq=3
+```
+
+and never prints another heartbeat, because `waited_ms` never advances past the first wait.
+
+The remedy is the remedy of section 216, applied to op 5: **service it directly through the `Process`**. The semantics
+need no guest thread at all -- `SetExecutablePath::processCall` reads the string through the process's memory interface
+and stores it on the `Process` -- so the plane now reads the guest pointer out of the page's payload and calls the same
+`readMemory` + `setExecutablePath` pair, with the same `TestDiagnostics` trace, trying both registry keys as the dyld
+case does.
+
+**Measured effect, on `basic 20` under the socket hatch.** Boot stays GREEN (`sem_ready` PASS). The workload's fallback
+disappears (`denied` 1 -> 0 for this shape) and the bootstrap walks **through** the op that used to deadlock:
+
+```
+seq=4 after-execpath pid=917234 status=0 ready=1 image=/usr/libexec/shellspawn
+seq=5 before-threadself / seq=6 after-threadself / seq=7 after-seed ...
+```
+
+with the server confirming the store (`process-control-store op=5 seq=4 readback=2`). The remaining stall is now
+**after** `after-seed` and before the workload's own machine-readable line, so the next instrument is the workload's own
+progress inside `shellspawn` rather than another plane op.
