@@ -958,6 +958,19 @@ const INSTRUMENTS: &[(&str, &str, &str)] = &[
     ("crash", r"dserver-CRASH", "server: the crash probe, with its fault address and stack walk"),
     ("workload-stall", r"RING_MACH_TEST_STALL", "guest workload: its own watchdog fired"),
     ("execpath-after", r"after-execpath", "server: the post-exec completion-store barrier"),
+    // Added 2026-09-27 with the per-thread-socket removal and the diagnostics that closed the silent-death
+    // investigation. Each one is an instrument that was added to the tree and therefore has to be counted here, or
+    // `witness` reports a live instrument as silent (the failure this registry exists to prevent).
+    ("sigexc", r"\[sigexc-(fatal|default) sig=", "guest: the fault translator reporting a fatal/returned raw signal"),
+    ("plane-slow", r"\[plane-slow op=", "guest: a process-control request the server did not complete in time"),
+    ("modrefs", r"\[modrefs-(entry|exit) ", "guest: the mach_port_mod_refs trap around its impl and its exit code"),
+    ("allocprobe", r"\[allocprobe\]", "guest: an allocation-path probe taken while a lock-free path was suspected"),
+    ("ring-trace-gen", r"RING_TRACE gen (ENTER|EXIT) callnum=", "guest: the generated-call trampoline's enter/exit pair"),
+    ("iter-drop", r"ITER [0-9]+ tid=[0-9]+ drop_", "guest workload: which drop path an iteration took"),
+    ("rpc-socket-denied", r"\[rpc-socket-DENIED\] ", "guest: a caller that has no lane and no plane op, and the call it is (the removal's own instrument)"),
+    ("checkout-path", r"\[checkout-path\] ", "guest: a thread-exit checkout that could not be published, with the state that prevented it"),
+    ("checkin-path", r"\[checkin-path\] ", "guest: a checkin that could not be published, with the state that prevented it"),
+    ("release-drops-pending", r"\[release-drops-pending\] site=", "guest/server: a completed request whose slot was released while still pending, by site"),
 ];
 
 /// Count each registered instrument's lines in `text`, and keep one sample per instrument for the human to read.
@@ -1134,6 +1147,16 @@ mod witness_tests {
         ("crash", "[dserver-CRASH sig=b addr=0x0,self=61d5aa4f9060,ret=0x0,sp=0x7de2c8112bf0,pc=0x61d5aa61229b"),
         ("workload-stall", "RING_MACH_TEST_STALL age=31.9"),
         ("execpath-after", "seq=4 after-execpath status=0"),
+        ("sigexc", "[sigexc-fatal sig=11 code=1 addr=0x0 pid=2678054 tid=2678054]"),
+        ("plane-slow", "[plane-slow op=24 state=1 rseq=7 rs=-1 rq=0 tid=1274647]"),
+        ("modrefs", "[modrefs-entry target=1 name=2 right=3 delta=-1]"),
+        ("allocprobe", "[allocprobe]"),
+        ("ring-trace-gen", "RING_TRACE gen ENTER callnum=9 tid=1250752"),
+        ("iter-drop", "ITER 3 tid=1282542 drop_enter"),
+        ("rpc-socket-denied", "[rpc-socket-DENIED] pid=1 tid=2 call=pthread_kill image=kernel delta=0x1a denied=1"),
+        ("checkout-path", "[checkout-path] pid=1 tid=2 page=0x7f ready=0 main=1"),
+        ("checkin-path", "[checkin-path] pid=1 tid=2 page=0x7f ready=0 -> no-transport (declined)"),
+        ("release-drops-pending", "[release-drops-pending] site=dserver-ring.c:2752"),
     ];
 
     #[test]
