@@ -20,11 +20,25 @@ if [ -d "$VENDORED/src" ]; then TOOL_REPO="$VENDORED"; elif [ -d "$LEGACY/src" ]
 	echo "dwdiag: no tool source found (looked in $VENDORED and $LEGACY)" >&2; exit 3; fi
 BIN="$TOOL_REPO/target/release/darling-debug-runner"
 
-if [ ! -x "$BIN" ]; then
-	echo "dwdiag: building $BIN (first use or after a clean)" >&2
+# REBUILD when the SOURCE is newer than the binary. MEASURED (2026-09-27): the shim only built a missing binary, so
+# after a source change it kept answering from the stale one -- a new `--repeat` flag was absent from `--help` while
+# the same command worked from the sibling repository, i.e. "the tool ran" was a different tool than the edited one.
+# A stale oracle is the defect class this whole diagnostic set exists to make impossible, so the check is the
+# boring mtime one, not a version constant.
+needs_build=0
+[ -x "$BIN" ] || needs_build=1
+if [ "$needs_build" -eq 0 ]; then
+	if [ -n "$(find "$TOOL_REPO/src" "$TOOL_REPO/Cargo.toml" "$TOOL_REPO/Cargo.lock" -newer "$BIN" -print -quit 2>/dev/null)" ]; then
+		needs_build=1
+	fi
+fi
+if [ "$needs_build" -ne 0 ]; then
+	echo "dwdiag: building $BIN (missing or stale relative to $TOOL_REPO)" >&2
 	( cd "$TOOL_REPO" && cargo build --release >&2 )
 fi
 [ -x "$BIN" ] || { echo "dwdiag: cannot build $BIN" >&2; exit 3; }
+# Say WHICH copy answered: "the tool ran" and "the tool you edited ran" are not the same claim.
+echo "dwdiag: tool=$TOOL_REPO binary=$BIN" >&2
 
 case "${1:-}" in
 	--build-only) exit 0 ;;
