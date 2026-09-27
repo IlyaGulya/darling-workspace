@@ -12487,3 +12487,20 @@ seq=5 before-threadself / seq=6 after-threadself / seq=7 after-seed ...
 with the server confirming the store (`process-control-store op=5 seq=4 readback=2`). The remaining stall is now
 **after** `after-seed` and before the workload's own machine-readable line, so the next instrument is the workload's own
 progress inside `shellspawn` rather than another plane op.
+
+
+### 231. The instrument grew the one command this cycle kept re-improvising
+
+Three runs in a row, the diagnosis was reached by grepping two logs by hand for the same three facts, so the tool now
+carries them: `dwdiag progress --log RUN_LOG [--guest-log MLDR_DIAG_LOG] [--mode M]` prints whether the workload produced
+its own machine-readable line, the last `[mldr-ctl]` stage the guest loader reached, the op the guest **published** and
+the last plane op the server **serviced**. Published-versus-serviced is the whole diagnosis -- a request published and
+never serviced is a server-side stop; one serviced while the guest still waits is a completion that did not land -- and
+`verdict` now composes the same summary into a `VERDICT-STAGE` line on any non-PASS verdict, so a HANG is readable
+without a pipeline.
+
+Its first version was itself an instance of the defect this section's predecessors keep recording: it classified a line
+by testing whether the first whitespace token equals `seq`, while every such line begins `seq=N`, so the rule could never
+fire and the tool reported an early `planeloop` line as the last one. Lines are now classified by the key **before** the
+`=` and a priority decides which survives (a stage beats a spin, a timeout beats everything). The command is documented
+in the tool README, `docs/tooling.md` and the workspace situation list, and the vendored copy is the canonical one.

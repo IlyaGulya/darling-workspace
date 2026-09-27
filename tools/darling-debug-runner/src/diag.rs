@@ -515,6 +515,23 @@ fn run_verdict(args: VerdictArgs) -> Result<ExitCode> {
             extra,
             if v.line.is_empty() { "<no result line>" } else { &v.line }
         );
+        // COMPOSED, not repeated: a non-PASS verdict is useless without the stage, and reading it out of two logs by
+        // hand is exactly the work this tool exists to remove (doc section 230 -- the stall was found by grepping
+        // `[mldr-ctl]` and `process-control-service` by hand, three runs in a row).
+        if v.verdict != "PASS" {
+            let text = fs::read_to_string(&v.log).unwrap_or_default();
+            let guest_log = std::env::var("MLDR_DIAG_LOG").ok().map(PathBuf::from);
+            let guest = guest_log.as_ref().and_then(|p| fs::read_to_string(p).ok()).unwrap_or_default();
+            let p = summarize_progress(&text, &guest, &v.mode);
+            println!(
+                "VERDICT-STAGE workload={} last-guest={} last-published-op={} last-served-op={} serviced={}",
+                p.workload,
+                if p.last_guest.is_empty() { "<none>" } else { &p.last_guest },
+                if p.last_published_op.is_empty() { "<none>" } else { &p.last_published_op },
+                if p.last_served_op.is_empty() { "<none>" } else { &p.last_served_op },
+                p.serviced
+            );
+        }
     }
     Ok(if v.ok() { ExitCode::SUCCESS } else { ExitCode::from(1) })
 }
@@ -623,6 +640,174 @@ fn run_suite(args: SuiteArgs) -> Result<ExitCode> {
 }
 
 // ----------------------------------------------------------------------------------------------------------------
+// `progress`: WHERE a run stopped. MEASURED need (doc sections 227/230): every stall this cycle cost a manual grep
+// over a boot log and a guest loader log, and the answer was always one of a handful of shapes -- the workload's own
+// result line is absent, the guest loader's last `[mldr-ctl]` line says which op it published or which stage it
+// reached, and the server's last `process-control-service` line says which op it actually serviced. That difference
+// (published vs serviced) is the whole diagnosis, so it belongs in the tool and not in a shell pipeline.
+
+#[derive(Args, Debug)]
+pub struct ProgressArgs {
+    /// The run log the boot harness wrote (`--log`).
+    #[arg(long)]
+    log: PathBuf,
+    /// The guest loader diagnostic file (`MLDR_DIAG_LOG`), when the run enabled one.
+    #[arg(long)]
+    guest_log: Option<PathBuf>,
+    /// The workload's mode, used to look for its own machine-readable result line.
+    #[arg(long, default_value = "")]
+    mode: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct Progress {
+    pub workload: String,
+    pub result: String,
+    pub last_guest: String,
+    pub last_published_op: String,
+    pub last_served_op: String,
+    pub serviced: u64,
+    pub denied: u64,
+    pub created: u64,
+    pub first_denial_call: String,
+}
+
+fn scalar(prefix: &str) -> Option<String> {
+    // "op=5 pid=917234" -> the value of `op`, for any whitespace-separated KEY=VALUE in an unstructured line.
+    // A bare key with no `=` (`after-seed`) is returned as-is, because that IS the stage name.
+    if !prefix.contains('=') {
+        return Some(prefix.to_string());
+    }
+    prefix.split_once('=').map(|(_, v)| v.to_string())
+}
+
+fn summarize_progress(run: &str, guest: &str, mode: &str) -> Progress {
+    let mut p = Progress::default();
+    let want = if mode.is_empty() { "RING_MACH_TEST mode=".to_string() } else { format!("RING_MACH_TEST mode={mode} ") };
+    if let Some(l) = run.lines().find(|l| l.contains(&want)) {
+        p.workload = "present".to_string();
+        p.result = l.trim().to_string();
+    } else if run.contains("RING_MACH_TEST mode=") {
+        p.workload = "other-mode".to_string();
+    } else {
+        p.workload = "absent".to_string();
+    }
+    p.denied = run.lines().filter(|l| l.contains("rpc-socket-DENIED")).count() as u64;
+    p.created = run
+        .lines()
+        .filter(|l| l.contains("rpc-socket] created") || l.contains("rpc-socket. created"))
+        .count() as u64;
+    if let Some(dl) = run.lines().find(|l| l.contains("rpc-socket-DENIED")) {
+        for f in dl.split_whitespace() {
+            if let Some(v) = f.strip_prefix("call=") {
+                p.first_denial_call = v.to_string();
+            }
+        }
+    }
+    // The server side: last serviced op, and the count. `process-control-service ... op=N ...` is the line that proves
+    // the server DID see and answer the request the guest may still be waiting on.
+    for l in run.lines().filter(|l| l.contains("process-control-service")) {
+        p.serviced += 1;
+        for f in l.split_whitespace() {
+            if let Some(v) = f.strip_prefix("op=") {
+                p.last_served_op = v.to_string();
+            }
+        }
+    }
+    // The guest side: the LAST `[mldr-ctl]` line that says what is being waited for. MEASURED DEFECT, fixed here: the
+    // first version tested `head == "seq"` against a line whose first token is `seq=7`, so the stage rule could never
+    // fire and the tool reported a `planeloop BEGIN` from early in the boot as the "last" line -- an instrument that
+    // silently does nothing is indistinguishable from no instrument, which is the class this project keeps recording.
+    // Lines are therefore classified by the key BEFORE `=`, and a priority decides which one survives: a stage line
+    // beats a spin, and a timeout beats everything (it is the current, terminal state).
+    let mut best: (u8, String) = (0, String::new());
+    for l in guest.lines().filter(|l| l.contains("[mldr-ctl]")) {
+        let rest = l.split("[mldr-ctl]").nth(1).unwrap_or("").trim();
+        let head = rest.split_whitespace().next().unwrap_or("");
+        let kind = head.split('=').next().unwrap_or("");
+        let mut pid = String::new();
+        for w in rest.split_whitespace() {
+            if let Some(v) = w.strip_prefix("pid=") {
+                pid = v.to_string();
+            }
+        }
+        let (prio, rendered) = match kind {
+            "request" => {
+                let mut op = String::new();
+                for w in rest.split_whitespace() {
+                    if let Some(v) = w.strip_prefix("op=") {
+                        op = v.to_string();
+                    }
+                }
+                p.last_published_op = op.clone();
+                (1u8, format!("published op={op} pid={pid}"))
+            }
+            "planeloop" => {
+                let mut op = String::new();
+                let mut mine = String::new();
+                for w in rest.split_whitespace() {
+                    if let Some(v) = w.strip_prefix("op=") {
+                        op = v.to_string();
+                    } else if let Some(v) = w.strip_prefix("mine=") {
+                        mine = v.to_string();
+                    }
+                }
+                (2, format!("waiting op={op} mine={mine} pid={pid}"))
+            }
+            "iter" => (0, format!("spin {}", rest.split_whitespace().take(3).collect::<Vec<_>>().join(" "))),
+            "plane-request" if rest.contains("TIMEOUT") => (9, format!("TIMEOUT {}", rest)),
+            "seq" => {
+                // `seq=N after-<stage> pid=... image=...` -- the bootstrap stage names, which is what a stall is read
+                // against when the workload never speaks.
+                let stage = rest.split_whitespace().find(|w| w.starts_with("after-") || w.starts_with("before-"));
+                match stage {
+                    Some(st) => (5, format!("{st} pid={pid}")),
+                    None => (1, format!("seq {}", rest)),
+                }
+            }
+            _ => (0, rest.to_string()),
+        };
+        if prio >= best.0 {
+            best = (prio, rendered);
+        }
+    }
+    p.last_guest = best.1;
+    let _ = scalar("");
+    p
+}
+
+fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
+    let run = fs::read_to_string(&args.log).unwrap_or_default();
+    let guest = args.guest_log.as_ref().map(|p| fs::read_to_string(p).unwrap_or_default()).unwrap_or_default();
+    let p = summarize_progress(&run, &guest, &args.mode);
+    if args.json {
+        println!(
+            "{{\"workload\":\"{}\",\"result\":\"{}\",\"last_guest\":\"{}\",\"last_published_op\":\"{}\",\"last_served_op\":\"{}\",\"serviced\":{},\"denied\":{},\"created\":{},\"first_denial_call\":\"{}\"}}",
+            jesc(&p.workload), jesc(&p.result), jesc(&p.last_guest), jesc(&p.last_published_op),
+            jesc(&p.last_served_op), p.serviced, p.denied, p.created, jesc(&p.first_denial_call)
+        );
+    } else {
+        println!(
+            "PROGRESS workload={} last-guest={} last-published-op={} last-served-op={} serviced={} denied={} created={} first-denial={}",
+            p.workload,
+            if p.last_guest.is_empty() { "<none>" } else { &p.last_guest },
+            if p.last_published_op.is_empty() { "<none>" } else { &p.last_published_op },
+            if p.last_served_op.is_empty() { "<none>" } else { &p.last_served_op },
+            p.serviced, p.denied, p.created,
+            if p.first_denial_call.is_empty() { "<none>" } else { &p.first_denial_call }
+        );
+        if !p.result.is_empty() {
+            println!("PROGRESS-RESULT {}", p.result);
+        }
+    }
+    // The exit code is a QUESTION ("did the workload speak?"), not a judgement: absent means the caller must look at
+    // `last-guest`/`last-served-op`, present means the run got far enough to be judged on the result line itself.
+    Ok(if p.workload == "present" { ExitCode::SUCCESS } else { ExitCode::from(1) })
+}
+
+// ----------------------------------------------------------------------------------------------------------------
 
 pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
     match cmd {
@@ -630,6 +815,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Crash(a) => run_crash(a),
         DiagCommand::Verdict(a) => run_verdict(a),
         DiagCommand::Suite(a) => run_suite(a),
+        DiagCommand::Progress(a) => run_progress(a),
     }
 }
 
@@ -643,6 +829,9 @@ pub enum DiagCommand {
     Verdict(VerdictArgs),
     /// Run a SET of guest workloads and print one table with the counters that decide acceptance.
     Suite(SuiteArgs),
+    /// Say WHERE a finished run stopped: the workload's own line, the guest loader's last stage, and the last plane op
+    /// the server actually serviced. Published-vs-serviced is the diagnosis; this prints both instead of grepping.
+    Progress(ProgressArgs),
 }
 
 // A tiny helper used by the table so a caller can see the set in a stable order under --json too.
