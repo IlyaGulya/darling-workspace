@@ -627,6 +627,11 @@ digest check catches; a literal only reports that the derivation ran.
     --state-dir DIR`. `west dev follow DIR` is the same observer with the
     heartbeat off and the engine's flags forwarded. Do not hand-roll
     `follow | grep -v log-change-age | tail`; reconnect with `follow` instead.
+  - Which instruments actually ran in a captured run: `darling-workspace/scripts/dwdiag witness [--log PATH]` prints a
+    census of every registered instrument with counts and samples, then `WITNESS-SILENT <names>` for the ones that never
+    spoke. Use it instead of grepping a run log by hand: a hand-written pattern finds only the line it was written for
+    and cannot report that another instrument stayed silent, and both mistakes happened (a `SEM-SITE` line missed by its
+    pattern; two `dserver-CRASH` lines read past as a transport stall).
   - State root ownership: `west dev status --json` reports the live job
     registry, temporary worktrees, source worktrees and the patch/doctor
     sections; `west dev context NAME --prefix PATH` selects the prefix a run
