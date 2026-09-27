@@ -13055,3 +13055,33 @@ different one" was not answerable from the log, and the two instruments had no c
 carry `tcb=0x7d3d03e9e8c0` for the main thread in a fresh run. `SEM-SITE` printed nothing in that same run because no
 semaphore call happened in it -- the semaphore family is rare, and the correlation needs a run in which both instruments
 speak, which is the next measurement rather than an inference.
+
+
+### 252. The workload's marks carry the SERVER's thread identity, so a mark and a parked thread can be the same thread
+
+The stall dump names a parked thread by its namespace tid (`pid=1 tid=1282542 … active=38`), and the workload's
+per-iteration marks carried only a TCB pointer, so "a thread is parked in `mach_msg`" could not be tied to "THIS mark's
+thread is parked there". The marks now print `tid=<self_tid()>` (`pthread_threadid_np`, the same namespace identity the
+server prints): `ITER 0 tid=… make_port`, `… port=… create`, `… created`, `… received`, `… joined`, `… dropped`. The
+identity is what turns the next correlation from an inference into a read.
+
+### 253. A C++ throw had NO usable instrument; now it has one, plus an honesty bound in the decoder
+
+`terminate called after throwing an instance of 'std::length_error' (basic_string::_M_replace_aux)` killed the server on
+one run (the workload never started; the verdict was NO-RUN). Every instrument this project had was blind to it: the
+crash probe reports registers, and a throw has no faulting instruction; `dwdiag crash`'s anchor subtraction assumes the
+pc belongs to the server binary, so it produced `LOCATION: end + 0x1b6f5f75786c` -- a location that cannot exist; and no
+core is written because the host core pattern pipes to apport. Two changes:
+
+* The server installs a `std::set_terminate` handler that writes `[dserver-TERMINATE]` and a
+  `backtrace_symbols_fd` trace to fd 2 before exiting 134. `backtrace` is glibc and this is a Linux binary, so a C++
+  abort now names its own stack. STATUS: INSTALLED, NOT YET EXERCISED -- the throw is intermittent and has not recurred
+  since; by this project's own rule an instrument that has never fired is not yet evidence, and it is recorded as
+  unverified rather than as working.
+* `dwdiag crash` refuses to name a location outside the binary's own symbol range and says why
+  (`<outside this binary's symbol range: the pc belongs to another object>`), verified against the log that produced the
+  bogus symbol. An answer that cannot be checked is worse than no answer.
+
+The `std::length_error` itself is recorded as an OPEN intermittent defect: a `basic_string` operation in the server
+received an impossible size,
+and until the handler catches the next occurrence the call site is unknown.

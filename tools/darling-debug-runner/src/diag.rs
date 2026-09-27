@@ -280,7 +280,20 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
         _ => crash.pc,
     };
 
-    let location = file_target.and_then(|t| locate(&syms, t).map(|(i, o)| (t, i, o)));
+    // HONESTY BOUND (perf#30, doc section 253). The anchor subtraction assumes the faulting pc belongs to THIS binary.
+    // MEASURED: a `std::length_error` throw made the pc land in libstdc++, the subtraction produced a huge number, and
+    // `locate` still returned a symbol -- the output claimed `LOCATION: end + 0x1b6f...`, a location that cannot exist.
+    // An answer that cannot be checked is worse than no answer, so a target outside the binary's own symbol range is
+    // reported as such instead of being matched to the nearest symbol.
+    let (min_sym, max_sym) = match (syms.first(), syms.last()) {
+        (Some(f), Some(l)) => (f.addr, l.addr),
+        _ => (0, u64::MAX),
+    };
+    let in_binary = file_target.map(|t| t >= min_sym.saturating_sub(0x1000) && t <= max_sym.saturating_add(0x1000));
+    let location = match (file_target, in_binary) {
+        (Some(t), Some(true)) => locate(&syms, t).map(|(i, o)| (t, i, o)),
+        _ => None,
+    };
     let mut stack_locs: Vec<(usize, u64, String)> = Vec::new();
     if let Some(self_runtime) = crash.self_ {
         for (i, w) in crash.stack.iter().enumerate() {
@@ -339,6 +352,10 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
         if let Some((t, i, o)) = &location {
             println!("target=0x{t:x}");
             println!("LOCATION: {} + 0x{o:x}", symbol_name(&syms[*i].name));
+        } else if crash.pc.is_some() {
+            // Say WHY there is no location, instead of printing nothing (or a guess): the pc is not in this binary,
+            // which is the normal case for a C++ throw, a libc abort, or a fault inside a shared library.
+            println!("LOCATION: <outside this binary's symbol range: the pc belongs to another object>");
         }
         if !stack_locs.is_empty() {
             println!("--- stack walk ---");
