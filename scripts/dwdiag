@@ -1,0 +1,25 @@
+#!/bin/sh
+# dwdiag -- the ONE entry point for the workspace diagnostics that used to be four separate scripts.
+#
+# It is a build-and-exec shim, not an implementation: the tool itself is the Rust crate in the sibling
+# `darling-debug-runner` repository, whose `diag` subcommands own the verdict rule, the symbolization, the crash
+# resolution and the suite table. Keeping the shim means a stable path for callers and for muscle memory, while the
+# behaviour (and its tests) live in one place with the runner's own machinery.
+#
+# Usage: dwdiag <symbolize|crash|verdict|suite> [OPTIONS]
+#        dwdiag --help
+set -eu
+
+TOOL_REPO=${DWDIAG_TOOL_REPO:-/home/ilyagulya/work/darling-debug-runner}
+BIN="$TOOL_REPO/target/release/darling-debug-runner"
+
+if [ ! -x "$BIN" ]; then
+	echo "dwdiag: building $BIN (first use or after a clean)" >&2
+	( cd "$TOOL_REPO" && cargo build --release >&2 )
+fi
+[ -x "$BIN" ] || { echo "dwdiag: cannot build $BIN" >&2; exit 3; }
+
+case "${1:-}" in
+	--build-only) exit 0 ;;
+esac
+exec "$BIN" diag "$@"
