@@ -12400,3 +12400,42 @@ REQUESTER published. The doorbell/attach path already learns that mapping (`ATTA
 `(dev, ino)` that differs from what the request's page reports) instead of writing into whatever the entry still holds.
 That is the next change to make, and the instrument for it is already in the log: every `process-control-service` line
 prints `region_fd ino dev size map`, so the re-adoption is verifiable line by line.
+
+
+### 229. The identity comparison names the root cause: the guest waits on a NEW page while the server answers the OLD one
+
+The region-fd fix of section 228 is verified in the fields it was meant to change -- a serviced request now carries its
+identity again:
+
+```
+process-control-service pid=891922 op=2 region_fd=50 ino=14607480 dev=1 size=528
+process-control-service pid=891922 op=4 region_fd=50 ino=14607480 dev=1 size=528
+process-control-service pid=891922 op=5 region_fd=50 ino=14607480 dev=1 size=528
+```
+
+and `region-fd-kept-for-live-process` fired three times, so the descriptor survives the outgoing incarnation's
+destructor as intended. (Seventy `region_fd=-1` lines remain: the lookup that guards the close asks the registry by
+**NSID**, and a process outside the root namespace is keyed by its own pid -- the same two-key lesson as `SET_DYLD_INFO`
+in section 217, and the same one-line refinement.)
+
+**But the loader still spins with `reply=0`, and comparing the two identities says why.** The guest publishes the page it
+is polling, and the server logs the page it writes:
+
+```
+guest : [mldr-ctl] request ... dev=1 ino=14604477
+server: process-control-service ... ino=14607480
+```
+
+**Different memfds.** After an exec (and after a fork) the guest creates a **new** plane page, while the server's
+`_processControl` is keyed by **pid** and keeps servicing the entry registered by the previous incarnation. The server
+answers into the old mapping, the waiter polls the new one, and the loader spins `iter=20000 waited=0 reply=0 seq=3`
+while the server's log proves it serviced that very request.
+
+So the fix is exactly what section 228 described and is now backed by a `(dev, ino)` pair rather than by an inference:
+**a plane request must be serviced into the page the requester published.** The doorbell/attach path already learns the
+new page (the courier delivers the new memfd), so the server must either re-adopt the entry when the identity changes or
+key the plane's bookkeeping by something finer than the pid -- which is the same "a pid is not an incarnation" rule this
+work has now hit in the descriptor courier, in the region lifetime (section 200) and here.
+
+Two refinements are therefore queued and both are small: the close-guard must try both registry keys, and the service
+path must re-adopt (or re-key) when the requester's page identity differs from the entry's.
