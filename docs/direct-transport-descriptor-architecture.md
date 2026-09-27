@@ -13085,3 +13085,34 @@ core is written because the host core pattern pipes to apport. Two changes:
 The `std::length_error` itself is recorded as an OPEN intermittent defect: a `basic_string` operation in the server
 received an impossible size,
 and until the handler catches the next occurrence the call site is unknown.
+
+## The per-thread RPC socket is gone as a transport
+
+Normative: a guest thread has NO per-thread AF_UNIX endpoint. The transports are (1) the per-thread SPSC Ring for
+ordinary calls, (2) the process-management plane (the shared page) for lifecycle, early and blocking calls, and (3) the
+single PROCESS-level AF_UNIX socket, which exists only as the descriptor (SCM_RIGHTS) courier and as the loader's own
+bootstrap endpoint. `__darling_thread_rpc_socket` (loader) and `mach_driver_get_fd` (kernel image) no longer create or
+return a per-thread descriptor: a caller that reaches them has neither a lane nor a plane op, so it is NAMED
+(`[rpc-socket-DENIED] ... reason=... (declined: no lane, no plane op)`) and fails. Under the hard acceptance hatch
+(`DARLING_DISABLE_THREAD_RPC_UDS=1`) it aborts instead, which is what keeps the acceptance claim strict. The token is
+deliberately the one the acceptance harness counts, so a decline can never pass as a pass.
+
+Plane operation 30 (`DSERVER_PROCESS_CONTROL_OP_PTHREAD_KILL`) is the last call moved off the socket: `raise()` in a
+Darling guest IS a `pthread_kill` to the calling thread, and under the hard hatch the oracle named it
+(`[rpc-socket-DENIED] call=pthread_kill`). The ordinary PThreadKill semantics is `Thread::threadForPort` +
+`Thread::sendSignal`, and `sendSignal` is a host `tgkill` -- no S2C upcall to the caller -- so the plane services it
+DIRECTLY, exactly as pthread_canceled (7). A call whose service requires an upcall to the caller can ride neither the
+Ring (the membership rule in `DSERVER_RING_C2S_OPCODES`) nor the plane without an upcall-pumping wait.
+
+Acceptance signal (measured): a whole boot and a 15-workload suite under the hatch report zero `[rpc-socket] created`,
+zero `[rpc-socket-DENIED]`, zero urgent timeouts, zero courier misses, and every row PASS.
+### The one case where a lifecycle checkout may go unpublished
+
+Rule: a thread-exit checkout rides the management plane; if the plane cannot publish it, that is a NAMED hard failure
+(`[rpc-socket-DENIED] ... call=checkout image=loader`) for every thread EXCEPT the main thread. When the MAIN thread
+exits, the process is ending and darlingserver learns of it from the process exit itself, so an unpublished checkout
+there carries no information the server does not already have: it is logged (`[checkout-path] page=... ready=...
+main=1` plus `[mldr-ctl] checkout-skipped`) and skipped. MEASURED, and the reason this rule exists: the rare
+occurrence of that case produced exactly one denial per run on `basic 1`/`basic 20`, which the removed datagram
+fallback had been covering silently. The state line is printed with the decision, so a route that did not publish is
+never a route that cannot say why.

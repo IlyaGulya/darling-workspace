@@ -134,3 +134,31 @@ that had been read twice as a transport stall. Adding an instrument means adding
 sample line, and every entry must have one, because a pattern that has drifted from its instrument's format reports a
 live instrument as silent -- which happened twice in one session (`SEM-SITE` gained a `tcb=` field; the ring dump was
 rewritten from `trace-record` to `dtape.ering seq=`).
+
+## The verdict reports the workload's own exit status
+
+A missing result line is not a hang. The guest command is wrapped so the guest shell prints `__DWDIAG_RC=$?`, and
+`verdict` classifies accordingly: `CRASH <SIG>` (with `rc=128+N`, e.g. `CRASH SEGV rc=139`), `EXIT rc=N`, `HANG`
+(no status at all), or `NO-RUN` (never started). `--json` carries `rc` and `signal`.
+
+Measured need: a `SIGSEGV` at a workload's second iteration and a deadlock were indistinguishable before this, and
+the absence of the line was read as a lock problem for far longer than it should have been.
+
+## `--repeat N`: a single-run verdict cannot see flake
+
+Every run prints `LOG=<path>` (stable and machine-readable, so callers stop globbing a temp directory) and, with
+`--repeat N`, one `VERDICT[i/N]` line per run plus a summary:
+
+```
+STABILITY mode=basic runs=4 pass=0 stable=no distribution=CRASH SEGV=4
+```
+
+Exit status is non-zero unless **every** run passed. Measured need: one-run verdicts flipped between PASS and
+`CRASH SEGV` for the same command all session, and the flips were read as changes in behaviour.
+
+This is required, not optional, for any claim about a failing shape: `sem_ready 2` at `--repeat 4` is `PASS=4
+stable=yes`, while `basic 1` is `CRASH SEGV=4 stable=no`.
+
+`scripts/dwdiag` rebuilds the tool when its source is newer than the binary and prints which copy answered
+(`dwdiag: tool=... binary=...`). Before that it only built a *missing* binary, so a source change was silently
+ignored and `--help` described a different tool than the one that ran.

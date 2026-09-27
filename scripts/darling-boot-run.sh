@@ -38,7 +38,7 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 		--prefix) PREFIX="$2"; shift 2 ;;
 		--wait) WAIT="$2"; shift 2 ;;
-		--marker) MARKERS="$MARKERS $2"; shift 2 ;;
+		--marker) MARKERS="$MARKERS|$2"; shift 2 ;;
 		--cmd) CMD="$2"; shift 2 ;;
 		--hatch) HATCH=1; shift ;;
 		--env) EXTRA_ENV="$EXTRA_ENV $2"; shift 2 ;;
@@ -77,7 +77,7 @@ if [ "$ASSERT_MAPS" = 1 ]; then
 		exit 1
 	fi
 fi
-[ -n "$MARKERS" ] || MARKERS="HELLO=1 FINAL=1"
+[ -n "$MARKERS" ] || MARKERS="|HELLO=1|FINAL=1"
 [ -x "$PREFIX/bin/darling" ] || { echo "no launcher at $PREFIX/bin/darling" >&2; exit 2; }
 
 [ -n "$LOG" ] || LOG="/tmp/darling-boot-$(date +%H%M%S)-$$.log"
@@ -189,7 +189,12 @@ sleep "$WAIT"
 
 echo "== verdict =="
 verdict=0
+# MEASURED: a marker containing spaces was split by the old space-separated list, so `--marker 'ITER 0 dropped'`
+# became three markers and reported `MISS dropped` for something that was simply never queried as a whole.
+# '|' keeps a marker intact; IFS is restored right after the loop.
+oldIFS=$IFS; IFS='|'
 for m in $MARKERS; do
+	[ -n "$m" ] || continue
 	if grep -q -- "$m" "$LOG"; then
 		echo "MARKER ok   $m"
 	else
@@ -197,6 +202,7 @@ for m in $MARKERS; do
 		verdict=1
 	fi
 done
+IFS=$oldIFS
 echo "sockets created:   $(grep -c 'rpc-socket. created' "$LOG" 2>/dev/null)"
 echo "socket denials:    $(grep -c 'rpc-socket-DENIED' "$LOG" 2>/dev/null)"
 echo "urgent timeouts:   $(grep -c 'urgent-wait-TIMEOUT' "$LOG" 2>/dev/null)"

@@ -247,6 +247,11 @@ EXCLUDED_CONTRACTS = {
         "requires OBJC4_MACRO_CONTRACT_CANDIDATE, a reviewed objc4 source tree supplied by the operator",
     "tests/run-lifecycle-real-kernel-contract.sh":
         "runs a privileged cgroup-v2 fixture (bounded sudo) and needs an interpreter with os.pidfd_open",
+    "tests/run-guest-syscall-trace-contract.sh":
+        "guest-runtime gate: it drives booted-prefix workload runs through scripts/dwdiag (--prefix/"
+        "DPREFIX) to prove the guest Darwin-syscall tracer preserves the guest, actually traces, and "
+        "does not trace its own output. The host tier has no prefix lifecycle and no guest runtime, so "
+        "it is exercised by the prefix-backed lane that owns the Ring/plane work instead",
     "tests/west_test_contracts/a0_typed_wake_fault_hook_contract.py":
         "argparse tool, not a self-running contract: it needs --source, the materialized "
         "darlingserver source root an operator selects",

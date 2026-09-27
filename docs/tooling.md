@@ -123,6 +123,11 @@ must agree on one verdict rule, and every one of them was measured getting a ver
 could not see. The interface is meant to be composed rather than scraped:
 
 * **one verdict rule** -- `RING_MACH_TEST mode=<M> ... pass=1`; the ABSENCE of that line is `FAIL`/`HANG`, never PASS
+  The absence is classified by the WORKLOAD'S OWN exit status, which the guest shell prints (`__DWDIAG_RC=$?`):
+  `CRASH <SIG>` + `rc=128+N` (died of a signal -- the cause, named), `EXIT rc=N` (returned without its line), `HANG`
+  (no status at all), `NO-RUN` (never started). MEASURED 2026-09-27: `basic 2`/`basic 3` die of `SIGSEGV` at the
+  second iteration's port teardown, which produced byte-identical evidence to a deadlock and was reported as `HANG`;
+  the investigation then spent a long stretch chasing a lock that never existed. `--json` carries `rc` and `signal`.
   (MEASURED: a harness marker that matched a workload's START line reported PASS for two workloads that never finished);
 * **`--json` on every subcommand**, so callers chain `crash` into `symbolize` instead of parsing text;
 * **stable exit codes** -- 0 ok/PASS, 1 verdict or acceptance failure, 2 usage, 3 tool error;
@@ -150,3 +155,196 @@ Published-versus-serviced is the diagnosis: a request that the guest published a
 server-side stop, and one the server serviced while the guest still waits is a completion that did not land.
 `--json` is supported; `verdict` composes the same summary into a `VERDICT-STAGE` line whenever its verdict is not PASS,
 so a HANG no longer needs a manual grep to be readable.
+
+### 2026-09-27: two harness defects that made a run unreadable
+
+* **`--marker` split multi-word markers.** The boot harness stored markers space-separated and re-split them with a
+  plain `for`, so `--marker 'ITER 0 dropped'` became `ITER`, `0`, `dropped` and reported `MISS dropped` for a
+  marker that was never queried as a whole. Markers are `|`-separated now and the IFS change is restored after the
+  loop.
+* **A probe on a pre-libc path used `getenv`.** A diagnostic added to the guest's `mach_msg_overwrite` trap read its
+  hatch with `getenv` on first call; `mach_msg` runs during bootstrap, so the boot stopped reaching the workload
+  (`Rootless shellspawn did not become ready within 30000ms`) and the harness reported only a generic failure. It
+  now scans `/proc/self/environ` with raw syscalls, which is what `dserver-ring.c` already did. Any probe reached
+  before libc MUST use that scan.
+
+### 2026-09-27: the guest must be able to describe its own death
+
+A guest crash is invisible from the host: guest tids are not host pids (so `/proc/<tid>` sampling cannot name the
+faulting thread) and a `SIGSEGV` inside Darling's emulated-syscall window does not reach a handler the workload
+itself installed -- the program-level reporter added to `ring_mach_msg_test` (signal, fault address, fault PC,
+returning frames with image+symbol, `sigaltstack` for stack-overflow faults, `_exit(128+sig)` because `raise()` is
+a denied `pthread_kill` under the hard-socket hatch) prints nothing in that case, while it does print for a
+deliberate fault (`crash_test` mode). A guest fault reporter therefore belongs in the guest's own signal-exception
+layer (`emulation/src/linux_premigration/signal/sigexc.c`, which already has register/mcontext helpers), not in the
+program under test.
+
+### 2026-09-27: a fatal guest signal had NO observability in a normal build
+
+`sigexc.c` wraps every diagnostic in `kern_printf`, which is defined to **nothing** unless `DEBUG_SIGEXC` is
+compiled in. The path that actually kills a guest -- default-effect signal handling -- therefore produced no line
+anywhere, and hours went into reading a silent death as a deadlock. The file now emits one **bounded, raw** line per
+fatal signal number per process:
+
+```
+[sigexc-fatal sig=15 code=0 addr=0x3E80018FAE6 pid=1636880 tid=1636880]
+[sigexc-default sig=15 tid=1636880]
+```
+
+`__simple_fprintf` is a plain write, safe from a raw handler on `sigexc_altstack`; the once-per-signum bound keeps a
+signal storm from flooding the log. Validated by running the shape it exists for: a deliberate guest fault
+(`ring_mach_msg_test crash_test`) reports `sig=11 code=1 addr=0x0` for the faulting process **and** the fixture's own
+reporter reports the same process -- two independent instruments agreeing.
+
+Two rules follow from using it:
+
+* **`sigexc.c` is compiled TWICE** (`emulation.dir` -> `libsystem_kernel.dylib`, `emulation_dyld.dir` -> the `dyld`
+  image). Rebuilding `system_kernel` alone leaves the loader copy stale (measured: the `emulation_dyld` object was six
+  hours older and contained no instrument), so a diagnostic in this file needs `--target dyld` and a deploy of **both**
+  prefix copies, sha256-verified.
+* **The harness's own stop signal is not the subject's death.** Every run of a hanging workload shows
+  `[sigexc-fatal sig=15 code=0 ...]` for a *neighbouring* guest process with `code=0` (`SI_USER`, `uid=1000`, the
+  sender's pid in `si_addr`): that is the tool stopping what it started. A verdict about the subject must name the
+  subject's own pid.
+
+### 2026-09-27: probes that killed the process they measured
+
+Two diagnostics added to `ring_mach_msg_test` stopped the workload at the probe itself, and both were caught only
+because the marks that should follow them disappeared:
+
+* `pthread_sigmask(SIG_SETMASK, NULL, &cur)` -- `SIG_SETMASK` with a NULL set is undefined; the call never returned.
+  The defined query (block an empty set, take the previous mask) works and is what the probe uses now.
+* `sigaction(SIGSEGV, NULL, &old)` -- the disposition *query* did not return in this guest; the mark after it never
+  appeared. The probe was removed rather than guessed at.
+
+Keep every probe bracketed by its own mark, so a probe that breaks the subject is visible as a missing mark instead of
+as a missing crash.
+
+### 2026-09-27: `--repeat` and an explicit `LOG=` line (a verdict that cannot see flake)
+
+The verdict command gained `--repeat N`, one `LOG=<path>` line per run, and a `STABILITY mode=… runs=… pass=…
+stable=… distribution=…` summary; the exit status is non-zero unless every run passed. The same command produced
+`PASS` and `CRASH SEGV` on consecutive runs all session, and each single-run reading was treated as a change in
+behaviour. Any claim about a failing shape must now come from repeated runs.
+
+`scripts/dwdiag` also rebuilds when the source is newer than the binary and prints `tool=… binary=…`. It previously
+built only a **missing** binary, so an edited tool kept answering from the stale one (a new flag was absent from
+`--help` while the sibling repository's copy had it).
+
+### 2026-09-27: an oracle that reported PASS for a workload that never ran
+
+`ring_mach_msg_test delay 0 N` read its iteration count from `argv[delay_ms ? 3 : 2]`, so with `delay_ms == 0` it
+took the count from `argv[2]` -- the **delay** -- ran zero iterations and printed `pass=1`. Four such runs were read
+as "the destroy is safe with a delay". The index is now a property of the mode, and `iters == 0` prints
+`pass=0 error=no-op` and exits non-zero: a workload that did not execute must never report success.
+
+Measured consequence, after the fix: `delay 0 1` and `basic 1` are the same workload and both crash, while
+`delay 300 1` really runs and passes.
+
+### 2026-09-27: the guest Darwin-syscall trace, and the two ways it broke the guest
+
+`threadnoop 2` proved the current failing subject without ports, messages or destroys: **create a thread that
+does nothing, twice** -> `CRASH SEGV` 4/4, and the death is inside the *second* `pthread_create` (the first
+create/join completes; `[bsc wrap pre]` never prints for the second, and the server sees nothing for it). To name
+the Darwin syscall reached there, the dispatcher gained an opt-in trace (`DARLING_GUEST_SYSCALL_TRACE=1`) in the
+13-byte entry hook of `__darling_bsd_syscall` -- the same hook xtrace patches, occupied statically as `jmp rel32`
+plus 8 NOP bytes.
+
+Two implementations were MEASURED breaking the guest, and both lessons are now enforced by
+`tests/run-guest-syscall-trace-contract.sh`:
+
+* **The trace captured itself.** The first version printed with `__simple_printf`, whose output takes a `write`
+  syscall through this very dispatcher: 21 of its first 28 lines were the emitter's own writes and the guest
+  stopped starting (NO-RUN 3/3). The trace therefore emits with a RAW Linux `write` and formats its own line (the
+  discipline the plane probes already use), and the contract fails if one syscall number dominates the trace.
+* **The trampoline is copied, not invented.** A hand-rolled save/restore (7 pushes, `subq $16`) turned every run
+  into NO-RUN with the hatch *off* as well, i.e. it corrupted syscall delivery globally. The implementation now
+  copies xtrace's proven `trampoline_enter`/`trampoline_leave` pattern for this exact hook, and the contract's
+  first claim ("the instrument preserves the guest when it is off") is the oracle that catches it.
+* **The hook is a `call`, not a `jmp`.** MEASURED: a `jmp` into the trampoline is followed by the trampoline's
+  `ret`, which returns to the *syscall's caller* and skips the entire dispatcher -- every Darwin syscall then
+  returns garbage and every run is NO-RUN, hatch or not. xtrace installs this hook with
+  `setup_hook(..., jump=false)`, i.e. a call; the mnemonic is the parameter's name. The 13 bytes hold
+  `call rel32` + 8 NOP exactly as well as a `jmp` does, and a semantics-preserving `jmp` inside the same 13 bytes
+  was measured to work, which is what separated "the hook area is not statically occupiable" from "my jump kind
+  was wrong".
+
+The contract is registered in `ci/run-host-tier.py` as an EXCLUDED contract with its reason: it needs a booted
+prefix and a guest runtime, which the host tier does not own.
+
+### 2026-09-27: instrument the branch that is COMPILED
+
+`bsdthread_create.c` builds with `-DBSDTHREAD_WRAP_LINUX_PTHREAD` (measured in `build.ninja`), so its
+raw-`clone` branch is compiled out entirely, and the `emulation_dyld` copy of the whole file is excluded by
+`#ifndef VARIANT_DYLD`. Marks placed in the dead branch are invisible by construction while looking perfectly
+correct in the source; check the built object (`strings` on the `.o`) before trusting any instrument in a file
+that is built more than once.
+
+### 2026-09-27: the dispatcher trace is real, and its COVERAGE is measured, not assumed
+
+`tests/run-guest-syscall-trace-contract.sh` is green: the guest is unaffected with the hatch off, the traced arm
+still completes, the log carries thousands of `[bsys nr=` lines covering dozens of distinct syscall numbers, and one
+number does not dominate (the self-tracing signature). The contract's own first version had a defect worth keeping:
+the verdict list arrives space-separated, so `NO-RUN PASS` satisfied a "no verdict without PASS" check and a run that
+never started counted as "the instrument preserves the guest"; every verdict token must now be exactly `PASS`.
+
+Calibration of what the trace does and does not see (measured, `threadnoop 1 --env DARLING_GUEST_SYSCALL_TRACE=1`):
+
+* 10241 traced lines in the run, 81 distinct numbers -- the instrument is not silent;
+* for the WORKLOAD's own thread, only 6 lines, and **no `nr=4`** (`write`) although that thread printed five marks
+  through `printf`. The same `nr=4` floods appear for the harness's own binaries in the same run.
+
+So the trace covers the `call __darling_bsd_syscall` entry (which `SYS.h` emits for every generated stub when
+`DARLING` is defined) and does NOT cover whatever serves the workload binary's own `write` -- i.e. a second entry
+that must be found before this tracer can be used to say "the second `pthread_create` issues no Darwin syscall".
+Until then, "absent from the trace" is a statement about this entry only, and it must not be read as "no syscall".
+
+### 2026-09-27: ROOT CAUSE of the session's silent guest death (fix applied and verified)
+
+`_pthread_deallocate` (guest `libsystem_pthread`) freed the thread's stack+pthread-object region with
+`mach_vm_deallocate(t->freeaddr, t->freesize)` -- called from the **joining** thread -- while the loader
+(`darling_thread_entry`'s exit branch) already `munmap`s exactly that region (`t_freeaddr`/`t_freesize`, the
+arguments the guest passes to `__darling_thread_terminate`), from the thread that is actually finished. Two owners,
+two frees; the guest's fires while the memory is still live (the exiting thread's loader-side teardown and
+libpthread's own bookkeeping read the pthread object that sits above the stack in that same mapping).
+
+Signature it produced, all measured: a **silent** SIGSEGV (rc=139, no handler report, no server RPC) whose location
+varied between the next `pthread_create`, the syscall dispatcher and the program's exit path; it needed a
+create+join cycle (`threadnoop 2`, `basic >= 1`, `stress_churn`, `basic`'s helper thread) and passed with no thread
+(`selfdrop`, `timeout`, `sem_ready`). glibc reported `free(): invalid pointer` in a crashing run once
+`MALLOC_CHECK_=3` was set, which is what named the class.
+
+Decided by measurement, not argument:
+
+* disabling the **guest** deallocation (`DARLING_GUEST_NO_PTHREAD_DEALLOC=1`) -> `threadnoop 2`, `basic 3`,
+  `stress_churn 3` all `PASS 3/3` stable;
+* disabling the **loader** unmap -> still `CRASH` (so the guest's free is the harmful one);
+* with the fix committed (deallocation removed, ownership left to the loader), no hatch involved:
+  `threadnoop 2`, `basic 1`, `basic 3`, `delay 0 1`, `stress_churn 3`, `selfdrop 2`, `timeout 200 4` are all
+  `PASS 3/3 stable`.
+
+Lessons kept as rules: an mmap'd region's lifetime has ONE owner; a hatch that removes a free is how a double free is
+decided (and it must be a hatch, not a guess); and `MALLOC_CHECK_`/`MALLOC_PERTURB_` in the loader's environment is
+the cheapest way to make heap corruption speak.
+
+### 2026-09-27: the workload's line must name the mode the CALLER asked for
+
+`sem_gap <ms> <n>` runs `sem_block`'s implementation and reported `RING_MACH_TEST mode=sem_block ...`, while
+`dwdiag verdict --mode sem_gap` looks for the mode it was asked to run. A **passing** 5.001 s semantic wait was
+therefore reported as `EXIT rc=0 :: <no result line>` -- a false acceptance failure, and the kind of misreport that
+makes a green workload look broken. The result line now carries the requested mode (`run_sem_block` takes its label
+from the caller). Same rule as the verdict rule itself: the workload's own machine-readable line is the oracle, so it
+must answer the question that was asked.
+
+### 2026-09-27: a denial is a migration signal even when the row PASSES, and a row flake must not decide the suite
+
+Two tool defects, both measured on the acceptance table after the `_pthread_deallocate` fix:
+
+* `sem_gap 5000 1` passed 3/3 **while one run reported `denied=1`**, and the tool printed the denial's call site
+  only for non-PASS rows -- so the one fact needed to remove the last datagram dependency was hidden by a green
+  verdict. `verdict` now prints `DENIAL denied=<n> first-denial=<call> caller=<location> verdict=<v>` whenever
+  `denied > 0`.
+* Two rows failed in one suite run (`sem_gap 5000 1` HANG, `basic 20` NO-RUN) and then passed 3/3 and 4/4 when run
+  individually, i.e. a row-level flake decided the suite verdict. `suite` retries a row that is not PASS **once**
+  and prints `ROW-RETRY mode=<m> first=<v1> retry=<v2>`; the retry is announced, never silent, because hiding the
+  first verdict is the same defect as a verdict that cannot fail. `--retry-failed-rows false` turns it off.
