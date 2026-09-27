@@ -12652,3 +12652,58 @@ question is therefore the **send-to-parked-receive wake on the Ring**: when the 
 message on the port a server-parked receive is waiting for, the receive must be resumed and its reply published -- and if
 that wake is missing, the sender's own reply never arrives either, which is precisely two publishes without two
 consumes and two parked threads.
+
+
+### 236. The mach_msg send/receive join, at the trap level, and what it rules OUT
+
+Three instruments were added to the duct-tape XNU copy (the real server-side path; the earlier attempt traced
+`mach_msg_receive`, which this path does **not** use -- measured: `recv_enter` never appeared while `recv_woken` did):
+
+* `mach_msg_overwrite_trap`: `trap_recv_wait` (mqueue + name + option) and `trap_recv_done` (result), plus
+  `trap_recv_object` (the **port object behind the name**, which is the only field that can answer an identity
+  question);
+* `ipc_kmsg_send`: `kmsg_send_dest` (the mqueue the message is posted to), first placed on `msgh_remote_port` and
+  **corrected** -- that field is the port OBJECT, not a name, so the first version looked right and answered nothing;
+* `ipc_mqueue_post`: `post_wake` (the mqueue, the receiver it found, and whether it found one).
+
+The measurements, on `basic 20`:
+
+| fact | value |
+|---|---|
+| receives armed (`trap_recv_wait`) | 102 |
+| receives completed inline (`trap_recv_done`) | 56 |
+| wakes through the continuation (`recv_woken`) | 45 |
+| posts that **found a waiter** (`post_wake result=1`) | 45 |
+| posts that found none (`result=0`) | 56 |
+
+**Every post that found a waiter woke it** (45 = 45), and every armed receive whose mqueue received a post either
+completed or belongs to a thread whose completion is the continuation path. So the post/wait handshake is **not**
+losing wakes, and the armed-and-uncompleted receives are threads waiting for a message that has not been sent to their
+port object. The remaining identity question -- "does the same name denote the same object for sender and receiver" --
+was instrumented (`trap_recv_object`) and shows names denoting several objects **across the run**, which is expected
+because the workload creates and drops a port every iteration; no same-iteration mismatch was found.
+
+Section 231's rule applies to two of these three attempts: `msgh_remote_port` looked like a name and was a pointer, and
+`mach_msg_receive` looked like the receive entry and was not the one this path uses. Both were caught by asking what
+the instrument actually compares.
+
+### 237. `basic 1` PASSES and `basic 2` hangs: the transport is proven, the REPEAT is not
+
+The shape, measured with the same build and the same hard socket hatch:
+
+```
+basic 1  ->  PASS  RING_MACH_TEST mode=basic delay_ms=0 iters=1 pass=1 min_elapsed=0.000283 max_elapsed=0.000283
+basic 2  ->  HANG
+basic 4  ->  HANG
+```
+
+One full iteration -- `make_port`, `pthread_create` a sender, the sender's `mach_msg` send, the main thread's blocking
+`mach_msg` receive, `pthread_join`, `drop_port` -- completes with `pass=1` and no denial and no socket creation. That is
+the whole mach-msg path on the Ring, end to end, and it is the first time this project has a **passing** workload on the
+Ring under the hard hatch. The failure is therefore **not** the transport: it is what the second iteration does to the
+state the first one left behind (a port name reused with a different object, a lane not released, a thread's reply port,
+or the pthread create/join handshake, which the stall dump shows parked in `semaphore_timedwait`, callnum 62).
+
+The next step is bounded and specific: instrument the workload's own loop progress (one bounded line per iteration) and
+re-read the stall dump for iteration 2, where the same three instruments already say which half is parked and on which
+mqueue and call number.
