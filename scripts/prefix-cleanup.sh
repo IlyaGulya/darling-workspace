@@ -63,12 +63,16 @@ GUEST_COMMS="mldr launchd vchroot shellspawn"
 # shell. The guard is on the name, not on the PID, because a subshell's PID differs but its cmdline does not.
 SELF_NAME=${0##*/}
 SELF_PID=$$
+ANCESTORS=$(p=$$; while [ -n "$p" ] && [ "$p" != "0" ] && [ "$p" != "1" ]; do echo "$p"; p=$(sed 's/.*) //' "/proc/$p/stat" 2>/dev/null | awk '{print $2}'); done | tr '\n' ' ')
 
 owned_pids() {
 	for d in /proc/[0-9]*; do
 		pid=${d#/proc/}
 		[ "$pid" = "$SELF_PID" ] && continue
-		[ "$pid" = "$PPID" ] && continue
+		# EVERY ancestor, transitively: a wrapper at any depth is also invoked with --prefix, and a cleanup that
+		# only spares its immediate parent kills the process tree that asked for it. MEASURED in the sibling
+		# runner: a two-level wrapper died with SIGKILL three seconds in.
+		case " $ANCESTORS " in *" $pid "*) continue ;; esac
 		exe=$(readlink "$d/exe" 2>/dev/null)
 		case "$exe" in
 			"$PREFIX"|"$PREFIX"/*) echo "$pid"; continue ;;
