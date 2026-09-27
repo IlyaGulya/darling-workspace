@@ -809,7 +809,7 @@ pub struct WitnessArgs {
 // instrument without adding it here stops the census from being a census, so the list is the point of the command:
 // `witness` answers "which of these spoke", and names the ones that did not.
 const INSTRUMENTS: &[(&str, &str, &str)] = &[
-    ("sem-site", r"^SEM-SITE op=", "guest: who calls the semaphore family, and with which name/address"),
+    ("sem-site", r"^SEM-SITE ", "guest: who calls the semaphore family, with which name/address, and from which thread"),
     ("iter-marks", r"^ITER [0-9]+ ", "guest workload: per-iteration progress, names the iteration that stopped"),
     ("stall-dump", r"stall-dump idle_ms=", "server: parked threads, their calls, and their wait-timer state"),
     ("ring-dump", r"dtape\.ering (dump|seq=)", "server: the in-memory event ring dumped when the counters stop"),
@@ -972,4 +972,52 @@ pub enum DiagCommand {
 #[allow(dead_code)]
 fn btree_from(pairs: Vec<(String, String)>) -> BTreeMap<String, String> {
     pairs.into_iter().collect()
+}
+
+
+#[cfg(test)]
+mod witness_tests {
+    use super::*;
+
+    // ONE SAMPLE LINE PER INSTRUMENT, and the assertion that the registered pattern matches it. Why this exists: the
+    // registry is what makes the census a census, and it rots the moment an instrument's FORMAT changes -- which
+    // happened for real, twice in one session: `SEM-SITE` gained a `tcb=` field so `^SEM-SITE op=` stopped matching,
+    // and the ring dump was rewritten from `trace-record` to `dtape.ering seq=`. In both cases the instrument was on
+    // and the census called it silent. A format change now fails here instead of silently emptying a report.
+    const SAMPLES: &[(&str, &str)] = &[
+        ("sem-site", "SEM-SITE tcb=0x7d3d03e9e8c0 op=timedwait a=0x903 b=0x1E ra=0x71DA7C883893 sym0=semaphore_timedwait_trap_impl"),
+        ("iter-marks", "ITER 1 tid=1282542 port=2307 create"),
+        ("stall-dump", "[1790512650.010866](stall-dump, Error) stall-dump idle_ms=5136 serviced=571 processes=4 threads=8"),
+        ("ring-dump", "dtape.ering seq=453 tag=timer_arm a=0x62f094848e213 b=0x0 c=0x62f024c254e7f d=0x0"),
+        ("plane-refuse", "[plane-refuse] why=no-slot op=24 a=1 b=103079215108 tid=1274647"),
+        ("dtape-msgq", "dtape.msgq event=post_wake thread=0x653875af3de8 mqueue=0x653875aef3e8 arg=0x0 bits=0x300000000 result=1"),
+        ("dtape-timer", "dtape.wait_timer event=thread_unblock thread=0x60604ca39ee8 wait_result=0 had_timer=0 active=0"),
+        ("rpc-begin", "rpc.semaphore.begin operation=semaphore_timedwait pid=1 tid=1250752 wait_name=2307 signal_name=none sec=30 nsec=0"),
+        ("rpc-reply", "rpc.semaphore.reply operation=semaphore_timedwait pid=1 tid=1250752 wait_name=2307 signal_name=none code=49 outcome=timeout terminal=reply-enqueued"),
+        ("crash", "[dserver-CRASH sig=b addr=0x0,self=61d5aa4f9060,ret=0x0,sp=0x7de2c8112bf0,pc=0x61d5aa61229b"),
+        ("workload-stall", "RING_MACH_TEST_STALL age=31.9"),
+        ("execpath-after", "seq=4 after-execpath status=0"),
+    ];
+
+    #[test]
+    fn every_registered_instrument_matches_its_sample() {
+        for (name, sample) in SAMPLES {
+            let (_, pattern, _) = INSTRUMENTS
+                .iter()
+                .find(|(n, _, _)| n == name)
+                .unwrap_or_else(|| panic!("instrument {name} is registered nowhere"));
+            let re = Regex::new(pattern).unwrap();
+            assert!(re.is_match(sample), "instrument {name} does not match its own sample line");
+        }
+    }
+
+    #[test]
+    fn every_instrument_has_a_sample() {
+        for (name, _, _) in INSTRUMENTS {
+            assert!(
+                SAMPLES.iter().any(|(n, _)| n == name),
+                "instrument {name} has no sample line, so its pattern is unchecked"
+            );
+        }
+    }
 }

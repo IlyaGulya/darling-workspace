@@ -130,4 +130,7 @@ Why it exists: a hand-written `grep` finds the line it was written for and canno
 ran, and "an instrument that silently does nothing is indistinguishable from no guard". Both failure modes were hit for
 real: a `SEM-SITE` line was present while the pattern missed it, and two `dserver-CRASH` lines sat unnoticed in a log
 that had been read twice as a transport stall. Adding an instrument means adding it to the `INSTRUMENTS` table in
-`src/diag.rs`, or the census stops being a census.
+`src/diag.rs`, or the census stops being a census. The table is checked by `cargo test`: every entry must match a
+sample line, and every entry must have one, because a pattern that has drifted from its instrument's format reports a
+live instrument as silent -- which happened twice in one session (`SEM-SITE` gained a `tcb=` field; the ring dump was
+rewritten from `trace-record` to `dtape.ering seq=`).
