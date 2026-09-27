@@ -82,6 +82,17 @@ darling-workspace/scripts/dwdiag crash --binary ~/work/ringmm-build/src/external
 darling-workspace/scripts/dwdiag crash --binary /path/to/darlingserver \
   --line '[dserver-CRASH sig=b addr=0x684,self=...,pc=...,w0=...]'
 
+# --- progress: WHERE a finished run stopped, without grepping two logs --------------------------------
+# Reads the run log and (if given) the guest loader log and prints the three facts that decide a stall:
+# whether the workload spoke, the last `[mldr-ctl]` stage the loader reached, the last plane op the guest
+# PUBLISHED, and the last plane op the server actually SERVICED. Published-vs-serviced IS the diagnosis.
+darling-workspace/scripts/dwdiag progress --log /tmp/dwdiag-verdict-1234-basic.log \
+    --guest-log /tmp/mldr-diag.log --mode basic
+#   PROGRESS workload=absent last-guest=after-seed pid=917234 last-published-op=5 last-served-op=4 serviced=7 denied=0 created=0 first-denial=<none>
+# `--json` is supported, and `verdict` composes the same summary itself: a non-PASS verdict prints a
+# VERDICT-STAGE line (with `MLDR_DIAG_LOG` picked up from the environment), because a bare HANG that does not
+# say where it stopped is the manual-grep work this subcommand removes.
+
 # --- verdict: ONE guest workload, judged by its OWN machine-readable line --------------------------------
 # The absence of `RING_MACH_TEST mode=<M> ... pass=1` is FAIL or HANG, NEVER PASS. That rule exists because a harness
 # marker that matched a workload's START line reported two hung workloads as passes in one session.

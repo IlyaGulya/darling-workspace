@@ -139,3 +139,14 @@ Defects this tool found in ITSELF while being used, each fixed and kept as a rul
 * crash fields were parsed with a first-match-else chain, so `addr` was silently empty whenever it shared a comma-field
   with `sig` (`[dserver-CRASH sig=b addr=0x0`) -- a parse that looked right and dropped a field.
 
+
+### `dwdiag progress` -- where a run stopped
+
+`darling-workspace/scripts/dwdiag progress --log RUN_LOG [--guest-log MLDR_DIAG_LOG] [--mode M]` answers the question a
+stalled acceptance run always raises, from the two logs the run already wrote, without a shell pipeline: whether the
+workload produced its own machine-readable line, the last `[mldr-ctl]` stage the guest loader reached (a `seq=N after-*`
+bootstrap stage, the request it published, or the spin it is in), and the last plane op the **server serviced**.
+Published-versus-serviced is the diagnosis: a request that the guest published and the server never serviced is a
+server-side stop, and one the server serviced while the guest still waits is a completion that did not land.
+`--json` is supported; `verdict` composes the same summary into a `VERDICT-STAGE` line whenever its verdict is not PASS,
+so a HANG no longer needs a manual grep to be readable.

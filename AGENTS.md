@@ -618,7 +618,11 @@ digest check catches; a literal only reports that the derivation ran.
   - Profile replay diagnosis: `west test --profile P --env ENV
     --materialize-profile` for the whole chain, `west patch materialize-lock
     --repo CLONE --lock SCHEMA_V2_LOCK` for one lock in isolation.
-  - Job start and observation: `scripts/west-job.sh start --state-dir DIR -- …`
+  - Where a guest run stopped (without grepping its two logs): `scripts/dwdiag progress --log RUN_LOG
+  [--guest-log MLDR_DIAG_LOG] [--mode M]` prints whether the workload spoke, the guest loader's last stage, the op it
+  published and the last plane op the server serviced; `dwdiag verdict` prints the same summary as `VERDICT-STAGE` on
+  any non-PASS verdict.
+- Job start and observation: `scripts/west-job.sh start --state-dir DIR -- …`
     then `follow --state-dir DIR`, `status --state-dir DIR`, `cancel
     --state-dir DIR`. `west dev follow DIR` is the same observer with the
     heartbeat off and the engine's flags forwarded. Do not hand-roll
