@@ -90,38 +90,34 @@ When you find another, fix the tool, add the rule here, and record the incident 
 the architecture document.
 
 
-## Guest-workload verdicts and server crashes
+## The diagnostics are ONE tool: `dwdiag`
 
-* `scripts/darling-guest-verdict.sh --prefix P --mode M [--args 'A B'] [--wait S] [--env K=V]...`
-  runs ONE guest workload mode and judges it by its **own** machine-readable line:
-  the verdict is `RING_MACH_TEST mode=<M> ... pass=1`, and its ABSENCE is
-  `FAIL` or `HANG`, never `PASS`. It exists because the boot harness reports
-  `VERDICT: PASS` when the markers it was given appear anywhere in the log, so
-  naming a marker that matches a workload's **start** line reported PASS for
-  workloads that never finished (`sem_gap 5000 1`, `basic 20`). A wrapper that
-  stores only the value of `--env` and drops the flag is the same class of
-  defect: the runner then rejects a bare `K=V` and the failure looks like a
-  workload failure.
-* `scripts/dserver-crash-resolve.sh --binary PATH (--log LOG | --self 0x.. --pc 0x..)`
-  turns a `dserver-CRASH` line into a location and the code around it: it derives
-  the offset from the probe's own `self=`, resolves it with `llvm-nm`, prints the
-  disassembly with a `FAULT HERE` marker, and resolves the probe's stack words
-  (`w0..w7`) into symbol + offset. Two instrument defects were found by using it:
-  `ret=` was a **stack pointer** (never a caller), and the first stack-word tags
-  were written without `=` or `0x`, so nothing could parse them. MEASURED value:
-  one run of this tool showed `si_addr = 0x684` = `0 + 0x684` right after
-  `call current_thread`, i.e. `current_thread()` returned NULL -- the answer that
-  explains why the management plane cannot execute Mach semantics directly.
+Everything that used to be a separate shell script for this work -- judging a guest workload, running a set of them,
+symbolizing an offset, resolving a crash -- is now a subcommand of the Rust tool in the sibling tooling repository:
 
-* `scripts/darling-suite-run.sh --prefix P [--env K=V]... [--require-zero-creations] -- 'MODE [ARGS] :: MODE [ARGS]'`
-  runs a SET of guest workloads (one boot each), judges every row by that workload's own
-  `RING_MACH_TEST ... pass=1` line, prints one table with `denied`/`created` next to each
-  row, and exits non-zero on any non-`PASS` row or on any creation when asked. MEASURED
-  defect it exposed, in the class this file exists for: `darling-boot-run.sh`'s cleanup
-  excluded only `$$` and `$PPID`, so a two-level wrapper (suite -> verdict -> runner) was
-  inside the cmdline arm and the runner **killed the process tree that asked for it**
-  (`rc=137`, three seconds in); and after that was fixed by excluding the whole PPID chain,
-  the guard still did nothing because the ancestor list was newline-separated while the
-  membership test needs spaces. Both are fixed here and in `prefix-cleanup.sh`. An
-  instrument whose guard silently does nothing is indistinguishable from one with no
-  guard; run the shape the guard exists for.
+```
+scripts/dwdiag <symbolize|crash|verdict|suite> [OPTIONS]     # build-and-exec shim, stable path
+  = darling-debug-runner diag ...                            # the implementation, in the tool repo
+```
+
+Why one tool rather than four scripts: they share two primitives (`llvm-nm` symbolization and reading a run log), they
+must agree on one verdict rule, and every one of them was measured getting a verdict or a parse wrong in a way the others
+could not see. The interface is meant to be composed rather than scraped:
+
+* **one verdict rule** -- `RING_MACH_TEST mode=<M> ... pass=1`; the ABSENCE of that line is `FAIL`/`HANG`, never PASS
+  (MEASURED: a harness marker that matched a workload's START line reported PASS for two workloads that never finished);
+* **`--json` on every subcommand**, so callers chain `crash` into `symbolize` instead of parsing text;
+* **stable exit codes** -- 0 ok/PASS, 1 verdict or acceptance failure, 2 usage, 3 tool error;
+* it **delegates** rather than reimplements: prefix start/stop stays in the boot harness (`--boot-runner`), and the
+  symbol table stays `llvm-nm`'s, because a second implementation of either is a second source of truth.
+
+Defects this tool found in ITSELF while being used, each fixed and kept as a rule:
+
+* the boot harness was invoked as `--cmd "" <command>`, i.e. two arguments, so it exited instantly and the verdict
+  reported `NO-RUN` -- a tool defect that looked exactly like a workload that failed to start;
+* the JSON escaping handled quotes, backslashes and newlines but not tabs or other control characters, so a crash
+  document with a disassembly in it was **unparseable** -- a tool that emits "json" a consumer cannot parse is worse
+  than one that emits text, because the consumer trusted it;
+* crash fields were parsed with a first-match-else chain, so `addr` was silently empty whenever it shared a comma-field
+  with `sig` (`[dserver-CRASH sig=b addr=0x0`) -- a parse that looked right and dropped a field.
+
