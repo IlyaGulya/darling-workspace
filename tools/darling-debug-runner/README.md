@@ -113,3 +113,21 @@ darling-workspace/scripts/dwdiag suite --prefix /tmp/dr-on-matched --wait-base 6
 `scripts/darling-boot-run.sh` relative to the caller's directory) and read its log; `symbolize` and `crash` delegate the
 symbol table to `llvm-nm` and the disassembly to `objdump`. Nothing is reimplemented here, because a second
 implementation would be a second source of truth for something the toolchain already answers.
+
+## `diag witness` — which instruments spoke, and which stayed silent
+
+```
+scripts/dwdiag witness [--log PATH] [--json]
+```
+
+Reads a run log (default: the newest `dwdiag-verdict-*.log`) and reports a census of every instrument this project
+ships -- `SEM-SITE`, the workload's `ITER` marks, the server's `stall-dump`, the in-memory ring dump, `plane-refuse`,
+`dtape.msgq`, `dtape.wait_timer`, `rpc.*.begin`/`.reply`, `dserver-CRASH`, the workload's own watchdog and the
+post-exec barrier -- with a hit count and one sample line each, followed by `WITNESS-SILENT <names>` for the ones that
+never spoke.
+
+Why it exists: a hand-written `grep` finds the line it was written for and cannot tell you which OTHER instrument never
+ran, and "an instrument that silently does nothing is indistinguishable from no guard". Both failure modes were hit for
+real: a `SEM-SITE` line was present while the pattern missed it, and two `dserver-CRASH` lines sat unnoticed in a log
+that had been read twice as a transport stall. Adding an instrument means adding it to the `INSTRUMENTS` table in
+`src/diag.rs`, or the census stops being a census.
