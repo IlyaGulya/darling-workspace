@@ -12618,3 +12618,37 @@ follows from that: whether the parked `semaphore_timedwait` should have complete
 server holds the timeout, by design) while something else is parked -- i.e. whether a parked continuation blocks the
 same process's other parked continuation from being resumed, which is a server-side concurrency question and no longer a
 transport question.
+
+
+### 235. The signal must ride the same transport as the wait, and the semaphore trace then shows the wait is NOT the stall
+
+Two things were established this round, one by a fix and one by a measurement that corrects the previous section.
+
+**The fix: `semaphore_signal` and `semaphore_signal_all` belong to the blocking family.** The route table
+(`RING_GENERATED_SIMPLE`) carried the four *waits* and **not** the signals, so a signal went by the process plane --
+whose single slot was held by the parked wait -- could not be published, took the datagram, and was **denied** by the
+hard socket hatch. The waiter was therefore never woken, which is exactly the mutual wait section 234's dump showed
+(`active=62` parked next to `active=38`, `serviced=568`, `waiting=2`). A signal may never queue behind the wait it
+exists to release. Both calls were added to the wire class table and to the route table; boot stays GREEN and
+`basic 20` no longer reports a denial at all.
+
+**The measurement that corrects the reading: the wait is not stuck.** With the server-side semaphore trace enabled, the
+same run says:
+
+```
+rpc.semaphore.begin  operation=semaphore_timedwait pid=1 tid=1021526 wait_name=2307 sec=30 nsec=0
+rpc.semaphore.reply  operation=semaphore_timedwait pid=1 tid=1021526 wait_name=2307 code=49 outcome=timeout terminal=reply-enqueued
+rpc.semaphore.begin  operation=semaphore_timedwait pid=1 tid=1021526 wait_name=2307 sec=30 nsec=0      <-- again
+```
+
+The server's timed wait **times out and enqueues its reply** (`code=49` is `ETIMEDOUT`), the guest receives it, and the
+workload **starts the same wait again**. So the semaphore family, on the Ring, is working exactly as its standalone
+modes measure (`sem_timed kr=49 elapsed=0.300`). What the dump shows parked is therefore not a lost wake: it is a
+workload politely waiting 30 seconds at a time for something that never comes.
+
+That something is the **sender**: the other parked thread sits in `mach_msg_overwrite` (call 38), i.e. a receive, with a
+continuation, and the two publishes with no matching consume are the two halves of one message exchange. The remaining
+question is therefore the **send-to-parked-receive wake on the Ring**: when the sender's `mach_msg_overwrite` puts a
+message on the port a server-parked receive is waiting for, the receive must be resumed and its reply published -- and if
+that wake is missing, the sender's own reply never arrives either, which is precisely two publishes without two
+consumes and two parked threads.
