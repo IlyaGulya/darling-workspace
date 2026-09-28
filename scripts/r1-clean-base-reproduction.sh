@@ -1,112 +1,126 @@
 #!/usr/bin/env bash
 # Clean-base reproduction of the transport work (directive section 3E).
 #
-# What this proves and what it does not: it rebuilds the PRODUCT from a clean clone of the recorded base revision plus
-# the recorded source archive, with a FRESH configure into a FRESH build directory and a SEPARATE install prefix. It does
-# not touch the live prefix, and it deliberately does not reuse the dirty build tree.
+# Proves: the PRODUCT rebuilds from a clean materialization of the pinned upstream revision plus a CONTENT-based delta of
+# the working tree, with a FRESH configure into a FRESH build directory and a SEPARATE install prefix.
+# Does not touch the live prefix, does not reuse the dirty build tree, does not copy any working tree.
+#
+# Two lessons are baked in, both measured:
+#   * the local product commit is EMPTY, so "base revision" cannot mean it: the base is the pinned west revision.
+#   * submodules have submodules: the walk recurses (a one-level walk left metal/deps/indium empty and configure failed).
+#   * a delta selected by modification time is INCOMPLETE: the tree carries untracked, build-required files
+#     (e.g. src/startup/mldr/signal_atomic.h). The delta is therefore diff-based, which is complete by construction.
 set -u
+
 SRC_REPO=/home/ilyagulya/work/procctl-src
-BASE=8f33c0cd89728f17ea8700ede8edcb2b40129952
+DARLING=/home/ilyagulya/work/darling-gwn-resume/darling
 PINNED=5f2d7401d878455cf3c3c0865ee5a4290dfa03f0
+REF=/home/ilyagulya/work/r1-clean-ref
 CLEAN=/home/ilyagulya/work/r1-clean-base
 CLEAN_BUILD=/home/ilyagulya/work/r1-clean-build
 CLEAN_PREFIX=/tmp/r1-clean-prefix
 EVID=/home/ilyagulya/work/darling-dev/evidence
-ARCHIVE=$(ls -1t "$EVID"/r1-transport-sources-*.tar.gz 2>/dev/null | head -1)
 
-echo "== 0. regenerate the durable artifact from the CURRENT tree =="
-python3 -B - "$SRC_REPO" "$EVID" <<'PY'
-import hashlib, os, pathlib, subprocess, sys, tarfile, time
-src, evid = sys.argv[1], sys.argv[2]
-files = []
-for root, dirs, names in os.walk(src):
-    dirs[:] = [d for d in dirs if d not in ('.git', 'build')]
-    for n in names:
-        p = os.path.join(root, n)
-        try:
-            if os.path.getmtime(p) >= time.mktime(time.strptime('2026-09-27', '%Y-%m-%d')):
-                files.append(p)
-        except OSError:
-            pass
-files.sort()
-stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
-arch = os.path.join(evid, f'r1-transport-sources-{stamp}.tar.gz')
-with tarfile.open(arch, 'w:gz') as tf:
-    for f in files:
-        tf.add(f, arcname=os.path.relpath(f, src), recursive=False)
-h = hashlib.sha256(open(arch, 'rb').read()).hexdigest()
-man = arch.replace('.tar.gz', '.sha256')
-with open(man, 'w') as fh:
-    for f in files:
-        fh.write(f"{hashlib.sha256(open(f,'rb').read()).hexdigest()}  {os.path.relpath(f, src)}\n")
-base = subprocess.run(['git','log','--format=%H','-1'], cwd=src, capture_output=True, text=True).stdout.strip()
-print(f"archive {arch} files={len(files)} bytes={os.path.getsize(arch)} sha256={h}")
-print(f"manifest {man}")
-print(f"base commit {base}")
-open(os.path.join(evid, 'r1-transport-sources-LATEST'), 'w').write(f"{arch}\nsha256={h}\nbase={base}\n")
-PY
-
-echo "== 1. clean materialization of the base revision (tracked content + every gitlink submodule) =="
-# The local product repo has an EMPTY base commit, so cloning it is meaningless (measured). The base is the pinned west
-# revision, materialized from COMMITTED content: the darling repository at the recorded revision, plus each gitlink
-# submodule's own archive at the commit the tree records. Nothing is copied from a working tree, so the result cannot
-# carry uncommitted local state.
-DARLING=/home/ilyagulya/work/darling-gwn-resume/darling
-rm -rf "$CLEAN"; mkdir -p "$CLEAN"
-git -C "$DARLING" archive "$PINNED" | tar -x -C "$CLEAN" || { echo "base archive failed"; exit 1; }
-# RECURSIVE: submodules have submodules. MEASURED: a one-level scan left src/external/metal/deps/indium empty and the
-# configure failed on its missing CMakeLists.txt -- the indium dependency is a nested gitlink. The sha of a nested
-# submodule comes from its PARENT's tree, so the walk carries both the repository directory and the commit.
-mat_one() { # $1 = repository dir, $2 = commit, $3 = destination
-	local repo="$1" sha="$2" dest="$3" sub sha_n path dir
+mat_one() { # $1 repository dir, $2 commit, $3 destination
+	local repo="$1" sha="$2" dest="$3" sha_n path dir
 	git -C "$repo" archive "$sha" 2>/dev/null | tar -x -C "$dest" || { echo "  ARCHIVE FAILED $repo@$sha"; return 1; }
 	while read -r sha_n path; do
 		[ -n "$path" ] || continue
 		dir="$repo/$path"
-		if [ -d "$dir/.git" ] || [ -f "$dir/.git" ] || git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+		if git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
 			mkdir -p "$dest/$path"
 			mat_one "$dir" "$sha_n" "$dest/$path"
-		elif [ -n "${INDIUM_SHA:-}" ] && [ "$path" = "deps/indium" ]; then
-			mkdir -p "$dest/$path"
-			mat_one "$DARLING/src/external/metal/deps/indium" "$INDIUM_SHA" "$dest/$path"
 		else
 			echo "  no local repository for nested submodule: $path @ $sha_n"
 		fi
 	done < <(git -C "$repo" ls-tree -r "$sha" | awk '$2 == "commit" {print $3" "$4}')
 }
-mkdir -p "$CLEAN"
-mat_one "$DARLING" "$PINNED" "$CLEAN"
-# The nested `metal/deps/indium` case: its gitlink lives in the metal submodule, but the local repository for it may sit
-# elsewhere in the workspace; find it and extract it explicitly so the configure can proceed.
-INDIUM=$(find /home/ilyagulya/work -maxdepth 6 -type d -name indium 2>/dev/null | head -1)
-if [ -n "$INDIUM" ] && [ ! -f "$CLEAN/src/external/metal/deps/indium/CMakeLists.txt" ]; then
-	echo "  extracting indium from $INDIUM"
-	mkdir -p "$CLEAN/src/external/metal/deps/indium"
-	( cd "$INDIUM" && git archive HEAD 2>/dev/null | tar -x -C "$CLEAN/src/external/metal/deps/indium" ) || echo "  indium archive failed"
-fi
-echo "clean tree files=$(find "$CLEAN" -type f | wc -l)"
 
-echo "== 2. apply the recorded archive =="
+echo "== 0a. reference materialization of the base =="
+rm -rf "$REF"; mkdir -p "$REF"
+mat_one "$DARLING" "$PINNED" "$REF"
+echo "reference files=$(find "$REF" -type f | wc -l)"
+
+echo "== 0b. CONTENT-based delta (every differing or missing path) =="
+python3 -B - "$SRC_REPO" "$REF" "$EVID" <<'PY'
+import hashlib, os, subprocess, sys, tarfile, time
+src, ref, evid = sys.argv[1], sys.argv[2], sys.argv[3]
+out = subprocess.run(['diff', '-rq', '--no-dereference', ref, src], capture_output=True, text=True).stdout
+changed = set()
+for line in out.splitlines():
+    if line.startswith('Files ') and ' differ' in line:
+        changed.add(os.path.relpath(line.split(' and ')[1].rsplit(' differ', 1)[0], src))
+    elif line.startswith('Only in '):
+        head, name = line[len('Only in '):].split(': ', 1)
+        p = os.path.join(head, name)
+        # A path that exists only in the REFERENCE is not part of the delta (the delta is what the working tree adds or
+        # changes). MEASURED: without this guard the script tried to archive a base-only path relative to the working
+        # tree and died on a path that cannot exist.
+        if not p.startswith(src + os.sep):
+            if os.path.isdir(p):
+                for root, _dirs, names in os.walk(p):
+                    for n in names:
+                        changed.add(os.path.relpath(os.path.join(root, n), src)) if False else None
+            continue
+        if os.path.isfile(p):
+            changed.add(os.path.relpath(p, src))
+        elif os.path.isdir(p):
+            for root, _dirs, names in os.walk(p):
+                for n in names:
+                    changed.add(os.path.relpath(os.path.join(root, n), src))
+changed = sorted(changed)
+stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+arch = os.path.join(evid, f'r1-transport-sources-{stamp}.tar.gz')
+man = arch.replace('.tar.gz', '.sha256')
+# Symlinks are skipped: the SDK stubs are dangling links by design (libSystem.dylib -> a versioned file that the tree
+# does not carry), MEASURED to abort the tar step, and a link is not a product change. If one ever matters, the build
+# will name it and it can be handled explicitly instead of guessed at.
+skipped_links = [rel for rel in changed if os.path.islink(os.path.join(src, rel))]
+changed = [rel for rel in changed if not os.path.islink(os.path.join(src, rel))]
+missing = [rel for rel in changed if not os.path.isfile(os.path.join(src, rel))]
+changed = [rel for rel in changed if os.path.isfile(os.path.join(src, rel))]
+if skipped_links:
+    print(f"skipped {len(skipped_links)} symlink path(s), e.g. {skipped_links[0]}")
+if missing:
+    print(f"skipped {len(missing)} non-regular path(s), e.g. {missing[0]}")
+with tarfile.open(arch, 'w:gz') as tf:
+    for rel in changed:
+        tf.add(os.path.join(src, rel), arcname=rel, recursive=False)
+with open(man, 'w') as fh:
+    for rel in changed:
+        fh.write(f"{hashlib.sha256(open(os.path.join(src, rel), 'rb').read()).hexdigest()}  {rel}\n")
+open(os.path.join(evid, 'r1-transport-sources-LATEST'), 'w').write(
+    f"{arch}\npaths={len(changed)}\nbase={ref}\npinned={os.environ.get('PINNED_FOR_MANIFEST', '')}\n")
+print(f"delta paths={len(changed)} bytes={os.path.getsize(arch)}")
+print(f"manifest {man}")
+print(f"includes signal_atomic.h: {'src/startup/mldr/signal_atomic.h' in changed}")
+PY
+
+echo "== 1. materialize a FRESH tree at the pinned revision =="
+rm -rf "$CLEAN"; mkdir -p "$CLEAN"
+mat_one "$DARLING" "$PINNED" "$CLEAN"
+echo "clean files=$(find "$CLEAN" -type f | wc -l)"
+
+echo "== 2. apply the delta =="
 ARCHIVE=$(head -1 "$EVID/r1-transport-sources-LATEST")
 tar -xzf "$ARCHIVE" -C "$CLEAN" || { echo "apply failed"; exit 1; }
 echo "applied $(tar -tzf "$ARCHIVE" | wc -l) paths from $(basename "$ARCHIVE")"
 
-echo "== 3. FRESH configure (identity extracted from the working build tree) =="
+echo "== 3. FRESH configure =="
 rm -rf "$CLEAN_BUILD" "$CLEAN_PREFIX"; mkdir -p "$CLEAN_PREFIX"
 cmake -S "$CLEAN" -B "$CLEAN_BUILD" -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug -DCMAKE_INSTALL_PREFIX="$CLEAN_PREFIX" \
   -DDARLING_EUNION=ON -DDARLING_MALLOC_REGION_TEST=ON -DDARLING_RING_TRANSPORT=ON \
   -DDARLING_ROOTLESS_HOMEBREW=ON -DDARLING_ROOTLESS_TOOLCHAIN=ON -DDARLING_SKIP_DRIFT_GATE=ON \
-  > "$CLEAN_BUILD.configure.log" 2>&1 || { echo "CONFIGURE FAILED (log: $CLEAN_BUILD.configure.log)"; tail -20 "$CLEAN_BUILD.configure.log"; exit 1; }
+  > "$CLEAN_BUILD.configure.log" 2>&1 || { echo "CONFIGURE FAILED"; tail -15 "$CLEAN_BUILD.configure.log"; exit 1; }
 echo "configure OK -> $CLEAN_BUILD"
 
-echo "== 4. build the three artifacts that the transport work touches =="
+echo "== 4. build the artifacts the transport work touches =="
 ( cd "$CLEAN_BUILD" && ninja mldr darlingserver libsystem_kernel.dylib dyld ) > "$CLEAN_BUILD.build.log" 2>&1
 rc=$?
 echo "BUILD rc=$rc (log: $CLEAN_BUILD.build.log)"
-if [ $rc -eq 0 ]; then
-  for f in src/startup/mldr/mldr src/external/darlingserver/darlingserver src/external/xnu/darling/src/libsystem_kernel/libsystem_kernel.dylib src/external/dyld/dyld; do
-    [ -f "$CLEAN_BUILD/$f" ] && echo "  built $(sha256sum "$CLEAN_BUILD/$f" | cut -c1-16) $f"
-  done
-fi
+[ $rc -ne 0 ] && grep -m4 -iE "error|fatal" "$CLEAN_BUILD.build.log" | cut -c1-180
+for f in src/startup/mldr/mldr src/external/darlingserver/darlingserver src/external/xnu/darling/src/libsystem_kernel/libsystem_kernel.dylib src/external/dyld/dyld; do
+	[ -f "$CLEAN_BUILD/$f" ] && echo "  built $(sha256sum "$CLEAN_BUILD/$f" | cut -c1-16) $f"
+done
 echo "CLEAN-BASE-DONE rc=$rc"
