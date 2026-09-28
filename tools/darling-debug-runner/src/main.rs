@@ -911,6 +911,27 @@ fn main() -> Result<ExitCode> {
         nix::sys::signal::signal(nix::sys::signal::Signal::SIGPIPE, nix::sys::signal::SigHandler::SigDfl)
             .expect("failed to restore the default SIGPIPE disposition");
     }
+    // EVERYTHING THIS PROCESS PRINTS ALSO GOES TO A FILE, announced first.
+    //
+    // MEASURED: a gate that booted a prefix and ran a workload for 265 seconds produced NO output at all through a
+    // pipeline -- not in the calling script's own failure path, not with the output echoed back. A diagnostic whose
+    // result can be lost while it runs cannot be used to decide anything, and the caller cannot even tell a silent
+    // failure from a lost one. Child processes inherit these descriptors, so the boot harness and the guest tooling are
+    // captured too, and the announcement is written to the ORIGINAL stdout so it survives the redirection.
+    {
+        use std::io::Write;
+        let path = std::env::var("DWDIAG_TRANSCRIPT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(format!("/tmp/dwdiag-transcript-{}.out", std::process::id())));
+        if let Ok(file) = std::fs::File::create(&path) {
+            // Announce on the ORIGINAL stdout first, then redirect: the announcement must reach the caller even though
+            // everything printed afterwards (including by the children) lands in the transcript.
+            println!("TRANSCRIPT={}", path.display());
+            let _ = std::io::stdout().flush();
+            let _ = nix::unistd::dup2_stdout(&file);
+            let _ = nix::unistd::dup2_stderr(&file);
+        }
+    }
     let cli = Cli::parse();
     // The diagnostics do not run an experiment and do not produce a bundle: they answer a question and report it with
     // their OWN exit code (0 ok/PASS, 1 finding, 2 usage, 3 tool error), so a caller can compose them without parsing
