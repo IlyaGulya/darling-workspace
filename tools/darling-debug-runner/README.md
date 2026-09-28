@@ -189,3 +189,27 @@ were found by using the tool on a real failure, and both were closed in `diag.rs
 Both changes are verified by use: `crash` resolved the frames above against the deployed `darlingserver`, and `progress`
 reported the crash for the same log. The rule they encode: when a reading is empty, say **why** it is empty, and never
 withhold a fact that is already in hand.
+
+
+## Third round of proactive decoding (2026-09-28): the wake channel, and a classifier that had to be caught lying
+
+The question violation A turns on is not "did something wake the server" but "WHICH channel woke it", and two
+instruments were answering it wrongly.
+
+1. The loader's `[plane-wake]` line said `via=doorbell-or-server-poll`, a label that cannot be told apart -- and the
+   loader already knew the answer (it rings the doorbell only when it holds the descriptor). It now prints
+   `via=doorbell` or `via=none` plus `db=<fd>`.
+2. The same line ended in a LITERAL backslash-n instead of a newline, so every `[plane-wake]` record collapsed into one
+   log line. Any line-based count of them undercounts, which is exactly how a reader concludes the wake path is quiet.
+   Both the instrument and the tool now count OCCURRENCES, not lines.
+3. `dwdiag progress` prints `WAKES plane-publishes=.. doorbell=.. none=.. unknown=..` with a verdict:
+   `the bounded poll is LOAD-BEARING` when a publish had no doorbell to ring, `the poll is not what makes progress`
+   when every publish rang it, and `record(s) predate the channel-aware instrument; re-run to judge` otherwise.
+
+That third verdict is the one that had to be earned: the first version of the classifier used a SUBSTRING test, and the
+retired label `via=doorbell-or-server-poll` contains `via=doorbell`, so it reported `doorbell=38 none=0` for a run whose
+channel was never recorded -- wrong in the most dangerous direction, because it would have "proved" that the poll was
+unnecessary. It now extracts the token after `via=` and compares it, and the same log honestly reports `unknown=38`.
+
+Rule encoded: an instrument must not make two different facts look the same, and a classifier over instrument output
+must match the value, never a prefix of it -- verification by use caught the second one immediately.

@@ -1145,6 +1145,34 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
             }
         }
     }
+    // Wake-channel summary (user directive: the reading violation A turns on must be one command away). A plane
+    // publish is either woken by the process doorbell or only found later by the server's bounded poll, and the
+    // loader's instrument now names which. Counting OCCURRENCES, not lines, is deliberate: the older instrument ended
+    // its record with a literal backslash-n, so several records shared one line and a line-based count undercounts
+    // exactly the path this is meant to expose.
+    let (mut wake_doorbell, mut wake_none, mut wake_unknown) = (0u64, 0u64, 0u64);
+    {
+        let mut idx = 0usize;
+        while let Some(rel) = run[idx..].find("[plane-wake]") {
+            let at = idx + rel;
+            idx = at + 1;
+            let seg = &run[at..(at + 160).min(run.len())];
+            // TOKEN equality, never a substring test: the retired label was `via=doorbell-or-server-poll`, which
+            // CONTAINS `via=doorbell`, so a substring classifier reported 38 doorbell wakes for a run whose channel
+            // was in fact never recorded -- a verdict wrong in the most dangerous direction. Extracting the token
+            // makes the old label land in `unknown`, which is the truth about it.
+            let token = seg.find("via=").map(|v| {
+                let rest = &seg[v + 4..];
+                let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
+                &rest[..end]
+            });
+            match token {
+                Some("doorbell") => wake_doorbell += 1,
+                Some("none") => wake_none += 1,
+                _ => wake_unknown += 1,
+            }
+        }
+    }
     if args.json {
         println!(
             "{{\"workload\":\"{}\",\"result\":\"{}\",\"last_guest\":\"{}\",\"last_published_op\":\"{}\",\"last_served_op\":\"{}\",\"serviced\":{},\"denied\":{},\"created\":{},\"first_denial_call\":\"{}\"}}",
@@ -1170,6 +1198,19 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
         );
         if !p.result.is_empty() {
             println!("PROGRESS-RESULT {}", p.result);
+        }
+        if wake_doorbell + wake_none + wake_unknown > 0 {
+            println!(
+                "WAKES plane-publishes={} doorbell={} none={} unknown={}",
+                wake_doorbell + wake_none + wake_unknown, wake_doorbell, wake_none, wake_unknown
+            );
+            if wake_none > 0 {
+                println!("WAKES-VERDICT the bounded poll is LOAD-BEARING: {wake_none} publish(es) had no doorbell to ring");
+            } else if wake_unknown == 0 {
+                println!("WAKES-VERDICT every publish rang the doorbell: the poll is not what makes progress");
+            } else {
+                println!("WAKES-VERDICT {wake_unknown} record(s) predate the channel-aware instrument; re-run to judge");
+            }
         }
         if let Some(cl) = &crash_line {
             println!("STOP-REASON crash: {cl}");
