@@ -348,3 +348,13 @@ Two tool defects, both measured on the acceptance table after the `_pthread_deal
   individually, i.e. a row-level flake decided the suite verdict. `suite` retries a row that is not PASS **once**
   and prints `ROW-RETRY mode=<m> first=<v1> retry=<v2>`; the retry is announced, never silent, because hiding the
   first verdict is the same defect as a verdict that cannot fail. `--retry-failed-rows false` turns it off.
+
+### `darling-boot-run.sh --cmd` replaces the boot command, so the default markers do not appear
+
+Measured 2026-09-28: a churn run (`--cmd 'shell -c "…"'`) was reported `VERDICT FAIL` with `MARKER MISS HELLO=1` and
+`MARKER MISS FINAL=1`, and it was read as a product failure. It was not: `--cmd` runs THAT command instead of the
+default one, and `HELLO=1`/`FINAL=1` are printed by the default command, so their absence is expected and carries no
+information about the product. When a run supplies `--cmd`, judge it by the markers that command prints and by the
+counter block; the boot markers only apply to a default boot. A `--cmd` run that neither prints its own completion
+marker nor its expected output has not executed the workload at all, and that is what the two zero counts above
+(`checkout-skipped`, `R1-CHURN-DONE`) actually said.
