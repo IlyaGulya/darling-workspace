@@ -902,6 +902,46 @@ fn prepare_darling(args: &DarlingArgs) -> Result<()> {
     Ok(())
 }
 
+/// The stream the CALLER is actually watching.
+///
+/// A long run duplicates stdout/stderr into a transcript so its output cannot be lost; but then the caller sees NOTHING,
+/// which is its own defect: MEASURED, `dwdiag prefix`/`verdict` output was grepped from stdout and matched nothing while
+/// the answer sat in the transcript, twice leading to "the tool was silent" conclusions that were wrong. Essentials --
+/// stage lines, verdict rows, denial lines, hash checks, the final rc -- are therefore written HERE as well.
+static ORIGINAL_STDOUT: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+
+pub fn say(message: &str) {
+    use std::io::Write;
+    use std::os::fd::FromRawFd;
+    if let Some(fd) = ORIGINAL_STDOUT.get() {
+        let mut f = unsafe { std::fs::File::from_raw_fd(*fd) };
+        let _ = writeln!(f, "{message}");
+        let _ = f.flush();
+        std::mem::forget(f);
+    } else {
+        println!("{message}");
+    }
+}
+
+/// Print the part of a long run that a caller actually asks for: stage lines, hash checks, verdict rows, denial lines,
+/// the suite table and the final verdict. The transcript next to it still holds EVERYTHING.
+fn echo_essentials(path: &std::path::Path) {
+    const KEEP: &[&str] = &[
+        "PREFIX-STAGE", "PREFIX-INSTALL", "PREFIX-INSTALLED", "PREFIX-ENV",
+        "VERDICT", "LOG=", "DENIAL", "MARKER", "SUITE", "MATCH", "MISMATCH",
+        "COURIER", "WAKES", "PROGRESS", "ERROR", "error:", "Failed", "failed",
+    ];
+    let Ok(text) = std::fs::read_to_string(path) else { return };
+    let mut printed = 0usize;
+    for line in text.lines() {
+        if KEEP.iter().any(|k| line.contains(k)) {
+            say(line);
+            printed += 1;
+        }
+    }
+    say(&format!("ESSENTIALS {printed} line(s) from {}", path.display()));
+}
+
 fn main() -> Result<ExitCode> {
     // MEASURED defect: `dwdiag progress ... | head -4` panicked with `failed printing to stdout: Broken pipe (os error
     // 32)`, because Rust starts every process with SIGPIPE ignored. A diagnostic whose output is paged or truncated is
@@ -921,6 +961,17 @@ fn main() -> Result<ExitCode> {
     // result can be lost while it runs cannot be used to decide anything, and the caller cannot even tell a silent
     // failure from a lost one. Child processes inherit these descriptors, so the boot harness and the guest tooling are
     // captured too, and the announcement is written to the ORIGINAL stdout so it survives the redirection.
+    // PARSE FIRST. MEASURED: with the transcript installed before parsing, `dwdiag prefix --artifact …` (a flag that had
+    // been lost from the build) answered `error: unexpected argument '--artifact' found` INTO THE TRANSCRIPT, so the
+    // caller saw a bare TRANSCRIPT= line and nothing else -- a usage error is an answer and must reach the caller.
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            print!("{e}");
+            return Ok(if e.use_stderr() { ExitCode::from(2) } else { ExitCode::SUCCESS });
+        }
+    };
+    let mut transcript_path: Option<PathBuf> = None;
     {
         use std::io::Write;
         let path = std::env::var("DWDIAG_TRANSCRIPT")
@@ -934,28 +985,52 @@ fn main() -> Result<ExitCode> {
         let wants_help = std::env::args()
             .any(|a| matches!(a.as_str(), "-h" | "--help" | "-V" | "--version" | "help"));
         if !wants_help {
-            if let Ok(file) = std::fs::File::create(&path) {
+            // The transcript exists for runs whose output can be LOST while they run -- a boot plus a workload under a
+        // watchdog. For the short diagnostics the answer IS the output, and redirecting it hides the one thing the
+        // caller asked for: MEASURED, `dwdiag symbolize` refused loudly with `Error: base symbol not found: 0` and I read
+        // an empty terminal, concluding the tool was silent. Answers go to the terminal; only long runs get a transcript.
+        let long_run = std::env::args().any(|a| matches!(a.as_str(), "verdict" | "suite" | "prefix" | "replay"))
+            || std::env::var("DWDIAG_TRANSCRIPT").is_ok();
+        if long_run {
+        if let Ok(file) = std::fs::File::create(&path) {
+                // Keep a duplicate of the CALLER's stdout for `say()`, then redirect.
+                {
+                    use std::os::fd::IntoRawFd;
+                    if let Ok(d) = nix::unistd::dup(std::io::stdout()) {
+                        let _ = ORIGINAL_STDOUT.set(d.into_raw_fd());
+                    }
+                }
                 // Announce on the ORIGINAL stdout first, then redirect: the announcement must reach the caller even though
                 // everything printed afterwards (including by the children) lands in the transcript.
+                transcript_path = Some(path.clone());
                 println!("TRANSCRIPT={}", path.display());
                 let _ = std::io::stdout().flush();
                 let _ = nix::unistd::dup2_stdout(&file);
                 let _ = nix::unistd::dup2_stderr(&file);
             }
         }
+        }
     }
-    let cli = Cli::parse();
     // The diagnostics do not run an experiment and do not produce a bundle: they answer a question and report it with
     // their OWN exit code (0 ok/PASS, 1 finding, 2 usage, 3 tool error), so a caller can compose them without parsing
     // human output. That is why they are dispatched before the bundle machinery.
+    //
+    // After a long run the ESSENTIALS are echoed to the caller from the transcript. Without this the caller sees only
+    // the transcript's path: MEASURED, output was grepped from stdout and matched nothing while the answer sat in the
+    // file, twice producing a wrong "the tool was silent" conclusion. The transcript still holds everything; this is
+    // the part a person or a script actually asks for.
     if let RunnerCommand::Diag(cmd) = cli.command {
-        return diag::dispatch(cmd).map(|code| {
+        let code = diag::dispatch(cmd).map(|code| {
             if code == ExitCode::SUCCESS {
                 ExitCode::SUCCESS
             } else {
                 code
             }
         });
+        if let Some(p) = transcript_path.as_deref() {
+            echo_essentials(p);
+        }
+        return code;
     }
     let (bundle, result) = match cli.command {
         RunnerCommand::Run(args) => {
