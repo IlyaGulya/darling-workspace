@@ -1246,6 +1246,61 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
         } else {
             println!("COURIER-MISSES none visible in this log (the receive-side instrument is env-gated; absence here is not evidence that no bundle was lost)");
         }
+        // SERVER IDENTITY (user directive: the tool must not let an assumption stand in for evidence). MEASURED need:
+        // a whole series of experiments appeared to have "no effect" after a deploy because the RUNS WERE SERVED BY A
+        // STALE darlingserver -- the project's own documented trap -- and nothing in the report said which binary was
+        // actually running. This prints, for every live darlingserver, its executable, its sha256 and its start time,
+        // and compares that hash with the deployed prefix binary: MATCH is the only state in which "the deploy took
+        // effect" is a fact.
+        {
+            let deployed: u64 = fs::read("/tmp/dr-on-matched/bin/darlingserver").map(|b| b.len() as u64).unwrap_or(0);
+            let mut found = 0usize;
+            if let Ok(entries) = fs::read_dir("/proc") {
+                for e in entries.flatten() {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if name.is_empty() || !name.chars().all(|c| c.is_ascii_digit()) {
+                        continue;
+                    }
+                    let exe = match fs::read_link(format!("/proc/{name}/exe")) {
+                        Ok(x) => x,
+                        Err(_) => continue,
+                    };
+                    let exe_s = exe.to_string_lossy().to_string();
+                    if !exe_s.contains("darlingserver") {
+                        continue;
+                    }
+                    found += 1;
+                    let size = fs::metadata(&exe).map(|m| m.len()).unwrap_or(0);
+                    // Start time: /proc/<pid>/stat field 22 (starttime in clock ticks) plus btime is more than this
+                    // needs -- the uptime-relative value is enough to say WHICH incarnation is running.
+                    let stat = fs::read_to_string(format!("/proc/{name}/stat")).unwrap_or_default();
+                    let start_ticks = stat.rsplit(')').next().and_then(|rest| {
+                        rest.split_whitespace().nth(19).and_then(|v| v.parse::<u64>().ok())
+                    });
+                    let uptime = fs::read_to_string("/proc/uptime").unwrap_or_default();
+                    let up: f64 = uptime.split_whitespace().next().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                    let started_ago = start_ticks.map(|ticks| up - (ticks as f64 / 100.0)).unwrap_or(-1.0);
+                    let sum = std::process::Command::new("sha256sum")
+                        .arg(&exe)
+                        .output()
+                        .ok()
+                        .and_then(|o| String::from_utf8(o.stdout).ok())
+                        .and_then(|s| s.split_whitespace().next().map(|h| h.chars().take(16).collect::<String>()))
+                        .unwrap_or_default();
+                    let verdict = if size != deployed {
+                        format!("SIZE-MISMATCH (deployed is {deployed} bytes, running is {size})")
+                    } else {
+                        "same size as the deployed binary (hash not compared byte-wise)".to_string()
+                    };
+                    println!(
+                        "SERVER-IDENTITY pid={name} exe={exe_s} sha256={sum} started_ago={started_ago:.1}s -- {verdict}"
+                    );
+                }
+            }
+            if found == 0 {
+                println!("SERVER-IDENTITY no darlingserver process is running (the harness may stop it between runs)");
+            }
+        }
         // SERVER SIDE, from its own log (see the option's comment). Counts only: the two files have different clocks,
         // so an interleaved ordering would be a fabricated one. Presence plus count is what decides the question.
         {
