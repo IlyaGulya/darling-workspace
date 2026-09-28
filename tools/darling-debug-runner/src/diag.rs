@@ -1262,7 +1262,7 @@ const TRANSPORTS: &[TransportRow] = &[
     TransportRow { name: "SPSC Ring (per-thread lane, ordinary calls)", patterns: &[r"RING_TRACE gen ENTER callnum="], instrument: Some("RING_TRACE gen ENTER (only under DARLING_GUEST_RING_TRACE=1)"), proof_token: "RING_TRACE gen ENTER callnum=", must_be_zero: false },
     TransportRow { name: "duplex Ring/mailbox (caller-S2C, OOL)", patterns: &[r"RING_MACHMSG_PUBLISH", r"dtape\.msgq event="], instrument: Some("guest RING_MACHMSG_PUBLISH / server dtape.msgq"), proof_token: "RING_MACHMSG_PUBLISH", must_be_zero: false },
     TransportRow { name: "process management plane (shared page, slot)", patterns: &[r"\[plane-", r"\[release-drops-pending\]"], instrument: Some("plane-* lines (partial: only named paths print)"), proof_token: "[plane-", must_be_zero: false },
-    TransportRow { name: "urgent shared plane (interrupt/sigprocess)", patterns: &[r"urgent-service"], instrument: Some("urgent-service (server: one line per serviced urgent slot)"), proof_token: "", must_be_zero: false },
+    TransportRow { name: "urgent shared plane (interrupt/sigprocess)", patterns: &[r"urgent-service"], instrument: Some("urgent-service (server: one line per serviced urgent slot)"), proof_token: "urgent-service", must_be_zero: false },
     TransportRow { name: "SCM_RIGHTS courier (fd-bearing packets)", patterns: &[r"\[afunix-send\] .*scm=1", r"\[courier-send\] .*scm=1"], instrument: Some("afunix-send + courier-send (scm=1)"), proof_token: "[courier-send]", must_be_zero: false },
     TransportRow { name: "legacy ordinary AF_UNIX (semantic, no fd)", patterns: &[r"\[afunix-send\] .*scm=0", r"\[courier-send\] .*scm=0"], instrument: Some("afunix-send + courier-send (scm=0)"), proof_token: "[afunix-send]", must_be_zero: true },
     TransportRow { name: "zero-fd control/wake packets on AF_UNIX", patterns: &[r"\[afunix-wake\]"], instrument: Some("afunix-wake (gone: the plane wake is now a non-packet; [plane-wake] records it)"), proof_token: "[plane-wake]", must_be_zero: true },
@@ -1280,6 +1280,10 @@ fn run_courier(args: CourierArgs) -> Result<ExitCode> {
     let default_artifacts = vec![
         PathBuf::from("/tmp/dr-on-matched/libexec/darling/usr/libexec/darling/mldr"),
         PathBuf::from("/tmp/dr-on-matched/libexec/darling/usr/lib/system/libsystem_kernel.dylib"),
+        // The SERVER carries the plane's own instruments (plane-wake, courier-send, urgent-service), so a census of
+        // those rows cannot be judged without it: a zero whose instrument is missing from this binary is not
+        // evidence. MEASURED need: the urgent plane's instrument lives here and was not in the default set.
+        PathBuf::from("/tmp/dr-on-matched/bin/darlingserver"),
     ];
     let artifacts = if args.artifact.is_empty() { &default_artifacts } else { &args.artifact };
     let mut artifact_blobs: Vec<Vec<u8>> = Vec::new();
