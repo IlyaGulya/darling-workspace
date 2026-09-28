@@ -162,3 +162,30 @@ stable=yes`, while `basic 1` is `CRASH SEGV=4 stable=no`.
 `scripts/dwdiag` rebuilds the tool when its source is newer than the binary and prints which copy answered
 (`dwdiag: tool=... binary=...`). Before that it only built a *missing* binary, so a source change was silently
 ignored and `--help` described a different tool than the one that ran.
+
+
+## Proactive decoding: what was fixed and why (2026-09-28)
+
+A diagnostic that requires a second, hand-written step is a diagnostic that will be skipped when it matters. Two gaps
+were found by using the tool on a real failure, and both were closed in `diag.rs`.
+
+1. `crash` withheld information it already had. On a `dserver-CRASH sig=6` whose pc was outside the given binary it
+   printed `LOCATION: <outside this binary's symbol range>` and an empty disassembly, while the run log's own panic
+   backtrace named the whole call chain. It now prints, for every crash:
+   - the **signal's meaning** (`6` -> `SIGABRT: abort() -- in C++ almost always an uncaught exception reaching
+     std::terminate, or an explicit abort()`; `11` -> null/freed dereference; and so on), because `sig=6` versus
+     `sig=11` changes the diagnosis completely;
+   - the `addr` field's two 32-bit halves when it has that shape, explicitly labelled `HYPOTHESIS, unverified`, since
+     a tgkill-raised signal carries a pid/uid pair there and guessing it as fact would be worse than silence;
+   - **every `darlingserver(+0x...)` frame from the log, resolved to `symbol + offset`** against the given binary.
+   That last one is what turned an opaque abort into a located defect: it produced
+   `panic <- Assert <- retrieve_thread_self_fast <- thread_self_trap_for <- dtape_thread_self_trap_for <-
+   Server::_serviceProcessControl`, which is the evidence that a trap cannot be answered inside the plane's pass.
+
+2. `progress` said `workload=absent` for a crashed run, which is true and useless. It now prints
+   `STOP-REASON crash: <line>` with the first panic-backtrace frames and the exact `dwdiag crash --binary ... --log ...`
+   command that decodes it, and reports the same in `--json`.
+
+Both changes are verified by use: `crash` resolved the frames above against the deployed `darlingserver`, and `progress`
+reported the crash for the same log. The rule they encode: when a reading is empty, say **why** it is empty, and never
+withhold a fact that is already in hand.

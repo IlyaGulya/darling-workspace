@@ -247,6 +247,23 @@ fn parse_crash_line(line: &str) -> CrashLine {
     c
 }
 
+// Proactive signal decoding (user directive): "sig=6" is an abbreviation every reader has to look up, and the
+// answer changes the diagnosis completely -- 6 is an abort, which in C++ means an uncaught exception reached
+// std::terminate, while 11 is a null/freed dereference. MEASURED need: a plane-path abort was printed as "sig=6"
+// and the meaning had to be reconstructed by hand.
+fn sig_meaning(sig: &str) -> Option<&'static str> {
+    let digits: String = sig.chars().filter(|c| c.is_ascii_digit()).collect();
+    match digits.parse::<i32>().ok()? {
+        4 => Some("SIGILL: illegal instruction"),
+        5 => Some("SIGTRAP: trace/breakpoint trap"),
+        6 => Some("SIGABRT: abort() -- in C++ almost always an uncaught exception reaching std::terminate, or an explicit abort()"),
+        7 => Some("SIGBUS: bus error (misaligned or unmapped access)"),
+        8 => Some("SIGFPE: arithmetic exception"),
+        11 => Some("SIGSEGV: invalid memory reference (null, freed, or wrong-object pointer)"),
+        _ => None,
+    }
+}
+
 fn run_crash(args: CrashArgs) -> Result<ExitCode> {
     let line = match (&args.line, &args.log) {
         (Some(l), _) => l.clone(),
@@ -332,10 +349,40 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
         }
     }
 
+    // Proactive enrichment (user directive): a fault whose pc is OUTSIDE this binary is still evidence, and the run
+    // log usually carries the panic backtrace that says where it happened. MEASURED need: the plane-path abort
+    // printed `LOCATION: <outside this binary's symbol range>` and an empty disassembly, while the log's own eleven
+    // `darlingserver(+0x...)` frames named the call chain -- the tool had the information and withheld it.
+    let signal_meaning = sig_meaning(&crash.sig);
+    let mut backtrace_frames: Vec<(u64, String)> = Vec::new();
+    let backtrace_log = args.log.clone().unwrap_or_else(|| newest_verdict_log().unwrap_or_default());
+    if let Ok(text) = std::fs::read_to_string(&backtrace_log) {
+        for line in text.lines() {
+            let Some(open) = line.find("(+0x") else { continue };
+            let name = &line[..open];
+            if !(name == "darlingserver" || name.ends_with("/darlingserver")) {
+                continue;
+            }
+            let rest = &line[open + 4..];
+            let Some(end) = rest.find(')') else { continue };
+            if let Ok(off) = u64::from_str_radix(&rest[..end], 16) {
+                if let Some((si, o)) = locate(&syms, off) {
+                    backtrace_frames.push((off, format!("{} + 0x{:x}", symbol_name(&syms[si].name), o)));
+                }
+            }
+        }
+    }
+    // The `addr` field of a Linux signal carries two 32-bit halves for a tgkill-raised signal; printing the halves
+    // is a hypothesis, not a claim, so it is labelled as one.
+    let addr_halves = {
+        let a = crash.addr.trim().trim_start_matches("0x");
+        u64::from_str_radix(a, 16).ok().and_then(|v| if v >> 32 == 0 { None } else { Some((v >> 32, v & 0xffff_ffff)) })
+    };
+
     if args.json {
         let escaped = jesc(&disassembly);
         println!(
-            "{{\"crash\":\"{}\",\"sig\":\"{}\",\"addr\":\"{}\",\"location\":\"{}\",\"stack\":[{}],\"disassembly\":\"{}\"}}",
+            "{{\"crash\":\"{}\",\"sig\":\"{}\",\"addr\":\"{}\",\"location\":\"{}\",\"stack\":[{}],\"signal_meaning\":\"{}\",\"frames\":[{}],\"disassembly\":\"{}\"}}",
             jesc(&crash.raw),
             jesc(&crash.sig),
             jesc(&crash.addr),
@@ -343,6 +390,12 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
             stack_locs
                 .iter()
                 .map(|(i, _, s)| format!("{{\"w\":{},\"location\":\"{}\"}}", i, s))
+                .collect::<Vec<_>>()
+                .join(","),
+            jesc(signal_meaning.unwrap_or("")),
+            backtrace_frames
+                .iter()
+                .map(|(off, s)| format!("{{\"offset\":\"0x{off:x}\",\"location\":\"{}\"}}", jesc(s)))
                 .collect::<Vec<_>>()
                 .join(","),
             escaped
@@ -356,6 +409,19 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
             // Say WHY there is no location, instead of printing nothing (or a guess): the pc is not in this binary,
             // which is the normal case for a C++ throw, a libc abort, or a fault inside a shared library.
             println!("LOCATION: <outside this binary's symbol range: the pc belongs to another object>");
+        }
+        match signal_meaning {
+            Some(m) => println!("signal: {} -- {m}", crash.sig),
+            None => println!("signal: {}", crash.sig),
+        }
+        if let Some((hi, lo)) = addr_halves {
+            println!("addr-halves: high=0x{hi:x} (=pid {hi}?) low=0x{lo:x} (={lo}) -- HYPOTHESIS, unverified");
+        }
+        if !backtrace_frames.is_empty() {
+            println!("--- backtrace frames from the log, resolved against {} ---", args.binary.display());
+            for (n, (off, sym)) in backtrace_frames.iter().enumerate() {
+                println!("  #{n} +0x{off:x} -> {sym}");
+            }
         }
         if !stack_locs.is_empty() {
             println!("--- stack walk ---");
@@ -1061,12 +1127,37 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
     let run = fs::read_to_string(&args.log).unwrap_or_default();
     let guest = args.guest_log.as_ref().map(|p| fs::read_to_string(p).unwrap_or_default()).unwrap_or_default();
     let p = summarize_progress(&run, &guest, &args.mode);
+    // Proactive stop reason (user directive): a CRASHED run has no workload result line, so every summary field is
+    // empty and the output used to read `workload=absent` -- which says nothing about WHY. MEASURED need: a
+    // darlingserver abort in the plane pass produced exactly that, and the crash was only found by grepping the log
+    // by hand. The crash line plus the first panic-backtrace frames are printed here, with the command that decodes
+    // them, so the reason is never withheld from the next reader.
+    let crash_line = run
+        .lines()
+        .find(|l| l.contains("dserver-CRASH"))
+        .map(|l| l.split("dserver-CRASH").last().unwrap_or(l).trim().to_string());
+    let mut crash_frames: Vec<String> = Vec::new();
+    if crash_line.is_some() {
+        for line in run.lines() {
+            let l = line.trim();
+            if l.starts_with("darlingserver(+0x") && crash_frames.len() < 4 {
+                crash_frames.push(l.to_string());
+            }
+        }
+    }
     if args.json {
         println!(
             "{{\"workload\":\"{}\",\"result\":\"{}\",\"last_guest\":\"{}\",\"last_published_op\":\"{}\",\"last_served_op\":\"{}\",\"serviced\":{},\"denied\":{},\"created\":{},\"first_denial_call\":\"{}\"}}",
             jesc(&p.workload), jesc(&p.result), jesc(&p.last_guest), jesc(&p.last_published_op),
             jesc(&p.last_served_op), p.serviced, p.denied, p.created, jesc(&p.first_denial_call)
         );
+        if let Some(cl) = &crash_line {
+            println!(
+                "{{\"crash\":\"{}\",\"frames\":[{}]}}",
+                jesc(cl),
+                crash_frames.iter().map(|f| format!("\"{}\"", jesc(f))).collect::<Vec<_>>().join(",")
+            );
+        }
     } else {
         println!(
             "PROGRESS workload={} last-guest={} last-published-op={} last-served-op={} serviced={} denied={} created={} first-denial={}",
@@ -1079,6 +1170,13 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
         );
         if !p.result.is_empty() {
             println!("PROGRESS-RESULT {}", p.result);
+        }
+        if let Some(cl) = &crash_line {
+            println!("STOP-REASON crash: {cl}");
+            for f in &crash_frames {
+                println!("  {f}");
+            }
+            println!("  decode: dwdiag crash --binary <server binary> --log {}", args.log.display());
         }
     }
     // The exit code is a QUESTION ("did the workload speak?"), not a judgement: absent means the caller must look at
