@@ -875,6 +875,11 @@ pub struct ProgressArgs {
     /// The guest loader diagnostic file (`MLDR_DIAG_LOG`), when the run enabled one.
     #[arg(long)]
     guest_log: Option<PathBuf>,
+    /// A REGRESSION TRIPWIRE, not a proof: fail (exit 2) when fewer plane publishes were seen than this. MEASURED
+    /// need: two broken boots showed `plane-publishes=6` where a healthy boot shows 40+, and noticing that required
+    /// remembering the healthy number -- the tool must say it instead of leaving it to the reader.
+    #[arg(long, default_value_t = 0)]
+    min_plane_publishes: u64,
     /// The workload's mode, used to look for its own machine-readable result line.
     #[arg(long, default_value = "")]
     mode: String,
@@ -1204,10 +1209,17 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
             println!("PROGRESS-RESULT {}", p.result);
         }
         if wake_doorbell + wake_none + wake_unknown > 0 {
+            let total_publishes = wake_doorbell + wake_none + wake_unknown;
             println!(
                 "WAKES plane-publishes={} doorbell={} none={} unknown={}",
-                wake_doorbell + wake_none + wake_unknown, wake_doorbell, wake_none, wake_unknown
+                total_publishes, wake_doorbell, wake_none, wake_unknown
             );
+            if args.min_plane_publishes > 0 && total_publishes < args.min_plane_publishes {
+                println!(
+                    "WAKES-REGRESSION only {total_publishes} plane publishes, at least {} expected: a boot that stops early looks exactly like this",
+                    args.min_plane_publishes
+                );
+            }
             if wake_none > 0 {
                 println!("WAKES-VERDICT the bounded poll is LOAD-BEARING: {wake_none} publish(es) had no doorbell to ring");
             } else if wake_unknown == 0 {
@@ -1215,6 +1227,18 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
             } else {
                 println!("WAKES-VERDICT {wake_unknown} record(s) predate the channel-aware instrument; re-run to judge");
             }
+        }
+        // A receive that missed its token means a bundle was consumed by ANOTHER consumer or never arrived -- the exact
+        // mechanism that broke two boots in this session (a doorbell envelope adopted instead of stored, while the lane
+        // attach still waited for it by token). The line existed in the log; nothing surfaced it.
+        let misses: Vec<&str> = run
+            .lines()
+            .filter(|l| l.contains("fd-courier-recv") && l.contains("MISS") || l.contains("[fd-courier-miss]"))
+            .collect();
+        if !misses.is_empty() {
+            println!("COURIER-MISSES {} record(s); first: {}", misses.len(), misses[0].trim());
+        } else {
+            println!("COURIER-MISSES none visible in this log (the receive-side instrument is env-gated; absence here is not evidence that no bundle was lost)");
         }
         if let Some(cl) = &crash_line {
             println!("STOP-REASON crash: {cl}");
@@ -1362,6 +1386,57 @@ fn run_courier(args: CourierArgs) -> Result<ExitCode> {
                 violations.push(format!("{} UNMEASURED ({inst})", row.name));
             } else if n > 0 {
                 violations.push(format!("{} = {n} (must be 0)", row.name));
+            }
+        }
+    }
+    // KIND-LEVEL DELIVERY ACCOUNTING (user directive: the question "who received the bundle" must not require
+    // reading the server's source). The server already logs every courier bundle with its kind and whether the
+    // target connection is the LOADER's (`[courier-send-image] bundle-to pid=.. kind=.. isLoader=..`). Aggregating
+    // that answers, in one command, a question that cost a source dive: which kinds reach the loader and which
+    // reach only the guest image. The generic verdict flags any kind delivered ONLY to isLoader=0, because for the
+    // process doorbell that is exactly the defect the wake census exposed (36 of 38 publishes had no doorbell).
+    {
+        use std::collections::BTreeMap;
+        let mut by_kind: BTreeMap<(String, String), u64> = BTreeMap::new();
+        for line in text.lines() {
+            let Some(pos) = line.find("bundle-to ") else { continue };
+            let seg = &line[pos..];
+            let field = |name: &str| -> Option<String> {
+                let at = seg.find(name)?;
+                let rest = &seg[at + name.len()..];
+                let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
+                Some(rest[..end].to_string())
+            };
+            if let (Some(kind), Some(loader)) = (field("kind="), field("isLoader=")) {
+                *by_kind.entry((kind, loader)).or_insert(0) += 1;
+            }
+        }
+        if by_kind.is_empty() {
+            println!(
+                "COURIER-KINDS none -- the server's per-bundle delivery record is env-gated; re-run the workload with DARLING_SERVER_COURIER_LOG=1 to account for delivery by kind"
+            );
+        }
+        if !by_kind.is_empty() {
+            println!("COURIER-KINDS kind loader count");
+            for ((kind, loader), n) in &by_kind {
+                println!("  {kind:<22} isLoader={loader}  {n}");
+            }
+            let kinds: Vec<&String> = by_kind.keys().map(|(k, _)| k).collect();
+            let mut only_image: Vec<&String> = Vec::new();
+            for k in kinds {
+                let to_loader: u64 = by_kind.iter().filter(|((kk, l), _)| kk == k && l == "1").map(|(_, n)| *n).sum();
+                let to_image: u64 = by_kind.iter().filter(|((kk, l), _)| kk == k && l == "0").map(|(_, n)| *n).sum();
+                if to_loader == 0 && to_image > 0 {
+                    only_image.push(k);
+                }
+            }
+            if only_image.is_empty() {
+                println!("COURIER-KINDS-VERDICT every delivered kind reached the loader connection at least once");
+            } else {
+                println!(
+                    "COURIER-KINDS-VERDICT kind(s) delivered ONLY to the guest image (isLoader=0): {}",
+                    only_image.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")
+                );
             }
         }
     }

@@ -213,3 +213,19 @@ unnecessary. It now extracts the token after `via=` and compares it, and the sam
 
 Rule encoded: an instrument must not make two different facts look the same, and a classifier over instrument output
 must match the value, never a prefix of it -- verification by use caught the second one immediately.
+
+
+## Fourth round (2026-09-28): a regression tripwire, because I broke the boot twice by memory
+
+Two broken boots in a row produced the same reading -- `plane-publishes=6` where a healthy boot shows 40+ -- and
+noticing that required *remembering* the healthy number. A tool that needs the reader to remember a baseline is not
+proactive, so `progress` now takes `--min-plane-publishes N` and prints
+`WAKES-REGRESSION only N plane publishes, at least M expected: a boot that stops early looks exactly like this`.
+It is explicitly a tripwire, not a proof: a floor that a known-good boot clears comfortably.
+
+The root cause of the second break was a bundle consumed by the wrong consumer (a `PROCESS_DOORBELL` envelope adopted
+instead of stored, while the lane attach still waited for it by token), and the log already had the vocabulary for it.
+`progress` now surfaces `COURIER-MISSES` from the receive-side records, and -- deliberately -- prints
+`none visible in this log (the receive-side instrument is env-gated; absence here is not evidence that no bundle was
+lost)` when it finds nothing, because an empty reading that does not say why it is empty is the failure mode this whole
+tool exists to prevent.
