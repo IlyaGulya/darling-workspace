@@ -1916,6 +1916,18 @@ pub struct PrefixArgs {
     /// one, and its absence is what made an earlier run report workload=absent).
     #[arg(long = "asset", value_parser = parse_kv, num_args = 0..)]
     asset: Vec<(String, String)>,
+    /// `NAME=BUILT` for a runtime component, expanded to EVERY copy the prefix layout needs, because the guest root is
+    /// `libexec/darling` and a component installed only at the host-visible path is one the guest cannot open (MEASURED:
+    /// `Cannot open /usr/lib/dyld` after exactly that mistake). The layout is knowledge this tool must hold rather than a
+    /// list every caller retypes: darlingserver -> bin/darlingserver; mldr -> usr/libexec/darling/mldr and its libexec
+    /// mirror; libsystem_kernel -> usr/lib/system/... and its mirror; dyld -> usr/lib/dyld and its mirror.
+    #[arg(long = "artifact", value_parser = parse_kv, num_args = 0..)]
+    artifact: Vec<(String, String)>,
+    /// `KEY=VALUE` environment for the harness, and through it for the launcher, the server and the guest -- the same
+    /// shape as `verdict --env`. MEASURED need: a gate that needs an environment must not be reachable only by exporting
+    /// it in the caller's shell; one attempt at enabling the server-side plane log that way did not arrive at all.
+    #[arg(long = "env", value_parser = parse_kv, num_args = 0..)]
+    env: Vec<(String, String)>,
     /// Workload to run when the installation succeeded; omitted stops after the installation.
     #[arg(long, default_value = "")]
     mode: String,
@@ -1973,7 +1985,32 @@ fn run_prefix(args: PrefixArgs) -> Result<ExitCode> {
         }
     }
     let mut installed = 0usize;
-    for (built, dest) in &args.install {
+    let layout: &[(&str, &[&str])] = &[
+        ("darlingserver", &["bin/darlingserver"]),
+        ("mldr", &["usr/libexec/darling/mldr", "libexec/darling/usr/libexec/darling/mldr"]),
+        (
+            "libsystem_kernel",
+            &["usr/lib/system/libsystem_kernel.dylib", "libexec/darling/usr/lib/system/libsystem_kernel.dylib"],
+        ),
+        ("dyld", &["usr/lib/dyld", "libexec/darling/usr/lib/dyld"]),
+    ];
+    let mut pairs: Vec<(String, String)> = args.install.clone();
+    for (name, built) in &args.artifact {
+        let destinations = layout
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, d)| *d)
+            .with_context(|| {
+                format!(
+                    "--artifact {name}: unknown component; known: {}",
+                    layout.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")
+                )
+            })?;
+        for dest in destinations {
+            pairs.push((built.clone(), (*dest).to_string()));
+        }
+    }
+    for (built, dest) in &pairs {
         let dest_path = if PathBuf::from(dest).is_absolute() {
             PathBuf::from(dest)
         } else {
@@ -2025,7 +2062,7 @@ fn run_prefix(args: PrefixArgs) -> Result<ExitCode> {
         mode: args.mode.clone(),
         args: args.args.clone(),
         wait: args.wait,
-        env: Vec::new(),
+        env: args.env.clone(),
         boot_runner: PathBuf::from("scripts/darling-boot-run.sh"),
         guest_command: "/usr/bin/ring_mach_msg_test".to_string(),
         guest_symbols: None,
