@@ -1461,16 +1461,19 @@ struct TransportRow {
     proof_token: &'static str,
     /// A row that MUST be zero for the courier-purity requirement.
     must_be_zero: bool,
+    /// The row's instrument is OPT-IN (an env-gated trace): its silence then means the trace was off, not that no
+    /// traffic flowed. The count is reported as UNMEASURED rather than 0 (directive section 12: no fabricated zeros).
+    opt_in_instrument: bool,
 }
 
 const TRANSPORTS: &[TransportRow] = &[
-    TransportRow { name: "SPSC Ring (per-thread lane, ordinary calls)", patterns: &[r"RING_TRACE gen ENTER callnum="], instrument: Some("RING_TRACE gen ENTER (only under DARLING_GUEST_RING_TRACE=1)"), proof_token: "RING_TRACE gen ENTER callnum=", must_be_zero: false },
-    TransportRow { name: "duplex Ring/mailbox (caller-S2C, OOL)", patterns: &[r"RING_MACHMSG_PUBLISH", r"dtape\.msgq event="], instrument: Some("guest RING_MACHMSG_PUBLISH / server dtape.msgq"), proof_token: "RING_MACHMSG_PUBLISH", must_be_zero: false },
-    TransportRow { name: "process management plane (shared page, slot)", patterns: &[r"\[plane-", r"\[release-drops-pending\]"], instrument: Some("plane-* lines (partial: only named paths print)"), proof_token: "[plane-", must_be_zero: false },
-    TransportRow { name: "urgent shared plane (interrupt/sigprocess)", patterns: &[r"urgent-service"], instrument: Some("urgent-service (server: one line per serviced urgent slot)"), proof_token: "urgent-service", must_be_zero: false },
-    TransportRow { name: "SCM_RIGHTS courier (fd-bearing packets)", patterns: &[r"\[afunix-send\] .*scm=1", r"\[courier-send\] .*scm=1"], instrument: Some("afunix-send + courier-send (scm=1)"), proof_token: "[courier-send]", must_be_zero: false },
-    TransportRow { name: "legacy ordinary AF_UNIX (semantic, no fd)", patterns: &[r"\[afunix-send\] .*scm=0", r"\[courier-send\] .*scm=0"], instrument: Some("afunix-send + courier-send (scm=0)"), proof_token: "[afunix-send]", must_be_zero: true },
-    TransportRow { name: "zero-fd control/wake packets on AF_UNIX", patterns: &[r"\[afunix-wake\]"], instrument: Some("afunix-wake (gone: the plane wake is now a non-packet; [plane-wake] records it)"), proof_token: "[plane-wake]", must_be_zero: true },
+    TransportRow { name: "SPSC Ring (per-thread lane, ordinary calls)", patterns: &[r"RING_TRACE gen ENTER callnum="], instrument: Some("RING_TRACE gen ENTER (only under DARLING_GUEST_RING_TRACE=1)"), proof_token: "RING_TRACE gen ENTER callnum=", must_be_zero: false, opt_in_instrument: true },
+    TransportRow { name: "duplex Ring/mailbox (caller-S2C, OOL)", patterns: &[r"RING_MACHMSG_PUBLISH", r"dtape\.msgq event="], instrument: Some("guest RING_MACHMSG_PUBLISH / server dtape.msgq"), proof_token: "RING_MACHMSG_PUBLISH", must_be_zero: false, opt_in_instrument: true },
+    TransportRow { name: "process management plane (shared page, slot)", patterns: &[r"\[plane-", r"\[release-drops-pending\]"], instrument: Some("plane-* lines (partial: only named paths print)"), proof_token: "[plane-", must_be_zero: false, opt_in_instrument: false },
+    TransportRow { name: "urgent shared plane (interrupt/sigprocess)", patterns: &[r"urgent-service"], instrument: Some("urgent-service (server: one line per serviced urgent slot)"), proof_token: "urgent-service", must_be_zero: false, opt_in_instrument: false },
+    TransportRow { name: "SCM_RIGHTS courier (fd-bearing packets)", patterns: &[r"\[afunix-send\] .*scm=1", r"\[courier-send\] .*scm=1"], instrument: Some("afunix-send + courier-send (scm=1)"), proof_token: "[courier-send]", must_be_zero: false, opt_in_instrument: false },
+    TransportRow { name: "legacy ordinary AF_UNIX (semantic, no fd)", patterns: &[r"\[afunix-send\] .*scm=0", r"\[courier-send\] .*scm=0"], instrument: Some("afunix-send + courier-send (scm=0)"), proof_token: "[afunix-send]", must_be_zero: true, opt_in_instrument: false },
+    TransportRow { name: "zero-fd control/wake packets on AF_UNIX", patterns: &[r"\[afunix-wake\]"], instrument: Some("afunix-wake (gone: the plane wake is now a non-packet; [plane-wake] records it)"), proof_token: "[plane-wake]", must_be_zero: true, opt_in_instrument: false },
 ];
 
 fn run_courier(args: CourierArgs) -> Result<ExitCode> {
@@ -1515,6 +1518,13 @@ fn run_courier(args: CourierArgs) -> Result<ExitCode> {
                 _ => (format!("{n}"), i),
             },
             None => ("UNMEASURED".to_string(), "no instrument in the tree yet"),
+        };
+        // OPT-IN INSTRUMENT (directive section 12): a zero from an env-gated trace measures the TRACE FLAG, not the
+        // traffic. Report it as UNMEASURED, because a fabricated zero row is worse than an admitted gap.
+        let (count, inst) = if row.opt_in_instrument && count == "0" && !inst.contains("ABSENT") {
+            ("UNMEASURED".to_string(), format!("{inst} -- trace not enabled in this run"))
+        } else {
+            (count, inst.to_string())
         };
         println!("{:<48} {:>8}  {}", row.name, count, inst);
         if row.must_be_zero {
