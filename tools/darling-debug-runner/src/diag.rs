@@ -439,7 +439,7 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
 pub struct VerdictArgs {
     #[arg(long)]
     prefix: PathBuf,
-    #[arg(long)]
+    #[arg(long, default_value = "")]
     mode: String,
     #[arg(long, default_value = "")]
     args: String,
@@ -461,6 +461,11 @@ pub struct VerdictArgs {
     /// uniform. Each run gets its own log.
     #[arg(long, default_value_t = 1)]
     repeat: u64,
+    /// Print the workload modes THIS prefix's fixture actually contains, with the argument shape and the marker each mode
+    /// emits, then exit. The list is read out of the fixture's own strings, so it cannot drift from the binary that will
+    /// run: the tool answers "what can I ask for, and what will it print" without anyone grepping a source tree.
+    #[arg(long)]
+    list_modes: bool,
     #[arg(long)]
     json: bool,
 }
@@ -608,7 +613,67 @@ fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
     Ok(Verdict { mode: args.mode.clone(), verdict, denied, created, line, denial_call, denial_location, log, rc, signal })
 }
 
+/// Answer "what can I ask this prefix to do, and what will it print" from the FIXTURE ITSELF.
+///
+/// The mode names and the marker each mode emits are both already inside the workload binary as literals, so this reads
+/// them out instead of keeping a list in the tool that could drift from the binary that runs. That drift is not
+/// hypothetical: this session twice searched a source tree for the workload and found nothing, because the fixture is a
+/// test asset installed into the prefix and its source lives in the canonical transport repository, not in every tree.
+fn list_modes(args: &VerdictArgs) -> Result<ExitCode> {
+    let host = args.prefix.join(args.guest_command.trim_start_matches('/'));
+    if !host.is_file() {
+        println!("MODES-FIXTURE absent {}", host.display());
+        println!("MODES: the workload fixture is a TEST ASSET; install it into the prefix (it is not part of the runtime install)");
+        return Ok(ExitCode::from(1));
+    }
+    println!("MODES-FIXTURE {}", host.display());
+    let bytes = fs::read(&host).with_context(|| format!("reading {}", host.display()))?;
+    // Literals of length >= 8 are printable ASCII runs; the workload's own strings are the contract.
+    let mut markers: Vec<String> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for b in bytes.iter().chain(std::iter::once(&0u8)) {
+        if (0x20..0x7f).contains(b) {
+            cur.push(*b as char);
+        } else {
+            if cur.len() >= 8 && cur.contains("RING_MACH_TEST") {
+                markers.push(cur.clone());
+            }
+            if (3..=20).contains(&cur.len())
+                && cur.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+                && cur.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            {
+                names.push(cur.clone());
+            }
+            cur.clear();
+        }
+    }
+    markers.sort();
+    markers.dedup();
+    names.sort();
+    names.dedup();
+    println!("MODES-MARKERS {} (the line each workload prints; absence of it is the failure)", markers.len());
+    for m in &markers {
+        println!("  {m}");
+    }
+    println!("MODES-CANDIDATES {} (lowercase literals in the fixture; the mode is the first argument)", names.len());
+    println!("  {}", names.join(" "));
+    println!("MODES-USAGE dwdiag verdict --prefix <p> --mode <name> [--args '<args>'] [--wait <s>] [--repeat <n>]");
+    Ok(ExitCode::SUCCESS)
+}
+
 fn run_verdict(args: VerdictArgs) -> Result<ExitCode> {
+    if args.list_modes {
+        return list_modes(&args);
+    }
+    if args.mode.trim().is_empty() {
+        // The tool must SAY what it needs instead of running a workload named "": list the modes it can see from the
+        // fixture and stop, because that is the question an empty --mode actually asks.
+        println!("MODES: --mode is required; the fixture's own modes follow. Usage: --mode <name> [--args '<args>']");
+        let listed = list_modes(&args)?;
+        let _ = listed;
+        return Ok(ExitCode::from(2));
+    }
     let repeat = args.repeat.max(1);
     if repeat > 1 {
         let mut ok = 0usize;
@@ -794,6 +859,7 @@ fn run_suite(args: SuiteArgs) -> Result<ExitCode> {
             guest_command: "/usr/bin/ring_mach_msg_test".to_string(),
             guest_symbols: args.guest_symbols.clone(),
             repeat: 1,
+            list_modes: false,
             json: false,
         };
         let mut v = run_one_workload(&va, "")?;
