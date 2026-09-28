@@ -1124,6 +1124,10 @@ fn run_witness(args: WitnessArgs) -> Result<ExitCode> {
 }
 
 fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
+    // Name the log that was actually read (user directive: never withhold a fact that changes the reading). MEASURED
+    // need: a `--log`-less invocation silently picked a different run's log and the wake census described THAT run --
+    // a reader comparing two runs would have attributed the numbers to the wrong one.
+    eprintln!("PROGRESS-LOG {}", args.log.display());
     let run = fs::read_to_string(&args.log).unwrap_or_default();
     let guest = args.guest_log.as_ref().map(|p| fs::read_to_string(p).unwrap_or_default()).unwrap_or_default();
     let p = summarize_progress(&run, &guest, &args.mode);
