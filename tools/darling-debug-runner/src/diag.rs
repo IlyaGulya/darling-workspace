@@ -279,10 +279,6 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
     let crash = parse_crash_line(&line);
     let syms = load_symbols(&args.binary)?;
 
-    let resolve = |addr: u64| -> Option<String> {
-        locate(&syms, addr).map(|(i, off)| format!("{} + 0x{:x}", symbol_name(&syms[i].name), off))
-    };
-
     // The probe reports `self` (a known symbol's runtime address) precisely so that the runtime pc can be turned into an
     // offset inside the FILE; without that subtraction the number is only meaningful to the process that printed it.
     let file_target = match (crash.self_, crash.pc) {

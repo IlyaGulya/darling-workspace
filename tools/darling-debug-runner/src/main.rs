@@ -903,6 +903,14 @@ fn prepare_darling(args: &DarlingArgs) -> Result<()> {
 }
 
 fn main() -> Result<ExitCode> {
+    // MEASURED defect: `dwdiag progress ... | head -4` panicked with `failed printing to stdout: Broken pipe (os error
+    // 32)`, because Rust starts every process with SIGPIPE ignored. A diagnostic whose output is paged or truncated is
+    // ordinary use, so restore the default disposition and let the kernel terminate the process the way any other CLI
+    // would, instead of reporting a panic that says nothing about the transport under test.
+    unsafe {
+        nix::sys::signal::signal(nix::sys::signal::Signal::SIGPIPE, nix::sys::signal::SigHandler::SigDfl)
+            .expect("failed to restore the default SIGPIPE disposition");
+    }
     let cli = Cli::parse();
     // The diagnostics do not run an experiment and do not produce a bundle: they answer a question and report it with
     // their OWN exit code (0 ok/PASS, 1 finding, 2 usage, 3 tool error), so a caller can compose them without parsing
