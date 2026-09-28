@@ -1095,6 +1095,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Verdict(a) => run_verdict(a),
         DiagCommand::Suite(a) => run_suite(a),
         DiagCommand::Progress(a) => run_progress(a),
+        DiagCommand::Courier(a) => run_courier(a),
         DiagCommand::Witness(a) => run_witness(a),
     }
 }
@@ -1112,6 +1113,9 @@ pub enum DiagCommand {
     /// Say WHERE a finished run stopped: the workload's own line, the guest loader's last stage, and the last plane op
     /// the server actually serviced. Published-vs-serviced is the diagnosis; this prints both instead of grepping.
     Progress(ProgressArgs),
+    /// Count the packets per TRANSPORT for a run log, and judge the AF_UNIX endpoint's purity. Rows with no
+    /// instrument behind them are printed UNMEASURED, never as zero: a census that cannot see a transport must say so.
+    Courier(CourierArgs),
     /// Report which INSTRUMENTS fired in a run log, and which stayed SILENT. A registered instrument with zero hits is
     /// the failure this exists to catch: a guard that silently does nothing cannot be told from no guard at all, and a
     /// hand-written grep over one log finds a line but cannot tell you which of the other instruments never spoke.
@@ -1124,6 +1128,107 @@ fn btree_from(pairs: Vec<(String, String)>) -> BTreeMap<String, String> {
     pairs.into_iter().collect()
 }
 
+
+
+#[derive(clap::Args, Debug)]
+pub struct CourierArgs {
+    /// Run log. Defaults to the newest `dwdiag-verdict-*.log`.
+    #[arg(long)]
+    log: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+    /// The DEPLOYED artifact whose instruments this census relies on (default: the live prefix's loader). A silent
+    /// instrument and an instrument that sent nothing look identical in a log; the artifact decides which.
+    /// Deployed artifacts whose instruments this census relies on; defaults to the live prefix's loader and kernel
+    /// image when none is given.
+    #[arg(long)]
+    artifact: Vec<PathBuf>,
+}
+
+// THE TRANSPORT CENSUS. One row per transport, with the log token that counts it and its source instrument. A row whose
+// instrument does not exist in the tree yet is printed UNMEASURED with the reason -- the alternative (a zero) is a
+// number nobody measured, which is the failure mode this project keeps recording.
+struct TransportRow {
+    name: &'static str,
+    /// Log patterns whose matching lines count this transport.
+    patterns: &'static [&'static str],
+    /// None = no instrument exists for this row today.
+    instrument: Option<&'static str>,
+    /// A token whose presence in the DEPLOYED artifact makes this row's count evidence rather than silence.
+    proof_token: &'static str,
+    /// A row that MUST be zero for the courier-purity requirement.
+    must_be_zero: bool,
+}
+
+const TRANSPORTS: &[TransportRow] = &[
+    TransportRow { name: "SPSC Ring (per-thread lane, ordinary calls)", patterns: &[r"RING_TRACE gen ENTER callnum="], instrument: Some("RING_TRACE gen ENTER (only under DARLING_GUEST_RING_TRACE=1)"), proof_token: "RING_TRACE gen ENTER callnum=", must_be_zero: false },
+    TransportRow { name: "duplex Ring/mailbox (caller-S2C, OOL)", patterns: &[r"RING_MACHMSG_PUBLISH", r"dtape\.msgq event="], instrument: Some("guest RING_MACHMSG_PUBLISH / server dtape.msgq"), proof_token: "RING_MACHMSG_PUBLISH", must_be_zero: false },
+    TransportRow { name: "process management plane (shared page, slot)", patterns: &[r"\[plane-", r"\[release-drops-pending\]"], instrument: Some("plane-* lines (partial: only named paths print)"), proof_token: "[plane-", must_be_zero: false },
+    TransportRow { name: "urgent shared plane (interrupt/sigprocess)", patterns: &[r"urgent"], instrument: None, proof_token: "", must_be_zero: false },
+    TransportRow { name: "SCM_RIGHTS courier (fd-bearing packets)", patterns: &[r"\[afunix-send\] .*scm=1"], instrument: Some("afunix-send (loader send hook, always on)"), proof_token: "[afunix-send]", must_be_zero: false },
+    TransportRow { name: "legacy ordinary AF_UNIX (semantic, no fd)", patterns: &[r"\[afunix-send\] .*scm=0"], instrument: Some("afunix-send (loader send hook, always on)"), proof_token: "[afunix-send]", must_be_zero: true },
+    TransportRow { name: "zero-fd control/wake packets on AF_UNIX", patterns: &[r"\[afunix-wake\]"], instrument: Some("afunix-wake (the four wake-byte sites)"), proof_token: "[afunix-wake]", must_be_zero: true },
+];
+
+fn run_courier(args: CourierArgs) -> Result<ExitCode> {
+    let log = match args.log {
+        Some(p) => p,
+        None => newest_verdict_log().context("no `dwdiag-verdict-*.log` in the temp directory; pass --log")?,
+    };
+    let text = fs::read_to_string(&log).with_context(|| format!("read {}", log.display()))?;
+    println!("COURIER log={} lines={}", log.display(), text.lines().count());
+    // The ARTIFACT decides whether a zero is evidence: a token that is not in the deployed binary means the row was
+    // never measured, however quiet the log is. (A silent probe is not evidence -- this project's own rule.)
+    let default_artifacts = vec![
+        PathBuf::from("/tmp/dr-on-matched/libexec/darling/usr/libexec/darling/mldr"),
+        PathBuf::from("/tmp/dr-on-matched/libexec/darling/usr/lib/system/libsystem_kernel.dylib"),
+    ];
+    let artifacts = if args.artifact.is_empty() { &default_artifacts } else { &args.artifact };
+    let mut artifact_blobs: Vec<Vec<u8>> = Vec::new();
+    for a in artifacts {
+        match fs::read(a) { Ok(b) => artifact_blobs.push(b), Err(_) => println!("COURIER-WARN cannot read artifact {}", a.display()) }
+    }
+    let has_token = |tok: &str| -> Option<bool> {
+        if tok.is_empty() { return None; }
+        if artifact_blobs.is_empty() { return None; }
+        let t = tok.as_bytes();
+        Some(artifact_blobs.iter().any(|b| b.windows(t.len()).any(|w| w == t)))
+    };
+    println!("{:<48} {:>8}  {}", "transport", "packets", "instrument");
+    let mut violations: Vec<String> = Vec::new();
+    for row in TRANSPORTS {
+        let mut n = 0u64;
+        for pat in row.patterns {
+            let re = Regex::new(pat).expect("transport pattern is a literal of this file");
+            n += text.lines().filter(|l| re.is_match(l)).count() as u64;
+        }
+        let (count, inst) = match row.instrument {
+            Some(i) => match has_token(row.proof_token) {
+                Some(false) => ("UNMEASURED".to_string(), "instrument ABSENT from the deployed artifact"),
+                _ => (format!("{n}"), i),
+            },
+            None => ("UNMEASURED".to_string(), "no instrument in the tree yet"),
+        };
+        println!("{:<48} {:>8}  {}", row.name, count, inst);
+        if row.must_be_zero {
+            if inst.starts_with("instrument ABSENT") || inst.starts_with("no instrument") {
+                violations.push(format!("{} UNMEASURED ({inst})", row.name));
+            } else if n > 0 {
+                violations.push(format!("{} = {n} (must be 0)", row.name));
+            }
+        }
+    }
+    if violations.is_empty() {
+        println!("COURIER-VERDICT PASS legacy-ordinary-afunix=0 zero-fd-control=0");
+        Ok(ExitCode::SUCCESS)
+    } else {
+        for v in &violations {
+            println!("COURIER-VIOLATION {v}");
+        }
+        println!("COURIER-VERDICT FAIL violations={}", violations.len());
+        Ok(ExitCode::from(1))
+    }
+}
 
 #[cfg(test)]
 mod witness_tests {
