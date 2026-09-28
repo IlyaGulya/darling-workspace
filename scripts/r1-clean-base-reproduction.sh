@@ -7,6 +7,7 @@
 set -u
 SRC_REPO=/home/ilyagulya/work/procctl-src
 BASE=8f33c0cd89728f17ea8700ede8edcb2b40129952
+PINNED=5f2d7401d878455cf3c3c0865ee5a4290dfa03f0
 CLEAN=/home/ilyagulya/work/r1-clean-base
 CLEAN_BUILD=/home/ilyagulya/work/r1-clean-build
 CLEAN_PREFIX=/tmp/r1-clean-prefix
@@ -45,11 +46,45 @@ print(f"base commit {base}")
 open(os.path.join(evid, 'r1-transport-sources-LATEST'), 'w').write(f"{arch}\nsha256={h}\nbase={base}\n")
 PY
 
-echo "== 1. clean clone of the base revision =="
-rm -rf "$CLEAN"
-git clone --quiet "$SRC_REPO" "$CLEAN" || { echo "clone failed"; exit 1; }
-git -C "$CLEAN" checkout --quiet "$BASE" || { echo "checkout $BASE failed"; exit 1; }
-echo "clean tree at $(git -C "$CLEAN" rev-parse --short HEAD), files=$(git -C "$CLEAN" ls-files | wc -l)"
+echo "== 1. clean materialization of the base revision (tracked content + every gitlink submodule) =="
+# The local product repo has an EMPTY base commit, so cloning it is meaningless (measured). The base is the pinned west
+# revision, materialized from COMMITTED content: the darling repository at the recorded revision, plus each gitlink
+# submodule's own archive at the commit the tree records. Nothing is copied from a working tree, so the result cannot
+# carry uncommitted local state.
+DARLING=/home/ilyagulya/work/darling-gwn-resume/darling
+rm -rf "$CLEAN"; mkdir -p "$CLEAN"
+git -C "$DARLING" archive "$PINNED" | tar -x -C "$CLEAN" || { echo "base archive failed"; exit 1; }
+# RECURSIVE: submodules have submodules. MEASURED: a one-level scan left src/external/metal/deps/indium empty and the
+# configure failed on its missing CMakeLists.txt -- the indium dependency is a nested gitlink. The sha of a nested
+# submodule comes from its PARENT's tree, so the walk carries both the repository directory and the commit.
+mat_one() { # $1 = repository dir, $2 = commit, $3 = destination
+	local repo="$1" sha="$2" dest="$3" sub sha_n path dir
+	git -C "$repo" archive "$sha" 2>/dev/null | tar -x -C "$dest" || { echo "  ARCHIVE FAILED $repo@$sha"; return 1; }
+	while read -r sha_n path; do
+		[ -n "$path" ] || continue
+		dir="$repo/$path"
+		if [ -d "$dir/.git" ] || [ -f "$dir/.git" ] || git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+			mkdir -p "$dest/$path"
+			mat_one "$dir" "$sha_n" "$dest/$path"
+		elif [ -n "${INDIUM_SHA:-}" ] && [ "$path" = "deps/indium" ]; then
+			mkdir -p "$dest/$path"
+			mat_one "$DARLING/src/external/metal/deps/indium" "$INDIUM_SHA" "$dest/$path"
+		else
+			echo "  no local repository for nested submodule: $path @ $sha_n"
+		fi
+	done < <(git -C "$repo" ls-tree -r "$sha" | awk '$2 == "commit" {print $3" "$4}')
+}
+mkdir -p "$CLEAN"
+mat_one "$DARLING" "$PINNED" "$CLEAN"
+# The nested `metal/deps/indium` case: its gitlink lives in the metal submodule, but the local repository for it may sit
+# elsewhere in the workspace; find it and extract it explicitly so the configure can proceed.
+INDIUM=$(find /home/ilyagulya/work -maxdepth 6 -type d -name indium 2>/dev/null | head -1)
+if [ -n "$INDIUM" ] && [ ! -f "$CLEAN/src/external/metal/deps/indium/CMakeLists.txt" ]; then
+	echo "  extracting indium from $INDIUM"
+	mkdir -p "$CLEAN/src/external/metal/deps/indium"
+	( cd "$INDIUM" && git archive HEAD 2>/dev/null | tar -x -C "$CLEAN/src/external/metal/deps/indium" ) || echo "  indium archive failed"
+fi
+echo "clean tree files=$(find "$CLEAN" -type f | wc -l)"
 
 echo "== 2. apply the recorded archive =="
 ARCHIVE=$(head -1 "$EVID/r1-transport-sources-LATEST")
