@@ -249,3 +249,15 @@ joined facts:
 Counts only, never an interleaved ordering: the two files have different clocks and a merged sequence would be
 fabricated. When the file is missing the report says so, so "no server facts" can never again be read as "no server
 activity". Rule encoded: an absence of evidence in one source is not evidence of absence -- name the source.
+
+
+## Sixth round (2026-09-28): no fabricated zeros in the transport census
+
+The table printed `SPSC Ring 0` and `duplex Ring/mailbox 0` whenever their traces were simply DISABLED, so a reader
+could not tell "no traffic" from "no instrument". Directive section 12 forbids exactly that. Rows whose instrument is
+opt-in (the Ring traces, enabled by `DARLING_GUEST_RING_TRACE=1`) now report
+
+    SPSC Ring (per-thread lane, ordinary calls)      UNMEASURED  RING_TRACE gen ENTER (only under ...) -- trace not enabled in this run
+
+The rule this encodes, and it is the same one the rest of the tool already follows: a zero must come from a live
+instrument, otherwise the row admits it was not measured.
