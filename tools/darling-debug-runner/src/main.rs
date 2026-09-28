@@ -908,8 +908,11 @@ fn main() -> Result<ExitCode> {
     // ordinary use, so restore the default disposition and let the kernel terminate the process the way any other CLI
     // would, instead of reporting a panic that says nothing about the transport under test.
     unsafe {
-        nix::sys::signal::signal(nix::sys::signal::Signal::SIGPIPE, nix::sys::signal::SigHandler::SigDfl)
-            .expect("failed to restore the default SIGPIPE disposition");
+        nix::sys::signal::signal(
+            nix::sys::signal::Signal::SIGPIPE,
+            nix::sys::signal::SigHandler::SigDfl,
+        )
+        .expect("failed to restore the default SIGPIPE disposition");
     }
     // EVERYTHING THIS PROCESS PRINTS ALSO GOES TO A FILE, announced first.
     //
@@ -922,14 +925,23 @@ fn main() -> Result<ExitCode> {
         use std::io::Write;
         let path = std::env::var("DWDIAG_TRANSCRIPT")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(format!("/tmp/dwdiag-transcript-{}.out", std::process::id())));
-        if let Ok(file) = std::fs::File::create(&path) {
-            // Announce on the ORIGINAL stdout first, then redirect: the announcement must reach the caller even though
-            // everything printed afterwards (including by the children) lands in the transcript.
-            println!("TRANSCRIPT={}", path.display());
-            let _ = std::io::stdout().flush();
-            let _ = nix::unistd::dup2_stdout(&file);
-            let _ = nix::unistd::dup2_stderr(&file);
+            .unwrap_or_else(|_| {
+                PathBuf::from(format!("/tmp/dwdiag-transcript-{}.out", std::process::id()))
+            });
+        // `--help` and `--version` are ANSWERS, not run output: redirecting them into a file would hide the one thing
+        // the caller asked for. MEASURED: with the redirect unconditional, `dwdiag prefix --help` printed nothing to the
+        // terminal at all.
+        let wants_help = std::env::args()
+            .any(|a| matches!(a.as_str(), "-h" | "--help" | "-V" | "--version" | "help"));
+        if !wants_help {
+            if let Ok(file) = std::fs::File::create(&path) {
+                // Announce on the ORIGINAL stdout first, then redirect: the announcement must reach the caller even though
+                // everything printed afterwards (including by the children) lands in the transcript.
+                println!("TRANSCRIPT={}", path.display());
+                let _ = std::io::stdout().flush();
+                let _ = nix::unistd::dup2_stdout(&file);
+                let _ = nix::unistd::dup2_stderr(&file);
+            }
         }
     }
     let cli = Cli::parse();
@@ -938,7 +950,11 @@ fn main() -> Result<ExitCode> {
     // human output. That is why they are dispatched before the bundle machinery.
     if let RunnerCommand::Diag(cmd) = cli.command {
         return diag::dispatch(cmd).map(|code| {
-            if code == ExitCode::SUCCESS { ExitCode::SUCCESS } else { code }
+            if code == ExitCode::SUCCESS {
+                ExitCode::SUCCESS
+            } else {
+                code
+            }
         });
     }
     let (bundle, result) = match cli.command {
