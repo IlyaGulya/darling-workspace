@@ -13116,3 +13116,49 @@ main=1` plus `[mldr-ctl] checkout-skipped`) and skipped. MEASURED, and the reaso
 occurrence of that case produced exactly one denial per run on `basic 1`/`basic 20`, which the removed datagram
 fallback had been covering silently. The state line is printed with the decision, so a route that did not publish is
 never a route that cannot say why.
+
+
+### 254. Current state (2026-09-28): the trap is on the plane, legacy ordinary AF_UNIX is literally zero
+
+This section is the CURRENT code truth and supersedes the older statements above that describe the trap as a
+datagram, a wake as four bytes on the courier, or the loop as polling.
+
+Plane operation 31 (`DSERVER_PROCESS_CONTROL_OP_THREAD_SELF_BOOTSTRAP`, appended in `rpc-supplement.h`; case in
+`src/server.cpp`) carries the loader's `thread_self_trap`. The loader asks for its main thread's self port ON the plane
+before `__darling_thread_initialize_main` consumes the name (`mldr.c:480` asks, `:502` consumes); the datagram path
+remains only for the pre-page window and there is deliberately NO fallback after a plane failure.
+
+The trap is NOT answered in the plane's own pass, and that is a measurement, not a preference. Calling the duct-tape
+trap directly from the pass asserts and aborts -- the crash tool's resolved backtrace named it:
+`panic <- Assert <- retrieve_thread_self_fast <- thread_self_trap_for <- dtape_thread_self_trap_for <-
+Server::_serviceProcessControl <- Server::start <- main`. The semantics are therefore reused exactly as the RPC path
+runs them: build the ordinary `thread_self_trap` Call, dispatch it (its fiber is the guest thread's context), and read
+the port out of the SUPPRESSED reply body (`body.port_name` -> `reply_payload[0]`). `callFromMessage` also registers
+Process/Thread, which is why the loader can ask before its deferred checkin.
+
+Measured acceptance for this step (one run each, logs retained):
+- `dwdiag verdict --mode sem_ready --args 2 --wait 150`: PASS, `denied=0 created=0 rc=0`, with and without
+  `DARLING_DISABLE_THREAD_RPC_UDS=1`.
+- `dwdiag courier`: `COURIER-VERDICT PASS legacy-ordinary-afunix=0 zero-fd-control=0` in both runs. The former 5
+  packets were this trap, from the loader, before any lane existed.
+- `SCM_RIGHTS courier` 17-20 fd-bearing packets (`scm=1`), process management plane 22-24 slot requests.
+
+Still open, with its exact prerequisite MEASURED rather than assumed: the 2 ms `epoll_wait` timeout
+(`server.cpp:3284/3293`) is still there. Removing it and blocking on `-1` produced `NO-RUN` twice with every stage
+empty, because the server never services the earliest plane publishes: the loader adopts the process-wide wake
+descriptor only at its first lane attach (`mldr.c:1241`), while the earliest publishes are the PING (`mldr.c:416`), the
+dyld info, the executable path (`:462`) and this trap (`:480`), and the wake in the publish path is guarded by
+`if (ring_doorbell_fd >= 0)` (`mldr.c:1539`). The AF_UNIX wake route is CLOSED by this epic's own oracle, since those
+four zero-fd bytes are exactly the `zero-fd control/wake packets` that must stay 0. The fix is an ordering change: hand
+the guest a doorbell at the PAGE ATTACH (`mldr.c:1374` sends the control memfd as a courier envelope; the server
+receives it under `DSERVER_FD_COURIER_KIND_PROCESS_CONTROL`, `server.cpp:1081`) so `ring_doorbell_fd` is set before the
+first publish. The doorbell wake-path fix is already in and KEPT: `_ringDoorbellWake()` now also runs
+`_serviceProcessControl()`, so a ring genuinely services the management page instead of only the rings.
+
+Tooling in the same round (because two readings were being withheld, not because the tools were optional):
+`dwdiag crash` now decodes the signal's meaning, prints the `addr` halves (labelled a hypothesis) and resolves every
+`darlingserver(+0x...)` frame to `symbol + offset` -- that is what located the assert above; `dwdiag progress` prints
+`STOP-REASON crash:` with those frames for a run that has no workload line; the urgent shared plane now has an
+instrument (`[urgent-service]`, one line per serviced slot) and its census row carries a proof token, and the census's
+default artifact set includes the SERVER binary, so "quiet" and "instrument absent from the deployed artifact" are no
+longer the same reading.
