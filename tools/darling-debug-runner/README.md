@@ -229,3 +229,23 @@ instead of stored, while the lane attach still waited for it by token), and the 
 `none visible in this log (the receive-side instrument is env-gated; absence here is not evidence that no bundle was
 lost)` when it finds nothing, because an empty reading that does not say why it is empty is the failure mode this whole
 tool exists to prevent.
+
+
+## Fifth round (2026-09-28): the server's own log is an input, because its absence was misread as its silence
+
+Most of this session's wrong turns came from one invisible fact: **the server's stderr never appears in the run log**.
+It goes to `<prefix>/private/var/log/dserver.log`. From a run log that simply lacks server lines I twice concluded
+"the server does not send the doorbell" and "an exported variable does not reach the server" -- the first was false
+(52 `plane-doorbell-sent` records in the prefix log) and the second is unproven, because the evidence I was reading
+could not have contained it either way.
+
+`progress` therefore takes `--server-log` (default the live prefix's `private/var/log/dserver.log`) and prints two
+joined facts:
+
+    SERVER-SENT plane-doorbell-sent=52 (from <path>)
+    SERVER-GUEST-SPLIT the server sent the doorbell 52 time(s) while 11 guest drain window(s) expired empty:
+      the descriptor is being SENT but not RECEIVED (look at the guest's receive path, not at the sender)
+
+Counts only, never an interleaved ordering: the two files have different clocks and a merged sequence would be
+fabricated. When the file is missing the report says so, so "no server facts" can never again be read as "no server
+activity". Rule encoded: an absence of evidence in one source is not evidence of absence -- name the source.

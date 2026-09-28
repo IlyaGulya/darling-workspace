@@ -885,6 +885,12 @@ pub struct ProgressArgs {
     mode: String,
     #[arg(long)]
     json: bool,
+    /// The server's OWN log. MEASURED: the server's stderr never appears in the run log -- it goes to the prefix's
+    /// private/var/log/dserver.log -- so several of this session's conclusions were drawn from an absence that meant
+    /// "not captured" rather than "not produced". Reading it here makes "the server sent it" and "the guest received
+    /// it" two facts in one report instead of a guess.
+    #[arg(long, default_value = "/tmp/dr-on-matched/private/var/log/dserver.log")]
+    server_log: PathBuf
 }
 
 #[derive(Debug, Default)]
@@ -1239,6 +1245,81 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
             println!("COURIER-MISSES {} record(s); first: {}", misses.len(), misses[0].trim());
         } else {
             println!("COURIER-MISSES none visible in this log (the receive-side instrument is env-gated; absence here is not evidence that no bundle was lost)");
+        }
+        // SERVER SIDE, from its own log (see the option's comment). Counts only: the two files have different clocks,
+        // so an interleaved ordering would be a fabricated one. Presence plus count is what decides the question.
+        {
+            let server_text = fs::read_to_string(&args.server_log).unwrap_or_default();
+            if server_text.is_empty() {
+                println!("SERVER-LOG unreadable or empty ({}) -- server-side facts are NOT included in this report", args.server_log.display());
+            } else {
+                let sent = server_text.lines().filter(|l| l.contains("plane-doorbell-sent")).count();
+                let guest_timeouts = run.lines().filter(|l| l.contains("drain attempts=") && l.contains("adopted=0")).count();
+                println!(
+                    "SERVER-SENT plane-doorbell-sent={sent} (from {})",
+                    args.server_log.display()
+                );
+                if sent > 0 && guest_timeouts > 0 {
+                    println!(
+                        "SERVER-GUEST-SPLIT the server sent the doorbell {sent} time(s) while {guest_timeouts} guest drain window(s) expired empty: the descriptor is being SENT but not RECEIVED (look at the guest's receive path, not at the sender)"
+                    );
+                } else if sent == 0 {
+                    println!("SERVER-GUEST-SPLIT the server did not send anything: the send path never ran");
+                }
+            }
+        }
+        // ORDERED TIMELINE of the three events that decide violation A's ordering. MEASURED need: a run showed 14
+        // doorbell ADOPTIONS and 44 publishes that still reported `db=-1`, and no reading said WHICH came first --
+        // counts cannot express an ordering, and the ordering is the whole remaining question. The events are
+        // printed in log order with their position, so "the first N publishes precede the first adoption" is a
+        // sentence the tool says instead of one the reader infers.
+        {
+            let mut events: Vec<(usize, String)> = Vec::new();
+            for (n, line) in run.lines().enumerate() {
+                // Only a REAL adoption is an ADOPT event. The drain-outcome line carries the same tag and says
+                // `adopted=0`, and counting it as an adoption produced the false verdict "every publish followed the
+                // first adoption" for a run whose own drain lines said the opposite. Same lesson as the earlier
+                // substring classifier: match the VALUE.
+                if line.contains("[plane-doorbell]") && line.contains("adopted=1") && !line.contains("drain") {
+                    events.push((n, format!("ADOPT   {}", line.trim().chars().take(90).collect::<String>())));
+                } else if line.contains("[plane-wake]") {
+                    let seg = line;
+                    let via = seg.find("via=").map(|v| {
+                        let r = &seg[v + 4..];
+                        let e = r.find(|c: char| c.is_whitespace()).unwrap_or(r.len());
+                        &r[..e]
+                    }).unwrap_or("?");
+                    let db = seg.find("db=").map(|v| {
+                        let r = &seg[v + 3..];
+                        let e = r.find(|c: char| c.is_whitespace()).unwrap_or(r.len());
+                        &r[..e]
+                    }).unwrap_or("?");
+                    events.push((n, format!("PUBLISH via={via} db={db}")));
+                } else if line.contains("attach-rc") {
+                    let wake = line.find("wake=").map(|v| {
+                        let r = &line[v + 5..];
+                        let e = r.find(|c: char| c.is_whitespace()).unwrap_or(r.len());
+                        &r[..e]
+                    }).unwrap_or("?");
+                    events.push((n, format!("ATTACH  wake={wake}")));
+                }
+            }
+            if !events.is_empty() {
+                println!("TIMELINE first {} of {} event(s):", events.len().min(12), events.len());
+                for (n, e) in events.iter().take(12) {
+                    println!("  line {n:>5}  {e}");
+                }
+                let first_adopt = events.iter().find(|(_, e)| e.starts_with("ADOPT")).map(|(n, _)| *n);
+                let publishes_before = match first_adopt {
+                    Some(a) => events.iter().filter(|(n, e)| *n < a && e.starts_with("PUBLISH")).count(),
+                    None => events.iter().filter(|(_, e)| e.starts_with("PUBLISH")).count(),
+                };
+                match first_adopt {
+                    Some(_) if publishes_before == 0 => println!("TIMELINE-VERDICT every publish followed the first adoption"),
+                    Some(_) => println!("TIMELINE-VERDICT {publishes_before} publish(es) PRECEDED the first adoption: the ordering the doorbell needs is not yet in place"),
+                    None => println!("TIMELINE-VERDICT no adoption in this log at all"),
+                }
+            }
         }
         if let Some(cl) = &crash_line {
             println!("STOP-REASON crash: {cl}");
