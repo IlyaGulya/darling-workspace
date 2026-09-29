@@ -377,6 +377,162 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
     Ok(worst)
 }
 
+/// Watch a RUNNING guest's kernel signal dispositions, because that is where the evidence for the silent
+/// SIGSEGV death lives and a shell around it could not be made reliable: the discovery loop that worked by
+/// hand matched the harness's command line first, and the sampling loop written in bash took a second per
+/// pass, so a two-second workload yielded two samples and no transition.
+///
+/// Discovery uses the handle that is actually observable from the host -- a process whose exe is the
+/// prefix's loader AND whose cmdline names the guest path -- and then samples ONLY that process, at the
+/// requested rate, recording SigCgt against the run log's size so a transition can be held against the
+/// log's own marks. `cycle` runs underneath with --probe, so the run is fresh and not a cached verdict.
+#[derive(Args, Debug)]
+pub struct WatchArgs {
+    #[arg(long)]
+    build: Option<PathBuf>,
+    #[arg(long)]
+    prefix: Option<PathBuf>,
+    #[arg(long, default_value = "basic")]
+    mode: String,
+    #[arg(long, default_value = "")]
+    args: String,
+    #[arg(long, default_value_t = 1)]
+    repeat: u64,
+    /// Guest path fragment that identifies the process to watch, matched against the host cmdline together
+    /// with the loader exe.
+    #[arg(long, default_value = "ring_mach_msg_test")]
+    pattern: String,
+    #[arg(long, default_value_t = 200)]
+    hz: u64,
+    #[arg(long)]
+    json: bool,
+}
+
+fn newest_run_log() -> Option<PathBuf> {
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir("/tmp").ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("dwdiag-verdict-") || !name.ends_with(".log") {
+            continue;
+        }
+        let Ok(md) = entry.metadata() else { continue };
+        let Ok(mt) = md.modified() else { continue };
+        if best.as_ref().map(|(t, _)| mt > *t).unwrap_or(true) {
+            best = Some((mt, entry.path()));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+fn sig_line(pid: &str, key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix(key) {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+fn run_watch(args: WatchArgs) -> Result<ExitCode> {
+    let build = required_path("--build", args.build.clone(), "DWDIAG_BUILD")?;
+    let prefix = required_path("--prefix", args.prefix.clone(), "DWDIAG_PREFIX")?;
+    let loader_suffix = "/mldr";
+    let prefix_s = prefix.display().to_string();
+
+    // The run underneath: probes force a fresh run, which is the whole point.
+    let run_prefix = prefix.clone();
+    let run_build = build.clone();
+    let mode = args.mode.clone();
+    let run_args = args.args.clone();
+    let repeat = args.repeat;
+    let runner = std::thread::spawn(move || {
+        run_cycle(CycleArgs {
+            build: Some(run_build),
+            prefix: Some(run_prefix),
+            mode,
+            args: run_args,
+            repeat,
+            wait: 90,
+            skip_build: true,
+            targets: vec!["libsystem_kernel.dylib".to_string(), "dyld".to_string()],
+            artifact: Vec::new(),
+            env: Vec::new(),
+            probe: vec!["wait4".to_string()],
+            json: false,
+        })
+    });
+
+    let pattern = args.pattern.clone();
+    let period = std::time::Duration::from_millis((1000 / args.hz.max(1)).max(1));
+    let start = std::time::Instant::now();
+    let mut target: Option<String> = None;
+    let mut last: Option<String> = None;
+    let mut samples = 0u64;
+    let mut transitions = 0u64;
+    while !runner.is_finished() || target.is_some() {
+        if target.is_none() {
+            if let Ok(entries) = std::fs::read_dir("/proc") {
+                for e in entries.flatten() {
+                    let pid = e.file_name().to_string_lossy().into_owned();
+                    if !pid.chars().all(|c| c.is_ascii_digit()) {
+                        continue;
+                    }
+                    let exe = std::fs::read_link(format!("/proc/{pid}/exe"))
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default();
+                    if !(exe.starts_with(&prefix_s) && exe.ends_with(loader_suffix)) {
+                        continue;
+                    }
+                    let cmd = std::fs::read(format!("/proc/{pid}/cmdline"))
+                        .map(|b| b.iter().map(|c| if *c == 0 { ' ' } else { *c as char }).collect::<String>())
+                        .unwrap_or_default();
+                    if cmd.contains(&pattern) && !cmd.contains("gwn-") {
+                        println!("WATCH target pid={pid} exe={exe}");
+                        target = Some(pid);
+                        break;
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            continue;
+        }
+        let pid = target.clone().unwrap();
+        match (sig_line(&pid, "SigCgt:"), sig_line(&pid, "SigBlk:")) {
+            (Some(cgt), Some(blk)) => {
+                samples += 1;
+                let key = format!("{cgt}|{blk}");
+                if last.as_deref() != Some(key.as_str()) {
+                    let size = newest_run_log()
+                        .and_then(|p| std::fs::metadata(p).ok())
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                    println!(
+                        "WATCH t={}.{:03}s pid={} SigCgt={} SigBlk={} logsize={}",
+                        start.elapsed().as_secs(),
+                        start.elapsed().subsec_millis(),
+                        pid,
+                        cgt,
+                        blk,
+                        size
+                    );
+                    transitions += 1;
+                    last = Some(key);
+                }
+            }
+            _ => {
+                println!("WATCH pid={pid} gone after {samples} samples, {transitions} transition(s)");
+                target = None;
+                break;
+            }
+        }
+        std::thread::sleep(period);
+    }
+    let rc = runner.join().unwrap_or(Ok(ExitCode::from(1)));
+    println!("WATCH done samples={samples} transitions={transitions}");
+    rc
+}
+
 #[derive(Args, Debug)]
 pub struct SymbolizeArgs {
     /// Image to symbolize against (a Mach-O dylib or an ELF binary).
@@ -2726,6 +2882,7 @@ fn run_trace(args: TraceArgs) -> Result<ExitCode> {
 
 pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
     match cmd {
+        DiagCommand::Watch(a) => run_watch(a),
         DiagCommand::Build(a) => run_build(a),
         DiagCommand::Cycle(a) => run_cycle(a),
         DiagCommand::Symbolize(a) => run_symbolize(a),
@@ -2981,6 +3138,8 @@ fn run_prefix(args: PrefixArgs) -> Result<ExitCode> {
 
 #[derive(clap::Subcommand, Debug)]
 pub enum DiagCommand {
+    /// Watch a running guest's kernel signal dispositions (SigCgt/SigBlk) against the run log's size.
+    Watch(WatchArgs),
     /// Build the runtime pair the rule requires (libsystem_kernel and the dyld image TOGETHER) and check that the
     /// instrument strings a caller expects are present in the built artifact.
     Build(BuildArgs),

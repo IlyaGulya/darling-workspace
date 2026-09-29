@@ -648,6 +648,12 @@ digest check catches; a literal only reports that the derivation ran.
     given and prints that it did, because the framework reuses a zero verdict by
     identity and a probe census over a run that never happened is a silent lie
     (two measurements in one session were served cached PASS in fifteen seconds).
+  - Watching a RUNNING guest's kernel signal dispositions (SigCgt/SigBlk) against the
+    run log's size: `DWDIAG_BUILD=... DWDIAG_PREFIX=... scripts/dwdiag watch --mode basic
+    --args 20 --pattern ring_mach_msg_test`. Discovery uses the only handle observable from
+    the host (loader exe + the guest path in cmdline) and then samples that ONE process at
+    `--hz`, because the same loop written in bash took a second per pass and a two-second
+    workload yielded two samples and no transition.
   - One build -> deploy -> run iteration while hunting a guest/runtime failure:
     `DWDIAG_BUILD=<tree> DWDIAG_PREFIX=<prefix> scripts/dwdiag build --expect '[tag '`
     then `... scripts/dwdiag cycle --mode M --args A --repeat N --probe tag1,tag2`.

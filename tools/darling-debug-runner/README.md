@@ -368,3 +368,17 @@ with PASS and no guest work at all -- two measurements in one session had to be 
 the switch from the caller's shell does not help, because this tool builds the harness environment itself.
 A census of instruments over a run that never happened is a silent lie, so the default is now a fresh run, and
 the caller can override it with `--env WEST_TEST_VERDICT_CACHE=on`.
+
+### `diag watch` -- kernel signal dispositions of a running guest, against the log
+
+```
+DWDIAG_BUILD=... DWDIAG_PREFIX=... dwdiag watch --mode basic --args 20 --pattern ring_mach_msg_test
+WATCH target pid=2464324 exe=.../mldr
+WATCH t=6.243s pid=2464324 SigCgt=000000067ffafeff SigBlk=0000000000000000 logsize=144195
+WATCH done samples=1 transitions=1
+```
+
+It runs a fresh cycle underneath and samples only the discovered process, so a transition can be held
+against the log's own marks. Written as a subcommand because the shell version of the same loop could not
+be made reliable: a matcher that took a bare substring hit the harness's command line first, and a
+per-pass /proc rescan cost about a second, which is longer than the workload lives.
