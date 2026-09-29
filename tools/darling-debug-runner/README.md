@@ -355,19 +355,26 @@ tree and the prefix come from `DWDIAG_BUILD` and `DWDIAG_PREFIX` so they are nev
 workload's own machine-readable line; and each run reports which registered instruments fired and which stayed
 **silent**, which is what turns "the probe said nothing" into a fact about the instrument.
 
-### A census must never be taken over a run that did not happen
-
-`diag cycle` forces `WEST_TEST_VERDICT_CACHE=off` when `--probe` is given, and says so:
+### Freshness is a witness, not a claim
 
 ```
-CYCLE forcing a fresh run (WEST_TEST_VERDICT_CACHE=off) because --probe was given
+FRESHNESS run=r1 log=/tmp/dwdiag-verdict-...-basicr1.log result=__DWDIAG_RC=0 workload_lines=1635 cache=none-in-this-path
 ```
 
-The framework reuses a **zero** verdict by identity, so a probe census used to come back in fifteen seconds
-with PASS and no guest work at all -- two measurements in one session had to be redone because of it. Passing
-the switch from the caller's shell does not help, because this tool builds the harness environment itself.
-A census of instruments over a run that never happened is a silent lie, so the default is now a fresh run, and
-the caller can override it with `--env WEST_TEST_VERDICT_CACHE=on`.
+`cycle --fresh` (and therefore `--probe`) requires that the run's own log carries evidence that the
+workload executed -- its iteration/port marks, its result line, its rc -- and FAILS the command when it
+does not, rather than reporting a plausible-looking pass. Two consecutive `--fresh` invocations are the
+contract: distinct logs, both with `workload_lines` greater than zero.
+
+This replaces an earlier, wrong explanation of a fifteen-second PASS as verdict-cache reuse. There is no
+cache in this path to bypass: `cycle` launches `scripts/darling-boot-run.sh` through setsid and that script
+never invokes `west test`, so the framework's identity-keyed verdict cache -- which does reuse a zero
+verdict where it applies -- is not in this call chain. The fast PASS was a genuinely fast passing workload:
+its log held 1637 port-operation lines, the workload's own `RING_MACH_TEST_DURATION` line and rc=0.
+
+`--fresh` is DIAGNOSTIC EXECUTION POLICY. `--env` is guest/product environment. They are not to be mixed:
+execution policy never travels as a guest variable.
+
 
 ### `diag watch` -- kernel signal dispositions of a running guest, against the log
 
