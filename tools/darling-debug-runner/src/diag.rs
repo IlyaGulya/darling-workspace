@@ -314,12 +314,23 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
         println!("CYCLE aborted at deploy");
         return Ok(rc);
     }
+    // A CENSUS OF INSTRUMENTS OVER A RUN THAT NEVER HAPPENED IS A SILENT LIE. MEASURED (2026-09-29): the
+    // framework reuses a ZERO verdict by identity, so 'cycle ... --probe x' came back in 15 seconds with PASS
+    // and no guest work at all, and two measurements in one session had to be redone because of it. Exporting
+    // WEST_TEST_VERDICT_CACHE=off in the caller's shell does NOT help, because this tool builds the harness
+    // environment itself. When probes are asked for, the run is therefore forced fresh unless the caller
+    // already set the switch.
+    let mut run_env = args.env.clone();
+    if !args.probe.is_empty() && !run_env.iter().any(|(k, _)| k == "WEST_TEST_VERDICT_CACHE") {
+        run_env.push(("WEST_TEST_VERDICT_CACHE".to_string(), "off".to_string()));
+        println!("CYCLE forcing a fresh run (WEST_TEST_VERDICT_CACHE=off) because --probe was given");
+    }
     let va = VerdictArgs {
         prefix: Some(prefix.clone()),
         mode: args.mode.clone(),
         args: args.args.clone(),
         wait: args.wait,
-        env: args.env.clone(),
+        env: run_env,
         boot_runner: PathBuf::from("scripts/darling-boot-run.sh"),
         guest_command: "/usr/bin/ring_mach_msg_test".to_string(),
         guest_symbols: None,
@@ -1961,6 +1972,11 @@ const INSTRUMENTS: &[(&str, &str, &str)] = &[
         "sigsegv-mask",
         r"^\[sigsegv-mask ",
         "guest: mask transitions carrying Darwin's SIGSEGV bit -- a block with no matching unblock means the forced default action",
+    ),
+    (
+        "sigexc-setup",
+        r"^\[sigexc-setup ",
+        "guest: the ONE place that installs Darling's delivery handler for every signal -- did it run for this process",
     ),
     (
         "sigact",

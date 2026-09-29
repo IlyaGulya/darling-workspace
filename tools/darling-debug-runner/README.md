@@ -354,3 +354,17 @@ The artifact pair (`libsystem_kernel`, `dyld`) is the default and is sha256-chec
 tree and the prefix come from `DWDIAG_BUILD` and `DWDIAG_PREFIX` so they are never retyped; the verdict is the
 workload's own machine-readable line; and each run reports which registered instruments fired and which stayed
 **silent**, which is what turns "the probe said nothing" into a fact about the instrument.
+
+### A census must never be taken over a run that did not happen
+
+`diag cycle` forces `WEST_TEST_VERDICT_CACHE=off` when `--probe` is given, and says so:
+
+```
+CYCLE forcing a fresh run (WEST_TEST_VERDICT_CACHE=off) because --probe was given
+```
+
+The framework reuses a **zero** verdict by identity, so a probe census used to come back in fifteen seconds
+with PASS and no guest work at all -- two measurements in one session had to be redone because of it. Passing
+the switch from the caller's shell does not help, because this tool builds the harness environment itself.
+A census of instruments over a run that never happened is a silent lie, so the default is now a fresh run, and
+the caller can override it with `--env WEST_TEST_VERDICT_CACHE=on`.
