@@ -644,6 +644,10 @@ digest check catches; a literal only reports that the derivation ran.
     process (a guest argv never appears in a host cmdline); the prefix must be in a supported
     lifecycle state, because the launcher refuses with "no recognized stable state: recreation
     required" after an abnormal shutdown.
+    `cycle` forces a FRESH run (`WEST_TEST_VERDICT_CACHE=off`) whenever `--probe` is
+    given and prints that it did, because the framework reuses a zero verdict by
+    identity and a probe census over a run that never happened is a silent lie
+    (two measurements in one session were served cached PASS in fifteen seconds).
   - One build -> deploy -> run iteration while hunting a guest/runtime failure:
     `DWDIAG_BUILD=<tree> DWDIAG_PREFIX=<prefix> scripts/dwdiag build --expect '[tag '`
     then `... scripts/dwdiag cycle --mode M --args A --repeat N --probe tag1,tag2`.
