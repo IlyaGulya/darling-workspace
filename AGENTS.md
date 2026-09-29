@@ -679,6 +679,10 @@ digest check catches; a literal only reports that the derivation ran.
     prints which registered instruments FIRED and which stayed SILENT. Do not
     write the four steps out by hand: the paths get retyped, and a probe census
     is a fact about instruments rather than about a grep pattern.
+  - Which build actually served a run: read the run's own `[dwdiag-env ...]` line (or `RUN-ENV` on stdout),
+    which names the resolved prefix and the sha256 of every deployed runtime artifact. A log without that line
+    was produced by an older tool or a hand-rolled command and cannot support a claim about a specific build;
+    when two runs disagree, compare their `mldr=`/`dylib=`/`dyld=` digests before comparing anything else.
   - State root ownership: `west dev status --json` reports the live job
     registry, temporary worktrees, source worktrees and the patch/doctor
     sections; `west dev context NAME --prefix PATH` selects the prefix a run
