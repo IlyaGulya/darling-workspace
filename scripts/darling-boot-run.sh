@@ -101,6 +101,22 @@ own_ancestors() {
 	done
 }
 
+# Teardown witness: every destructive decision names ITSELF and the EVIDENCE it acted on, on stderr so the pid lists on
+# stdout stay parseable. A caller that dies during teardown (MEASURED: exit 143 = SIGTERM at wait+6 s) cannot be diagnosed
+# from a process count: the arm that matched, the ancestry verdict and the command text are the diagnosis.
+witness() { echo "$@" >&2; }
+# The harness records its OWN death too: MEASURED, a group-directed SIGTERM killed the harness and the tool that spawned
+# it at the same instant, so neither of them reached the teardown witness and the run simply stopped. A trap turns
+# "it stopped" into "sig=15 arrived at this point in the script".
+STAGE=harness-start
+trap 'witness "HARNESS-SIGNAL sig=15 stage=$STAGE elapsed=${SECONDS}s self=$$ parent=$PPID"; exit 143' TERM
+trap 'witness "HARNESS-SIGNAL sig=2 stage=$STAGE elapsed=${SECONDS}s self=$$"; exit 130' INT
+caller_id() { # pid ppid pgid sid cmd
+	local p=$1 st
+	st=$(sed 's/.*) //' "/proc/$p/stat" 2>/dev/null)
+	echo "$p $(echo "$st" | awk '{print $2}') $(echo "$st" | awk '{print $3}') $(echo "$st" | awk '{print $4}') $(tr "\0" " " < "/proc/$p/cmdline" 2>/dev/null | cut -c1-120)"
+}
+
 owned_pids() {
 	self=$$
 	# space-separated: the membership test is `case " $ancestors " in *" $pid "*`, and a NEWLINE-separated list
@@ -111,35 +127,47 @@ owned_pids() {
 	for d in /proc/[0-9]*; do
 		pid=${d#/proc/}
 		[ "$pid" = "$self" ] && continue
-		case " $ancestors " in *" $pid "*) continue ;; esac
+		case " $ancestors " in *" $pid "*) witness "OWNED pid=$pid arm=none ancestor=yes ppid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $2}') pgid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $3}') sid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $4}') cmd=$(tr "\0" " " < "$d/cmdline" 2>/dev/null | cut -c1-120)"; continue ;; esac
 		exe=$(readlink "$d/exe" 2>/dev/null)
-		case "$exe" in "$PREFIX"|"$PREFIX"/*) echo "$pid"; continue ;; esac
+		case "$exe" in "$PREFIX"|"$PREFIX"/*) witness "OWNED pid=$pid arm=exe ancestor=no ppid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $2}') pgid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $3}') sid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $4}') exe=$exe"; echo "$pid"; continue ;; esac
 		cmd=$(tr "\0" " " < "$d/cmdline" 2>/dev/null)
 		# The cmdline arm must NOT match this script or its pipeline subshells: they are invoked WITH --prefix,
 		# so their own cmdline contains the prefix, and a `kill` loop then kills the very loop doing the killing
 		# ("Killed" printed by the script itself). A subshell has a different PID but the same cmdline, so the
 		# guard is on the script name, not on the PID.
 		case "$cmd" in *"$SELF_NAME"*) continue ;; esac
-		case "$cmd" in *"$PREFIX"*) echo "$pid" ;; esac
+		case "$cmd" in
+			*"$PREFIX"*) witness "OWNED pid=$pid arm=cmdline ancestor=no ppid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $2}') pgid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $3}') sid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $4}') cmd=$(echo "$cmd" | cut -c1-120)"; echo "$pid" ;;
+		esac
 	done
 }
 count_owned() { owned_pids | wc -l; }
 
-echo "== clean start =="
+STAGE=clean-start; echo "== clean start =="
+witness "TEARDOWN stage=shutdown-enter self=$$ parent=$PPID harness=$(caller_id $$)"
 DPREFIX="$PREFIX" DARLING_PREFIX="$PREFIX" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
 	"$PREFIX/bin/darling" --rootless shutdown >/dev/null 2>&1
+witness "TEARDOWN stage=shutdown-exit rc=$? self=$$"
 sleep 3
 # Kill, then SETTLE: a process that has just been signalled is still enumerable for a moment (and a zombie whose
 # parent has not reaped it stays visible). Declaring failure on the first count produced a false failure the first
 # time this script was used -- so re-check in bounded rounds instead of racing the kernel.
-owned_pids | while read -r pid; do kill -9 "$pid" 2>/dev/null; done
+owned_pids | while read -r pid; do
+	anc=$(own_ancestors | tr '\n' ' ')
+	case " $anc " in *" $pid "*) witness "SKIP-KILL pid=$pid reason=ancestor"; continue ;; esac
+	witness "KILL pid=$pid sig=9 reason=owned"; kill -9 "$pid" 2>/dev/null
+done
 left=1
 i=0
 while [ "$i" -lt 10 ]; do
 	sleep 2
 	left=$(count_owned)
 	[ "$left" -eq 0 ] && break
-	owned_pids | while read -r pid; do kill -9 "$pid" 2>/dev/null; done
+	owned_pids | while read -r pid; do
+	anc=$(own_ancestors | tr '\n' ' ')
+	case " $anc " in *" $pid "*) witness "SKIP-KILL pid=$pid reason=ancestor"; continue ;; esac
+	witness "KILL pid=$pid sig=9 reason=owned"; kill -9 "$pid" 2>/dev/null
+done
 	i=$((i + 1))
 done
 if [ "$left" -gt 0 ]; then
@@ -179,15 +207,46 @@ else
 fi
 : > "$LOG"
 # shellcheck disable=SC2086
-# shellcheck disable=SC2086
+# THE SHELL VERB, NOT exec. MEASURED: `--rootless shell /bin/sh -c ...` runs the command INSIDE the guest (a
+# run on /tmp/dr-on-matched produced mldr-seed attach/seeded, dring-adopt and the command's own output, 5803
+# lines, and `ls /private/var/tmp/ring_mach_msg_test` printed the path, so a fixture installed there IS visible),
+# while `exec` hands the command to the HOST's shell (/Volumes/SystemRoot/usr/bin/dash reporting "not found" for
+# every prefix-local fixture). An earlier edit spliced this comment into the MIDDLE of the command line, so the
+# launcher was never started and every run ended in a prefix-state message: keep comments OUTSIDE the command.
+# THE LAUNCHER INVOCATION MUST STAY ONE UNBROKEN COMMAND. MEASURED TWICE: an explanatory comment placed between
+# the backslash-continued lines of this command is JOINED into it, the trailing backslash is swallowed, and the
+# launcher is then executed WITHOUT the DPREFIX/DARLING_PREFIX environment -- so it cannot find the prefix state
+# and answers "runtime prefix has no recognized stable state: recreation required", while the same launcher invoked
+# by hand with those variables works. Keep every comment above this block.
+# Guest transport facts (measured): the verb must be `shell` (`exec` hands the command to the HOST shell reached as
+# /Volumes/SystemRoot/usr/bin/dash); the shell must be /bin/bash (a freshly bootstrapped guest has no /bin/sh and the
+# failure reads "/bin/bash: /bin/sh: No such file or directory").
 env DPREFIX="$PREFIX" DARLING_PREFIX="$PREFIX" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
 	$HATCH_ENV $EXTRA_ENV \
-	nohup timeout "$((WAIT + 60))" "$PREFIX/bin/darling" --rootless shell /bin/sh -c "$CMD" >> "$LOG" 2>&1 &
+	nohup timeout "$((WAIT + 60))" \
+	"$PREFIX/bin/darling" --rootless shell /bin/bash -c "$CMD" >> "$LOG" 2>&1 &
 
-echo "waiting ${WAIT}s (the workload's own duration; diagnostic lines before this are not verdicts)"
-sleep "$WAIT"
+# WAIT FOR THE WORKLOAD'S OWN RESULT LINE, NOT FOR A TIMER. MEASURED: `sleep "$WAIT"` made every row cost the full
+# watchdog -- the acceptance suite ran 9 rows at --wait-base 400 and needed about an hour, which is the difference
+# between a measurement you take and one you avoid. The workload prints one machine-readable result line and then
+# exits, so the harness polls for a line that carries `pass=` and stops as soon as it sees it, still bounded by WAIT.
+# The marker list is deliberately NOT used here: the tool's markers open the window a probe is read in, and exiting on
+# one of them would cut a run short (the value of the run is what happens after the marker).
+STAGE=workload-wait; echo "waiting up to ${WAIT}s for the workload's own result line (diagnostic lines before it are not verdicts)"
+_waited=0
+while [ "$_waited" -lt "$WAIT" ]; do
+	if grep -aq "RING_MACH_TEST mode=.*pass=" "$LOG" 2>/dev/null; then
+		break
+	fi
+	sleep 1
+	_waited=$((_waited + 1))
+done
+# The boundary reached is part of the LOG, not just of this console: a verdict rule that has to tell "the workload
+# failed" from "we stopped measuring" reads the log, and a line that only ever reached a terminal cannot be judged
+# later (MEASURED: the offline verdict could not see this and kept calling a watchdog stop a CRASH).
+echo "waited ${_waited}s of at most ${WAIT}s" | tee -a "$LOG"
 
-echo "== verdict =="
+STAGE=verdict; echo "== verdict =="
 verdict=0
 # MEASURED: a marker containing spaces was split by the old space-separated list, so `--marker 'ITER 0 dropped'`
 # became three markers and reported `MISS dropped` for something that was simply never queried as a whole.
@@ -209,18 +268,28 @@ echo "urgent timeouts:   $(grep -c 'urgent-wait-TIMEOUT' "$LOG" 2>/dev/null)"
 echo "courier misses:    $(grep -c 'fd-courier-recv. MISS' "$LOG" 2>/dev/null)"
 echo "log lines:         $(wc -l < "$LOG")"
 
-echo "== cleanup =="
+STAGE=cleanup; echo "== cleanup =="
+witness "TEARDOWN stage=shutdown-enter self=$$ parent=$PPID harness=$(caller_id $$)"
 DPREFIX="$PREFIX" DARLING_PREFIX="$PREFIX" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
 	"$PREFIX/bin/darling" --rootless shutdown >/dev/null 2>&1
+witness "TEARDOWN stage=shutdown-exit rc=$? self=$$"
 sleep 3
-owned_pids | while read -r pid; do kill -9 "$pid" 2>/dev/null; done
+owned_pids | while read -r pid; do
+	anc=$(own_ancestors | tr '\n' ' ')
+	case " $anc " in *" $pid "*) witness "SKIP-KILL pid=$pid reason=ancestor"; continue ;; esac
+	witness "KILL pid=$pid sig=9 reason=owned"; kill -9 "$pid" 2>/dev/null
+done
 final=1
 i=0
 while [ "$i" -lt 10 ]; do
 	sleep 2
 	final=$(count_owned)
 	[ "$final" -eq 0 ] && break
-	owned_pids | while read -r pid; do kill -9 "$pid" 2>/dev/null; done
+	owned_pids | while read -r pid; do
+	anc=$(own_ancestors | tr '\n' ' ')
+	case " $anc " in *" $pid "*) witness "SKIP-KILL pid=$pid reason=ancestor"; continue ;; esac
+	witness "KILL pid=$pid sig=9 reason=owned"; kill -9 "$pid" 2>/dev/null
+done
 	i=$((i + 1))
 done
 mounts=$(mount 2>/dev/null | grep -c "$PREFIX")

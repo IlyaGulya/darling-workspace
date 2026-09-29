@@ -261,3 +261,96 @@ opt-in (the Ring traces, enabled by `DARLING_GUEST_RING_TRACE=1`) now report
 
 The rule this encodes, and it is the same one the rest of the tool already follows: a zero must come from a live
 instrument, otherwise the row admits it was not measured.
+
+
+## A guest crash, symbolized with one command and no arguments
+
+```
+scripts/dwdiag crash
+```
+
+Reads the NEWEST verdict log that actually carries a symbolizable fault, attributes the faulting instruction
+pointer to an image using the `/proc/self/maps` dump the fatal-signal handler writes at the moment of death,
+and resolves it to `symbol + offset`. No `--binary`, no offset arithmetic, no symbol table: the tool does
+what used to be done by hand.
+
+    CRASH-LOG /tmp/dwdiag-verdict-...-sem_ready.log (newest log with a symbolized fault)
+    GUEST-FAULT sig=11 addr=0x6a rip=0x7033c5425d0a
+    GUEST-IMAGE /tmp/.../usr/lib/system/libsystem_c.dylib base=0x7033c53a6000
+    GUEST-SYMBOL ... (file offset 0x80d0a)
+
+`--json` prints the same as one machine-readable line. A loader-side `dserver-CRASH` line still needs
+`--binary <image>`, because that path derives its offset from the probe's own `self=` anchor.
+
+
+### The caller chain
+
+The same command also reports the candidate return addresses the fatal handler dumps (24 words from `rsp` plus the
+`rbp` frame chain), each attributed to an image and resolved to a symbol:
+
+    GUEST-CALLER w3=0x7bee805026e1 __vfprintf+0xe51 (libsystem_c.dylib file offset 0x8f6e1)
+    GUEST-CALLER w11=0x7bee804f6d03 freopen+0x163 (libsystem_c.dylib file offset 0x83d03)
+
+Attribution of every word is reported, including anonymous mappings and words with no symbol, because a filter that
+discards the answer is worse than a noisy list: two such filters were found here by running the command (one required a
+mapping path; another had lost its leading negation, so it kept only numeric local labels). Data words on the stack
+appear as plausible symbols; the file offset is always printed so a wrong pick is visible.
+
+## Installing the workload fixture: `--asset`
+
+A runtime component is installed with `--artifact NAME=BUILT`, which expands to every copy the prefix layout needs.
+The workload fixture is **not** a runtime component: it is a test asset, and it is installed with
+
+```
+--asset <SOURCE>=<DESTINATION>          # DESTINATION relative to the prefix
+```
+
+Two measured traps this option exists to close:
+
+* The guest's `/usr/bin` resolves through `/Volumes/SystemRoot` to the **host's** `/usr/bin`, so copying the fixture
+  into `<prefix>/usr/bin` does **not** put it where `--guest-command /usr/bin/...` looks. Use a guest path the prefix
+  itself owns, such as `/private/var/tmp/...`, and install the asset at the matching prefix-relative destination.
+* A fresh prefix has no `usr/bin`; the copy's original error named neither the missing directory nor the destination.
+  The tool creates the destination's parent and names it in the error.
+
+Every gate also prints `ASSET-CHECK guest=... host=... host-present=... asset-installs=...` before the workload runs,
+so a fixture that cannot be seen is visible at the top of the run rather than as `workload=absent` at the end.
+
+## Watchdogs: `--wait-base` must cover the workload's own duration
+
+`verdict --wait` and `suite --wait-base` are the watchdog, not a poll interval: each row's harness sleeps for that
+long and the run is killed with SIGTERM when it expires. MEASURED: the `basic` mode needs about 200 s of work, the
+suite was run with `--wait-base 90`, its first attempt died at the boundary with no result line, and the row was
+printed as a plain failure -- only the automatic retry (which prints `ROW-RETRY mode=... first=... retry=...`) let
+the suite pass. A signal death with no result line is now printed as `WATCHDOG?` with the wait that was used and the
+hint to raise `--wait-base`, because "the workload failed" and "we stopped measuring too early" are different claims
+and only one of them is about the product. For the ring/mach workload a base of 400 s is what the acceptance run
+uses.
+
+### `diag build` -- build the pair the rule requires, and check the instruments are IN it
+
+```
+DWDIAG_BUILD=/path/to/build dwdiag build --expect '[sigexc-in '
+BUILD targets=libsystem_kernel.dylib,dyld rc=0 errors=0
+  artifact .../libsystem_kernel.dylib stamp=12:33:08 bytes=2777588
+  artifact .../dyld stamp=12:36:19 bytes=5755632
+```
+
+`libsystem_kernel` and the dyld image are built **together**, because the same loader code is compiled twice and
+building one leaves the other stale. `--expect STRING` is checked against the BUILT file: a probe whose string is
+absent from the artifact cannot fire, and a silent probe that is really an absent probe is the most expensive
+measurement mistake this project has made.
+
+### `diag cycle` -- build, deploy, run, and say which instruments fired
+
+```
+DWDIAG_BUILD=/path/to/build DWDIAG_PREFIX=/tmp/prefix \
+  dwdiag cycle --mode basic --args 20 --repeat 3 --probe sigexc-in,native-exit
+CYCLE[1/3] mode=basic verdict=CRASH SEGV (Segmentation fault) denied=0 created=0 rc=139
+  instruments fired=[native-exit=2 sigexc-in=1] silent=[...] log=/tmp/dwdiag-verdict-...log
+```
+
+The artifact pair (`libsystem_kernel`, `dyld`) is the default and is sha256-checked at EVERY deployed copy; the build
+tree and the prefix come from `DWDIAG_BUILD` and `DWDIAG_PREFIX` so they are never retyped; the verdict is the
+workload's own machine-readable line; and each run reports which registered instruments fired and which stayed
+**silent**, which is what turns "the probe said nothing" into a fact about the instrument.

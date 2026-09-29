@@ -34,6 +34,7 @@ struct Symbol {
     name: String,
 }
 
+
 fn load_symbols(binary: &Path) -> Result<Vec<Symbol>> {
     let out = Command::new("llvm-nm")
         .arg("-n")
@@ -110,6 +111,260 @@ fn symbol_name(name: &str) -> &str {
 // ----------------------------------------------------------------------------------------------------------------
 // symbolize
 // ----------------------------------------------------------------------------------------------------------------
+
+/// Build the runtime the way the rule requires: the two compilations of the same loader code (libsystem_kernel and
+/// the dyld image) are built TOGETHER, because building one leaves the other stale -- a mistake this session made
+/// and measured. Replaces the long ninja invocation plus its error grep and artifact listing, which was retyped at
+/// every iteration; the build tree comes from the environment so a caller does not retype a path.
+#[derive(Args, Debug)]
+pub struct BuildArgs {
+    /// Build tree. Taken from DWDIAG_BUILD when the flag is absent, so a caller does not retype a path.
+    #[arg(long)]
+    build: Option<PathBuf>,
+    #[arg(long = "target", value_delimiter = ',', default_value = "libsystem_kernel.dylib,dyld")]
+    targets: Vec<String>,
+    /// Substrings that must be present in a built artifact, checked after the build. A probe whose string is absent
+    /// from the artifact cannot fire, and a silent probe that is really an absent probe is this session's most
+    /// expensive measurement mistake.
+    #[arg(long = "expect", value_delimiter = ',')]
+    expect: Vec<String>,
+    #[arg(long, default_value = "src/external/xnu/darling/src/libsystem_kernel/libsystem_kernel.dylib")]
+    kernel: PathBuf,
+    #[arg(long, default_value = "src/external/dyld/dyld")]
+    dyld: PathBuf,
+    #[arg(long)]
+    json: bool,
+}
+
+/// A path argument that may come from the environment: the caller then writes `dwdiag diag cycle --mode basic`
+/// instead of spelling a build tree and a prefix at every iteration, while the tool still refuses to guess.
+fn required_path(flag: &str, value: Option<PathBuf>, var: &str) -> Result<PathBuf> {
+    match value {
+        Some(p) => Ok(p),
+        None => std::env::var(var)
+            .map(PathBuf::from)
+            .with_context(|| format!("{flag} or {var} is required")),
+    }
+}
+
+fn artifact_facts(path: &Path, expect: &[String]) -> (String, u64, Vec<(String, u64)>) {
+    let stamp = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map(|t| {
+            let d = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+            let secs = d.as_secs() as i64;
+            let tod = secs % 86400;
+            format!("{:02}:{:02}:{:02}", tod / 3600, (tod % 3600) / 60, tod % 60)
+        })
+        .unwrap_or_else(|_| "absent".to_string());
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let hits = expect
+        .iter()
+        .map(|tag| {
+            let found = Command::new("strings")
+                .arg(path)
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).contains(tag.as_str()))
+                .unwrap_or(false);
+            (tag.clone(), if found { 1u64 } else { 0u64 })
+        })
+        .collect();
+    (stamp, size, hits)
+}
+
+fn run_build(args: BuildArgs) -> Result<ExitCode> {
+    let build = required_path("--build", args.build.clone(), "DWDIAG_BUILD")?;
+    let out = Command::new("ninja")
+        .args(&args.targets)
+        .current_dir(&build)
+        .output()
+        .with_context(|| format!("running ninja in {}", build.display()))?;
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    let errors: Vec<&str> = text
+        .lines()
+        .filter(|l| l.contains("error:"))
+        .take(6)
+        .collect();
+    let rc = out.status.code().unwrap_or(-1);
+    println!(
+        "BUILD targets={} rc={} errors={}",
+        args.targets.join(","),
+        rc,
+        errors.len()
+    );
+    for line in errors.iter().take(3) {
+        println!("  {}", line.trim());
+    }
+    let mut missing: Vec<String> = Vec::new();
+    for path in [&args.kernel, &args.dyld] {
+        let full = build.join(path);
+        let (stamp, size, hits) = artifact_facts(&full, &args.expect);
+        let cells: Vec<String> = hits
+            .iter()
+            .map(|(tag, n)| {
+                if *n == 0 {
+                    missing.push(tag.clone());
+                }
+                format!("{tag}={n}")
+            })
+            .collect();
+        println!(
+            "  artifact {} stamp={} bytes={} {}",
+            full.display(),
+            stamp,
+            size,
+            cells.join(" ")
+        );
+    }
+    if !missing.is_empty() {
+        missing.sort();
+        missing.dedup();
+        println!("BUILD-EXPECT-MISSING {}", missing.join(","));
+    }
+    if rc != 0 || !missing.is_empty() {
+        return Ok(ExitCode::from(1));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// One iteration of the loop this stage actually performs: build, deploy the pair, run the workload, then report
+/// which instruments fired. Written because the same four steps were retyped as a long shell command at every
+/// attempt, with the prefix, the build tree and the artifact pair spelled out each time -- and because a probe
+/// census is a fact about INSTRUMENTS, not about my grep. Defaults come from DWDIAG_BUILD and DWDIAG_PREFIX.
+#[derive(Args, Debug)]
+pub struct CycleArgs {
+    /// Build tree and prefix. Taken from DWDIAG_BUILD / DWDIAG_PREFIX when the flags are absent.
+    #[arg(long)]
+    build: Option<PathBuf>,
+    #[arg(long)]
+    prefix: Option<PathBuf>,
+    #[arg(long, default_value = "basic")]
+    mode: String,
+    #[arg(long, default_value = "")]
+    args: String,
+    #[arg(long, default_value_t = 1)]
+    repeat: u64,
+    #[arg(long, default_value_t = 90)]
+    wait: u64,
+    #[arg(long)]
+    skip_build: bool,
+    #[arg(long = "target", value_delimiter = ',', default_value = "libsystem_kernel.dylib,dyld")]
+    targets: Vec<String>,
+    /// `NAME=PATH` runtime components to deploy; the default pair is libsystem_kernel and dyld, built together.
+    #[arg(long = "artifact", value_parser = parse_kv, num_args = 0..)]
+    artifact: Vec<(String, String)>,
+    #[arg(long = "env", value_parser = parse_kv, num_args = 0..)]
+    env: Vec<(String, String)>,
+    /// Instrument tags to report per run; omitted reports every registered instrument that fired.
+    #[arg(long = "probe", value_delimiter = ',')]
+    probe: Vec<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
+    let build = required_path("--build", args.build.clone(), "DWDIAG_BUILD")?;
+    let prefix = required_path("--prefix", args.prefix.clone(), "DWDIAG_PREFIX")?;
+    if !args.skip_build {
+        let rc = run_build(BuildArgs {
+            build: Some(build.clone()),
+            targets: args.targets.clone(),
+            expect: Vec::new(),
+            kernel: PathBuf::from("src/external/xnu/darling/src/libsystem_kernel/libsystem_kernel.dylib"),
+            dyld: PathBuf::from("src/external/dyld/dyld"),
+            json: false,
+        })?;
+        if rc != ExitCode::SUCCESS {
+            println!("CYCLE aborted at build");
+            return Ok(rc);
+        }
+    }
+    let mut artifacts = vec![
+        (
+            "libsystem_kernel".to_string(),
+            build
+                .join("src/external/xnu/darling/src/libsystem_kernel/libsystem_kernel.dylib")
+                .display()
+                .to_string(),
+        ),
+        (
+            "dyld".to_string(),
+            build.join("src/external/dyld/dyld").display().to_string(),
+        ),
+    ];
+    for (k, v) in &args.artifact {
+        artifacts.retain(|(n, _)| n != k);
+        artifacts.push((k.clone(), v.clone()));
+    }
+    let rc = run_prefix(PrefixArgs {
+        prefix: prefix.clone(),
+        bootstrap_profile: None,
+        install: Vec::new(),
+        asset: Vec::new(),
+        artifact: artifacts,
+        env: args.env.clone(),
+        mode: String::new(),
+        args: String::new(),
+        guest_command: "/private/var/tmp/ring_mach_msg_test".to_string(),
+        wait: args.wait,
+        json: false,
+    })?;
+    if rc != ExitCode::SUCCESS {
+        println!("CYCLE aborted at deploy");
+        return Ok(rc);
+    }
+    let va = VerdictArgs {
+        prefix: Some(prefix.clone()),
+        mode: args.mode.clone(),
+        args: args.args.clone(),
+        wait: args.wait,
+        env: args.env.clone(),
+        boot_runner: PathBuf::from("scripts/darling-boot-run.sh"),
+        guest_command: "/usr/bin/ring_mach_msg_test".to_string(),
+        guest_symbols: None,
+        log: None,
+        repeat: 1,
+        list_modes: false,
+        json: args.json,
+    };
+    let mut worst = ExitCode::SUCCESS;
+    for i in 1..=args.repeat {
+        let tag = format!("r{i}");
+        let v = run_one_workload(&va, &tag)?;
+        println!(
+            "CYCLE[{i}/{}] mode={} verdict={} denied={} created={} rc={}",
+            args.repeat,
+            v.mode,
+            v.verdict,
+            v.denied,
+            v.created,
+            v.rc.map(|r| r.to_string()).unwrap_or_else(|| "-".to_string())
+        );
+        if !v.ok() {
+            worst = ExitCode::from(1);
+        }
+        if let Ok(text) = std::fs::read_to_string(&v.log) {
+            let census = witness_census(&text);
+            let wanted: Vec<(String, u64, String)> = census
+                .into_iter()
+                .filter(|(name, _, _)| args.probe.is_empty() || args.probe.iter().any(|p| p == name))
+                .collect();
+            let fired: Vec<String> = wanted
+                .iter()
+                .filter(|(_, n, _)| *n > 0)
+                .map(|(name, n, _)| format!("{name}={n}"))
+                .collect();
+            let silent: Vec<String> = wanted
+                .iter()
+                .filter(|(_, n, _)| *n == 0)
+                .map(|(name, _, _)| name.clone())
+                .collect();
+            println!("  instruments fired=[{}] silent=[{}] log={}", fired.join(" "), silent.join(" "), v.log.display());
+        }
+    }
+    Ok(worst)
+}
 
 #[derive(Args, Debug)]
 pub struct SymbolizeArgs {
@@ -197,8 +452,10 @@ fn run_symbolize(args: SymbolizeArgs) -> Result<ExitCode> {
 
 #[derive(Args, Debug)]
 pub struct CrashArgs {
+    /// Optional: required only for the loader-side `dserver-CRASH` line. A GUEST fatal signal is symbolized from the
+    /// log alone, because the handler dumps /proc/self/maps at the moment of death and that names the image.
     #[arg(long)]
-    binary: PathBuf,
+    binary: Option<PathBuf>,
     /// A run log containing a `dserver-CRASH` line.
     #[arg(long)]
     log: Option<PathBuf>,
@@ -288,7 +545,205 @@ fn sig_meaning(sig: &str) -> Option<&'static str> {
     }
 }
 
+/// Symbolize a GUEST fatal signal from a run log, with no hand-work: the handler writes
+/// `[sigexc-fatal sig=... addr=... rip=... rsp=... rbp=...]` and dumps `/proc/self/maps` between
+/// `[sigexc-maps-begin` and `[sigexc-maps-end]`, so the faulting instruction pointer can be attributed to an image and
+/// resolved to a symbol by the tool itself. MEASURED need: doing this by hand took a parser, an offset computation and
+/// a symbol lookup, and the same arithmetic had to be redone for every run.
+fn symbolize_guest_fault(text: &str, json: bool) -> Result<ExitCode> {
+    // The log accumulates across runs, so the FIRST fatal line can belong to an older binary that did not print
+    // registers. Take the last one that carries rip= -- the newest fault is the one being asked about.
+    let fatal = text
+        .lines()
+        .filter(|l| l.contains("[sigexc-fatal") && l.contains("rip="))
+        .last()
+        .context("no [sigexc-fatal line with rip= in the log (older binary)")?;
+    // The marks print addresses as `0x...`, and from_str_radix does NOT accept a radix prefix -- MEASURED: the tool
+    // matched the right line and then reported "carries no rip=", because the parse, not the search, was wrong.
+    let grab = |key: &str| -> Option<u64> {
+        fatal.split_whitespace().find_map(|w| {
+            w.strip_prefix(key)
+                .map(|v| v.trim_end_matches(']'))
+                .map(|v| v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")).unwrap_or(v))
+                .and_then(|v| u64::from_str_radix(v, 16).ok())
+        })
+    };
+    let rip = grab("rip=").context("the fatal line carries no rip= (older log)")?;
+    let addr = grab("addr=").unwrap_or(0);
+    let sig = fatal
+        .split_whitespace()
+        .find_map(|w| w.strip_prefix("sig=").and_then(|v| v.parse::<i64>().ok()))
+        .unwrap_or(0);
+
+    let mut maps: Vec<(u64, u64, u64, String)> = Vec::new();
+    let mut inside = false;
+    for l in text.lines() {
+        if l.contains("[sigexc-maps-begin") {
+            inside = true;
+            continue;
+        }
+        if l.contains("[sigexc-maps-end") {
+            break;
+        }
+        if !inside {
+            continue;
+        }
+        let mut f = l.split_whitespace();
+        let (Some(range), Some(_perms), Some(off)) = (f.next(), f.next(), f.next()) else { continue };
+        let (Some(lo), Some(hi)) = (range.split('-').next(), range.split('-').nth(1)) else { continue };
+        let (Ok(lo), Ok(hi), Ok(off)) =
+            (u64::from_str_radix(lo, 16), u64::from_str_radix(hi, 16), u64::from_str_radix(off, 16))
+        else {
+            continue;
+        };
+        let rest: Vec<&str> = f.collect();
+        let path = rest.last().copied().unwrap_or("").to_string();
+        maps.push((lo, hi, off, path));
+    }
+
+    let (lo, _hi, file_off, path) = maps
+        .iter()
+        .find(|(lo, hi, _, _)| *lo <= rip && rip < *hi)
+        .map(|(lo, hi, off, p)| (*lo, *hi, *off, p.clone()))
+        .with_context(|| format!("rip={rip:#x} is in no dumped mapping"))?;
+
+    println!("GUEST-FAULT sig={sig} addr={addr:#x} rip={rip:#x}");
+
+    // THE CALLERS ABOVE THE FAULT: the handler also dumps stack words, and each one that lands in a mapped, named
+    // image is a candidate return address. Reporting them makes "who called into this function" one command instead of
+    // a stack walk performed by hand, which is how the earlier crashes were chased.
+    let stack: Vec<u64> = text
+        .lines()
+        .filter_map(|l| {
+            let i = l.find("[sigexc-stack ")?;
+            let rest = &l[i..];
+            let v = rest.split("v=").nth(1)?.trim_end_matches(']').trim();
+            u64::from_str_radix(v.strip_prefix("0x").unwrap_or(v), 16).ok()
+        })
+        .collect();
+    if !stack.is_empty() {
+        println!("GUEST-STACK {} word(s)", stack.len());
+        let mut shown = 0;
+        for (wi, w) in stack.iter().enumerate() {
+            if *w == 0 {
+                continue;
+            }
+            // ANY mapping counts, anonymous included. MEASURED: requiring a mapping with a PATH suppressed every
+            // candidate and the caller list came out empty on a log that clearly had 33 stack words -- a filter that
+            // silently discards the answer it exists to find. Anonymous regions are printed as such, so the first
+            // pass through a real chain has something to follow.
+            let Some((lo, hi, foff, p)) =
+                maps.iter().find(|(lo, hi, _, _)| *lo <= *w && *w < *hi).map(|(a, b, c, d)| (*a, *b, *c, d.clone()))
+            else {
+                continue;
+            };
+            if p.is_empty() {
+                println!("GUEST-CALLER w{wi}={w:#x} <anonymous mapping {lo:#x}-{hi:#x}>");
+                continue;
+            }
+            let target = foff + (*w - lo);
+            // NO FILTER AND NO INVERTED PREDICATE. MEASURED: an edit-time rewrite of this very expression dropped its
+            // leading `!`, so retain() KEPT the numeric local labels and threw the real names away -- the caller list
+            // then reported "0 symbols loaded" for images that llvm-nm resolves. Names are printed as the table has
+            // them; a reader can see a numeric label instead of the row being silently deleted.
+            let Ok(syms) = load_symbols(Path::new(&p)) else { continue };
+            let file = Path::new(&p).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+            match locate(&syms, target) {
+                Some((idx, delta)) => println!(
+                    "GUEST-CALLER w{wi}={w:#x} {}+{:#x} ({file} file offset {target:#x})",
+                    symbol_name(&syms[idx].name),
+                    delta
+                ),
+                // No symbol is still an answer: it says the word lands in a mapped image at an offset with no name in
+                // the table, which is what a stripped region or a data word looks like.
+                None => println!(
+                    "GUEST-CALLER w{wi}={w:#x} <no symbol, {} symbols loaded> ({file} file offset {target:#x})",
+                    syms.len()
+                ),
+            }
+            shown += 1;
+            if shown >= 8 {
+                break;
+            }
+        }
+    }
+    println!("GUEST-IMAGE {path} base={lo:#x}");
+    if path.is_empty() {
+        bail!("the faulting mapping is anonymous: nothing to symbolize");
+    }
+    let target = file_off + (rip - lo);
+    let mut syms = load_symbols(Path::new(&path))?;
+    // NUMERIC NAMES ARE LOCAL LABELS, NOT FUNCTIONS. MEASURED: the lookup returned "1106 +0x80bf0" for an address a
+    // hand computation resolved to "_fgetln+0x11a" -- the nearest symbol happened to be an unnamed local label, which
+    // is worse than useless because it looks like an answer. Drop them before locating.
+    syms.retain(|s| {
+        let n = symbol_name(&s.name);
+        let numeric_label = !n.is_empty() && n.chars().all(|c| c.is_ascii_digit() || c == '.');
+        !numeric_label
+    });
+    match locate(&syms, target) {
+        // locate returns (INDEX, base) -- not a name. MEASURED: destructuring it as (name, base) printed an index as if
+        // it were a symbol, which is how the output read "1106 +0x80bf0" for an address llvm-nm resolves to
+        // "_fgetln+0x11a".
+        // locate returns (index, DELTA) -- the second element is already the offset from that symbol, so subtracting
+        // again produced "fgetln +0x80bf0" for an address that is fgetln+0x11a.
+        Some((idx, delta)) => {
+            println!("GUEST-SYMBOL {} +{:#x} (file offset {:#x})", symbol_name(&syms[idx].name), delta, target);
+        }
+        None => println!("GUEST-SYMBOL <none> (file offset {:#x})", target),
+    }
+    if json {
+        println!(
+            "{{\"sig\":{sig},\"addr\":\"{addr:#x}\",\"rip\":\"{rip:#x}\",\"image\":{path:?},\"file_offset\":\"{target:#x}\"}}"
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The newest verdict log that actually CONTAINS something this command can symbolize. MEASURED: taking simply the
+/// newest log picked one written by a binary that predates the rip/rsp instrumentation, so the obvious invocation
+/// failed on a log that had nothing to do with the question. Scanning a few candidates and naming the one chosen turns
+/// "it did not work" into "here is the log I read".
+fn newest_usable_crash_log() -> Option<String> {
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for entry in fs::read_dir("/tmp").ok()? {
+        let Ok(e) = entry else { continue };
+        let name = e.file_name().to_string_lossy().to_string();
+        if !(name.starts_with("dwdiag-verdict-") && name.ends_with(".log")) {
+            continue;
+        }
+        let Ok(md) = e.metadata() else { continue };
+        let Ok(mtime) = md.modified() else { continue };
+        candidates.push((mtime, e.path()));
+    }
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in candidates.iter().take(8) {
+        let Ok(text) = fs::read_to_string(path) else { continue };
+        // BOTH facts must be on the SAME line: `rip=` appears in other marks too, so a file-wide contains() selected a
+        // log whose fatal line predates the instrumentation -- exactly the failure this selector exists to avoid.
+        let usable = text.lines().any(|l| l.contains("[sigexc-fatal") && l.contains("rip="))
+            && text.contains("[sigexc-maps-begin");
+        if usable {
+            println!("CRASH-LOG {} (newest log with a symbolized fault)", path.display());
+            return Some(text);
+        }
+    }
+    None
+}
+
 fn run_crash(args: CrashArgs) -> Result<ExitCode> {
+    // A guest fatal signal carries everything needed in the log itself; try that first, and when neither --log nor
+    // --line is given, use the newest verdict log so the obvious invocation just works.
+    let log_text = match (&args.log, &args.line) {
+        (Some(log), _) => fs::read_to_string(log).ok(),
+        (None, None) => newest_usable_crash_log(),
+        _ => None,
+    };
+    if let Some(text) = &log_text {
+        if text.contains("[sigexc-fatal") && text.contains("[sigexc-maps-begin") {
+            return symbolize_guest_fault(text, args.json);
+        }
+    }
     let line = match (&args.line, &args.log) {
         (Some(l), _) => l.clone(),
         (None, Some(log)) => {
@@ -302,7 +757,11 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
         _ => bail!("need --line or --log"),
     };
     let crash = parse_crash_line(&line);
-    let syms = load_symbols(&args.binary)?;
+    let binary = args
+        .binary
+        .as_ref()
+        .context("a loader-side dserver-CRASH line needs --binary <image> (a guest fatal signal does not)")?;
+    let syms = load_symbols(binary)?;
 
     // The probe reports `self` (a known symbol's runtime address) precisely so that the runtime pc can be turned into an
     // offset inside the FILE; without that subtraction the number is only meaningful to the process that printed it.
@@ -371,7 +830,7 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
                 &format!("--start-address=0x{lo:x}"),
                 &format!("--stop-address=0x{hi:x}"),
             ])
-            .arg(&args.binary)
+            .arg(binary)
             .output()
             .context("running objdump")?;
         for l in String::from_utf8_lossy(&out.stdout).lines() {
@@ -481,7 +940,7 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
         if !backtrace_frames.is_empty() {
             println!(
                 "--- backtrace frames from the log, resolved against {} ---",
-                args.binary.display()
+                binary.display()
             );
             for (n, (off, sym)) in backtrace_frames.iter().enumerate() {
                 println!("  #{n} +0x{off:x} -> {sym}");
@@ -505,8 +964,10 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
 
 #[derive(Args, Debug)]
 pub struct VerdictArgs {
+    /// The prefix to run in. Not required with --log, which judges a log that already exists: a verdict rule must be
+    /// testable against a file, and paying a full prefix boot just to re-read an old verdict is what this avoids.
     #[arg(long)]
-    prefix: PathBuf,
+    prefix: Option<PathBuf>,
     #[arg(long, default_value = "")]
     mode: String,
     #[arg(long, default_value = "")]
@@ -524,6 +985,10 @@ pub struct VerdictArgs {
     /// Image used to symbolize a denial's caller offset.
     #[arg(long)]
     guest_symbols: Option<PathBuf>,
+    /// Judge a run log that ALREADY EXISTS instead of running a workload. The prefix is then unused, which is what
+    /// makes a verdict rule testable against a file and what stops paying a full prefix boot to re-read an old verdict.
+    #[arg(long)]
+    log: Option<PathBuf>,
     /// How many times to run the SAME workload. A single-run verdict cannot see flake, and this session's
     /// evidence is full of one-run PASS/CRASH flips; the summary names the distribution and fails if it is not
     /// uniform. Each run gets its own log.
@@ -582,7 +1047,101 @@ pub fn signal_name(n: i32) -> &'static str {
     }
 }
 
+/// Judge a run log that already exists: the result line, the verdict, and the workload's own exit status.
+///
+/// Split out of the run path for two reasons. First, a log must be re-judgeable WITHOUT a prefix -- re-running a
+/// prefix-backed workload only to re-read its verdict costs about two minutes per attempt and was done repeatedly
+/// during the acceptance work. Second, the rule below is exactly the kind that has to be testable against a file:
+///
+/// THE HARNESS'S OWN KILL IS NOT THE WORKLOAD'S CRASH. MEASURED: when the watchdog bound is reached the harness
+/// terminates the run, the guest shell then reports 139 for the child it killed, and the verdict said CRASH SEGV --
+/// sending the operator after a memory fault that never happened, while the log's last guest line and the server's
+/// own stall dump both described a stranded waiter. The harness prints whether it reached the bound ("waited Ns of at
+/// most Ns"), and that line decides the verdict before any signal does.
+fn judge_run_log(text: &str, mode: &str) -> (String, String, Option<i32>) {
+    let line = workload_result_line(text, mode)
+        .map(|l| l.trim().to_string())
+        .unwrap_or_default();
+    let started = text.contains(&format!("mode={mode}"));
+    let rc: Option<i32> = text
+        .lines()
+        .filter_map(|l| l.split("__DWDIAG_RC=").nth(1))
+        .filter_map(|v| v.trim().parse::<i32>().ok())
+        .next_back();
+    // A log whose guest reports SIGTERM and that carries no result line is a run the harness stopped: the guest's
+    // own fatal line names the signal that ended it, and the workload never signals itself. This covers logs written
+    // before the "waited ... of at most ..." line was added to them, and it is the same claim, spelled differently.
+    // THE SHELL'S OWN REPORT OF HOW THE WORKLOAD DIED OUTRANKS THE BOUNDARY. MEASURED: a run whose guest
+    // shell prints "/bin/bash: line 1: <pid> Segmentation fault: 11 (core dumped) <workload> <args>" was called
+    // HANG (watchdog) by the previous form of this rule, because the harness did reach its bound afterwards --
+    // but the workload had really died of SIGSEGV and the run never produced a result line. The shell's report is
+    // the workload's own status, so it decides first. A `dserver-CRASH` probe line is NOT sufficient on its own:
+    // it appears in passing runs too (teardown aborts the host-side image), so a PASS with a result line stays PASS.
+    // THE GUEST'S OWN CRASH RECORD OUTRANKS EVERYTHING ELSE. MEASURED: with the workload's deliberate-fault hatch
+    // the reporter prints "RING_MACH_TEST_CRASH sig=11 addr=0x0 pc=... " plus symbolized frames, and the verdict
+    // still said HANG (watchdog) because no shell line named a signal -- the guest handler had caught the fault and
+    // exited on its own. A guest-reported fault IS a crash and must be named as one.
+    let guest_crash = text.lines().find_map(|l| {
+        let i = l.find("RING_MACH_TEST_CRASH sig=")?;
+        let rest = &l[i + "RING_MACH_TEST_CRASH sig=".len()..];
+        rest.split_whitespace().next()?.parse::<i32>().ok()
+    });
+    let shell_signal = text.lines().find_map(|l| {
+        if !(l.contains("/bin/bash: line") || l.contains("bash: line")) {
+            return None;
+        }
+        for (word, sig) in [
+            ("Segmentation fault", 11),
+            ("Aborted", 6),
+            ("Killed", 9),
+            ("Floating point exception", 8),
+            ("Bus error", 7),
+        ] {
+            if l.contains(word) {
+                return Some((sig, word));
+            }
+        }
+        None
+    });
+    let guest_terminated = text.lines().any(|l| l.contains("[sigexc-default sig=15"));
+    let hit_bound = guest_terminated
+        || text
+        .lines()
+        .filter_map(|l| {
+            let r = l.trim().strip_prefix("waited ")?;
+            let (a, b) = r.split_once("s of at most ")?;
+            let a = a.trim().parse::<u64>().ok()?;
+            let b = b.trim().trim_end_matches('s').parse::<u64>().ok()?;
+            Some(a == b)
+        })
+        .any(|x| x);
+    let verdict = if line.is_empty() {
+        if let Some(sig) = guest_crash {
+            format!("CRASH {} (guest reporter)", signal_name(sig))
+        } else if let Some((sig, word)) = shell_signal {
+            format!("CRASH {} ({word})", signal_name(sig))
+        } else if hit_bound {
+            "HANG (watchdog)".to_string()
+        } else {
+            match (started, rc) {
+                (_, Some(c)) if c >= 128 => format!("CRASH {}", signal_name(c - 128)),
+                (_, Some(c)) => format!("EXIT rc={c}"),
+                (true, None) => "HANG".to_string(),
+                (false, None) => "NO-RUN".to_string(),
+            }
+        }
+    } else if line.contains("pass=1") {
+        "PASS".to_string()
+    } else {
+        "FAIL".to_string()
+    };
+    (line, verdict, rc)
+}
+
 fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
+    let Some(prefix) = args.prefix.as_ref() else {
+        bail!("running a workload needs --prefix; use --log to judge a log that already exists");
+    };
     let log = std::env::temp_dir().join(format!(
         "dwdiag-verdict-{}-{}{}.log",
         std::process::id(),
@@ -598,9 +1157,21 @@ fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
         "{} {} {}; echo __DWDIAG_RC=$?",
         args.guest_command, args.mode, args.args
     );
-    let mut c = Command::new(&args.boot_runner);
+    // RUN THE HARNESS IN ITS OWN SESSION, VIA THE setsid BINARY. MEASURED: the prefix teardown is group-directed
+    // and killed the shell that asked for the run (rc=137 ~51 s in, twice). A pre_exec hook was tried first and
+    // BROKE spawning outright (no log file was created at all), so the isolation is done here instead, where a
+    // failure is visible: if setsid is missing we fall back to a direct spawn and say so.
+    let use_setsid = std::path::Path::new("/usr/bin/setsid").exists()
+        || std::path::Path::new("/bin/setsid").exists();
+    let mut c = if use_setsid {
+        let mut k = Command::new("setsid");
+        k.arg(&args.boot_runner);
+        k
+    } else {
+        Command::new(&args.boot_runner)
+    };
     c.arg("--prefix")
-        .arg(&args.prefix)
+        .arg(prefix)
         .arg("--wait")
         .arg(args.wait.to_string())
         .arg("--log")
@@ -613,6 +1184,11 @@ fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
     for (k, v) in &args.env {
         c.arg("--env").arg(format!("{k}={v}"));
     }
+    // THE GUEST LOG MUST BE CAPTURED BY IDENTITY, NOT BY LUCK. The verdict's own progress summary reads the guest
+    // diagnostic log from MLDR_DIAG_LOG; nothing on this path set it, so every verdict printed last-guest=<none> and
+    // the stage had to be found by hand in marker files. The harness writes the run's log to --log, and the loader
+    // appends its diagnostics to whatever MLDR_DIAG_LOG names, so point both at the same file.
+    c.env("MLDR_DIAG_LOG", &log);
     // A marker that can never appear: the harness exits non-zero, and the VERDICT below is ours, not its marker test.
     c.arg("--marker").arg("__dwdiag_never__");
     let out = c
@@ -624,12 +1200,12 @@ fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
     let _ = out;
 
     let text = fs::read_to_string(&log).unwrap_or_default();
-    let result_prefix = format!("RING_MACH_TEST mode={} ", args.mode);
-    let line = text
-        .lines()
-        .find(|l| l.contains(&result_prefix))
-        .map(|l| l.trim().to_string())
-        .unwrap_or_default();
+    // PREFER THE RESULT LINE, NOT THE FIRST LINE THAT MATCHES THE PREFIX. MEASURED: a mode whose informational
+    // header and result line share the `RING_MACH_TEST mode=<M>` prefix (the fsview diagnostic does exactly that)
+    // made this matcher read the HEADER, find no `pass=`, and report FAIL for a run whose workload printed
+    // `pass=1` and exited 0. Every other mode prints one such line, so preferring a line that carries `pass=` --
+    // and otherwise the LAST match, since a result is emitted at the end -- is strictly more honest.
+    let (line, verdict, rc) = judge_run_log(&text, &args.mode);
     let denied = text
         .lines()
         .filter(|l| l.contains("rpc-socket-DENIED"))
@@ -638,31 +1214,9 @@ fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
         .lines()
         .filter(|l| l.contains("rpc-socket] created") || l.contains("rpc-socket. created"))
         .count() as u64;
-    let started = text.contains(&format!("mode={}", args.mode));
-
-    let rc: Option<i32> = text
-        .lines()
-        .filter_map(|l| l.split("__DWDIAG_RC=").nth(1))
-        .filter_map(|v| v.trim().parse::<i32>().ok())
-        .next_back();
     let signal = rc
         .filter(|c| *c >= 128)
         .map(|c| signal_name(c - 128).to_string());
-
-    let verdict = if line.is_empty() {
-        match (started, rc) {
-            // A death by signal and a deadlock produce the same missing result line; only the status separates
-            // them, and the earlier conflation is what made a SIGSEGV look like a hang.
-            (_, Some(c)) if c >= 128 => format!("CRASH {}", signal_name(c - 128)),
-            (_, Some(c)) => format!("EXIT rc={c}"),
-            (true, None) => "HANG".to_string(),
-            (false, None) => "NO-RUN".to_string(),
-        }
-    } else if line.contains("pass=1") {
-        "PASS".to_string()
-    } else {
-        "FAIL".to_string()
-    };
 
     let mut denial_call = None;
     let mut denial_location = None;
@@ -721,7 +1275,10 @@ fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
 /// hypothetical: this session twice searched a source tree for the workload and found nothing, because the fixture is a
 /// test asset installed into the prefix and its source lives in the canonical transport repository, not in every tree.
 fn list_modes(args: &VerdictArgs) -> Result<ExitCode> {
-    let host = args.prefix.join(args.guest_command.trim_start_matches('/'));
+    let Some(prefix) = args.prefix.as_ref() else {
+        bail!("listing modes needs --prefix (the fixture lives inside a prefix)");
+    };
+    let host = prefix.join(args.guest_command.trim_start_matches('/'));
     if !host.is_file() {
         println!("MODES-FIXTURE absent {}", host.display());
         println!(
@@ -789,6 +1346,32 @@ fn run_verdict(args: VerdictArgs) -> Result<ExitCode> {
         let _ = listed;
         return Ok(ExitCode::from(2));
     }
+    if let Some(path) = args.log.as_ref() {
+        let text = fs::read_to_string(path)
+            .with_context(|| format!("reading the run log {}", path.display()))?;
+        let (line, verdict, rc) = judge_run_log(&text, &args.mode);
+        let denied = text.lines().filter(|l| l.contains("rpc-socket-DENIED")).count() as u64;
+        let created = text
+            .lines()
+            .filter(|l| l.contains("rpc-socket] created") || l.contains("rpc-socket. created"))
+            .count() as u64;
+        println!("LOG={}", path.display());
+        println!(
+            "VERDICT mode={} verdict={} denied={} created={} rc={} :: {}",
+            args.mode,
+            verdict,
+            denied,
+            created,
+            rc.map(|c| c.to_string()).unwrap_or_else(|| "?".into()),
+            if line.is_empty() { "<no result line>".to_string() } else { line }
+        );
+        let p = summarize_progress(&text, &text, &args.mode);
+        println!(
+            "VERDICT-STAGE workload={} last-guest={} last-published-op={} last-served-op={} serviced={}",
+            p.workload, p.last_guest, p.last_published_op, p.last_served_op, p.serviced
+        );
+        return Ok(ExitCode::from(u8::from(verdict != "PASS")));
+    }
     let repeat = args.repeat.max(1);
     if repeat > 1 {
         let mut ok = 0usize;
@@ -813,11 +1396,17 @@ fn run_verdict(args: VerdictArgs) -> Result<ExitCode> {
             verdicts.push(v.verdict.clone());
             if !v.ok() {
                 let text = fs::read_to_string(&v.log).unwrap_or_default();
-                let guest_log = std::env::var("MLDR_DIAG_LOG").ok().map(PathBuf::from);
-                let guest = guest_log
-                    .as_ref()
-                    .and_then(|p| fs::read_to_string(p).ok())
-                    .unwrap_or_default();
+                // The loader appends its diagnostics to MLDR_DIAG_LOG, which this tool points at the SAME file the
+                // harness writes, so the guest side and the harness side are one text. Reading a process environment
+                // variable here instead was wrong twice over: this process never sets it in its own environment (only
+                // in the child's), so every verdict printed last-guest=<none> no matter how much the guest logged.
+                let guest = text.clone();
+                // A BOOT THAT DIES OF A SIGNAL MUST EXPLAIN ITSELF IN THE SAME OUTPUT. MEASURED: the failing runs
+                // printed VERDICT/VERDICT-STAGE and the crash had to be chased with a second command and a hand
+                // computation. When the log carries a symbolized fault, print the fault and its caller chain here.
+                if text.lines().any(|l| l.contains("[sigexc-fatal") && l.contains("rip=")) {
+                    let _ = symbolize_guest_fault(&text, false);
+                }
                 let p = summarize_progress(&text, &guest, &v.mode);
                 println!(
                     "VERDICT-STAGE workload={} last-guest={} last-published-op={} last-served-op={} serviced={}",
@@ -928,11 +1517,17 @@ fn run_verdict(args: VerdictArgs) -> Result<ExitCode> {
         // `[mldr-ctl]` and `process-control-service` by hand, three runs in a row).
         if v.verdict != "PASS" {
             let text = fs::read_to_string(&v.log).unwrap_or_default();
-            let guest_log = std::env::var("MLDR_DIAG_LOG").ok().map(PathBuf::from);
-            let guest = guest_log
-                .as_ref()
-                .and_then(|p| fs::read_to_string(p).ok())
-                .unwrap_or_default();
+            // The loader appends its diagnostics to MLDR_DIAG_LOG, which this tool points at the SAME file the
+            // harness writes, so the guest side and the harness side are one text. Reading this process's own
+            // environment variable instead was wrong twice over: it is set only in the CHILD's environment
+            // (MLDR_DIAG_LOG never appears here), so every verdict printed last-guest=<none> however much the
+            // guest logged -- and this is the site the prefix path actually prints from.
+            let guest = text.clone();
+            // The SAME self-explanation as the other verdict path: a run that dies of a signal must name the fault and its
+            // callers in this output, not only in a second command.
+            if text.lines().any(|l| l.contains("[sigexc-fatal") && l.contains("rip=")) {
+                let _ = symbolize_guest_fault(&text, false);
+            }
             let p = summarize_progress(&text, &guest, &v.mode);
             println!(
                 "VERDICT-STAGE workload={} last-guest={} last-published-op={} last-served-op={} serviced={}",
@@ -1016,17 +1611,18 @@ fn run_suite(args: SuiteArgs) -> Result<ExitCode> {
             }
         }
         let va = VerdictArgs {
-            prefix: args.prefix.clone(),
+            prefix: Some(args.prefix.clone()),
             mode: mode.clone(),
             args: margs.clone(),
             wait: args.wait_base + extra,
             env: args.env.clone(),
             boot_runner: args.boot_runner.clone(),
-            guest_command: "/usr/bin/ring_mach_msg_test".to_string(),
+    guest_command: "/private/var/tmp/ring_mach_msg_test".to_string(),
             guest_symbols: args.guest_symbols.clone(),
             repeat: 1,
             list_modes: false,
             json: false,
+            log: None,
         };
         let mut v = run_one_workload(&va, "")?;
         // perf#30: a row that is not PASS is retried ONCE, and both verdicts are printed. MEASURED: two acceptance
@@ -1054,14 +1650,26 @@ fn run_suite(args: SuiteArgs) -> Result<ExitCode> {
         if args.require_zero_creations && v.created != 0 {
             failures += 1;
         }
+        // A ROW KILLED BY THE WATCHDOG IS NOT A WORKLOAD FAILURE. MEASURED: the suite's watchdog is the base wait
+        // alone, the basic mode needs about 200 s of work, and its first attempt died by SIGTERM at that boundary
+        // with no result line -- printed as a plain failed row, which is exactly the confusion this tool exists to
+        // remove (only the automatic retry let the suite pass). A signal death with no result line is the harness
+        // stopping a run that was still working, so it is named as such and the wait used is shown next to it.
+        let watchdog = v.line.is_empty()
+            && (v.verdict.contains("watchdog")
+                || v.verdict.contains("SIGTERM")
+                || v.verdict.contains("SIGKILL"));
+        let shown_verdict = if watchdog { "WATCHDOG?".to_string() } else { v.verdict.clone() };
         if !args.json {
             println!(
                 "{:<28} {:<9} {:<8} {:<8} {}",
                 format!("{} {}", v.mode, margs).trim(),
-                v.verdict,
+                shown_verdict,
                 v.denied,
                 v.created,
-                if v.line.is_empty() {
+                if watchdog {
+                    format!("<no result line; killed at the wait boundary with wait={}s -- raise --wait-base>", va.wait)
+                } else if v.line.is_empty() {
                     "<no result line>".to_string()
                 } else {
                     v.line.clone()
@@ -1159,14 +1767,28 @@ fn scalar(prefix: &str) -> Option<String> {
     prefix.split_once('=').map(|(_, v)| v.to_string())
 }
 
-fn summarize_progress(run: &str, guest: &str, mode: &str) -> Progress {
-    let mut p = Progress::default();
-    let want = if mode.is_empty() {
+/// The workload's OWN result line for a mode: the matching line that carries `pass=`, else the LAST matching line.
+/// MEASURED: the fsview diagnostic prints an informational header and a result line that both carry the mode
+/// prefix. The verdict rule read the header and reported FAIL for a run whose workload printed pass=1 and exited
+/// 0, and the progress summary printed the header as PROGRESS-RESULT. One selection rule, used by both.
+fn workload_result_line<'a>(text: &'a str, mode: &str) -> Option<&'a str> {
+    let prefix = if mode.is_empty() {
         "RING_MACH_TEST mode=".to_string()
     } else {
         format!("RING_MACH_TEST mode={mode} ")
     };
-    if let Some(l) = run.lines().find(|l| l.contains(&want)) {
+    let matches: Vec<&str> = text.lines().filter(|l| l.contains(&prefix)).collect();
+    matches
+        .iter()
+        .rev()
+        .find(|l| l.contains("pass="))
+        .or_else(|| matches.last())
+        .copied()
+}
+
+fn summarize_progress(run: &str, guest: &str, mode: &str) -> Progress {
+    let mut p = Progress::default();
+    if let Some(l) = workload_result_line(run, mode) {
         p.workload = "present".to_string();
         p.result = l.trim().to_string();
     } else if run.contains("RING_MACH_TEST mode=") {
@@ -1270,6 +1892,23 @@ fn summarize_progress(run: &str, guest: &str, mode: &str) -> Progress {
             best = (prio, rendered);
         }
     }
+    // FALLBACK TO THE REAL MARKER FAMILY. The classifier above only reads `[mldr-ctl]` lines, but the loader and the
+    // kernel emit bracketed marks of other families -- [fd-courier-conn], [plane-doorbell], [dring-adopt], [open-*],
+    // [pc-*], [drop-op-*], [rmmt]. MEASURED: a run with 1418 lines of real guest activity printed last-guest=<none>,
+    // because none of that activity is `[mldr-ctl]`; the stage then had to be found by hand. When the structured rule
+    // finds nothing, name the LAST bracketed line instead of nothing: an unnamed stall is indistinguishable from an
+    // absent guest.
+    if best.1.is_empty() {
+        if let Some(l) = guest
+            .lines()
+            .rev()
+            .find(|l| l.trim_start().starts_with('[') && l.contains(']'))
+        {
+            let mut s = l.trim().to_string();
+            s.truncate(96);
+            best = (1, s);
+        }
+    }
     p.last_guest = best.1;
     let _ = scalar("");
     p
@@ -1288,6 +1927,56 @@ pub struct WitnessArgs {
 // instrument without adding it here stops the census from being a census, so the list is the point of the command:
 // `witness` answers "which of these spoke", and names the ones that did not.
 const INSTRUMENTS: &[(&str, &str, &str)] = &[
+    (
+        "dthread-mask",
+        r"^\[dthread-mask ",
+        "loader: the kernel signal mask of a NEWLY created guest thread -- a header that inherits a blocked SIGSEGV makes the fault undeliverable there",
+    ),
+    (
+        "sigexc-deliver",
+        r"^\[sigexc-deliver ",
+        "guest: the FINAL dispatch of a delivered signal -- the point every delivery path reaches, unlike a probe in the function prologue",
+    ),
+    (
+        "fault",
+        r"^\[fault sig=11 ",
+        "guest: the FAULT ITSELF -- si_addr (the address that faulted) and gregs.rip (where execution was), printed inside the handler the host disposition points at",
+    ),
+    (
+        "segvdisp",
+        r"^\[segvdisp ",
+        "guest: the HOST disposition of SIGSEGV read with a raw rt_sigaction query next to the point where the workload stops",
+    ),
+    (
+        "wait4",
+        r"^\[wait4 ",
+        "guest: the pid the host reaped and its RAW host status -- a signaled child is signum|0x80, and the pid names the dying process",
+    ),
+    (
+        "guest-handler",
+        r"^\[guest-handler ",
+        "guest: the kernel ENTERED the wrapper that runs the guest's own handler -- for a fatal SIGSEGV this fires when the fault reached the guest",
+    ),
+    (
+        "sigsegv-mask",
+        r"^\[sigsegv-mask ",
+        "guest: mask transitions carrying Darwin's SIGSEGV bit -- a block with no matching unblock means the forced default action",
+    ),
+    (
+        "sigact",
+        r"^\[sigact ",
+        "guest: every transition of SIGSEGV's disposition on the HOST (req=0 is SIG_DFL, req=1 is SIG_IGN) -- names who removed the handler",
+    ),
+    (
+        "native-exit",
+        r"^\[native-exit ",
+        "guest: the boundary where the guest hands ITS OWN exit status to the host -- a 139 here would mean the guest decided it",
+    ),
+    (
+        "sigexc-in",
+        r"^\[sigexc-in ",
+        "guest: a GUEST linux signal number arriving in the guest's own signal machinery (sigexc_handler)",
+    ),
     (
         "sem-site",
         r"^SEM-SITE ",
@@ -1878,8 +2567,151 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
 
 // ----------------------------------------------------------------------------------------------------------------
 
+#[derive(clap::Args, Debug)]
+pub struct DenialsArgs {
+    #[arg(long)]
+    log: PathBuf,
+    /// Kernel image whose symbol `mach_driver_get_fd` is the base for every denial's `delta`.
+    #[arg(long)]
+    kernel: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+}
+
+/// The denials of one run, as a table, with the caller resolved and the surrounding lifecycle context attached.
+fn run_denials(args: DenialsArgs) -> Result<ExitCode> {
+    let text = fs::read_to_string(&args.log).with_context(|| format!("reading {}", args.log.display()))?;
+    let syms = match &args.kernel {
+        Some(k) if k.exists() => Some(load_symbols(k)?),
+        Some(k) => {
+            crate::say(&format!("DENIALS: kernel image {} does not exist; callers will not be symbolized", k.display()));
+            None
+        }
+        None => None,
+    };
+    let base = syms
+        .as_ref()
+        .and_then(|s| s.iter().find(|s| symbol_name(&s.name) == "mach_driver_get_fd"))
+        .map(|s| s.addr);
+    // The context that has decided every question in this stage: was this process's transport rebound, and did the plane
+    // or the urgent pool refuse it first?
+    let mut rebinds: Vec<(u64, usize)> = Vec::new();
+    let mut refusals: Vec<(usize, String)> = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        if let Some(rest) = line.split("postfork-child rebind pid=").nth(1) {
+            if let Ok(pid) = rest.split_whitespace().next().unwrap_or("").parse::<u64>() {
+                rebinds.push((pid, i));
+            }
+        }
+        if line.contains("[plane-refuse]") || line.contains("[urgent-refuse]") {
+            refusals.push((i, line.trim().to_string()));
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut rows = 0usize;
+    crate::say(&format!("DENIALS log={} lines={}", args.log.display(), text.lines().count()));
+    for (i, line) in text.lines().enumerate() {
+        let Some(pos) = line.find("rpc-socket-DENIED") else { continue };
+        let fields: Vec<&str> = line[pos..].split_whitespace().collect();
+        let get = |k: &str| fields.iter().find_map(|f| f.strip_prefix(k)).map(|v| v.to_string());
+        let pid: u64 = get("pid=").and_then(|v| v.parse().ok()).unwrap_or(0);
+        let call = get("call=").unwrap_or_default();
+        if !seen.insert((pid, call.clone())) {
+            continue;
+        }
+        let delta = get("delta=").unwrap_or_default();
+        let location = match (base, parse_hex(&delta)) {
+            (Some(b), Ok(d)) => syms
+                .as_ref()
+                .and_then(|s| locate(s, b + d))
+                .map(|(idx, off)| format!("{} + 0x{:x}", symbol_name(&syms.as_ref().unwrap()[idx].name), off))
+                .unwrap_or_else(|| "NOT-IN-IMAGE".to_string()),
+            _ => "UNRESOLVED (pass --kernel)".to_string(),
+        };
+        let rebound = rebinds.iter().find(|(p, _)| *p == pid).map(|(_, r)| if *r < i { "before" } else { "after" });
+        let refusal = refusals.iter().rev().find(|(ri, _)| *ri < i).map(|(_, l)| l.clone()).unwrap_or_default();
+        rows += 1;
+        crate::say(&format!(
+            "DENIAL pid={pid} call={call} image={} delta={delta} at={location} rebind={} refusal={}",
+            get("image=").unwrap_or_default(),
+            rebound.unwrap_or("none"),
+            if refusal.is_empty() { "-".to_string() } else { refusal }
+        ));
+    }
+    crate::say(&format!("DENIALS-DONE rows={rows} rebinds={}", rebinds.len()));
+    Ok(if rows == 0 { ExitCode::SUCCESS } else { ExitCode::from(1) })
+}
+
+#[derive(clap::Args, Debug)]
+pub struct TraceArgs {
+    #[arg(long)]
+    log: PathBuf,
+    /// The pid or tid to follow. Lines naming it, without needing a word-boundary guess by the caller.
+    #[arg(long)]
+    pid: u64,
+    /// Also show lines that name no pid but carry these tokens (refusals, attach, courier, checkin...).
+    #[arg(long = "also", num_args = 0.., default_values_t = Vec::<String>::new())]
+    also: Vec<String>,
+    /// Only the last N matching lines.
+    #[arg(long)]
+    tail: Option<usize>,
+    /// Also search this other log (typically the prefix's private/var/log/dserver.log) for the same pid, so one command
+    /// answers "what did the guest do" AND "what did the server do" without a second hand-written grep.
+    #[arg(long)]
+    server: Option<PathBuf>,
+}
+
+fn run_trace(args: TraceArgs) -> Result<ExitCode> {
+    let text = fs::read_to_string(&args.log).with_context(|| format!("reading {}", args.log.display()))?;
+    let pid = args.pid.to_string();
+    let pid_patterns = [format!("pid={pid}"), format!("tid={pid}"), format!("pid={pid} "), format!("tid={pid} ")];
+    let defaults = ["plane-refuse", "urgent-refuse", "dring-attach", "courier-", "checkin", "release-drops-pending"];
+    if let Some(server_path) = &args.server {
+        match fs::read_to_string(server_path) {
+            Ok(server_text) => {
+                let matches: Vec<&str> = server_text
+                    .lines()
+                    .filter(|l| l.contains(&format!("pid={pid}")) || l.contains(&format!("tid={pid}")))
+                    .collect();
+                crate::say(&format!(
+                    "TRACE-SERVER {} lines={} matches={}",
+                    server_path.display(),
+                    server_text.lines().count(),
+                    matches.len()
+                ));
+                for l in matches.iter().rev().take(12).rev() {
+                    crate::say(&format!("  S {}", l.trim()));
+                }
+            }
+            Err(_) => crate::say(&format!("TRACE-SERVER {} (unreadable)", server_path.display())),
+        }
+    }
+    let mut hits: Vec<(usize, &str)> = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let names_pid = pid_patterns.iter().any(|p| line.contains(p.as_str()));
+        let carries_token = args.also.iter().any(|a| line.contains(a.as_str()))
+            || (args.also.is_empty() && defaults.iter().any(|d| line.contains(d)));
+        if names_pid || carries_token {
+            hits.push((i, line));
+        }
+    }
+    let total = hits.len();
+    let shown: Vec<&(usize, &str)> = match args.tail {
+        Some(n) if n < total => hits.iter().skip(total - n).collect(),
+        _ => hits.iter().collect(),
+    };
+    crate::say(&format!("TRACE log={} pid={} matched={} shown={}", args.log.display(), args.pid, total, shown.len()));
+    for (i, l) in shown {
+        crate::say(&format!("{i}: {}", l.trim()));
+    }
+    crate::say(&format!("TRACE-DONE matched={total}"));
+    Ok(if total == 0 { ExitCode::from(1) } else { ExitCode::SUCCESS })
+}
+
 pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
     match cmd {
+        DiagCommand::Build(a) => run_build(a),
+        DiagCommand::Cycle(a) => run_cycle(a),
         DiagCommand::Symbolize(a) => run_symbolize(a),
         DiagCommand::Crash(a) => run_crash(a),
         DiagCommand::Verdict(a) => run_verdict(a),
@@ -1888,6 +2720,8 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Courier(a) => run_courier(a),
         DiagCommand::Witness(a) => run_witness(a),
         DiagCommand::Prefix(a) => run_prefix(a),
+        DiagCommand::Denials(a) => run_denials(a),
+        DiagCommand::Trace(a) => run_trace(a),
     }
 }
 
@@ -1933,6 +2767,12 @@ pub struct PrefixArgs {
     mode: String,
     #[arg(long, default_value = "")]
     args: String,
+    /// The workload's path AS THE GUEST SEES IT. MEASURED: the guest's /usr/bin resolves through /Volumes/SystemRoot
+    /// to the HOST's /usr/bin, so a fixture installed at <prefix>/usr/bin is invisible to it and the run dies with
+    /// "/usr/bin/<fixture>: not found" (rc=127) -- which reads as a broken workload rather than a wrong location. The
+    /// guest-visible, writable place is /private/var/tmp, so that is the default here.
+    #[arg(long, default_value = "/private/var/tmp/ring_mach_msg_test")]
+    guest_command: String,
     #[arg(long, default_value_t = 260)]
     wait: u64,
     #[arg(long)]
@@ -2022,7 +2862,19 @@ fn run_prefix(args: PrefixArgs) -> Result<ExitCode> {
             println!("PREFIX-INSTALL MISSING-BUILD-ARTIFACT {built}");
             continue;
         }
-        fs::copy(&source, &dest_path).with_context(|| format!("installing {built}"))?;
+        // ETXTBSY: A RUNNING darlingserver CANNOT BE OVERWRITTEN. MEASURED: the install of bin/darlingserver failed
+        // with the tool exiting 1 right after printing the install line, which reads as "the run refused" rather than
+        // "the server is still up". The documented rule is to stop the server first, so do exactly that here and
+        // retry once -- the alternative is every caller remembering it.
+        if let Err(first) = fs::copy(&source, &dest_path) {
+            let _ = Command::new(prefix.join("bin/darling"))
+                .arg("--rootless")
+                .arg("shutdown")
+                .output();
+            fs::copy(&source, &dest_path).with_context(|| {
+                format!("installing {built} (after a shutdown attempt; first error: {first})")
+            })?;
+        }
         let a = sha256_of(&source)?;
         let b = sha256_of(&dest_path)?;
         println!(
@@ -2043,38 +2895,82 @@ fn run_prefix(args: PrefixArgs) -> Result<ExitCode> {
             prefix.join(dest)
         };
         println!("PREFIX-STAGE asset {src} -> {}", dest_path.display());
-        fs::copy(src, &dest_path).with_context(|| format!("installing asset {src}"))?;
+        // A FRESH PREFIX DOES NOT HAVE usr/bin, AND THE COPY'S ENOENT NAMES NEITHER THE MISSING DIRECTORY NOR THE
+        // DESTINATION. MEASURED: that cost a full debugging cycle -- the failure looked like a missing SOURCE file
+        // while the source was present and only its parent directory was absent. Create the parent and name the
+        // destination in the error.
+        if let Some(parent) = dest_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("creating asset destination directory {}", parent.display()))?;
+        }
+        fs::copy(src, &dest_path)
+            .with_context(|| format!("installing asset {src} -> {}", dest_path.display()))?;
     }
     println!(
         "PREFIX-INSTALLED artifacts={installed} assets={}",
+        args.asset.len()
+    );
+    // ADVISORY GUEST-VIEW CHECK, printed BEFORE the workload runs. The guest's /usr/bin resolves through
+    // /Volumes/SystemRoot to the HOST's /usr/bin, so a fixture copied into <prefix>/usr/bin is not the one the
+    // workload opens. MEASURED: a gate whose fixture was never installed via --asset ends with workload=absent and
+    // says nothing about why, and that shape cost this work repeated cycles. This line is what makes the difference
+    // visible at the top of the run instead of after it.
+    let host_view = prefix.join(args.guest_command.trim_start_matches('/'));
+    println!(
+        "ASSET-CHECK guest={} host={} host-present={} asset-installs={}",
+        args.guest_command,
+        host_view.display(),
+        host_view.is_file(),
         args.asset.len()
     );
     if args.mode.trim().is_empty() {
         println!("PREFIX-STAGE: no --mode given, stopping after installation");
         return Ok(ExitCode::SUCCESS);
     }
+    // A server log that ACCUMULATES across runs cannot answer "what did the server do during THIS run", which is the
+    // question every server-side probe comes down to. Record each log's line count before and after, so the slice is
+    // named and any later query can be scoped to it.
+    let server_logs = ["private/var/log/dserver.log", "private/var/log/dserver-diag.log"];
+    let mut server_before: Vec<(String, u64)> = Vec::new();
+    for rel in server_logs {
+        let p = prefix.join(rel);
+        let n = fs::read_to_string(&p).map(|s| s.lines().count() as u64).unwrap_or(0);
+        server_before.push((p.display().to_string(), n));
+    }
     println!(
         "PREFIX-STAGE workload mode={} args={:?} wait={}",
         args.mode, args.args, args.wait
     );
     let va = VerdictArgs {
-        prefix: prefix.clone(),
+        prefix: Some(prefix.clone()),
         mode: args.mode.clone(),
         args: args.args.clone(),
         wait: args.wait,
         env: args.env.clone(),
         boot_runner: PathBuf::from("scripts/darling-boot-run.sh"),
-        guest_command: "/usr/bin/ring_mach_msg_test".to_string(),
+        guest_command: args.guest_command.clone(),
         guest_symbols: None,
         repeat: 1,
         list_modes: false,
         json: args.json,
+        log: None,
     };
-    run_verdict(va)
+    let code = run_verdict(va);
+    for (path, n) in server_before {
+        let after = fs::read_to_string(&path).map(|s| s.lines().count() as u64).unwrap_or(0);
+        crate::say(&format!("SERVER-LOG-SLICE {path} lines={n}:{after} (this run)"));
+    }
+    code
 }
 
 #[derive(clap::Subcommand, Debug)]
 pub enum DiagCommand {
+    /// Build the runtime pair the rule requires (libsystem_kernel and the dyld image TOGETHER) and check that the
+    /// instrument strings a caller expects are present in the built artifact.
+    Build(BuildArgs),
+    /// Build, deploy and run ONE workload, then report which instruments fired and which stayed silent: the four
+    /// steps this stage repeats, with the prefix, the build tree and the artifact pair taken from the environment.
+    Cycle(CycleArgs),
     /// Resolve a reported offset to `symbol + offset` for any image (guest dylib or server binary).
     Symbolize(SymbolizeArgs),
     /// Turn a `dserver-CRASH` line into a location, a stack walk and the disassembly around the fault.
@@ -2093,6 +2989,18 @@ pub enum DiagCommand {
     /// the failure this exists to catch: a guard that silently does nothing cannot be told from no guard at all, and a
     /// hand-written grep over one log finds a line but cannot tell you which of the other instruments never spoke.
     Witness(WitnessArgs),
+    /// The chronologically ordered story of ONE process in a run log: every line that names its pid or tid, plus the
+    /// plane/urgent refusals around it. This is the question of this whole stage -- "what happened to this child?" --
+    /// and it was reconstructed by hand with grep/sed/python six times, each time risking the wrong slice of a
+    /// two-million-line log.
+    Trace(TraceArgs),
+    /// One row per DISTINCT denial in a run log, with the caller SYMBOLIZED and the post-fork context next to it.
+    ///
+    /// This is the recurring question of this whole stage, assembled by hand five times: which call, which pid, which
+    /// caller, and was that process's transport rebound before the denial? The `delta` on a denial line is measured from
+    /// the symbol `mach_driver_get_fd` in the KERNEL image (not dyld, not the server binary), which is a trap that has
+    /// already produced one wrong attribution; passing `--kernel` resolves it here instead of by hand.
+    Denials(DenialsArgs),
     /// Prove a PREFIX rather than a working tree: bootstrap it, install the built artifacts with a sha256 check each,
     /// install the test assets, then run ONE workload on it. Prints a PREFIX-STAGE line before every step, so a gate that
     /// dies part way says where it died instead of going silent.
