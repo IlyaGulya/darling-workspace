@@ -96,7 +96,7 @@ Everything that used to be a separate shell script for this work -- judging a gu
 symbolizing an offset, resolving a crash -- is now a subcommand of the Rust tool in the sibling tooling repository:
 
 ```
-scripts/dwdiag <symbolize|crash|verdict|suite> [OPTIONS]     # build-and-exec shim, stable path
+scripts/dwdiag <build|cycle|symbolize|crash|verdict|suite|witness> [OPTIONS]   # build-and-exec shim, stable path
   = tools/darling-debug-runner/target/release/darling-debug-runner diag ...
 ```
 
@@ -144,6 +144,32 @@ Defects this tool found in ITSELF while being used, each fixed and kept as a rul
 * crash fields were parsed with a first-match-else chain, so `addr` was silently empty whenever it shared a comma-field
   with `sig` (`[dserver-CRASH sig=b addr=0x0`) -- a parse that looked right and dropped a field.
 
+
+### `dwdiag build` and `dwdiag cycle` -- the iteration loop, with the paths out of the command
+
+```
+DWDIAG_BUILD=/home/ilyagulya/work/r1-repro-build DWDIAG_PREFIX=/tmp/r1-repro-prefix \
+  scripts/dwdiag build --expect '[sigexc-in '
+BUILD targets=libsystem_kernel.dylib,dyld rc=0 errors=0
+  artifact .../libsystem_kernel.dylib stamp=12:33:08 bytes=2777588
+  artifact .../dyld stamp=12:36:19 bytes=5755632
+
+DWDIAG_BUILD=... DWDIAG_PREFIX=... \
+  scripts/dwdiag cycle --mode basic --args 20 --repeat 3 --probe sigexc-in,native-exit
+CYCLE[1/3] mode=basic verdict=CRASH SEGV (Segmentation fault) denied=0 created=0 rc=139
+  instruments fired=[native-exit=2 sigexc-in=1] silent=[iter-marks] log=/tmp/dwdiag-verdict-...log
+```
+
+`build` exists because the pair rule is easy to violate: the same loader code is compiled twice, once into
+`libsystem_kernel.dylib` and once into the `dyld` image, so building only one leaves the other stale -- measured
+during this work, and it cost a full rebuild-and-run cycle to notice. `--expect STRING` verifies the instrument
+string is present in the BUILT file, which is the check that turns "the probe printed nothing" from a mystery into
+a statement about the artifact.
+
+`cycle` exists because the four steps it composes were retyped as a long shell command at every attempt. The
+artifact pair is the default, the build tree and the prefix come from `DWDIAG_BUILD`/`DWDIAG_PREFIX`, the verdict is
+the workload's own line, and the instrument census comes from `witness` rather than from a grep: **silent** is
+reported next to **fired**, because a probe that cannot speak is indistinguishable from a guard that does nothing.
 
 ### `dwdiag progress` -- where a run stopped
 

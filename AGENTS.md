@@ -632,6 +632,31 @@ digest check catches; a literal only reports that the derivation ran.
     spoke. Use it instead of grepping a run log by hand: a hand-written pattern finds only the line it was written for
     and cannot report that another instrument stayed silent, and both mistakes happened (a `SEM-SITE` line missed by its
     pattern; two `dserver-CRASH` lines read past as a transport stall).
+  - Catching a fault in a GUEST process (a debugger outside cannot attach: `ptrace_scope=1`
+    allows only descendants, the harness daemonizes the server so its ppid is 1, its argv carries
+    namespace descriptors that cannot be re-created, and a guest argv is not in any host cmdline):
+    `scripts/dwdiag run --name NAME --capture-gdb --capture-tree --gdb-namespace --capture-pattern
+    <observable handle> --gdb-ex 'handle SIGSEGV stop print nopass' --timeout-seconds 280 --env ...
+    -- <launcher command>`, then read the bundle it prints. `--gdb-namespace` is the part that
+    attaches from inside the target's own tree, and it is why this exists instead of hand-written
+    `gdb`/`nsenter`/`/proc` polling: five such scripts were written in one session, one of them
+    attached to the harness's shell instead of the workload. The observable handle is the loader
+    process (a guest argv never appears in a host cmdline); the prefix must be in a supported
+    lifecycle state, because the launcher refuses with "no recognized stable state: recreation
+    required" after an abnormal shutdown.
+  - One build -> deploy -> run iteration while hunting a guest/runtime failure:
+    `DWDIAG_BUILD=<tree> DWDIAG_PREFIX=<prefix> scripts/dwdiag build --expect '[tag '`
+    then `... scripts/dwdiag cycle --mode M --args A --repeat N --probe tag1,tag2`.
+    `build` runs the ninja pair the rule requires (`libsystem_kernel` and the
+    dyld image TOGETHER, because building one leaves the other stale) and
+    checks each expected instrument string is present in the BUILT artifact --
+    a probe whose string is absent cannot fire, and a silent probe that is
+    really an absent probe is the most expensive measurement mistake here.
+    `cycle` composes build, deploy and run with the artifact pair as its
+    default, judges the run by the workload's own machine-readable line, and
+    prints which registered instruments FIRED and which stayed SILENT. Do not
+    write the four steps out by hand: the paths get retyped, and a probe census
+    is a fact about instruments rather than about a grep pattern.
   - State root ownership: `west dev status --json` reports the live job
     registry, temporary worktrees, source worktrees and the patch/doctor
     sections; `west dev context NAME --prefix PATH` selects the prefix a run

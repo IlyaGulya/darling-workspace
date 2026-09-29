@@ -6,7 +6,8 @@
 # resolution and the suite table. Keeping the shim means a stable path for callers and for muscle memory, while the
 # behaviour (and its tests) live in one place with the runner's own machinery.
 #
-# Usage: dwdiag <symbolize|crash|verdict|suite|progress|courier|witness|prefix> [OPTIONS]
+# Usage: dwdiag <symbolize|crash|verdict|suite|progress|courier|witness|prefix|build|cycle|attach-less capture> [OPTIONS]
+#        dwdiag <run|capture|darling> [OPTIONS]   # spawn-and-capture modes of the same tool, passed through
 #        dwdiag --help
 set -eu
 
@@ -40,7 +41,14 @@ fi
 # Say WHICH copy answered: "the tool ran" and "the tool you edited ran" are not the same claim.
 echo "dwdiag: tool=$TOOL_REPO binary=$BIN" >&2
 
+# The `diag` subcommands are the diagnostics; the tool ALSO has top-level `run`, `capture` and `darling` modes,
+# which spawn a command and collect a gdb/strace bundle around it. MEASURED (2026-09-29): the shim used to force
+# `diag` in front of every argument, so those modes were unreachable through the documented entry point -- and a
+# session then hand-rolled five shell scripts around `gdb`, `nsenter` and `/proc` polling to attach to a guest
+# process, one of which attached to the wrong process entirely. A facility that exists but cannot be reached from
+# the documented path is friction, not a missing tool.
 case "${1:-}" in
 	--build-only) exit 0 ;;
+	run|capture|darling|help) exec "$BIN" "$@" ;;
 esac
 exec "$BIN" diag "$@"
