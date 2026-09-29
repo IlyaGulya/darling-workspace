@@ -1441,6 +1441,53 @@ fn judge_run_log(text: &str, mode: &str) -> (String, String, Option<i32>) {
     (line, verdict, rc)
 }
 
+/// The identity of the runtime a run is about to use, written beside and into its log.
+///
+/// MEASURED COST OF NOT HAVING THIS: a run log records what the guest and the loader printed, but not WHICH copy of
+/// the loader served it. Two prefixes existed -- one freshly deployed, one stale -- and a log served by the stale
+/// copy was read as evidence about the fresh build, twice, before the mistake was caught by hand. The fingerprint
+/// below makes every log self-attributing: the resolved prefix and the sha256 of each runtime artifact found there,
+/// printed before the workload starts, written to a sidecar file (the run truncates its own log), and appended to
+/// the log once the run has finished.
+fn runtime_fingerprint(prefix: &std::path::Path) -> String {
+    const CANDIDATES: [&str; 7] = [
+        "libexec/darling/usr/libexec/darling/mldr",
+        "usr/libexec/darling/mldr",
+        "libexec/darling/usr/lib/system/libsystem_kernel.dylib",
+        "usr/lib/system/libsystem_kernel.dylib",
+        "libexec/darling/usr/lib/dyld",
+        "usr/lib/dyld",
+        "libexec/darling/usr/bin/darlingserver",
+    ];
+    let mut parts: Vec<String> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for rel in CANDIDATES {
+        let p = prefix.join(rel);
+        if !p.exists() {
+            continue;
+        }
+        let sum = std::process::Command::new("sha256sum")
+            .arg(&p)
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.split_whitespace().next().map(|v| v.to_string()))
+            .unwrap_or_else(|| "?".to_string());
+        let short = sum.chars().take(12).collect::<String>();
+        if seen.contains(&short) {
+            continue;
+        }
+        seen.push(short.clone());
+        let name = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("?")
+            .to_string();
+        parts.push(format!("{name}={short}"));
+    }
+    format!("prefix={} {}", prefix.display(), parts.join(" "))
+}
+
 fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
     let Some(prefix) = args.prefix.as_ref() else {
         bail!("running a workload needs --prefix; use --log to judge a log that already exists");
@@ -1452,6 +1499,11 @@ fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
         tag
     ));
     let _ = fs::remove_file(&log);
+    // Self-attributing run: see runtime_fingerprint for the incident this exists to prevent.
+    let fp = runtime_fingerprint(prefix);
+    let env_log = log.with_extension("log.env");
+    let _ = fs::write(&env_log, format!("[dwdiag-env {fp}]\n"));
+    eprintln!("RUN-ENV {fp}");
     // The workload's OWN exit status is part of the observation: MEASURED, a workload that dies of SIGSEGV
     // (`EXITRC=139`) produces exactly the same evidence as a deadlock -- no result line -- and every
     // measurement drawn from "HANG" then chases a lock that does not exist. The status is printed by the
@@ -1501,6 +1553,14 @@ fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
     // The harness's own exit code is deliberately ignored: it reports whether its MARKERS appeared, which is not the
     // question here (MEASURED: a marker matching the workload's start line made a hang look like a pass).
     let _ = out;
+
+    // Append the identity to the run's own log so the log alone answers "which build served this?".
+    if log.exists() {
+        use std::io::Write as _;
+        if let Ok(mut f) = fs::OpenOptions::new().append(true).open(&log) {
+            let _ = writeln!(f, "[dwdiag-env {fp}]");
+        }
+    }
 
     let text = fs::read_to_string(&log).unwrap_or_default();
     // PREFER THE RESULT LINE, NOT THE FIRST LINE THAT MATCHES THE PREFIX. MEASURED: a mode whose informational
