@@ -404,3 +404,10 @@ Rules this makes enforceable: a log that carries no `[dwdiag-env ...]` line was 
 hand-rolled command and cannot support a claim about a specific build; when two runs disagree, compare their
 `mldr=`/`dylib=`/`dyld=` digests before comparing anything else; and the digests are of the **deployed** prefix
 files, so they answer "what actually ran", not "what was built".
+
+### `suite` honours `DWDIAG_PREFIX`
+
+FIXED (measured friction): `cycle` resolved the runtime prefix from `DWDIAG_PREFIX` but `suite` required the
+`--prefix` flag, so a run started with the variable exported died on clap's usage error and read like a broken
+tool rather than a missing argument. `suite` now resolves the flag-or-variable pair the same way the other
+subcommands do. Verified by use without the flag: `rows=2 failures=0 SUITE-VERDICT PASS`.

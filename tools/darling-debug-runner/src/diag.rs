@@ -1923,8 +1923,11 @@ fn run_verdict(args: VerdictArgs) -> Result<ExitCode> {
 
 #[derive(Args, Debug)]
 pub struct SuiteArgs {
+    /// Runtime prefix. Taken from DWDIAG_PREFIX when the flag is absent -- MEASURED FRICTION: `cycle` honoured the
+    /// variable but `suite` demanded the flag, so a run started with the prefix exported died on clap's usage error
+    /// and looked like a tool failure instead of a missing argument.
     #[arg(long)]
-    prefix: PathBuf,
+    prefix: Option<PathBuf>,
     /// Base watchdog in seconds; a mode whose arguments name a longer delay gets that added.
     #[arg(long, default_value_t = 60)]
     wait_base: u64,
@@ -1974,7 +1977,7 @@ fn run_suite(args: SuiteArgs) -> Result<ExitCode> {
             }
         }
         let va = VerdictArgs {
-            prefix: Some(args.prefix.clone()),
+            prefix: Some(required_path("--prefix", args.prefix.clone(), "DWDIAG_PREFIX")?),
             mode: mode.clone(),
             args: margs.clone(),
             wait: args.wait_base + extra,
