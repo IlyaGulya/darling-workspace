@@ -644,10 +644,22 @@ digest check catches; a literal only reports that the derivation ran.
     process (a guest argv never appears in a host cmdline); the prefix must be in a supported
     lifecycle state, because the launcher refuses with "no recognized stable state: recreation
     required" after an abnormal shutdown.
-    `cycle` forces a FRESH run (`WEST_TEST_VERDICT_CACHE=off`) whenever `--probe` is
-    given and prints that it did, because the framework reuses a zero verdict by
-    identity and a probe census over a run that never happened is a silent lie
-    (two measurements in one session were served cached PASS in fifteen seconds).
+    `cycle --fresh` (implied by `--probe`) is DIAGNOSTIC EXECUTION POLICY and must not be
+    confused with `--env`, which is guest/product environment. It does not touch any cache,
+    because this path has none: `cycle` launches `scripts/darling-boot-run.sh` through setsid
+    and that script never runs `west test`, so the framework's identity-keyed verdict cache is
+    not in the chain at all. What `--fresh` requires is a WITNESS read out of the run's own
+    log -- `FRESHNESS run=… log=… result=… workload_lines=N` -- and a run whose log carries no
+    workload execution evidence FAILS instead of looking like a plausible pass. Measured: two
+    consecutive `--fresh` invocations produced distinct logs with 1635 and 1636 workload
+    progress lines, which is what a genuine execution looks like next to a reused verdict.
+    The workload DECLARES its own host identity (`host_pid=` from a raw Linux getpid in
+    `/private/var/tmp/ring_mach_msg_test`), and `watch` prefers that declaration over any
+    /proc heuristic -- the heuristic matched the shell and early loaders, and the emulated
+    Darwin pid is not the host pid. `cycle` runs the fixture from
+    `/private/var/tmp/ring_mach_msg_test`, which is where the tool installs the asset; /usr/bin
+    resolves to the HOST's /usr/bin, so a fixture deployed into the prefix is invisible there
+    and a run of an OLD copy looks like a run of the new one.
   - Watching a RUNNING guest's kernel signal dispositions (SigCgt/SigBlk) against the
     run log's size: `DWDIAG_BUILD=... DWDIAG_PREFIX=... scripts/dwdiag watch --mode basic
     --args 20 --pattern ring_mach_msg_test`. Discovery uses the only handle observable from

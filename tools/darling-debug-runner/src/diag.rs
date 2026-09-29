@@ -259,6 +259,12 @@ pub struct CycleArgs {
     /// Instrument tags to report per run; omitted reports every registered instrument that fired.
     #[arg(long = "probe", value_delimiter = ',')]
     probe: Vec<String>,
+    /// DIAGNOSTIC EXECUTION POLICY, not guest environment: require that the run actually executed the
+    /// workload and FAIL the command when the log carries no evidence of it. `--probe` implies it. This is
+    /// deliberately separate from `--env`, which is product/guest environment and must never carry
+    /// execution-policy switches.
+    #[arg(long)]
+    fresh: bool,
     #[arg(long)]
     json: bool,
 }
@@ -314,17 +320,17 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
         println!("CYCLE aborted at deploy");
         return Ok(rc);
     }
-    // A CENSUS OF INSTRUMENTS OVER A RUN THAT NEVER HAPPENED IS A SILENT LIE. MEASURED (2026-09-29): the
-    // framework reuses a ZERO verdict by identity, so 'cycle ... --probe x' came back in 15 seconds with PASS
-    // and no guest work at all, and two measurements in one session had to be redone because of it. Exporting
-    // WEST_TEST_VERDICT_CACHE=off in the caller's shell does NOT help, because this tool builds the harness
-    // environment itself. When probes are asked for, the run is therefore forced fresh unless the caller
-    // already set the switch.
-    let mut run_env = args.env.clone();
-    if !args.probe.is_empty() && !run_env.iter().any(|(k, _)| k == "WEST_TEST_VERDICT_CACHE") {
-        run_env.push(("WEST_TEST_VERDICT_CACHE".to_string(), "off".to_string()));
-        println!("CYCLE forcing a fresh run (WEST_TEST_VERDICT_CACHE=off) because --probe was given");
-    }
+    // FRESHNESS IS A WITNESS, NOT A STATEMENT, AND THIS PATH HAS NO VERDICT CACHE TO BYPASS.
+    // MEASURED (2026-09-29), correcting an earlier claim of this very tool: `cycle` launches
+    // `scripts/darling-boot-run.sh` through setsid and that script never invokes `west test`, so the
+    // framework's identity-keyed verdict cache -- which does reuse a zero verdict -- is not in this call
+    // chain at all. What looked like a cached 15-second PASS was a genuinely fast passing workload: its log
+    // held 1637 port-operation lines, the workload's own RING_MACH_TEST_DURATION line and rc=0. Injecting
+    // WEST_TEST_VERDICT_CACHE here therefore controlled nothing and is removed; what replaces it is a
+    // witness read OUT OF THE RUN'S OWN LOG (workload progress lines, the workload's result line, and the
+    // rc), and --fresh makes the absence of that witness a FAILURE instead of a plausible-looking pass.
+    let require_fresh = args.fresh || !args.probe.is_empty();
+    let run_env = args.env.clone();
     let va = VerdictArgs {
         prefix: Some(prefix.clone()),
         mode: args.mode.clone(),
@@ -332,7 +338,10 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
         wait: args.wait,
         env: run_env,
         boot_runner: PathBuf::from("scripts/darling-boot-run.sh"),
-        guest_command: "/usr/bin/ring_mach_msg_test".to_string(),
+        // The guest-visible path where the tool installs the fixture asset. MEASURED: /usr/bin resolves
+        // through /Volumes/SystemRoot to the HOST's /usr/bin, so a fixture deployed into the prefix is
+        // invisible there -- and a run of the OLD /usr/bin copy silently looked like a run of the new one.
+        guest_command: "/private/var/tmp/ring_mach_msg_test".to_string(),
         guest_symbols: None,
         log: None,
         repeat: 1,
@@ -353,6 +362,35 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
             v.rc.map(|r| r.to_string()).unwrap_or_else(|| "-".to_string())
         );
         if !v.ok() {
+            worst = ExitCode::from(1);
+        }
+        // The witness, read from the log the run itself produced. `workload_lines` counts the workload's own
+        // progress marks (its iteration/port marks and its start line); `result` is the last line that looks
+        // like a result. A run with no progress lines executed nothing that can be classified, whatever its
+        // verdict says, and an execution policy that demands freshness makes that a failure.
+        let mut workload_lines = 0u64;
+        let mut result = String::new();
+        if let Ok(text) = std::fs::read_to_string(&v.log) {
+            for line in text.lines() {
+                if line.contains("[rmmt]") || line.contains("ITER ") || line.contains("pc-entry")
+                    || line.contains("SEM-SITE") || line.contains("make_port") || line.contains("drop_port")
+                {
+                    workload_lines += 1;
+                }
+                if line.contains("RING_MACH_TEST") || line.contains("__DWDIAG_RC=") {
+                    result = line.trim().chars().take(120).collect();
+                }
+            }
+        }
+        println!(
+            "FRESHNESS run={} log={} result={} workload_lines={} cache=none-in-this-path",
+            tag,
+            v.log.display(),
+            if result.is_empty() { "<absent>" } else { result.as_str() },
+            workload_lines
+        );
+        if require_fresh && workload_lines == 0 {
+            println!("FRESHNESS-SUSPECT run={} log={} -- the log carries no workload execution evidence", tag, v.log.display());
             worst = ExitCode::from(1);
         }
         if let Ok(text) = std::fs::read_to_string(&v.log) {
@@ -399,9 +437,14 @@ pub struct WatchArgs {
     #[arg(long, default_value_t = 1)]
     repeat: u64,
     /// Guest path fragment that identifies the process to watch, matched against the host cmdline together
-    /// with the loader exe.
+    /// with the loader exe. Ignored when --pid is given.
     #[arg(long, default_value = "ring_mach_msg_test")]
     pattern: String,
+    /// Watch EXACTLY this host pid, taken from the workload's own raw `host_pid=` mark. This is the
+    /// structural fix for a discovery loop that matched the shell, an early loader or the final workload
+    /// interchangeably: the identity comes from the running workload itself, not from a /proc heuristic.
+    #[arg(long)]
+    pid: Option<u32>,
     #[arg(long, default_value_t = 200)]
     hz: u64,
     #[arg(long)]
@@ -422,6 +465,53 @@ fn newest_run_log() -> Option<PathBuf> {
         }
     }
     best.map(|(_, p)| p)
+}
+
+/// A cheap signature of the process's ADDRESS SPACE: how many mappings it has and the base of its first
+/// libsystem_kernel mapping. An exec swaps the whole map, so a change here is the visible mark of "a new
+/// image" -- which is what is needed to line the loss of a kernel signal disposition up against the exec
+/// that Linux performs it on. Cheaper and more robust than comparing probe addresses across processes.
+/// SigCgt as seen ACROSS the process's threads: the leader's value, the OR of every thread's, and how many
+/// threads were read. Linux signal actions are process-wide, so these should agree -- and the moment they do
+/// not, "the leader's SigCgt has no SIGSEGV bit" stops being a fact about the process and becomes a fact
+/// about which thread the install landed on, which is exactly the question left open.
+fn sigcgt_across_threads(pid: &str) -> (String, String, usize) {
+    let leader = sig_line(pid, "SigCgt:").unwrap_or_default();
+    let mut any: u64 = 0;
+    let mut n = 0usize;
+    if let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/task")) {
+        for e in entries.flatten() {
+            let tid = e.file_name().to_string_lossy().into_owned();
+            if let Some(v) = sig_line(&tid_path(pid, &tid), "SigCgt:") {
+                if let Ok(bits) = u64::from_str_radix(v.trim(), 16) {
+                    any |= bits;
+                    n += 1;
+                }
+            }
+        }
+    }
+    (leader, format!("{any:016x}"), n)
+}
+
+fn tid_path(pid: &str, tid: &str) -> String {
+    format!("/proc/{pid}/task/{tid}/status")
+}
+
+fn maps_signature(pid: &str) -> String {
+    let Ok(text) = std::fs::read_to_string(format!("/proc/{pid}/maps")) else {
+        return String::new();
+    };
+    let mut lines = 0u64;
+    let mut base = String::new();
+    for line in text.lines() {
+        lines += 1;
+        if base.is_empty() && line.contains("libsystem_kernel") {
+            if let Some(range) = line.split_whitespace().next() {
+                base = range.split('-').next().unwrap_or("").to_string();
+            }
+        }
+    }
+    format!("{lines}:{base}")
 }
 
 fn sig_line(pid: &str, key: &str) -> Option<String> {
@@ -459,19 +549,55 @@ fn run_watch(args: WatchArgs) -> Result<ExitCode> {
             artifact: Vec::new(),
             env: Vec::new(),
             probe: vec!["wait4".to_string()],
+            fresh: true,
             json: false,
         })
     });
 
     let pattern = args.pattern.clone();
+    // The workload DECLARES its own host identity: its start line carries host_pid= from a raw Linux getpid,
+    // which is the only value an outside observer can match in /proc. Prefer that over any /proc heuristic --
+    // the heuristic matched the shell, an early loader and the final workload interchangeably, and the guest's
+    // emulated pid is not the host's. --pid still wins when the caller has a pid in hand.
+    let pinned = args.pid.map(|p| p.to_string());
     let period = std::time::Duration::from_millis((1000 / args.hz.max(1)).max(1));
     let start = std::time::Instant::now();
-    let mut target: Option<String> = None;
+    let mut consumed: Vec<String> = Vec::new();
+    let mut target: Option<String> = pinned.clone();
+    if let Some(p) = &target {
+        println!("WATCH pinned host pid={p} (from the workload's own host_pid= mark)");
+    }
     let mut last: Option<String> = None;
     let mut samples = 0u64;
     let mut transitions = 0u64;
     while !runner.is_finished() || target.is_some() {
         if target.is_none() {
+            // 1. the workload's own declaration, read from the newest run log
+            if let Some(log) = newest_run_log() {
+                if let Ok(text) = std::fs::read_to_string(&log) {
+                    if let Some(idx) = text.rfind("host_pid=") {
+                        let tail = &text[idx + "host_pid=".len()..];
+                        let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+                        // A declaration belongs to ONE run: the previous run's pid must never be picked up
+                        // again, because pids are reused and the log keeps its old lines.
+                        if !digits.is_empty()
+                            && consumed.last().map(|c| c != &digits).unwrap_or(true)
+                            && std::path::Path::new(&format!("/proc/{digits}")).exists()
+                        {
+                            println!("WATCH declared host pid={digits} (from the workload's own host_pid= mark)");
+                            consumed.push(digits.clone());
+                            target = Some(digits);
+                            continue;
+                        }
+                    }
+                }
+            }
+            // 2. the /proc heuristic, and only as a LAST RESORT: the declaration above is the identity the
+            // workload itself reports, and the heuristic matched the shell twice while a workload was starting.
+            if start.elapsed() < std::time::Duration::from_secs(90) {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                continue;
+            }
             if let Ok(entries) = std::fs::read_dir("/proc") {
                 for e in entries.flatten() {
                     let pid = e.file_name().to_string_lossy().into_owned();
@@ -501,19 +627,26 @@ fn run_watch(args: WatchArgs) -> Result<ExitCode> {
         match (sig_line(&pid, "SigCgt:"), sig_line(&pid, "SigBlk:")) {
             (Some(cgt), Some(blk)) => {
                 samples += 1;
-                let key = format!("{cgt}|{blk}");
+                let (leader, any, nthreads) = sigcgt_across_threads(&pid);
+                let sig = format!("{cgt}|{blk}|{leader}|{any}|{nthreads}");
+                let maps = maps_signature(&pid);
+                let key = format!("{sig}|{maps}");
                 if last.as_deref() != Some(key.as_str()) {
                     let size = newest_run_log()
                         .and_then(|p| std::fs::metadata(p).ok())
                         .map(|m| m.len())
                         .unwrap_or(0);
                     println!(
-                        "WATCH t={}.{:03}s pid={} SigCgt={} SigBlk={} logsize={}",
+                        "WATCH t={}.{:03}s pid={} SigCgt={} SigBlk={} leader={} any={} threads={} maps={} logsize={}",
                         start.elapsed().as_secs(),
                         start.elapsed().subsec_millis(),
                         pid,
                         cgt,
                         blk,
+                        leader,
+                        any,
+                        nthreads,
+                        maps,
                         size
                     );
                     transitions += 1;
@@ -522,8 +655,11 @@ fn run_watch(args: WatchArgs) -> Result<ExitCode> {
             }
             _ => {
                 println!("WATCH pid={pid} gone after {samples} samples, {transitions} transition(s)");
+                if pinned.is_some() {
+                    break;   // an explicit --pid is a single target and a single lifetime
+                }
                 target = None;
-                break;
+                continue;    // a declared identity belongs to one run; the next run declares its own
             }
         }
         std::thread::sleep(period);
@@ -2133,6 +2269,11 @@ const INSTRUMENTS: &[(&str, &str, &str)] = &[
         "sigexc-setup",
         r"^\[sigexc-setup ",
         "guest: the ONE place that installs Darling's delivery handler for every signal -- did it run for this process",
+    ),
+    (
+        "setrestart",
+        r"^\[setrestart ",
+        "guest: the install of Darling's delivery handler for a guest-requested signal -- ret is the kernel's answer",
     ),
     (
         "sigact",
