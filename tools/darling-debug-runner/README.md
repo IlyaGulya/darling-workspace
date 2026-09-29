@@ -389,3 +389,23 @@ It runs a fresh cycle underneath and samples only the discovered process, so a t
 against the log's own marks. Written as a subcommand because the shell version of the same loop could not
 be made reliable: a matcher that took a bare substring hit the harness's command line first, and a
 per-pass /proc rescan cost about a second, which is longer than the workload lives.
+
+## Self-attributing run logs (`RUN-ENV` / `[dwdiag-env ...]`)
+
+FIXED (measured cause): a run's log recorded what the guest and the loader printed but not **which copy of the
+loader served it**. Two prefixes existed -- one freshly deployed, one stale -- and a log served by the stale copy
+was read as evidence about the fresh build, twice, before the mistake was caught by hand. Any per-thread claim
+drawn from such a log ("this thread never entered the loader") was therefore unsound.
+
+`dwdiag cycle` and `dwdiag verdict` now print a single machine-readable identity line before the workload starts,
+write the same line to a sidecar next to the log, and append it to the log once the run has finished:
+
+```
+RUN-ENV prefix=/tmp/r1-repro-prefix mldr=8dcb3246bcb4 libsystem_kernel.dylib=13170ac1ab11 dyld=3f97b08dac35
+[dwdiag-env prefix=/tmp/r1-repro-prefix mldr=8dcb3246bcb4 libsystem_kernel.dylib=13170ac1ab11 dyld=3f97b08dac35]
+```
+
+Rules this makes enforceable: a log that carries no `[dwdiag-env ...]` line was produced by an older tool or by a
+hand-rolled command and cannot support a claim about a specific build; when two runs disagree, compare their
+`mldr=`/`dylib=`/`dyld=` digests before comparing anything else; and the digests are of the **deployed** prefix
+files, so they answer "what actually ran", not "what was built".
