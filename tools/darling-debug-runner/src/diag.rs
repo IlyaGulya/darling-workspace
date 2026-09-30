@@ -363,6 +363,13 @@ pub struct CycleArgs {
     fresh: bool,
     #[arg(long)]
     json: bool,
+    /// Host-side capture of /proc/<pid>/wchan for prefix processes, sampled once a second while the run
+    /// proceeds. WHY THIS EXISTS: the boot failure this was written for leaves no guest evidence and its
+    /// rate moves when the guest is instrumented, so the only non-perturbing question left is where the
+    /// host threads of the prefix are blocked DURING the failure. It prints how many samples it took, so
+    /// silence can never be mistaken for "nothing was blocked".
+    #[arg(long)]
+    capture_wchan: bool,
 }
 
 fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
@@ -452,6 +459,52 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
         list_modes: false,
         json: args.json,
     };
+    /* HOST-SIDE WCHAN SAMPLER (see the flag). Started before the runs and stopped after the loop, so the
+     * window covers the harness' own boot wait -- which is exactly the window a boot failure occupies. */
+    let wchan_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let wchan_samples: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    if args.capture_wchan {
+        let stop = wchan_stop.clone();
+        let store = wchan_samples.clone();
+        let needle = prefix.to_string_lossy().to_string();
+        std::thread::spawn(move || {
+            let mut n: u64 = 0;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                n += 1;
+                if let Ok(rd) = std::fs::read_dir("/proc") {
+                    for e in rd.flatten() {
+                        let name = e.file_name().to_string_lossy().to_string();
+                        if !name.bytes().all(|b| b.is_ascii_digit()) {
+                            continue;
+                        }
+                        let cmd = std::fs::read(format!("/proc/{name}/cmdline")).unwrap_or_default();
+                        let cmds = String::from_utf8_lossy(&cmd).replace('\0', " ");
+                        if !cmds.contains(&needle) {
+                            continue;
+                        }
+                        let wchan = std::fs::read_to_string(format!("/proc/{name}/wchan"))
+                            .unwrap_or_else(|_| "?".to_string());
+                        let stat = std::fs::read_to_string(format!("/proc/{name}/stat"))
+                            .unwrap_or_default();
+                        let state = stat.split_whitespace().nth(2).unwrap_or("?").to_string();
+                        let cut = cmds.len().min(90);
+                        if let Ok(mut g) = store.lock() {
+                            g.push(format!(
+                                "s={n} pid={name} state={state} wchan={} cmd={}",
+                                wchan.trim(),
+                                &cmds[..cut]
+                            ));
+                            if g.len() > 8000 {
+                                g.drain(0..2000);
+                            }
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1000));
+            }
+        });
+    }
     let mut worst = ExitCode::SUCCESS;
     for i in 1..=args.repeat {
         let tag = format!("r{i}");
@@ -467,6 +520,13 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
         );
         if !v.ok() {
             worst = ExitCode::from(1);
+            if args.capture_wchan {
+                let g = wchan_samples.lock().unwrap();
+                println!("CAPTURE-WCHAN samples={} prefix={}", g.len(), prefix.display());
+                for line in g.iter().rev().take(24).collect::<Vec<_>>().iter().rev() {
+                    println!("CAPTURE-WCHAN {line}");
+                }
+            }
         }
         // The witness, read from the log the run itself produced. `workload_lines` counts the workload's own
         // progress marks (its iteration/port marks and its start line); `result` is the last line that looks
@@ -725,6 +785,7 @@ fn run_watch(args: WatchArgs) -> Result<ExitCode> {
             probe: vec!["wait4".to_string()],
             fresh: true,
             json: false,
+            capture_wchan: false,
         })
     });
 
