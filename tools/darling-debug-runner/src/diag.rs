@@ -3198,13 +3198,38 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
         {
             // The prefix comes from the run's own identity line when the caller did not name a log, so a run served
             // by another prefix cannot have its server evidence read from the wrong one (see resolve_prefix).
-            let server_log_path = match args.server_log.clone() {
-                Some(p) => p,
-                None => resolve_prefix(None, None)
-                    .unwrap_or_else(|| PathBuf::from("/tmp/dr-on-matched"))
-                    .join("private/var/log/dserver.log"),
+            /* THE PREFIX COMES FROM THE LOG BEING READ, BEFORE ANY DEFAULT (dar-4cp9). MEASURED: a boot-fail run
+             * of /tmp/r1-repro-prefix was reported with SERVER-LOG-PATH /tmp/dr-on-matched/private/var/log/... and
+             * a doorbell count of 19228 taken from THAT prefix's server log -- a number about a different prefix,
+             * presented next to this run's report. The run's own identity line carries the resolved prefix, so read
+             * it from there first; name the source of whatever path is used, and refuse to present a count whose
+             * file belongs to another prefix. */
+            let mut prefix_from_log: Option<PathBuf> = None;
+            for line in run.lines() {
+                let mut rest = line;
+                while let Some(i) = rest.find("prefix=") {
+                    rest = &rest[i + "prefix=".len()..];
+                    let end = rest.find(|c: char| c.is_whitespace() || c == ']').unwrap_or(rest.len());
+                    if end > 0 {
+                        let cand = PathBuf::from(&rest[..end]);
+                        if cand.is_absolute() {
+                            prefix_from_log = Some(cand);
+                        }
+                    }
+                    rest = &rest[end..];
+                }
+            }
+            let (server_log_path, server_log_source) = match args.server_log.clone() {
+                Some(p) => (p, "explicit --server-log"),
+                None => match prefix_from_log.clone().or_else(|| resolve_prefix(None, None)) {
+                    Some(p) => (p.join("private/var/log/dserver.log"), "the run's own prefix line"),
+                    None => (
+                        PathBuf::from("/tmp/dr-on-matched").join("private/var/log/dserver.log"),
+                        "DEFAULT -- no prefix in the log; counts below may belong to another prefix",
+                    ),
+                },
             };
-            eprintln!("SERVER-LOG-PATH {}", server_log_path.display());
+            eprintln!("SERVER-LOG-PATH {} (from {})", server_log_path.display(), server_log_source);
             let server_text = read_log_lossy(&server_log_path).unwrap_or_default();
             if server_text.is_empty() {
                 println!(
