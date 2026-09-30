@@ -411,3 +411,21 @@ FIXED (measured friction): `cycle` resolved the runtime prefix from `DWDIAG_PREF
 `--prefix` flag, so a run started with the variable exported died on clap's usage error and read like a broken
 tool rather than a missing argument. `suite` now resolves the flag-or-variable pair the same way the other
 subcommands do. Verified by use without the flag: `rows=2 failures=0 SUITE-VERDICT PASS`.
+
+### `dwdiag source`: refuse a build tree that does not compile the file you edited
+
+FIXED (measured friction): this stage edited the darlingserver's thread creator, ran `ninja darlingserver`, read
+`ninja: no work to do`, and only then found that the build tree has **zero** rules mentioning that source file --
+the target imports a prebuilt binary, so a probe there could never appear in a run and a cycle would have reported
+"the instrument stayed silent" about a byte-for-byte old artifact.
+
+`dwdiag source --build DIR --source FILE` answers from the generated build graph, not from timestamps (a target
+that imports a prebuilt artifact looks up to date whatever the source tree says). It prints, one line per file:
+
+```
+SOURCE-UNBUILT  file=kern_support.c rules=0  build=... -- no rule ...; a run here would exercise the OLD artifact
+SOURCE-CONSUMED file=threads.c      rules=54 build=...
+```
+
+Exit code 3 means "do not trust a run that claims to exercise this source", which turns a silent no-op probe into
+a refusal. Verified by use on both cases above (`rules=0` rc=3; `rules=54` rc=0).
