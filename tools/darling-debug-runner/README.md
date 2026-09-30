@@ -497,3 +497,26 @@ RING_MACH_TEST mode=forkexec iters=<n> child_ok=<n> child_bad=<n> pass=<0|1>
 
 so a successful child is evidence the transport survives both fork and exec,
 rather than an assumption.
+
+## `cycle --capture-wchan` (added 2026-09-30)
+
+`dwdiag cycle --capture-wchan` samples `/proc/<pid>/wchan` and the process state
+for every process whose cmdline names the prefix, once a second, for the whole
+run -- including the harness' boot wait, which is the window a boot failure
+occupies. On a non-PASS verdict it prints the sample count and the last 24
+samples:
+
+```
+CAPTURE-WCHAN samples=<n> prefix=<path>
+CAPTURE-WCHAN s=<second> pid=<pid> state=<S|D|R> wchan=<symbol> cmd=<cmdline>
+```
+
+WHY: the boot failure this was written for leaves no guest-side evidence, and its
+rate moves when the GUEST is instrumented (per-iteration marks took it from 10/10
+to 7/10). Sampling from the host changes nothing in the guest, so this is the one
+question that can be asked without perturbing the measurement. It prints the
+count so that an empty capture is never read as "nothing was blocked".
+
+Measured use: twelve consecutive boots with the flag on were all PASS, so the flag
+had nothing to print -- which is itself the correct behaviour and the reason the
+count must be printed rather than inferred.
