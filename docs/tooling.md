@@ -443,3 +443,15 @@ judged NO-RUN before the fix, PASS after it.
 Every log read now goes through `read_log_lossy` (bytes -> `String::from_utf8_lossy`); `/proc` reads that must stay
 strict keep `std::fs::read_to_string`. Consequence for method: any verdict recorded before this fix must be treated
 as possibly a READ failure rather than a run failure, and re-judged offline with the current tool.
+
+### A diagnosis reads the prefix the RUN used, from the run's own identity line
+
+FIXED (measured defect): several diagnostics carried a hardcoded default of `/tmp/dr-on-matched`, so a run served by
+another prefix had its server-side evidence read from the WRONG prefix's log -- and an absence there reads like "the
+server never sent it". Observed on a real hanging run: `dwdiag progress` reported
+`SERVER-SENT plane-doorbell-sent=19210 (from /tmp/dr-on-matched/private/var/log/dserver.log)` while the run used
+`/tmp/r1-repro-prefix`.
+
+`resolve_prefix()` now answers in a fixed order -- an explicit flag, then `DWDIAG_PREFIX`, then the `prefix=` field of
+the `[dwdiag-env ...]` line the run itself wrote -- and the server-log default is derived from it. Verified by use on
+the same log: `SERVER-LOG-PATH /tmp/r1-repro-prefix/private/var/log/dserver.log`.

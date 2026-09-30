@@ -1466,6 +1466,35 @@ pub fn signal_name(n: i32) -> &'static str {
 /// run that had PRINTED ITS OWN RESULT LINE, and the only visible evidence was an error buried in a transcript. A
 /// diagnosis pipeline that can silently discard a passing run's evidence is worse than no pipeline, so logs are read
 /// lossily and the bytes that are not text are replaced rather than allowed to erase the run.
+/// Resolve the runtime prefix a DIAGNOSIS should read, in order: an explicit flag, DWDIAG_PREFIX, then the identity
+/// line the run itself wrote.
+///
+/// MEASURED DEFECT THIS EXISTS TO FIX: several diagnostics carried a hardcoded default of /tmp/dr-on-matched, so a
+/// run served by another prefix had its server-side evidence read from the WRONG prefix's log -- and an absence there
+/// reads like "the server never sent it". The runs now stamp `[dwdiag-env prefix=...]` into their own log, so the log
+/// can name the prefix that produced it and no diagnosis has to assume one.
+fn resolve_prefix(explicit: Option<PathBuf>, log: Option<&std::path::Path>) -> Option<PathBuf> {
+    if let Some(p) = explicit {
+        return Some(p);
+    }
+    if let Ok(v) = std::env::var("DWDIAG_PREFIX") {
+        if !v.is_empty() {
+            return Some(PathBuf::from(v));
+        }
+    }
+    let log = log?;
+    let text = read_log_lossy(log).ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.split("prefix=").nth(1) {
+            let p = rest.split_whitespace().next()?.trim_end_matches(']');
+            if !p.is_empty() {
+                return Some(PathBuf::from(p));
+            }
+        }
+    }
+    None
+}
+
 fn read_log_lossy(path: &std::path::Path) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&std::fs::read(path)?).into_owned())
 }
@@ -2216,8 +2245,10 @@ pub struct ProgressArgs {
     /// private/var/log/dserver.log -- so several of this session's conclusions were drawn from an absence that meant
     /// "not captured" rather than "not produced". Reading it here makes "the server sent it" and "the guest received
     /// it" two facts in one report instead of a guess.
-    #[arg(long, default_value = "/tmp/dr-on-matched/private/var/log/dserver.log")]
-    server_log: PathBuf,
+    /// Server log to search. Left unset, the prefix is taken from the run's own identity line (or DWDIAG_PREFIX),
+    /// so a run served by another prefix cannot have its evidence read from the wrong one.
+    #[arg(long)]
+    server_log: Option<PathBuf>,
 }
 
 #[derive(Debug, Default)]
@@ -2912,11 +2943,20 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
         // SERVER SIDE, from its own log (see the option's comment). Counts only: the two files have different clocks,
         // so an interleaved ordering would be a fabricated one. Presence plus count is what decides the question.
         {
-            let server_text = read_log_lossy(&args.server_log).unwrap_or_default();
+            // The prefix comes from the run's own identity line when the caller did not name a log, so a run served
+            // by another prefix cannot have its server evidence read from the wrong one (see resolve_prefix).
+            let server_log_path = match args.server_log.clone() {
+                Some(p) => p,
+                None => resolve_prefix(None, None)
+                    .unwrap_or_else(|| PathBuf::from("/tmp/dr-on-matched"))
+                    .join("private/var/log/dserver.log"),
+            };
+            eprintln!("SERVER-LOG-PATH {}", server_log_path.display());
+            let server_text = read_log_lossy(&server_log_path).unwrap_or_default();
             if server_text.is_empty() {
                 println!(
                     "SERVER-LOG unreadable or empty ({}) -- server-side facts are NOT included in this report",
-                    args.server_log.display()
+                    server_log_path.display()
                 );
             } else {
                 let sent = server_text
@@ -2929,7 +2969,7 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
                     .count();
                 println!(
                     "SERVER-SENT plane-doorbell-sent={sent} (from {})",
-                    args.server_log.display()
+                    server_log_path.display()
                 );
                 if sent > 0 && guest_timeouts > 0 {
                     println!(
