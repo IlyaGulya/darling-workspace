@@ -308,7 +308,7 @@ fn run_deploy(a: DeployArgs) -> Result<ExitCode> {
             fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
         let want = sha256_of(&src)?;
-        fs::copy(&src, &dst).with_context(|| format!("copying {} -> {}", src.display(), dst.display()))?;
+        install_artifact_into_prefix(src.as_path(), &dst, prefix.as_path())?;
         let got = sha256_of(&dst)?;
         let bytes = fs::metadata(&dst).map(|m| m.len()).unwrap_or(0);
         if want != got {
@@ -1722,6 +1722,121 @@ fn prefix_prereq_report(prefix: &std::path::Path) -> bool {
         );
         false
     }
+}
+
+
+/// The processes that hold a prefix's files open, found the only way that works from the host.
+///
+/// MEASURED, AND IT STOPPED A GATE RUN: an aborted cycle left darlingserver (reparented to pid 1), launchd and
+/// shellspawn alive; the next install of `mldr` failed with ETXTBSY and the harness reported only "installing
+/// .../mldr (after a shutdown attempt; first error: Text file busy)". `bin/darling --rootless shutdown` stops the
+/// server the harness knows about, not the guest processes it does not, so the retry failed the same way and the
+/// message named neither the file's holders nor what to do. A file lock is a fact about processes, so report the
+/// processes.
+///
+/// Matching is on `exe` AS WELL AS `cmdline`, because a guest process runs through the prefix's `mldr` (its `exe`
+/// is the loader, its `cmdline` is the guest argv) while the server's `cmdline` names the prefix without `exe` doing
+/// so. The caller's own ancestry is excluded: a blanket match must never reach the process asking the question, and
+/// killing an ancestor at any depth ends the caller instead of the holder (that mistake was made once already).
+fn prefix_processes(prefix: &std::path::Path) -> Vec<u32> {
+    let needle = prefix.to_string_lossy().to_string();
+    let mut excluded: Vec<u32> = Vec::new();
+    let mut pid = std::process::id();
+    while pid > 1 {
+        excluded.push(pid);
+        let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(s) => s,
+            Err(_) => break,
+        };
+        pid = match stat.rsplit(')').next().and_then(|tail| tail.split_whitespace().nth(1)) {
+            Some(v) => v.parse().unwrap_or(1),
+            None => break,
+        };
+    }
+    let mut found: Vec<u32> = Vec::new();
+    if let Ok(entries) = fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let other: u32 = match name.parse() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if excluded.contains(&other) {
+                continue;
+            }
+            let exe = fs::read_link(format!("/proc/{other}/exe")).ok();
+            let cmdline = fs::read(format!("/proc/{other}/cmdline")).unwrap_or_default();
+            let exe_hit = exe.as_ref().map(|p| p.to_string_lossy().contains(&needle)).unwrap_or(false);
+            let cmd_hit = String::from_utf8_lossy(&cmdline).contains(&needle);
+            if exe_hit || cmd_hit {
+                found.push(other);
+            }
+        }
+    }
+    found.sort_unstable();
+    found
+}
+
+/// Stop every process holding the prefix, settle, then escalate. Returns the pids we found (for the message).
+fn stop_prefix_holders(prefix: &std::path::Path) -> Vec<u32> {
+    let victims = prefix_processes(prefix);
+    for &pid in &victims {
+        unsafe { libc_kill(pid as i32, 15) };
+    }
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    for &pid in &victims {
+        if Path::new(&format!("/proc/{pid}")).exists() {
+            unsafe { libc_kill(pid as i32, 9) };
+        }
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    victims
+}
+
+unsafe extern "C" {
+    #[link_name = "kill"]
+    fn libc_kill(pid: i32, sig: i32) -> i32;
+}
+
+
+/// Install ONE file into a prefix, removing whatever holds it.
+///
+/// There is exactly ONE way to install a file into a prefix, and this is it: both `deploy` and the cycle's staging
+/// path call it, because a second implementation of the same step drifts and then one of them is the one that fails
+/// at 3 a.m. The order is: copy, and when that fails, `bin/darling --rootless shutdown`, then stop the processes that
+/// still hold the file (a surviving launchd/shellspawn keeps `mldr` busy -- ETXTBSY is a fact about processes, not
+/// about permissions), then retry once and report the holders if it still fails.
+fn install_artifact_into_prefix(
+    built: &Path,
+    dest_path: &Path,
+    prefix: &std::path::Path,
+) -> Result<()> {
+    let source = built.to_path_buf();
+    if let Err(first) = fs::copy(&source, dest_path) {
+        let _ = Command::new(prefix.join("bin/darling"))
+            .arg("--rootless")
+            .arg("shutdown")
+            .output();
+        let holders = stop_prefix_holders(prefix);
+        if !holders.is_empty() {
+            println!(
+                "PREFIX-STOP-HELD prefix={} pids={} (they still held the staged files after shutdown)",
+                prefix.display(),
+                holders.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
+            );
+        }
+        return fs::copy(&source, dest_path)
+            .map(|_| ())
+            .with_context(|| {
+                format!(
+                    "installing {} -> {} (after a shutdown attempt and stopping {} prefix process(es); first error: {first})",
+                    built.display(),
+                    dest_path.display(),
+                    holders.len()
+                )
+            });
+    }
+    Ok(())
 }
 
 fn runtime_fingerprint(prefix: &std::path::Path) -> String {
@@ -3539,15 +3654,7 @@ fn run_prefix(args: PrefixArgs) -> Result<ExitCode> {
         // with the tool exiting 1 right after printing the install line, which reads as "the run refused" rather than
         // "the server is still up". The documented rule is to stop the server first, so do exactly that here and
         // retry once -- the alternative is every caller remembering it.
-        if let Err(first) = fs::copy(&source, &dest_path) {
-            let _ = Command::new(prefix.join("bin/darling"))
-                .arg("--rootless")
-                .arg("shutdown")
-                .output();
-            fs::copy(&source, &dest_path).with_context(|| {
-                format!("installing {built} (after a shutdown attempt; first error: {first})")
-            })?;
-        }
+        install_artifact_into_prefix(Path::new(built), &dest_path, prefix)?;
         let a = sha256_of(&source)?;
         let b = sha256_of(&dest_path)?;
         println!(

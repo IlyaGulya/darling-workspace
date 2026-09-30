@@ -477,3 +477,20 @@ case the prefix held a darlingserver from the instrumented tree, guest libraries
 shellspawn/launchd from a third; the run log said only `Failed to exec launchd: No such file or directory`, and the
 verdict said `HANG (watchdog)` ten times in a row. A verdict about a prefix must never be readable as a verdict
 about the workload, and a component set must never be assembled by hand one file at a time.
+
+## ETXTBSY belongs to processes, so the tool names them
+
+An aborted cycle left `darlingserver` (reparented to pid 1), `launchd` and `shellspawn` alive in the prefix. The next
+install of `mldr` failed with `ETXTBSY`, and the tool reported only `installing .../mldr (after a shutdown attempt;
+first error: Text file busy)` -- no holder, no next step, and the gate run died at staging rather than at the
+workload. `bin/darling --rootless shutdown` stops the server the harness knows about, not the guest processes it does
+not.
+
+`install_artifact_into_prefix()` is now the ONE way both `deploy` and the cycle's staging path put a file into a
+prefix: copy, and on failure shut the server down, stop the processes that still hold the prefix (matched on `exe`
+AS WELL AS `cmdline`, because a guest process runs through the prefix's `mldr` so its `exe` is the loader and its
+`cmdline` is the guest argv, while the server's `cmdline` names the prefix without `exe` doing so; the caller's own
+ancestry is excluded at every depth), retry once, and report `PREFIX-STOP-HELD pids=...` when holders were found.
+
+Verified by use: a deliberate holder executing a staged file produced `PREFIX-STOP-HELD ... pids=2359645`, the copy
+then completed, and the destination was restored to the build's sha256.
