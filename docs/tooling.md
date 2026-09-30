@@ -463,3 +463,17 @@ only, so `dwdiag cycle --artifact libsystem_pthread.dylib=...` refused with "unk
 prefix installs it fine -- a dead end in the tool while diagnosing the thread-creation path, which lives in exactly
 that library. The component is now in the layout table (both prefix copies) and verified by use:
 `PREFIX-INSTALL MATCH ... usr/lib/system/libsystem_pthread.dylib` and the `libexec/darling/...` copy.
+
+## A prefix is a SET, and a launch failure is its own verdict
+
+Added to `scripts/dwdiag` after a measured two-hour wall. `dwdiag deploy --build B --prefix P` installs the seven
+runtime components from one build tree and verifies each deployed copy by sha256 (paths owned by
+`scripts/darling-artifact-manifest.sh`). `dwdiag cycle` prints `PREFIX-PREREQ` before running, and `dwdiag verdict`
+returns `BOOT-FAIL (<cause>)` for logs carrying `Failed to exec launchd`, `shellspawn did not become ready` or
+`no recognized stable state`.
+
+The rule this encodes: a mixed-build prefix boots into a failure that looks like something else. In the measured
+case the prefix held a darlingserver from the instrumented tree, guest libraries from a second tree and
+shellspawn/launchd from a third; the run log said only `Failed to exec launchd: No such file or directory`, and the
+verdict said `HANG (watchdog)` ten times in a row. A verdict about a prefix must never be readable as a verdict
+about the workload, and a component set must never be assembled by hand one file at a time.

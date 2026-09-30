@@ -409,3 +409,24 @@ Rules this makes enforceable: a log that carries no `[dwdiag-env ...]` line was 
 hand-rolled command and cannot support a claim about a specific build; when two runs disagree, compare their
 `mldr=`/`dylib=`/`dyld=` digests before comparing anything else; and the digests are of the **deployed** prefix
 files, so they answer "what actually ran", not "what was built".
+
+## `deploy` - the component set as ONE unit (added after a two-hour wall)
+
+`dwdiag deploy --build B --prefix P` copies the seven runtime components (mldr, dyld, libsystem_kernel,
+darlingserver, shellspawn, vchroot, launchd) from ONE build tree into a prefix and then re-reads every destination
+and compares its sha256 with the source. The paths come from `scripts/darling-artifact-manifest.sh`, so both tools
+share one mapping.
+
+Why it exists, measured: a prefix was left holding an instrumented `bin/darlingserver` from one build tree while its
+guest libraries came from another (and its shellspawn/launchd from a third). The symptom was
+`Failed to exec launchd: No such file or directory` and `Rootless shellspawn did not become ready within 30000ms`,
+and `verdict` reported `HANG (watchdog)` / `NO-RUN` for ten consecutive runs - verdicts that read as statements
+about a workload that had never executed a single instruction. Two hours of deductions were drawn from those logs
+before the tail of one was read by hand. The fix has two halves, both in the tool:
+
+* `cycle` now prints `PREFIX-PREREQ ok|MISSING` **before** the run, checking the real deployment paths;
+* `verdict` returns `BOOT-FAIL (launchd|shellspawn|prefix-state)` - checked before every workload-shaped rule - so a
+  launch failure is named as a launch failure and can never be read as a hang of the workload.
+
+Verified by use: on a mixed-set prefix, `deploy` restored a consistent set (`DEPLOY-SET ok components=7`, every copy
+sha256-verified), the boot came back (`launchd_fail=0`) and the workload ran again (`noop=43` iterations).

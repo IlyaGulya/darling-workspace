@@ -251,6 +251,83 @@ fn run_build(args: BuildArgs) -> Result<ExitCode> {
 /// which instruments fired. Written because the same four steps were retyped as a long shell command at every
 /// attempt, with the prefix, the build tree and the artifact pair spelled out each time -- and because a probe
 /// census is a fact about INSTRUMENTS, not about my grep. Defaults come from DWDIAG_BUILD and DWDIAG_PREFIX.
+#[derive(clap::Args, Debug)]
+pub struct DeployArgs {
+    /// Build tree and prefix. Taken from DWDIAG_BUILD / DWDIAG_PREFIX when the flags are absent.
+    #[arg(long)]
+    build: Option<PathBuf>,
+    #[arg(long)]
+    prefix: Option<PathBuf>,
+    /// Deploy only these components (default: the whole set).
+    #[arg(long = "component", value_delimiter = ',')]
+    component: Vec<String>,
+}
+
+/// The component set a prefix must hold, as ONE unit.
+///
+/// WHY THIS SUBCOMMAND EXISTS, MEASURED: a prefix was left holding an instrumented `bin/darlingserver` from one
+/// build tree while its guest libraries came from another, and the symptom was "Failed to exec launchd: No such file
+/// or directory" -- a boot failure that said nothing about the real cause, cost two hours of deductions drawn from
+/// logs whose workload never ran, and was found only by comparing sha256 sums of the seven components across
+/// prefixes. The paths are the ones `scripts/darling-artifact-manifest.sh` owns (`built_path` / `dest_paths`), so
+/// there is one mapping for both tools and not a second, drifting list.
+const DEPLOY_SET: [(&str, &str, &str); 7] = [
+    ("mldr", "src/startup/mldr/mldr", "libexec/darling/usr/libexec/darling/mldr"),
+    ("dyld", "src/external/dyld/dyld", "usr/lib/dyld"),
+    ("libsystem_kernel", "src/external/xnu/darling/src/libsystem_kernel/libsystem_kernel.dylib", "usr/lib/system/libsystem_kernel.dylib"),
+    ("darlingserver", "src/external/darlingserver/darlingserver", "bin/darlingserver"),
+    ("shellspawn", "src/shellspawn/shellspawn", "usr/libexec/shellspawn"),
+    ("vchroot", "src/vchroot/vchroot", "usr/libexec/darling/vchroot"),
+    ("launchd", "src/launchd/src/launchd", "sbin/launchd"),
+];
+
+/// Deploy the complete component set from ONE build tree, then verify every copy by sha256.
+///
+/// A prefix is only meaningful as a set: the components are built against each other, and a mixture of two builds
+/// boots into a failure that looks like something else. So this copies all of them (or the named subset) and then
+/// re-reads each destination and compares its digest with the source. Verification is not optional here: the whole
+/// point is that "the prefix holds build X" is a claim the caller can trust.
+fn run_deploy(a: DeployArgs) -> Result<ExitCode> {
+    let build = required_path("--build", a.build.clone(), "DWDIAG_BUILD")?;
+    let prefix = required_path("--prefix", a.prefix.clone(), "DWDIAG_PREFIX")?;
+    let mut failures: Vec<String> = Vec::new();
+    let mut deployed: usize = 0;
+
+    for (name, built_rel, dest_rel) in DEPLOY_SET {
+        if !a.component.is_empty() && !a.component.iter().any(|c| c == name) {
+            continue;
+        }
+        let src = build.join(built_rel);
+        if !src.exists() {
+            failures.push(format!("{name}: build tree has no {built_rel}"));
+            println!("DEPLOY {name} MISSING-IN-BUILD {built_rel}");
+            continue;
+        }
+        let dst = prefix.join(dest_rel);
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        }
+        let want = sha256_of(&src)?;
+        fs::copy(&src, &dst).with_context(|| format!("copying {} -> {}", src.display(), dst.display()))?;
+        let got = sha256_of(&dst)?;
+        let bytes = fs::metadata(&dst).map(|m| m.len()).unwrap_or(0);
+        if want != got {
+            failures.push(format!("{name}: deployed copy differs from source ({want} vs {got})"));
+            println!("DEPLOY {name} VERIFY-FAILED dest={dest_rel} want={want} got={got}");
+        } else {
+            deployed += 1;
+            println!("DEPLOY {name} ok sha={} bytes={} dest={dest_rel}", &want[..12.min(want.len())], bytes);
+        }
+    }
+
+    if failures.is_empty() {
+        println!("DEPLOY-SET ok components={deployed} prefix={} build={}", prefix.display(), build.display());
+    } else {
+        println!("DEPLOY-SET FAILED components={deployed} failures={}", failures.join("; "));
+    }
+    Ok(if failures.is_empty() { ExitCode::SUCCESS } else { ExitCode::from(3) })
+}
+
 #[derive(Args, Debug)]
 pub struct CycleArgs {
     /// Build tree and prefix. Taken from DWDIAG_BUILD / DWDIAG_PREFIX when the flags are absent.
@@ -1500,6 +1577,25 @@ fn read_log_lossy(path: &std::path::Path) -> std::io::Result<String> {
 }
 
 fn judge_run_log(text: &str, mode: &str) -> (String, String, Option<i32>) {
+    // THE RUN NEVER STARTED, AND THAT IS ITS OWN VERDICT. MEASURED, PAINFULLY: a scratch prefix lost bin/shellspawn,
+    // every subsequent run therefore failed to launch (the guest log carries "Failed to exec launchd: No such file or
+    // directory" and "Rootless shellspawn did not become ready within 30000ms"), and this function reported HANG
+    // (watchdog) or NO-RUN for ten consecutive runs -- verdicts that read as statements about the workload while the
+    // workload had never executed a single instruction. Two hours of deductions were drawn from those logs before
+    // the tail of one of them was read by hand. A launch failure must be named as a launch failure, so it is checked
+    // BEFORE every workload-shaped rule below and short-circuits them.
+    for (marker, label) in [
+        ("Failed to exec launchd", "launchd"),
+        ("shellspawn did not become ready", "shellspawn"),
+        ("runtime prefix has no recognized stable state", "prefix-state"),
+        ("no recognized stable state", "prefix-state"),
+    ] {
+        if text.contains(marker) {
+            eprintln!("BOOT-FAIL ({label}): the run never reached the workload; verdict is about the prefix, not the test");
+            return (String::new(), format!("BOOT-FAIL ({label})"), None);
+        }
+    }
+
     let line = workload_result_line(text, mode)
         .map(|l| l.trim().to_string())
         .unwrap_or_default();
@@ -1587,6 +1683,47 @@ fn judge_run_log(text: &str, mode: &str) -> (String, String, Option<i32>) {
 /// below makes every log self-attributing: the resolved prefix and the sha256 of each runtime artifact found there,
 /// printed before the workload starts, written to a sidecar file (the run truncates its own log), and appended to
 /// the log once the run has finished.
+/// Report the prefix prerequisites a run needs, BEFORE it is attempted.
+///
+/// MEASURED, AND IT COST HOURS: a scratch prefix lost `bin/shellspawn`; every run after that failed to launch, and the
+/// only witness was the harness's own line buried in the guest log ("Failed to exec launchd: No such file or
+/// directory", "shellspawn did not become ready"). Ten verdicts read as HANG or NO-RUN -- statements about a workload
+/// that never executed -- before anyone read that line. A missing prerequisite is a fact about the PREFIX, it is
+/// cheap to check, and it belongs in front of the run rather than after the diagnosis.
+fn prefix_prereq_report(prefix: &std::path::Path) -> bool {
+    // THE REAL DESTINATION PATHS, taken from scripts/darling-artifact-manifest.sh (dest_paths) rather than guessed.
+    // MEASURED FALSE ALARM: the first version of this check looked for "bin/shellspawn", a path that exists in NO
+    // prefix -- not even in a healthy one -- because shellspawn is deployed to usr/libexec/shellspawn. The check
+    // reported "PREFIX-PREREQ MISSING" for a prefix that was in fact fine, and a guard that cries wolf is worse than
+    // no guard: it sends the next reader to repair something that is not broken. One representative destination per
+    // component is enough; the manifest owns the full list.
+    const NEEDED: [&str; 5] = [
+        "usr/libexec/shellspawn",
+        "bin/darlingserver",
+        "sbin/launchd",
+        "libexec/darling/usr/libexec/darling/mldr",
+        "usr/lib/dyld",
+    ];
+    let mut missing: Vec<&str> = Vec::new();
+    for rel in NEEDED {
+        if !prefix.join(rel).exists() {
+            missing.push(rel);
+        }
+    }
+    if missing.is_empty() {
+        println!("PREFIX-PREREQ ok prefix={} checked={}", prefix.display(), NEEDED.len());
+        true
+    } else {
+        println!(
+            "PREFIX-PREREQ MISSING prefix={} missing={} -- a run on this prefix fails to launch; fix the prefix \
+(repair it or bootstrap a fresh one) before reading any verdict as a statement about the workload",
+            prefix.display(),
+            missing.join(",")
+        );
+        false
+    }
+}
+
 fn runtime_fingerprint(prefix: &std::path::Path) -> String {
     const CANDIDATES: [&str; 7] = [
         "libexec/darling/usr/libexec/darling/mldr",
@@ -1642,6 +1779,7 @@ fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
     let env_log = log.with_extension("log.env");
     let _ = fs::write(&env_log, format!("[dwdiag-env {fp}]\n"));
     eprintln!("RUN-ENV {fp}");
+    prefix_prereq_report(prefix);
     // The workload's OWN exit status is part of the observation: MEASURED, a workload that dies of SIGSEGV
     // (`EXITRC=139`) produces exactly the same evidence as a deadlock -- no result line -- and every
     // measurement drawn from "HANG" then chases a lock that does not exist. The status is printed by the
@@ -3238,6 +3376,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Source(a) => run_source_check(a),
         DiagCommand::Watch(a) => run_watch(a),
         DiagCommand::Build(a) => run_build(a),
+        DiagCommand::Deploy(a) => run_deploy(a),
         DiagCommand::Cycle(a) => run_cycle(a),
         DiagCommand::Symbolize(a) => run_symbolize(a),
         DiagCommand::Crash(a) => run_crash(a),
@@ -3508,6 +3647,8 @@ pub enum DiagCommand {
     Build(BuildArgs),
     /// Build, deploy and run ONE workload, then report which instruments fired and which stayed silent: the four
     /// steps this stage repeats, with the prefix, the build tree and the artifact pair taken from the environment.
+    /// Deploy the complete component set from ONE build tree into a prefix, verifying every copy by sha256.
+    Deploy(DeployArgs),
     Cycle(CycleArgs),
     /// Resolve a reported offset to `symbol + offset` for any image (guest dylib or server binary).
     Symbolize(SymbolizeArgs),
