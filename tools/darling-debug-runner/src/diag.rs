@@ -523,8 +523,23 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
             if args.capture_wchan {
                 let g = wchan_samples.lock().unwrap();
                 println!("CAPTURE-WCHAN samples={} prefix={}", g.len(), prefix.display());
-                for line in g.iter().rev().take(24).collect::<Vec<_>>().iter().rev() {
-                    println!("CAPTURE-WCHAN {line}");
+                /* THE TAIL ALONE WAS NOT ENOUGH (measured): the first catch of this flag printed the last 24
+                 * samples, and by then every guest process of the prefix had exited, so all it showed was the
+                 * harness shell waiting in do_wait -- true, and useless. What answers "where was it blocked"
+                 * is each pid's LAST observed state, plus when it was last seen, so the reader can tell a
+                 * process that waited for 300 seconds from one that vanished in the first second. */
+                let mut last: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+                for line in g.iter() {
+                    if let (Some(pid), _) = (line.split("pid=").nth(1).and_then(|s| s.split_whitespace().next()), ()) {
+                        last.insert(pid.to_string(), line.clone());
+                    }
+                }
+                println!("CAPTURE-WCHAN distinct-pids={}", last.len());
+                for (_, line) in last.iter() {
+                    println!("CAPTURE-WCHAN last {line}");
+                }
+                for line in g.iter().rev().take(8).collect::<Vec<_>>().iter().rev() {
+                    println!("CAPTURE-WCHAN tail {line}");
                 }
             }
         }
