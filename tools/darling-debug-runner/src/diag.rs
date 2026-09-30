@@ -117,6 +117,25 @@ fn symbol_name(name: &str) -> &str {
 /// and measured. Replaces the long ninja invocation plus its error grep and artifact listing, which was retyped at
 /// every iteration; the build tree comes from the environment so a caller does not retype a path.
 #[derive(Args, Debug)]
+/// Which build tree actually CONSUMES a source file, answered before a build is attempted.
+///
+/// MEASURED COST OF NOT ASKING: this stage edited the darlingserver's thread creator, ran `ninja darlingserver`,
+/// read `ninja: no work to do`, and only then discovered that the build tree holds ZERO rules referencing that
+/// source file -- the target imports a prebuilt binary, so the probe could never appear in any run. A cycle that
+/// requests it would have deployed and measured the OLD runtime and reported "the instrument stayed silent",
+/// which is exactly the class of false negative this tool exists to prevent.
+pub struct SourceArgs {
+    /// Build tree to inspect. Taken from DWDIAG_BUILD when the flag is absent.
+    #[arg(long)]
+    build: Option<PathBuf>,
+    /// Source files whose consumption must be proven.
+    #[arg(long = "source", required = true)]
+    sources: Vec<PathBuf>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
 pub struct BuildArgs {
     /// Build tree. Taken from DWDIAG_BUILD when the flag is absent, so a caller does not retype a path.
     #[arg(long)]
@@ -522,6 +541,76 @@ fn sig_line(pid: &str, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Answer "does this build tree compile this file?" from the build graph itself.
+///
+/// The check is deliberately about the GENERATED build graph, not about timestamps: a target that imports a
+/// prebuilt artifact looks up to date whatever a source tree says, so the only honest question is whether any
+/// rule in `build.ninja` mentions the file at all. Exit code 3 means "do not trust a run that claims to exercise
+/// this source", which is how a silent no-op probe becomes a refusal instead of a measurement.
+fn run_source_check(args: SourceArgs) -> Result<ExitCode> {
+    let build = required_path("--build", args.build.clone(), "DWDIAG_BUILD")?;
+    let mut rows: Vec<(String, usize)> = Vec::new();
+    let mut missing = 0usize;
+    for src in &args.sources {
+        let name = src
+            .file_name()
+            .and_then(|s| s.to_str())
+            .context("source path has no file name")?
+            .to_string();
+        let mut rules = 0usize;
+        for entry in std::fs::read_dir(&build)
+            .with_context(|| format!("reading the build tree {}", build.display()))?
+        {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            let fname = match path.file_name().and_then(|s| s.to_str()) {
+                Some(f) => f,
+                None => continue,
+            };
+            if !fname.ends_with(".ninja") {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                rules += text.matches(&name).count();
+            }
+        }
+        if rules == 0 {
+            missing += 1;
+        }
+        rows.push((name, rules));
+    }
+    if args.json {
+        let items: Vec<String> = rows
+            .iter()
+            .map(|(n, c)| format!("{{\"file\":\"{n}\",\"rules\":{c}}}"))
+            .collect();
+        println!(
+            "{{\"build\":\"{}\",\"sources\":[{}]}}",
+            build.display(),
+            items.join(",")
+        );
+    } else {
+        for (name, rules) in &rows {
+            if *rules == 0 {
+                println!(
+                    "SOURCE-UNBUILT file={name} rules=0 build={} -- no rule in this build tree mentions it; \
+a run here would exercise the OLD artifact, not this source",
+                    build.display()
+                );
+            } else {
+                println!("SOURCE-CONSUMED file={name} rules={rules} build={}", build.display());
+            }
+        }
+    }
+    if missing > 0 {
+        return Ok(ExitCode::from(3));
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn run_watch(args: WatchArgs) -> Result<ExitCode> {
@@ -3086,6 +3175,7 @@ fn run_trace(args: TraceArgs) -> Result<ExitCode> {
 
 pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
     match cmd {
+        DiagCommand::Source(a) => run_source_check(a),
         DiagCommand::Watch(a) => run_watch(a),
         DiagCommand::Build(a) => run_build(a),
         DiagCommand::Cycle(a) => run_cycle(a),
@@ -3344,6 +3434,8 @@ fn run_prefix(args: PrefixArgs) -> Result<ExitCode> {
 pub enum DiagCommand {
     /// Watch a running guest's kernel signal dispositions (SigCgt/SigBlk) against the run log's size.
     Watch(WatchArgs),
+    /// Report whether a build tree actually compiles given source files, and refuse when it does not.
+    Source(SourceArgs),
     /// Build the runtime pair the rule requires (libsystem_kernel and the dyld image TOGETHER) and check that the
     /// instrument strings a caller expects are present in the built artifact.
     Build(BuildArgs),
