@@ -1,0 +1,104 @@
+--- a/src/startup/mldr/elfcalls/threads.c	2026-09-30 12:48:01.066772753 +0000
++++ b/src/startup/mldr/elfcalls/threads.c	2026-09-30 13:57:44.853887918 +0000
+@@ -401,6 +401,12 @@
+ 	// reimplemented here; what the page adds is that the request and its completion need no datagram. A page that is
+ 	// not established is therefore a NAMED failure (`__darling_no_datagram_transport`), not a fallback.
+ 	int checked_in = 0;
++	/* THE SEQUENCE THIS THREAD PUBLISHED (dar-4cp9). MEASURED: the server recorded the checkin for the very
++	 * tid that then aborted -- [srv-checkin #32 pid=... tid=3124771 ...] immediately before
++	 * [rpc-socket-DENIED ... call=checkin image=loader] and sigexc-fatal -- so the operation had been
++	 * delivered and only the client's acceptance test lost its reply to a later publisher, exactly as on the
++	 * checkout path (pub=5 seen=17). A checkin that was published is a checkin the server has. */
++	uint32_t checkin_pubseq = 0;
+ 	{
+ 		extern void* __mldr_process_control_page(void);
+ 		struct dserver_process_control* page = (struct dserver_process_control*)__mldr_process_control_page();
+@@ -430,6 +436,7 @@
+ 				// this route exists to avoid. Intersecting the socket-creation tids with the tids the server
+ 				// serviced showed 19 of 19 had been serviced with status 0, leaving only this collision.
+ 				uint32_t mine = __atomic_add_fetch(&checkin_seq, 1, __ATOMIC_RELAXED);
++				checkin_pubseq = mine;
+ 				page->reply_state = DSERVER_PROCESS_CONTROL_IDLE;
+ 				page->request_op = DSERVER_PROCESS_CONTROL_OP_CHECKIN;
+ 				page->request_seq = mine;
+@@ -495,7 +502,11 @@
+ 						fprintf(stderr, "[checkin-diag] pid=%d tid=%d state=%u seq=%u mine=%u status=%d spins=%d\n",
+ 							(int)getpid(), (int)syscall(SYS_gettid), seenState, seenSeq, mine, (int)seenStatus, spins);
+ 					}
+-				} else if (claimed) {
++				} else if (claimed || checkin_pubseq != 0) {
++					if (!claimed) {
++						fprintf(stderr, "[checkin-reply-unseen tid=%d pub=%u seen=%u seenstate=0x%x -- published, reply overtaken]\n",
++							(int)syscall(SYS_gettid), (unsigned)checkin_pubseq, (unsigned)seenSeq, (unsigned)seenState);
++					}
+ 					// the server owns the checkin; it is the same operation, so treat a completion we could
+ 					// not read as done rather than duplicating it on the datagram
+ 					checked_in = 1;
+@@ -648,6 +659,14 @@
+ 	// impossible was in the reply funnel (ENOTCONN is now a dropped message), not in this route, so it is
+ 	// restored with the fix in place. The datagram path stays as the fallback.
+ 	int checkout_via_page = 0;
++	/* THE PUBLISHED AND THE OBSERVED SEQUENCE, HOISTED SO A FAILED CHECKOUT CAN REPORT BOTH (dar-b5pe).
++	 * The reply slot is single and shared, and the accept path takes its seq/state snapshot AFTER the wait
++	 * loop has exited, so a second publisher in that window can make a delivered checkout look undelivered.
++	 * Without these numbers the two windows are indistinguishable in the log and any fix is a guess. */
++	uint32_t checkout_pubseq = 0;
++	uint32_t checkout_seenSeq = 0;
++	uint32_t checkout_seenState = 0xffffffffu;
++	int checkout_claimed = 0;
+ 	{
+ 		struct dserver_process_control* page =
+ 			(struct dserver_process_control*)__mldr_process_control_page();
+@@ -669,6 +688,7 @@
+ 			if (slot) {
+ 				static uint32_t exit_checkout_seq = 0;
+ 				uint32_t mine = __atomic_add_fetch(&exit_checkout_seq, 1, __ATOMIC_RELAXED);  // atomic: doc 70
++				checkout_pubseq = mine;
+ 				page->reply_state = DSERVER_PROCESS_CONTROL_IDLE;
+ 				page->request_op = DSERVER_PROCESS_CONTROL_OP_CHECKOUT;
+ 				page->request_seq = mine;
+@@ -707,6 +727,7 @@
+ 				uint32_t seenState = __atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE);
+ 				uint32_t seenSeq = page->reply_seq;
+ 				int32_t seenStatus = page->reply_status;
++				checkout_seenState = seenState; checkout_seenSeq = seenSeq; checkout_claimed = claimed;
+ 	{ uint32_t _st = __atomic_load_n(&(page)->request_state, __ATOMIC_ACQUIRE); if (_st == DSERVER_PROCESS_CONTROL_PENDING) { static const char _m[] = "[release-drops-pending] site=threads.c:531\n"; long _a = 1, _d = 2, _s = (long)_m, _n = sizeof(_m) - 1; __asm__ volatile("syscall" : "+a"(_a), "+D"(_d), "+S"(_s), "+d"(_n) : : "rcx", "r11", "memory"); } }
+ 				DSERVER_PROCESS_CONTROL_RELEASE(page);
+ 				if (seenState == DSERVER_PROCESS_CONTROL_DONE && seenSeq == mine) {
+@@ -749,13 +770,33 @@
+ 			{
+ 				extern void* __mldr_process_control_page(void);
+ 				struct dserver_process_control* pg2 = (struct dserver_process_control*)__mldr_process_control_page();
+-				fprintf(stderr, "[checkout-pubfail tid=%d req=0x%x rep=0x%x ready=%d]\n",
++				fprintf(stderr, "[checkout-pubfail tid=%d req=0x%x rep=0x%x ready=%d pub=%u seen=%u seenstate=0x%x claimed=%d]\n",
+ 					(int)syscall(SYS_gettid),
+ 					(unsigned)(pg2 != NULL ? __atomic_load_n(&pg2->request_state, __ATOMIC_ACQUIRE) : 0xffffffffu),
+ 					(unsigned)(pg2 != NULL ? __atomic_load_n(&pg2->reply_state, __ATOMIC_ACQUIRE) : 0xffffffffu),
+-					(int)(pg2 != NULL ? __atomic_load_n(&pg2->transport_ready, __ATOMIC_ACQUIRE) : -1));
++					(int)(pg2 != NULL ? __atomic_load_n(&pg2->transport_ready, __ATOMIC_ACQUIRE) : -1) ,
++					(unsigned)checkout_pubseq, (unsigned)checkout_seenSeq, (unsigned)checkout_seenState,
++					checkout_claimed);
++			}
++			/* A PUBLISHED CHECKOUT WAS DELIVERED, EVEN IF ITS REPLY WAS OVERTAKEN (dar-b5pe). MEASURED: the failure
++			 * carried pub=5 seen=17 seenstate=0x2(DONE) claimed=0 -- the claim succeeded and the request was published,
++			 * but by the time the accept path read the slot, another publisher's reply was in it, so the sequence did
++			 * not match and this branch treated a delivered checkout as an undelivered one. The only way the claim
++			 * can have succeeded is that request_state went IDLE -> PENDING for THIS thread, and a pending request is
++			 * never dropped by the server, so there is nothing left for the client to guarantee; the thread's checkout
++			 * is on its way and the process can exit. Retrying would be worse than useless: it cannot observe the
++			 * difference either, and it would publish a second checkout for the same thread. A checkout that was NOT
++			 * published still carries the information the abort was written for (a live thread the server would keep),
++			 * so that case keeps the named hard failure below. */
++			if (checkout_pubseq != 0) {
++				fprintf(stderr, "[checkout-reply-unseen tid=%d pub=%u seen=%u seenstate=0x%x -- published, reply overtaken]\n",
++					(int)syscall(SYS_gettid), (unsigned)checkout_pubseq, (unsigned)checkout_seenSeq,
++					(unsigned)checkout_seenState);
++				checkout_result = 0;
++				checkout_via_page = 1;
++			} else {
++				__darling_no_datagram_transport("checkout");
+ 			}
+-			__darling_no_datagram_transport("checkout");
+ 		}
+ 	}
+ 

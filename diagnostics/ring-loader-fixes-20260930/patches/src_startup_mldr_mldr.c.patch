@@ -1,0 +1,71 @@
+--- a/src/startup/mldr/mldr.c	2026-09-30 13:00:58.479253059 +0000
++++ b/src/startup/mldr/mldr.c	2026-09-30 13:09:31.560937260 +0000
+@@ -607,11 +607,28 @@
+ #else
+ 		uint64_t archForTrap = 4u;
+ #endif
+-		int trapStatus = __mldr_process_control_request(DSERVER_PROCESS_CONTROL_OP_THREAD_SELF_BOOTSTRAP,
+-			(uint64_t)(unsigned)gettid(), archForTrap, 0, 0);
++		/* A BOUNDED RETRY, BECAUSE THIS REQUEST IS AN IDEMPOTENT READ AND ITS FAILURE KILLS THE BOOT (dar-rcnr).
++		 * MEASURED: a run in ten died here with "[mldr-ctl] thread-self-bootstrap failed status=-2 port=0" followed
++		 * by "Failed to get main thread port from the process control plane", which the launcher turns into
++		 * "Rootless shellspawn did not become ready within 30000ms" -- so an unobservable race looked like a broken
++		 * boot. -2 is the plane helper's OVERTAKEN REPLY: the request was published and answered, but by the time
++		 * this thread read the slot the sequence belonged to another publisher (measured directly on the checkout
++		 * path as pub=5 seen=17). Asking again is safe HERE and not in general: this operation reads the main
++		 * thread's port for the calling thread and registers it if absent, so repeating it cannot undo anything,
++		 * and the fatal path below still fires loudly if three attempts cannot answer. The general question --
++		 * whether the plane should hand a reply to its own publisher instead of leaving it to a sequence
++		 * comparison -- is dar-rcnr/dar-b5pe and is not settled by this retry. */
++		int trapStatus = -1;
+ 		struct dserver_process_control* trapPage = __mldr_process_control_page();
+-		if (trapStatus == 0 && trapPage != NULL) {
+-			main_thread_port = (uint32_t)(trapPage->reply_payload[0] & 0xffffffffu);
++		for (int attempt = 1; attempt <= 3 && main_thread_port == 0; ++attempt) {
++			trapStatus = __mldr_process_control_request(DSERVER_PROCESS_CONTROL_OP_THREAD_SELF_BOOTSTRAP,
++				(uint64_t)(unsigned)gettid(), archForTrap, 0, 0);
++			if (trapStatus == 0 && trapPage != NULL) {
++				main_thread_port = (uint32_t)(trapPage->reply_payload[0] & 0xffffffffu);
++			}
++			if (main_thread_port == 0 && attempt < 3) {
++				mldr_diagf("[mldr-ctl] thread-self-bootstrap retry attempt=%d status=%d\n", attempt, trapStatus);
++			}
+ 		}
+ 		if (main_thread_port == 0) {
+ 			mldr_diagf("[mldr-ctl] thread-self-bootstrap failed pid=%d tid=%d status=%d port=%u\n",
+@@ -1502,7 +1519,7 @@
+ 	memset(page, 0, size);
+ 	page->version = DSERVER_PROCESS_CONTROL_VERSION;
+ 	page->request_state = DSERVER_PROCESS_CONTROL_IDLE;
+-	page->reply_state = DSERVER_PROCESS_CONTROL_IDLE;
++	__atomic_store_n(&page->reply_state, DSERVER_PROCESS_CONTROL_IDLE, __ATOMIC_RELEASE);
+ 	if (__mldr_fd_courier_send_envelope(memfd, 0x1000u, DSERVER_FD_COURIER_KIND_PROCESS_CONTROL) != 0) {
+ 		munmap(map, size);
+ 		close(memfd);
+@@ -1685,7 +1702,7 @@
+ 	// the result and repeats its operation on the datagram. MEASURED: 19 of 19 socket-creating threads had
+ 	// their page request serviced with status 0, which leaves this collision as the remaining cause.
+ 	uint32_t mine = __atomic_add_fetch(&seq, 1, __ATOMIC_RELAXED);
+-	page->reply_state = DSERVER_PROCESS_CONTROL_IDLE;
++	__atomic_store_n(&page->reply_state, DSERVER_PROCESS_CONTROL_IDLE, __ATOMIC_RELEASE);
+ 	page->reply_payload[0] = 0;   // doc 91: never inherit an earlier request's answer
+ 	page->reply_payload[1] = 0;
+ 	page->request_op = op;
+@@ -2212,7 +2229,7 @@
+ 				if (slot) {
+ 					static uint32_t seed_seq = 0;
+ 					uint32_t mine = __atomic_add_fetch(&seed_seq, 1, __ATOMIC_RELAXED);  // atomic: doc section 70
+-					page->reply_state = DSERVER_PROCESS_CONTROL_IDLE;
++					__atomic_store_n(&page->reply_state, DSERVER_PROCESS_CONTROL_IDLE, __ATOMIC_RELEASE);
+ 					page->request_op = DSERVER_PROCESS_CONTROL_OP_ATTACH_LANE;
+ 					page->request_seq = mine;
+ 					page->request_payload[0] = (uint64_t)tid;
+@@ -2251,7 +2268,7 @@
+ 						{
+ 							uint32_t seen = page->futex;
+ 							struct timespec ts = {0, claimed ? 2000000L : 1000000L};
+-							if (page->reply_state == DSERVER_PROCESS_CONTROL_DONE) { break; }
++							if (__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE) == DSERVER_PROCESS_CONTROL_DONE) { break; }
+ 							syscall(SYS_futex, &page->futex, FUTEX_WAIT, (int)seen, &ts, NULL, 0);
+ 						}
+ 					}

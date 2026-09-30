@@ -1,0 +1,76 @@
+--- a/src/external/darlingserver/src/call.cpp	2026-09-30 10:39:35.019857432 +0000
++++ b/src/external/darlingserver/src/call.cpp	2026-09-30 10:57:42.176193421 +0000
+@@ -189,6 +189,20 @@
+ 					<< " header_pid=" << header->pid << traceLog.endLog;
+ 			}
+ 			try {
++				/* PROCESS-REGISTRATION RECORD, UNCONDITIONAL. The checkin and lane-attach records showed that the early-hang
++				 * runs never register a THREAD; this record one step earlier says whether the PROCESS itself was ever
++				 * created for that pid -- 'registered, then nothing' and 'never registered' are different failures with
++				 * different owners (guest startup vs server ingress). Plain write(2,...), bounded. */
++				{
++					static unsigned g_srv_proc_records = 0;
++					unsigned n = __atomic_fetch_add(&g_srv_proc_records, 1, __ATOMIC_RELAXED);
++					if (n < 32) {
++						char b[160];
++						int l = snprintf(b, sizeof(b), "[srv-process-register #%u pid=%d callnum=%u nsid=%d]\n",
++							n, (int)requestMessage.pid(), (unsigned)header->number, (int)namespaceID);
++						if (l > 0) { (void)!write(2, b, (size_t)l); }
++					}
++				}
+ 				tmp = std::make_shared<Process>(requestMessage.pid(), namespaceID, static_cast<Process::Architecture>(header->architecture), lifetimePipe);
+ 			} catch (std::system_error e) {
+ 				return tmp;
+@@ -716,6 +730,28 @@
+  */
+ 
+ void DarlingServer::Call::Checkin::processCall() {
++	/* UNCONDITIONAL CHECKIN RECORD. MEASURED NEED: the server's own checkin attribution exists but is gated by
++	 * DARLING_SERVER_COURIER_LOG, and this stage measured that a server-side environment variable is not reliably
++	 * present (the gated S2C trace produced nothing where an unconditional write did). The question this answers is
++	 * whether the workload's guest threads check in by this path at all, and with which tid -- the same tid the
++	 * loader's fault witness prints. Plain write(2,...), bounded. */
++	{
++		static unsigned g_srv_checkin_records = 0;
++		unsigned n = __atomic_fetch_add(&g_srv_checkin_records, 1, __ATOMIC_RELAXED);
++		if (n < 64) {
++			void* pcPage = DarlingServer::Server::sharedInstance().processControlPageFor(_header.pid);
++			uint32_t pcReady = 0;
++			if (pcPage != nullptr) {
++				pcReady = __atomic_load_n(&static_cast<dserver_process_control*>(pcPage)->transport_ready, __ATOMIC_ACQUIRE);
++			}
++			char b[176];
++			int l = snprintf(b, sizeof(b), "[srv-checkin #%u pid=%d tid=%d fork=%d page=%d ready=%u]\n",
++				n, (int)_header.pid, (int)_header.tid, (int)(_body.is_fork ? 1 : 0),
++				(int)(pcPage != nullptr ? 1 : 0), (unsigned)pcReady);
++			if (l > 0) { (void)!write(2, b, (size_t)l); }
++		}
++	}
++
+ 	// the Call instance creation already took care of registering the process and thread.
+ 
+ 	// perf#30 ATTRIBUTION: which checkins still arrive on a DATAGRAM, and from whom. MEASURED need: 167 of 332
+@@ -2296,6 +2332,23 @@
+ 
+ 			if (ring) {
+ 				const auto& cb = ring->controlBlock();
++				/* LANE-ATTACH RECORD, SERVER SIDE, AND THE IDENTITY LINK. The guest logs [dring-attach] per new
++				 * thread; this is the same event as the SERVER sees it, carrying the thread's nsid (the guest's own host
++				 * tid, the value the loader's fault witness prints) and the lane it was given. Plain write(2,...) because
++				 * MEASURED: the server's stderr reaches the run log unconditionally, while the project's gated S2C trace
++				 * does not appear there at all. Bounded. */
++				{
++					static unsigned g_srv_lane_records = 0;
++					unsigned n = __atomic_fetch_add(&g_srv_lane_records, 1, __ATOMIC_RELAXED);
++					if (n < 64) {
++						char b[176];
++						int l = snprintf(b, sizeof(b),
++							"[srv-lane-attach #%u pid=%d tid=%d slots=%u slot_size=%u]\n",
++							n, (int)thread->process()->id(), (int)thread->nsid(),
++							(unsigned)cb.slot_count, (unsigned)cb.slot_size);
++						if (l > 0) { (void)!write(2, b, (size_t)l); }
++					}
++				}
+ 				callLog.debug() << "ring_attach accepted for TID " << thread->nsid()
+ 					<< " (" << cb.slot_count << " slots of " << cb.slot_size << "B)"
+ 					<< callLog.endLog;

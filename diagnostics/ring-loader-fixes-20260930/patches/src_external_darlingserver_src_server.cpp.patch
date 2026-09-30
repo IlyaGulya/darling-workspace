@@ -1,0 +1,25 @@
+--- a/src/external/darlingserver/src/server.cpp	2026-09-30 10:23:27.058434267 +0000
++++ b/src/external/darlingserver/src/server.cpp	2026-09-30 10:23:39.503266989 +0000
+@@ -201,6 +201,22 @@
+ 		auto thread = std::make_shared<DarlingServer::Thread>(DarlingServer::Thread::KernelThreadConstructorTag());
+ 		thread->registerWithProcess();
+ 		DarlingServer::threadRegistry().registerEntry(thread, true);
++		/* CREATOR RECORD, SERVER SIDE. MEASURED NEED: the guest-side counter for guest thread creations and the
++		 * loader's own counter agree with each other, but neither says WHICH server-side path brought the thread
++		 * into existence. This is the kernel-thread creator the guest's duct-tape path reaches; printing here makes
++		 * its participation a measurement. Bounded, raw write, no logging locks. */
++		{
++			static unsigned g_srv_kthread_records = 0;
++			unsigned n = __atomic_fetch_add(&g_srv_kthread_records, 1, __ATOMIC_RELAXED);
++			if (n < 32) {
++				char b[160];
++				int l = snprintf(b, sizeof(b),
++					"[srv-kthread-create #%u id=%d nsid=%d pid=%d]\n",
++					n, (int)thread->id(), (int)thread->nsid(),
++					(int)thread->process()->id());
++				if (l > 0) { (void)!write(2, b, (size_t)l); }
++			}
++		}
+ 		return thread->_dtapeThread;
+ 	};
+ 

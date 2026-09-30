@@ -1,0 +1,11 @@
+# Verified product changes carried by this stage, recovered from the materialized forest
+# (single 'init' commit, everything untracked) that the deployed artifacts were built from.
+# format: file sha256(current) patch-lines sha256(pre-edit)
+src/startup/mldr/mldr.c 7bc7382175856bb40be24e02fc834310ab750578ca3e3065458faf3f51f2920e 71 c2d4bfa273191265ae93f03e2ae7e58037bad972ad6d080a8f9ecb848d6b3181
+src/startup/mldr/elfcalls/threads.c 7fa20742a77834d5dbd537235a76ee97693a1b5e92de5356d0b16b01da5e6705 104 ea29f9235383846a3b65d901c909eed3ff1be72984f017318f271e80065e3817
+src/external/darlingserver/include/darlingserver/rpc-supplement.h 10d6685a47bac712f9a4cb91031dfffd6d20882476f96593e87641b8505909cc 11 8ff5faafc016e9a45b28c4967685dc8bba80bbc4474eaefdfd546f11ab101cd7
+src/external/darlingserver/src/call.cpp fd3b3a9b646501852b6437b5cd2c16ad9d741b080b1546f2850231d2ff7453cd 76 407abe54a1f710d52f526446bb75df234f11e8562a968a4e304a572b9f8fbf0c
+src/external/darlingserver/src/server.cpp fc3f9631f48097fd20fcc59f8fa49d2546121605da35ddb619d6fc1c4bd89efc 25 51f40d8cd465e01c4cea8c3245e425d0e9dea508ebd2a5ffe4cc787c649148da
+
+# deployed artifacts the smoke gate was run against (RUN-ENV of the passing runs):
+# mldr=52b03b0ac229 libsystem_kernel.dylib=ab8a45074848 dyld=be43e3e77534 darlingserver=339583b74931
