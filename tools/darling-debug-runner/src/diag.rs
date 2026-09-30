@@ -370,6 +370,12 @@ pub struct CycleArgs {
     /// silence can never be mistaken for "nothing was blocked".
     #[arg(long)]
     capture_wchan: bool,
+    /// Seconds to wait between runs. WHY: runs back-to-back keep the HOST filesystem journal busy, and a
+    /// host-I/O stall is the leading candidate for this workload's boot flap -- a gap is the cheapest way to
+    /// test that without touching the guest at all. Also stops one run's teardown from overlapping the next
+    /// run's boot, which is a distinct piece of friction this option removes.
+    #[arg(long, default_value_t = 0)]
+    gap_seconds: u64,
 }
 
 fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
@@ -513,6 +519,9 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
             if let Ok(mut g) = wchan_samples.lock() {
                 g.clear();
             }
+        }
+        if args.gap_seconds > 0 && i > 1 {
+            std::thread::sleep(std::time::Duration::from_secs(args.gap_seconds));
         }
         let tag = format!("r{i}");
         let v = run_one_workload(&va, &tag)?;
@@ -808,6 +817,7 @@ fn run_watch(args: WatchArgs) -> Result<ExitCode> {
             fresh: true,
             json: false,
             capture_wchan: false,
+            gap_seconds: 0,
         })
     });
 

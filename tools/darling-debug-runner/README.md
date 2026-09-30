@@ -564,3 +564,27 @@ That D-state is a candidate, not a conclusion: with the mixed buffer it may have
 belonged to a passing run, and host-I/O sensitivity would also explain why
 instrumenting the guest changes the failure rate. The per-run reset exists so the
 next failed boot can be attributed before that hypothesis is repeated.
+
+### `--gap-seconds` and the host-I/O test it enabled
+
+`dwdiag cycle --gap-seconds N` waits N seconds between runs. It exists because
+runs back-to-back keep the host filesystem journal busy, and host-I/O stalls were
+the leading candidate for the boot flap; a gap is the cheapest way to test that
+without touching the guest. It also stops one run's teardown from overlapping the
+next run's boot, which is friction in its own right.
+
+RESULT OF THE TEST -- host-I/O spacing is NOT the factor:
+
+* a 30-run series with `--gap-seconds 5` produced three failures (runs 13, 15,
+  22), which is the same rate as the pooled back-to-back series (~1-3 per 30);
+* none of the three attributed captures contained the `state=D
+  wchan=jbd2_log_wait_commit` entry that suggested the hypothesis, so that entry
+  is now known to have belonged to a passing run in the mixed-buffer era, exactly
+  as the earlier note warned.
+
+What the attributed captures DO show, in all three: the prefix's own
+`bin/darling --rootless shell ...` pair sits in its normal steady state
+(`sigsuspend` and `do_poll.constprop.0`) with the harness shells in `do_wait` /
+`pipe_read`, and nothing is blocked on a host resource. Two of the three failures
+had `denied=0`; one had `denied=1`. So the flap is the guest shell pair failing to
+complete its work, not the host stalling underneath it.
