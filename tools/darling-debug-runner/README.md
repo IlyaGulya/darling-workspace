@@ -447,3 +447,18 @@ ancestry is excluded at every depth), retry once, and report `PREFIX-STOP-HELD p
 
 Verified by use: a deliberate holder executing a staged file produced `PREFIX-STOP-HELD ... pids=2359645`, the copy
 then completed, and the destination was restored to the build's sha256.
+
+## Server-log resolution (fixed 2026-09-30)
+
+`dwdiag progress` reads the server's own log for the counts it prints beside a run
+(`SERVER-SENT plane-doorbell-sent=...`). It used to fall back to a hardcoded
+`/tmp/dr-on-matched` when the caller did not pass `--server-log`, so a run of
+another prefix was reported with ANOTHER prefix's numbers: measured on a
+`/tmp/r1-repro-prefix` boot failure, the report said 19228 doorbells read from
+`/tmp/dr-on-matched/private/var/log/dserver.log`, and after the fix the same run
+reads 16894 from its own prefix.
+
+Resolution order is now: the explicit `--server-log`, then the prefix recorded in
+the run log's own identity line, then the default. The chosen path is always
+printed with its source, and the default case says so out loud, because a count
+whose file belongs to another prefix is worse than no count.
