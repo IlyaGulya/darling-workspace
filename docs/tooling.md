@@ -567,3 +567,27 @@ count so that an empty capture is never read as "nothing was blocked".
 Measured use: twelve consecutive boots with the flag on were all PASS, so the flag
 had nothing to print -- which is itself the correct behaviour and the reason the
 count must be printed rather than inferred.
+
+### `--capture-wchan`: per-pid aggregation (added after the first real catch)
+
+The first catch printed only the last 24 samples, and by then every guest process
+of the prefix had exited: the output showed the harness shell waiting in
+`do_wait` and nothing else -- true, and useless for the question asked. The flag
+now prints, on a non-PASS verdict:
+
+```
+CAPTURE-WCHAN samples=<n> prefix=<path>
+CAPTURE-WCHAN distinct-pids=<n>
+CAPTURE-WCHAN last s=<second> pid=<pid> state=<S|D|R> wchan=<symbol> cmd=<cmdline>   # per pid
+CAPTURE-WCHAN tail <...>                                                            # last 8 raw
+```
+
+so each process's LAST observed state and the second it was last seen are both
+visible: a process that waited for 300 seconds is distinguishable from one that
+vanished in the first second, which the tail alone could not show.
+
+Measured value of the first catch (before this aggregation): a BOOT-FAIL run with
+`denied=0 created=0` had NO prefix guest process alive at the end -- only the
+harness shell in `do_wait` -- so the failure is not a live hang at the endpoint;
+whatever stalls it happens earlier and the prefix has already torn down by the
+time the watchdog expires.
