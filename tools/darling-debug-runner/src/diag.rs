@@ -3720,6 +3720,50 @@ fn run_prefix(args: PrefixArgs) -> Result<ExitCode> {
     // workload opens. MEASURED: a gate whose fixture was never installed via --asset ends with workload=absent and
     // says nothing about why, and that shape cost this work repeated cycles. This line is what makes the difference
     // visible at the top of the run instead of after it.
+    /* THE FIXTURE IS PART OF THE MEASUREMENT, SO REFRESH IT FROM THE BUILD TREE (dar-4cp9). MEASURED trap this
+     * closes: the guest fixture is read from the prefix, and a run of an OLD copy is indistinguishable from a run
+     * of the new one -- this session hit it exactly, running `forkexec` against a fixture installed hours earlier
+     * that did not contain the mode at all, and the workload answered `unknown_mode` for a mode that was in the
+     * source. The build tree is the only source of truth here (DWDIAG_BUILD), the copy is verified by sha256 like
+     * every other artifact, and a missing source is reported rather than silently skipped. */
+    {
+        let base = Path::new(&args.guest_command)
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "ring_mach_msg_test".to_string());
+        let build_root = std::env::var("DWDIAG_BUILD")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
+        let src = match build_root {
+            Some(b) => b.join("src/tools").join(&base),
+            None => PathBuf::from("/nonexistent-no-build-tree").join(&base),
+        };
+        let dst = prefix.join(args.guest_command.trim_start_matches('/'));
+        if src.is_file() {
+            if let (Ok(a), _) = (sha256_of(&src), ()) {
+                let same = sha256_of(&dst).map(|b| b == a).unwrap_or(false);
+                if !same {
+                    match install_artifact_into_prefix(src.as_path(), &dst, prefix) {
+                        Ok(()) => {
+                            let b = sha256_of(&dst).unwrap_or_default();
+                            println!(
+                                "FIXTURE-INSTALL {} {} {}",
+                                if b == a { "MATCH" } else { "MISMATCH" },
+                                &a[..16.min(a.len())],
+                                dst.display()
+                            );
+                        }
+                        Err(e) => println!("FIXTURE-INSTALL FAILED {e}"),
+                    }
+                } else {
+                    println!("FIXTURE-INSTALL MATCH {} (already current) {}", &a[..16.min(a.len())], dst.display());
+                }
+            }
+        } else {
+            println!("FIXTURE-INSTALL MISSING-BUILD-ARTIFACT {}", src.display());
+        }
+    }
     let host_view = prefix.join(args.guest_command.trim_start_matches('/'));
     println!(
         "ASSET-CHECK guest={} host={} host-present={} asset-installs={}",

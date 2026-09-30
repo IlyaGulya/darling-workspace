@@ -509,3 +509,38 @@ Resolution order is now: the explicit `--server-log`, then the prefix recorded i
 the run log's own identity line, then the default. The chosen path is always
 printed with its source, and the default case says so out loud, because a count
 whose file belongs to another prefix is worse than no count.
+
+## Guest fixture refresh (fixed 2026-09-30)
+
+`dwdiag cycle` runs the guest fixture at `/private/var/tmp/ring_mach_msg_test`
+(inside the prefix). It used to take whatever copy was already there, so a run of
+an OLD fixture was indistinguishable from a run of the new one. Measured: the
+`forkexec` mode was added to the workload source, the workload was rebuilt, and
+the run still answered `RING_MACH_TEST mode=forkexec pass=0 error=unknown_mode`
+because the prefix held a fixture built hours earlier.
+
+`cycle` now refreshes the fixture from the build tree (`DWDIAG_BUILD`,
+`src/tools/<name>`) before the run, verifies the copy by sha256 like every other
+artifact, and prints the outcome:
+
+```
+FIXTURE-INSTALL MATCH <sha256-16> <path>            # refreshed, or already current
+FIXTURE-INSTALL MISSING-BUILD-ARTIFACT <path>       # source absent; the run proceeds and says so
+FIXTURE-INSTALL FAILED <error>
+```
+
+Verification by use: with the refresh in place the same `forkexec` run reports
+`FIXTURE-INSTALL MATCH 6a91f572f3b789b3` and `verdict=PASS denied=0 created=0`.
+
+## Workload: `forkexec` mode
+
+The workload now implements the mode its own tool list advertised: it forks, the
+child `execve`s the same binary with a small transport-using mode, and the parent
+waits and counts results, printing
+
+```
+RING_MACH_TEST mode=forkexec iters=<n> child_ok=<n> child_bad=<n> pass=<0|1>
+```
+
+so a successful child is evidence the transport survives both fork and exec,
+rather than an assumption.
