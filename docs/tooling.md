@@ -591,3 +591,23 @@ Measured value of the first catch (before this aggregation): a BOOT-FAIL run wit
 harness shell in `do_wait` -- so the failure is not a live hang at the endpoint;
 whatever stalls it happens earlier and the prefix has already torn down by the
 time the watchdog expires.
+
+### `--capture-wchan`: per-run reset (added after the second catch)
+
+Across a `--repeat` series the sampler used to accumulate every run's samples, so
+the `distinct-pids` list on a failure mixed runs and could not say which process
+belonged to which run. The buffer is now cleared at the start of each iteration,
+which makes the next catch attributable to a single run.
+
+Census from the two catches so far (before the reset, so run attribution is not
+available): the non-harness entries are the prefix's own launcher and guest shells
+-- `bin/darling --rootless shell /bin/bash -c ...` in `sigsuspend` (one process)
+and in `do_poll.constprop.0` (its companion) -- plus one instance of that same
+shell pair in `state=D wchan=jbd2_log_wait_commit`, i.e. blocked on the HOST
+filesystem journal. The harness shells themselves are always `do_wait` or
+`pipe_read`.
+
+That D-state is a candidate, not a conclusion: with the mixed buffer it may have
+belonged to a passing run, and host-I/O sensitivity would also explain why
+instrumenting the guest changes the failure rate. The per-run reset exists so the
+next failed boot can be attributed before that hypothesis is repeated.
