@@ -507,6 +507,13 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
     }
     let mut worst = ExitCode::SUCCESS;
     for i in 1..=args.repeat {
+        // MEASURED flaw this resets: across a --repeat series the sampler accumulated every run's samples, so
+        // `distinct-pids` on a failure mixed runs and could not say which process belonged to WHICH run.
+        if args.capture_wchan {
+            if let Ok(mut g) = wchan_samples.lock() {
+                g.clear();
+            }
+        }
         let tag = format!("r{i}");
         let v = run_one_workload(&va, &tag)?;
         println!(
