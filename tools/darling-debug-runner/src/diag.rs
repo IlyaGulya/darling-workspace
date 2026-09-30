@@ -305,6 +305,10 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
             return Ok(rc);
         }
     }
+    // THE LOADER IS DEPLOYED BY DEFAULT TOO. MEASURED: a cycle refreshed libsystem_kernel.dylib and dyld but left
+    // the prefix's mldr alone, so a loader edit was invisible in the run and a guest-visible claim about thread
+    // creation was read off a stale image -- the same false-negative class as a probe that is not in the artifact.
+    // Every guest thread's creation passes through the loader, so it belongs in the default pair.
     let mut artifacts = vec![
         (
             "libsystem_kernel".to_string(),
@@ -316,6 +320,10 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
         (
             "dyld".to_string(),
             build.join("src/external/dyld/dyld").display().to_string(),
+        ),
+        (
+            "mldr".to_string(),
+            build.join("src/startup/mldr/mldr").display().to_string(),
         ),
     ];
     for (k, v) in &args.artifact {
@@ -389,7 +397,7 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
         // verdict says, and an execution policy that demands freshness makes that a failure.
         let mut workload_lines = 0u64;
         let mut result = String::new();
-        if let Ok(text) = std::fs::read_to_string(&v.log) {
+        if let Ok(text) = read_log_lossy(&v.log) {
             for line in text.lines() {
                 if line.contains("[rmmt]") || line.contains("ITER ") || line.contains("pc-entry")
                     || line.contains("SEM-SITE") || line.contains("make_port") || line.contains("drop_port")
@@ -412,7 +420,7 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
             println!("FRESHNESS-SUSPECT run={} log={} -- the log carries no workload execution evidence", tag, v.log.display());
             worst = ExitCode::from(1);
         }
-        if let Ok(text) = std::fs::read_to_string(&v.log) {
+        if let Ok(text) = read_log_lossy(&v.log) {
             let census = witness_census(&text);
             let wanted: Vec<(String, u64, String)> = census
                 .into_iter()
@@ -575,7 +583,7 @@ fn run_source_check(args: SourceArgs) -> Result<ExitCode> {
             if !fname.ends_with(".ninja") {
                 continue;
             }
-            if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(text) = read_log_lossy(&path) {
                 rules += text.matches(&name).count();
             }
         }
@@ -663,7 +671,7 @@ fn run_watch(args: WatchArgs) -> Result<ExitCode> {
         if target.is_none() {
             // 1. the workload's own declaration, read from the newest run log
             if let Some(log) = newest_run_log() {
-                if let Ok(text) = std::fs::read_to_string(&log) {
+                if let Ok(text) = read_log_lossy(&log) {
                     if let Some(idx) = text.rfind("host_pid=") {
                         let tail = &text[idx + "host_pid=".len()..];
                         let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
@@ -1110,7 +1118,7 @@ fn newest_usable_crash_log() -> Option<String> {
     }
     candidates.sort_by(|a, b| b.0.cmp(&a.0));
     for (_, path) in candidates.iter().take(8) {
-        let Ok(text) = fs::read_to_string(path) else { continue };
+        let Ok(text) = read_log_lossy(path) else { continue };
         // BOTH facts must be on the SAME line: `rip=` appears in other marks too, so a file-wide contains() selected a
         // log whose fatal line predates the instrumentation -- exactly the failure this selector exists to avoid.
         let usable = text.lines().any(|l| l.contains("[sigexc-fatal") && l.contains("rip="))
@@ -1127,7 +1135,7 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
     // A guest fatal signal carries everything needed in the log itself; try that first, and when neither --log nor
     // --line is given, use the newest verdict log so the obvious invocation just works.
     let log_text = match (&args.log, &args.line) {
-        (Some(log), _) => fs::read_to_string(log).ok(),
+        (Some(log), _) => read_log_lossy(log).ok(),
         (None, None) => newest_usable_crash_log(),
         _ => None,
     };
@@ -1140,7 +1148,7 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
         (Some(l), _) => l.clone(),
         (None, Some(log)) => {
             let text =
-                fs::read_to_string(log).with_context(|| format!("reading {}", log.display()))?;
+                read_log_lossy(log).with_context(|| format!("reading {}", log.display()))?;
             text.lines()
                 .find(|l| l.contains("dserver-CRASH"))
                 .map(|l| l.to_string())
@@ -1249,7 +1257,7 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
         .log
         .clone()
         .unwrap_or_else(|| newest_verdict_log().unwrap_or_default());
-    if let Ok(text) = std::fs::read_to_string(&backtrace_log) {
+    if let Ok(text) = read_log_lossy(&backtrace_log) {
         for line in text.lines() {
             let Some(open) = line.find("(+0x") else {
                 continue;
@@ -1450,6 +1458,18 @@ pub fn signal_name(n: i32) -> &'static str {
 /// sending the operator after a memory fault that never happened, while the log's last guest line and the server's
 /// own stall dump both described a stranded waiter. The harness prints whether it reached the bound ("waited Ns of at
 /// most Ns"), and that line decides the verdict before any signal does.
+/// Read a run log as text, NEVER as strictly-valid UTF-8.
+///
+/// MEASURED DEFECT THIS EXISTS TO FIX: a run log carries whatever the guest and the loader wrote to fd 2, including
+/// raw register/pointer dumps of probes that deliberately bypass libc. `fs::read_to_string` fails on the first
+/// invalid byte, and every caller here treated that failure as "no log text": the verdict then reported NO-RUN for a
+/// run that had PRINTED ITS OWN RESULT LINE, and the only visible evidence was an error buried in a transcript. A
+/// diagnosis pipeline that can silently discard a passing run's evidence is worse than no pipeline, so logs are read
+/// lossily and the bytes that are not text are replaced rather than allowed to erase the run.
+fn read_log_lossy(path: &std::path::Path) -> std::io::Result<String> {
+    Ok(String::from_utf8_lossy(&std::fs::read(path)?).into_owned())
+}
+
 fn judge_run_log(text: &str, mode: &str) -> (String, String, Option<i32>) {
     let line = workload_result_line(text, mode)
         .map(|l| l.trim().to_string())
@@ -1651,7 +1671,7 @@ fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
         }
     }
 
-    let text = fs::read_to_string(&log).unwrap_or_default();
+    let text = read_log_lossy(&log).unwrap_or_default();
     // PREFER THE RESULT LINE, NOT THE FIRST LINE THAT MATCHES THE PREFIX. MEASURED: a mode whose informational
     // header and result line share the `RING_MACH_TEST mode=<M>` prefix (the fsview diagnostic does exactly that)
     // made this matcher read the HEADER, find no `pass=`, and report FAIL for a run whose workload printed
@@ -1799,7 +1819,7 @@ fn run_verdict(args: VerdictArgs) -> Result<ExitCode> {
         return Ok(ExitCode::from(2));
     }
     if let Some(path) = args.log.as_ref() {
-        let text = fs::read_to_string(path)
+        let text = read_log_lossy(path)
             .with_context(|| format!("reading the run log {}", path.display()))?;
         let (line, verdict, rc) = judge_run_log(&text, &args.mode);
         let denied = text.lines().filter(|l| l.contains("rpc-socket-DENIED")).count() as u64;
@@ -1847,7 +1867,7 @@ fn run_verdict(args: VerdictArgs) -> Result<ExitCode> {
             }
             verdicts.push(v.verdict.clone());
             if !v.ok() {
-                let text = fs::read_to_string(&v.log).unwrap_or_default();
+                let text = read_log_lossy(&v.log).unwrap_or_default();
                 // The loader appends its diagnostics to MLDR_DIAG_LOG, which this tool points at the SAME file the
                 // harness writes, so the guest side and the harness side are one text. Reading a process environment
                 // variable here instead was wrong twice over: this process never sets it in its own environment (only
@@ -1968,7 +1988,7 @@ fn run_verdict(args: VerdictArgs) -> Result<ExitCode> {
         // hand is exactly the work this tool exists to remove (doc section 230 -- the stall was found by grepping
         // `[mldr-ctl]` and `process-control-service` by hand, three runs in a row).
         if v.verdict != "PASS" {
-            let text = fs::read_to_string(&v.log).unwrap_or_default();
+            let text = read_log_lossy(&v.log).unwrap_or_default();
             // The loader appends its diagnostics to MLDR_DIAG_LOG, which this tool points at the SAME file the
             // harness writes, so the guest side and the harness side are one text. Reading this process's own
             // environment variable instead was wrong twice over: it is set only in the CHILD's environment
@@ -2606,7 +2626,7 @@ fn run_witness(args: WitnessArgs) -> Result<ExitCode> {
         None => newest_verdict_log()
             .context("no `dwdiag-verdict-*.log` in the temp directory; pass --log")?,
     };
-    let text = fs::read_to_string(&log).with_context(|| format!("reading {}", log.display()))?;
+    let text = read_log_lossy(&log).with_context(|| format!("reading {}", log.display()))?;
     let census = witness_census(&text);
     let fired: Vec<_> = census.iter().filter(|(_, c, _)| *c > 0).collect();
     let silent: Vec<_> = census
@@ -2660,11 +2680,11 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
     // need: a `--log`-less invocation silently picked a different run's log and the wake census described THAT run --
     // a reader comparing two runs would have attributed the numbers to the wrong one.
     eprintln!("PROGRESS-LOG {}", args.log.display());
-    let run = fs::read_to_string(&args.log).unwrap_or_default();
+    let run = read_log_lossy(&args.log).unwrap_or_default();
     let guest = args
         .guest_log
         .as_ref()
-        .map(|p| fs::read_to_string(p).unwrap_or_default())
+        .map(|p| read_log_lossy(p).unwrap_or_default())
         .unwrap_or_default();
     let p = summarize_progress(&run, &guest, &args.mode);
     // Proactive stop reason (user directive): a CRASHED run has no workload result line, so every summary field is
@@ -2847,13 +2867,13 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
                     let size = fs::metadata(&exe).map(|m| m.len()).unwrap_or(0);
                     // Start time: /proc/<pid>/stat field 22 (starttime in clock ticks) plus btime is more than this
                     // needs -- the uptime-relative value is enough to say WHICH incarnation is running.
-                    let stat = fs::read_to_string(format!("/proc/{name}/stat")).unwrap_or_default();
+                    let stat = std::fs::read_to_string(format!("/proc/{name}/stat")).unwrap_or_default();
                     let start_ticks = stat.rsplit(')').next().and_then(|rest| {
                         rest.split_whitespace()
                             .nth(19)
                             .and_then(|v| v.parse::<u64>().ok())
                     });
-                    let uptime = fs::read_to_string("/proc/uptime").unwrap_or_default();
+                    let uptime = std::fs::read_to_string("/proc/uptime").unwrap_or_default();
                     let up: f64 = uptime
                         .split_whitespace()
                         .next()
@@ -2892,7 +2912,7 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
         // SERVER SIDE, from its own log (see the option's comment). Counts only: the two files have different clocks,
         // so an interleaved ordering would be a fabricated one. Presence plus count is what decides the question.
         {
-            let server_text = fs::read_to_string(&args.server_log).unwrap_or_default();
+            let server_text = read_log_lossy(&args.server_log).unwrap_or_default();
             if server_text.is_empty() {
                 println!(
                     "SERVER-LOG unreadable or empty ({}) -- server-side facts are NOT included in this report",
@@ -3045,7 +3065,7 @@ pub struct DenialsArgs {
 
 /// The denials of one run, as a table, with the caller resolved and the surrounding lifecycle context attached.
 fn run_denials(args: DenialsArgs) -> Result<ExitCode> {
-    let text = fs::read_to_string(&args.log).with_context(|| format!("reading {}", args.log.display()))?;
+    let text = read_log_lossy(&args.log).with_context(|| format!("reading {}", args.log.display()))?;
     let syms = match &args.kernel {
         Some(k) if k.exists() => Some(load_symbols(k)?),
         Some(k) => {
@@ -3127,12 +3147,12 @@ pub struct TraceArgs {
 }
 
 fn run_trace(args: TraceArgs) -> Result<ExitCode> {
-    let text = fs::read_to_string(&args.log).with_context(|| format!("reading {}", args.log.display()))?;
+    let text = read_log_lossy(&args.log).with_context(|| format!("reading {}", args.log.display()))?;
     let pid = args.pid.to_string();
     let pid_patterns = [format!("pid={pid}"), format!("tid={pid}"), format!("pid={pid} "), format!("tid={pid} ")];
     let defaults = ["plane-refuse", "urgent-refuse", "dring-attach", "courier-", "checkin", "release-drops-pending"];
     if let Some(server_path) = &args.server {
-        match fs::read_to_string(server_path) {
+        match read_log_lossy(server_path) {
             Ok(server_text) => {
                 let matches: Vec<&str> = server_text
                     .lines()
@@ -3401,7 +3421,7 @@ fn run_prefix(args: PrefixArgs) -> Result<ExitCode> {
     let mut server_before: Vec<(String, u64)> = Vec::new();
     for rel in server_logs {
         let p = prefix.join(rel);
-        let n = fs::read_to_string(&p).map(|s| s.lines().count() as u64).unwrap_or(0);
+        let n = read_log_lossy(&p).map(|s| s.lines().count() as u64).unwrap_or(0);
         server_before.push((p.display().to_string(), n));
     }
     println!(
@@ -3424,7 +3444,7 @@ fn run_prefix(args: PrefixArgs) -> Result<ExitCode> {
     };
     let code = run_verdict(va);
     for (path, n) in server_before {
-        let after = fs::read_to_string(&path).map(|s| s.lines().count() as u64).unwrap_or(0);
+        let after = std::fs::read_to_string(&path).map(|s| s.lines().count() as u64).unwrap_or(0);
         crate::say(&format!("SERVER-LOG-SLICE {path} lines={n}:{after} (this run)"));
     }
     code
@@ -3584,7 +3604,7 @@ fn run_courier(args: CourierArgs) -> Result<ExitCode> {
         None => newest_verdict_log()
             .context("no `dwdiag-verdict-*.log` in the temp directory; pass --log")?,
     };
-    let text = fs::read_to_string(&log).with_context(|| format!("read {}", log.display()))?;
+    let text = read_log_lossy(&log).with_context(|| format!("read {}", log.display()))?;
     println!(
         "COURIER log={} lines={}",
         log.display(),
