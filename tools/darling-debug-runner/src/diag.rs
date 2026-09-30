@@ -3360,6 +3360,13 @@ fn run_prefix(args: PrefixArgs) -> Result<ExitCode> {
             &["usr/lib/system/libsystem_kernel.dylib", "libexec/darling/usr/lib/system/libsystem_kernel.dylib"],
         ),
         ("dyld", &["usr/lib/dyld", "libexec/darling/usr/lib/dyld"]),
+        // MEASURED FRICTION: the guest's pthread library is a component a diagnosis regularly needs to deploy (the
+        // creation path lives in it), and without an entry here the cycle refused it as "unknown component" while the
+        // prefix could install it perfectly well -- a dead end in the tool, not in the runtime.
+        ("libsystem_pthread.dylib", &[
+            "usr/lib/system/libsystem_pthread.dylib",
+            "libexec/darling/usr/lib/system/libsystem_pthread.dylib",
+        ]),
     ];
     let mut pairs: Vec<(String, String)> = args.install.clone();
     for (name, built) in &args.artifact {

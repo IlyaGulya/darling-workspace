@@ -455,3 +455,11 @@ server never sent it". Observed on a real hanging run: `dwdiag progress` reporte
 `resolve_prefix()` now answers in a fixed order -- an explicit flag, then `DWDIAG_PREFIX`, then the `prefix=` field of
 the `[dwdiag-env ...]` line the run itself wrote -- and the server-log default is derived from it. Verified by use on
 the same log: `SERVER-LOG-PATH /tmp/r1-repro-prefix/private/var/log/dserver.log`.
+
+### `--artifact` accepts the guest's pthread library
+
+FIXED (measured friction): the deployable-component table knew `darlingserver`, `mldr`, `libsystem_kernel` and `dyld`
+only, so `dwdiag cycle --artifact libsystem_pthread.dylib=...` refused with "unknown component" even though the
+prefix installs it fine -- a dead end in the tool while diagnosing the thread-creation path, which lives in exactly
+that library. The component is now in the layout table (both prefix copies) and verified by use:
+`PREFIX-INSTALL MATCH ... usr/lib/system/libsystem_pthread.dylib` and the `libexec/darling/...` copy.
