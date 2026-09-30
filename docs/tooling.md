@@ -429,3 +429,17 @@ SOURCE-CONSUMED file=threads.c      rules=54 build=...
 
 Exit code 3 means "do not trust a run that claims to exercise this source", which turns a silent no-op probe into
 a refusal. Verified by use on both cases above (`rules=0` rc=3; `rules=54` rc=0).
+
+### Run logs are read lossily (a passing run must not be erased by one binary byte)
+
+FIXED (measured defect): a run log carries whatever the guest and the loader wrote to fd 2, including raw
+register/pointer dumps from probes that deliberately bypass libc. The verdict path used
+`fs::read_to_string`, so the FIRST invalid byte made the read fail, and every caller treated that as "no log text":
+`dwdiag verdict --log <log>` then reported **NO-RUN for a run that had printed its own `pass=1` result line**, with
+the only evidence an error buried in a transcript. Reproduced and fixed on a real log:
+`/tmp/dwdiag-verdict-284379-threadnoopr6.log` contained `RING_MACH_TEST mode=threadnoop iters=5 pass=1` and was
+judged NO-RUN before the fix, PASS after it.
+
+Every log read now goes through `read_log_lossy` (bytes -> `String::from_utf8_lossy`); `/proc` reads that must stay
+strict keep `std::fs::read_to_string`. Consequence for method: any verdict recorded before this fix must be treated
+as possibly a READ failure rather than a run failure, and re-judged offline with the current tool.
