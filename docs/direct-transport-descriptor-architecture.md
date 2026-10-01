@@ -13239,3 +13239,33 @@ cancel/re-assign path arms with `override = true` -- which is how an earlier pen
 Verification: the armed remaining time now counts down in real time (~29 s and falling, instead of ~450 ms
 resetting), the provoked series that previously passed 7 of 20 runs passed 12 of 12, and the acceptance suite
 reported `rows=9 failures=0 require_zero_creations=1`.
+
+### 255. The single process-scoped slot starves thread bootstrap, and the abort is where the delay lands (2026-10-01, dar-b5pe)
+
+The earlier claim in this document that the acceptance suite was clean (`rows=9 failures=0`) no longer holds on the
+instrumented build measured today, and the reason is worth recording as a design question rather than as a
+regression: `dwdiag verdict --mode basic --args 20 --repeat 12` gives 7 PASS, 4 CRASH ABRT (guest reporter) and 1
+HANG; the same workload at `--args 8` gives 2 PASS and 1 HANG, and at `--args 1` gives 3 PASS. The failure scales
+with the number of threads in the process, which is the whole point.
+
+Named cause, from the loader's own ungated state prints at the failure: the dying thread's checkout reaches the
+process-control page with `[checkout-path] ... ready=1 main=0` and fails with
+`[checkout-pubfail tid=T req=0x0 rep=0x2 ready=1]`, i.e. the page is established and the transport is ready, and at
+the moment of failure the slot is IDLE while the reply slot still carries a previous publisher's DONE. The claim
+loop sleeps a millisecond between two thousand attempts and does not win the slot in that window; an unpublished
+checkout leaves the thread live on the server, so the loader fails closed and aborts.
+
+Two facts keep this from being explained as a missing transport. A run that reports `denied=1` can still PASS, so
+a denial is not by itself fatal; and the deferred checkin succeeds through the plane in crashing and passing runs
+alike (`checkin-publish BEGIN` then `deferred-checkin status=0 ready=1`), so the main checkin is not the call that
+dies. The remaining question is a property of the one-slot design: when one plane operation is slow, every other
+thread's bootstrap waits on the same slot, and the wait ends in `abort()` rather than in a delay that survives.
+The same shape appears on the console path, where `plane-status=0` is printed five thousand two hundred ninety-four
+times against four `-1`s -- a rare non-publication, not a verdict -- and on the `console_open` denial whose
+neighbouring `-16` is an internal plane state line rather than the server's answer.
+
+The fix is a decision about the slot (fairness, or a bound that does not end the process, or per-thread state),
+which is why it is recorded here and not patched: the two obvious directions were already measured RED earlier in
+this work, and the scratch product tree is frozen until canonicalization completes. Repro:
+`dwdiag verdict --prefix P --mode basic --args 20`, with `DARLING_GUEST_CHECKIN_DIAG=1` for `[checkin-path]` and
+`[checkin-republish]`, and the ungated `[checkout-path]`/`[checkout-pubfail]` lines at the failure.
