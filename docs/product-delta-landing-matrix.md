@@ -36,3 +36,39 @@ Scratch product inventory with hashes: `/home/ilyagulya/work/dbg-srv-build/scrat
 (`product-deltas.sha256`, `deployed-vs-built.sha256`, `timer-arm-clamp-hunk.cpp`, `build-tree.txt`).
 Deployed server and built server agree: sha256 `ca2dd3f7a184010e2be4a98aad4fbd8812f420d126876bd60a23b2744d88e80d`.
 No product edits in the scratch tree until canonicalization completes.
+
+## The dependency closure is a subsystem, not a set of guards (measured 2026-10-01)
+
+Sizing the port changed the plan. The scratch and canonical versions of the server differ by more than the
+deltas this session touched:
+
+| file | scratch lines | canonical lines | note |
+|---|---|---|---|
+| `external/darlingserver/src/server.cpp` | 4421 | 1389 | the whole gap is here |
+| `external/darlingserver/src/call.cpp` | 2446 | 2233 | comparable |
+| `external/darlingserver/src/thread.cpp` | 2759 | 3220 | canonical is larger |
+| `external/darlingserver/src/ring.cpp` | 201 | 214 | comparable |
+| `external/darlingserver/src/kqchan.cpp` | 885 | 885 | identical size |
+
+Marker counts inside `server.cpp` (literal occurrences):
+
+| construct | scratch | canonical |
+|---|---|---|
+| `processControl` | 27 | 0 |
+| `plane` | 91 | 0 |
+| `fdCourier` | 111 | 0 |
+| `ProcessControlTxn` | 9 | 0 |
+| `ring` | 213 | 74 |
+
+And no branch of the component repository contains the plane-retry or `plane-token-missing` code at all (checked
+across every local branch). So the transport acceptance that was measured on the scratch build -- the process
+management plane, the descriptor courier, the plane-backed ring attach and their bounded retry -- rests on a
+subsystem that has never been landed in any canonical form. Porting it is an integration project with its own
+staging and gates, not a follow-up patch of a few guards like the timer fix (that one is landed as
+`patches/arch/darlingserver/timer-deadline-ordering.patch`, commit 305781e7 on branch
+`fix/timer-deadline-ordering`, and it is the only delta of this session that is now canonical).
+
+CONSEQUENCE FOR STEP 9: a fresh materialization of the `arch` profile today would build the OLD behaviour --
+without the plane, without the courier and without the timer invariants -- so it cannot be used to re-accept the
+transport. The order has to be: land the subsystem (staged, with its own acceptance), then land the timer patch
+into the locked series, then materialize and re-run the gates.
