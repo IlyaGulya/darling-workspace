@@ -671,3 +671,32 @@ workload's own boot-side evidence in the same window is `shellspawn` stopped aft
 step, which is NOT evidence of anything: that step is followed by a blocking `accept()` by design, and the
 instrumentation simply ends there. Likewise `release-drops-pending` is background noise: it fires 19-26
 times in a passing `basic` run and 70-102 times in a passing `stress_mixed` run.
+
+## Provenance witness and gate (2026-10-01, dar-4cp9)
+
+The transport phase produced strong runtime evidence from an untracked scratch source tree whose revision
+matched no branch, so a closed Bead rested on source nobody could reproduce and the fix could not be exported
+as a patch. That is a process defect, and it is now machine-checkable instead of being something a later
+reader has to guess.
+
+`dwdiag source --provenance` (the existing source-inspection command, extended rather than duplicated) reports:
+
+* the source root the build tree was configured against, taken from `CMAKE_HOME_DIRECTORY` in its cache;
+* for every component (darlingserver, mldr, xnu, launchd, dyld): revision, branch, dirty tracked file count and
+  untracked file count, or `no-git`/`missing` when the directory is not a repository;
+* the patch-series identity: sha256 of the profile's `patches.yml`, of the workspace `west.lock.yml`, and of
+  the profile-composition lock (searched one level under `locks/`, because the registry itself lives in a
+  subdirectory);
+* the hashes of the artifacts actually deployed into the prefix, because a source identity says nothing about
+  the binary a run executed.
+
+It then prints `PROVENANCE-CANONICAL` or `PROVENANCE-NON-CANONICAL` with the reasons. `--require-canonical`
+exits 2 when not canonical; `dwdiag cycle --provenance --require-canonical` prints the same witness at the end
+of a series and refuses the series the same way. A dirty tree is NOT an error: diagnostic runs from dirty
+source are legitimate. What is refused is calling such a run the evidence for a product claim.
+
+MEASURED USE, both arms: against the scratch build the witness reports
+`PROVENANCE-NON-CANONICAL ... reasons=src/external/darlingserver:untracked=21,...` (correct: that tree is
+untracked) while still naming the revision it was cut from, the patches.yml hash, the composition lock hash
+and four deployed artifact hashes including the server's; and a one-run series that PASSED was refused with
+`PROVENANCE-REFUSED` and exit 2, which is the deliberately tested negative contract.
