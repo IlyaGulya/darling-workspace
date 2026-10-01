@@ -740,3 +740,21 @@ plane refused once and then answered" and "the plane never answered at all" left
 bounded `[plane-exhausted] n= op= tid= attempts=9 status=` line. Measured use: in a batch where the failing runs
 all carried `call=checkin image=loader`, this instrument stayed silent, which is itself the answer -- those
 failures are the loader's datagram-path checkin being denied, not a plane refusal.
+
+### The loader's checkin diagnostics need two variables (2026-10-01)
+
+`[mldr-ctl]` lines -- `checkin-publish BEGIN`, `deferred-checkin ... status= ready=`, the skip notice -- are
+gated on `MLDR_COURIER_DIAG` (`mldr_diag_on()` reads exactly that), while `MLDR_DIAG_LOG` only chooses the
+sink and falls back to fd 2 when unset. Setting the sink alone therefore produces a log full of
+`[mldr-dthread ...]` lines, which are a different instrument, and a reader concludes the checkin diagnostics
+are broken. Measured cost: one batch run under `MLDR_DIAG_LOG` alone, which answered nothing. Use both:
+
+```
+dwdiag verdict --prefix P --mode basic --args 20 \
+  --env MLDR_COURIER_DIAG=1 --env MLDR_DIAG_LOG=/tmp/mldr-$n.log
+```
+
+What they answered when set: in crashing and passing runs alike the deferred checkin goes through the plane
+(`checkin-publish BEGIN` then `deferred-checkin status=0 ready=1`), so the deferred checkin is not the call
+that dies, and a run that reports `denied=1` can still PASS -- the denial is a correlation with the crash, not
+its cause, and any explanation of that failure class has to name the call site.
