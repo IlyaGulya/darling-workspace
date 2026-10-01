@@ -700,3 +700,16 @@ MEASURED USE, both arms: against the scratch build the witness reports
 untracked) while still naming the revision it was cut from, the patches.yml hash, the composition lock hash
 and four deployed artifact hashes including the server's; and a one-run series that PASSED was refused with
 `PROVENANCE-REFUSED` and exit 2, which is the deliberately tested negative contract.
+
+### Crash records identify their own image (2026-10-01)
+
+This session reversed guest/server crash attribution twice, and both times the correct answer came from asking
+which deployed image contains the reporting symbol. `dwdiag crash` now answers that itself: with `--prefix` (or
+`DWDIAG_PREFIX`) it hashes every candidate image and reports, per image, whether it carries
+`dserver_crash_probe`, then prints how many images report the probe, the prefix's live server host pid, and
+`host-tid=unavailable` when the record genuinely does not carry one.
+
+Measured on the recorded failure: five candidate images hashed, `images-reporting-the-probe=1`, with
+`bin/darlingserver ... reports-dserver-crash-probe=y` and every guest image `no` -- i.e. the record belongs to
+the server, which is the fact that had to be established by hand before. No product change was needed for this,
+which matters because the scratch product tree is frozen until canonicalization completes.

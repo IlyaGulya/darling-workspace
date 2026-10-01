@@ -1364,6 +1364,14 @@ pub struct CrashArgs {
     /// Bytes of disassembly to show on each side of the faulting instruction.
     #[arg(long, default_value_t = 160)]
     context: u64,
+    /// Prefix whose deployed images are identified for this crash record.
+    ///
+    /// WHY: this investigation reversed guest/server crash attribution twice, and both times the answer came
+    /// from asking which image actually contains the reporting symbol. That question belongs in the output of
+    /// the command that reads the crash, not in the head of whoever reads it next. Taken from DWDIAG_PREFIX
+    /// when the flag is absent.
+    #[arg(long)]
+    prefix: Option<PathBuf>,
     #[arg(long)]
     json: bool,
 }
@@ -1853,8 +1861,85 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
         }
         print!("--- disassembly ---\n{disassembly}");
     }
+    // WHICH IMAGE OWNS THIS RECORD, printed by the command that reads it. Two wrong attributions in one
+    // session happened because this question was answered by inspection instead of by output.
+    if let Some(pfx) = args
+        .prefix
+        .clone()
+        .or_else(|| std::env::var("DWDIAG_PREFIX").ok().map(PathBuf::from))
+    {
+        crash_identity(&pfx);
+    } else {
+        println!(
+            "CRASH-IDENTITY prefix=<unset> -- pass --prefix or DWDIAG_PREFIX to identify which deployed image {} reports this record",
+            binary.display()
+        );
+    }
     // A crash is a finding, not a tool error: exit 1 so a caller can branch on it without parsing.
     Ok(ExitCode::from(1))
+}
+
+/// Which deployed image a `dserver-CRASH` record belongs to, and which one can be symbolized at all.
+///
+/// MEASURED REASON: misattributing this record cost two wrong conclusions in one session -- first "the server
+/// aborted", then "the guest aborted", and the truth was decided only by asking which image contains
+/// `dserver_crash_probe`. The record itself carries no pid, tid or image, so the surrounding facts have to be
+/// produced by the command that reads it. This prints them, and says `unavailable` for anything the record
+/// genuinely does not contain rather than leaving the reader to guess.
+fn crash_identity(prefix: &std::path::Path) {
+    const CANDIDATES: [&str; 6] = [
+        "bin/darlingserver",
+        "bin/mldr",
+        "libexec/darling/usr/libexec/darling/mldr",
+        "libexec/darling/usr/lib/system/libsystem_kernel.dylib",
+        "libexec/darling/usr/lib/system/libdyld.dylib",
+        "usr/lib/dyld",
+    ];
+    let mut reporting = 0usize;
+    for rel in CANDIDATES {
+        let p = prefix.join(rel);
+        let sha = match sha256_file(&p) {
+            Some(h) => h,
+            None => continue,
+        };
+        let has = std::process::Command::new("llvm-nm")
+            .arg(&p)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("dserver_crash_probe"))
+            .unwrap_or(false);
+        if has {
+            reporting += 1;
+        }
+        println!(
+            "CRASH-IDENTITY image={rel} sha256={sha} reports-dserver-crash-probe={}",
+            if has { "yes" } else { "no" }
+        );
+    }
+    let server_pid = std::fs::read_dir("/proc")
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .find_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !name.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let exe = std::fs::read_link(format!("/proc/{name}/exe")).ok()?;
+            if exe == prefix.join("bin/darlingserver") {
+                Some(name)
+            } else {
+                None
+            }
+        });
+    println!(
+        "CRASH-IDENTITY prefix={} images-reporting-the-probe={} server-host-pid={} host-tid=unavailable(the crash record carries no host tid)",
+        prefix.display(),
+        reporting,
+        server_pid.as_deref().unwrap_or("not-running")
+    );
 }
 
 // ----------------------------------------------------------------------------------------------------------------
