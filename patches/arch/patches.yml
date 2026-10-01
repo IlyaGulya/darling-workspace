@@ -412,6 +412,19 @@ patches:
     timeout-seconds: 60
     note: The durable friend-adapter fixture compiles against the selected source-base/profile tree and executes the exact pending-mask helper called by Thread::sendSignal before tgkill.
   sha256sum: 99bfd16069c8cc382d105421dc4ee550f2cda6276bce172f766a0217ad9dab94
+- path: darlingserver/timer-deadline-ordering.patch
+  module: darling/src/external/darlingserver
+  source-branch: fix/timer-deadline-ordering
+  source-base: b545cdbe9e2f6c16828f484c36a5bef177b2b61a
+  source-commit: 305781e7f5c6d4db7cc12c1ba8e3882f7b360cbf
+  bead: dar-7tq3
+  publication-status: blocked
+  publication-blocker: requires reviewed immutable hosted closure and explicit ARCH_ONLY ownership acceptance.
+  test-exception:
+    reason: no focused behavioral harness for the server timerfd arm rule
+    scope: dtape_hook_timer_arm deadline ordering (expired-deadline guard and later-override clamp)
+    note: The decision lives in a static hook inside the server, and the guest-side wait-timer contracts cover only the guest bookkeeping, so no focused behavioral test exists yet. Behavioral coverage is the measured one and is owned by the profile gates to be re-run on the canonical build - the armed remaining time counts down in real time instead of resetting every ~450 ms, the provoked series passes 12/12 where it previously passed 7/20, and the acceptance suite reports rows=9 failures=0 require_zero_creations=1.
+  sha256sum: f98c81d9e9e5eb3fd31cfda29b1ee2748248abdf3a638310e6fb05f8fc63cf4f
 - path: darling/ci-host-regression-tests.patch
   module: darling
   source-branch: fix/ci-host-regression-tests
