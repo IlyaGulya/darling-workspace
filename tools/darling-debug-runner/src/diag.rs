@@ -129,8 +129,31 @@ pub struct SourceArgs {
     #[arg(long)]
     build: Option<PathBuf>,
     /// Source files whose consumption must be proven.
-    #[arg(long = "source", required = true)]
+    #[arg(long = "source")]
     sources: Vec<PathBuf>,
+    /// ALSO report the provenance of the run this build would serve: the component source revisions, whether
+    /// they are dirty or untracked, the patch-series identity (profile patches.yml, the profile-composition
+    /// lock and the workspace lock), and the hashes of the artifacts deployed into --prefix.
+    ///
+    /// WHY THIS EXISTS: excellent runtime evidence was obtained repeatedly from an untracked scratch source
+    /// tree whose revision matched no branch, so a closed Bead rested on source nobody could reproduce. A run
+    /// may still be useful diagnostically from dirty source, but a run used to close a product Bead, declare
+    /// FINAL acceptance or start the next milestone must be able to prove what it ran. The check is a
+    /// statement, not a repair: it never edits a tree, it only refuses to call a dirty tree canonical.
+    #[arg(long)]
+    provenance: bool,
+    /// Prefix whose deployed artifacts are hashed for the provenance record.
+    #[arg(long)]
+    prefix: Option<PathBuf>,
+    /// Workspace (manifest) root whose patch-series files identify the profile. Taken from DWDIAG_WORKSPACE.
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    /// Profile whose patches.yml and composition lock are part of the provenance record.
+    #[arg(long, default_value = "arch")]
+    profile: String,
+    /// Require a canonical provenance: exit non-zero when the tree is dirty, untracked or unreceipted.
+    #[arg(long)]
+    require_canonical: bool,
     #[arg(long)]
     json: bool,
 }
@@ -381,6 +404,20 @@ pub struct CycleArgs {
     /// held by that run and a following run would collide with it.
     #[arg(long)]
     freeze_on_fail: bool,
+    /// Print the FINAL-RUN PROVENANCE WITNESS after the series: component revisions and their dirty/untracked
+    /// state, the patch-series identity, and the hashes of the artifacts actually deployed into the prefix.
+    ///
+    /// WHY IT IS ON THE RUN AND NOT ONLY ON THE SOURCE CHECK: a series is the thing that becomes evidence, and
+    /// a series whose source was untracked cannot support a product claim however clean its verdicts looked.
+    #[arg(long)]
+    provenance: bool,
+    /// Refuse (non-zero exit) when the provenance is not canonical: dirty, untracked or unreceipted source.
+    /// Use it for runs that will close a Bead, declare FINAL acceptance, or start the next milestone.
+    #[arg(long)]
+    require_canonical: bool,
+    /// Profile whose patch-series identity is part of the witness.
+    #[arg(long, default_value = "arch")]
+    profile: String,
 }
 
 fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
@@ -624,6 +661,34 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
             println!("  instruments fired=[{}] silent=[{}] log={}", fired.join(" "), silent.join(" "), v.log.display());
         }
     }
+
+    if args.provenance {
+        let workspace = std::env::var("DWDIAG_WORKSPACE").ok().map(PathBuf::from);
+        let (canonical, reasons, lines) = provenance_report(
+            &build,
+            Some(prefix.as_path()),
+            workspace.as_deref(),
+            &args.profile,
+        );
+        for l in &lines {
+            println!("{l}");
+        }
+        if canonical {
+            println!("PROVENANCE-CANONICAL series={} runs={}", args.mode, args.repeat);
+        } else {
+            println!(
+                "PROVENANCE-NON-CANONICAL series={} runs={} reasons={} -- these verdicts are diagnostic, not product evidence",
+                args.mode,
+                args.repeat,
+                reasons.join(",")
+            );
+            if args.require_canonical {
+                println!("PROVENANCE-REFUSED: a run that must support a product claim needs canonical provenance");
+                return Ok(ExitCode::from(2));
+            }
+        }
+    }
+
     Ok(worst)
 }
 
@@ -736,6 +801,211 @@ fn sig_line(pid: &str, key: &str) -> Option<String> {
     None
 }
 
+/// Provenance of the source that a build tree was made from, and of the artifacts it deployed.
+///
+/// MEASURED REASON THIS EXISTS: the transport phase produced strong runtime evidence from a scratch source
+/// tree that was an untracked checkout of no branch, so the Bead closure rested on source nobody could
+/// reproduce and the fix could not be exported as a patch. This report makes that state a machine-readable
+/// fact instead of something a later reader has to guess, and `--require-canonical` turns it into a gate.
+///
+/// A DIRTY TREE IS NOT AN ERROR HERE. Diagnostic runs from dirty source are legitimate and common; what is
+/// not legitimate is calling such a run the evidence for a product claim. So this reports, and only refuses
+/// when asked to refuse.
+fn provenance_report(
+    build: &std::path::Path,
+    prefix: Option<&std::path::Path>,
+    workspace: Option<&std::path::Path>,
+    profile: &str,
+) -> (bool, Vec<String>, Vec<String>) {
+    let mut lines: Vec<String> = Vec::new();
+    let mut reasons: Vec<String> = Vec::new();
+
+    // The source root is what the build tree was configured against; without it the build tree itself is
+    // inspected, which is honest but usually means "no source identity available".
+    let mut source_root = build.to_path_buf();
+    let cache = build.join("CMakeCache.txt");
+    if let Ok(text) = read_log_lossy(&cache) {
+        for l in text.lines() {
+            if let Some(rest) = l.strip_prefix("CMAKE_HOME_DIRECTORY:INTERNAL=") {
+                source_root = PathBuf::from(rest.trim());
+                break;
+            }
+        }
+    }
+    lines.push(format!("PROVENANCE source-root={}", source_root.display()));
+    lines.push(format!("PROVENANCE build-tree={}", build.display()));
+
+    // Components whose revision must be provable. Paths are tried with and without the leading `src/` so the
+    // report works whether the build tree was configured against the superproject or a nested checkout.
+    const COMPONENTS: [&str; 5] = [
+        "src/external/darlingserver",
+        "src/startup/mldr",
+        "src/external/xnu",
+        "src/launchd",
+        "src/external/dyld",
+    ];
+    for rel in COMPONENTS {
+        let candidates = [
+            source_root.join(rel),
+            source_root.join(rel.trim_start_matches("src/")),
+        ];
+        let dir = match candidates.iter().find(|c| c.exists()) {
+            Some(d) => d.clone(),
+            None => {
+                lines.push(format!("PROVENANCE component={rel} state=missing"));
+                reasons.push(format!("{rel}:missing"));
+                continue;
+            }
+        };
+        let rev = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["rev-parse", "HEAD"])
+            .output();
+        let rev = match rev {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            _ => {
+                lines.push(format!("PROVENANCE component={rel} dir={} state=no-git", dir.display()));
+                reasons.push(format!("{rel}:no-git"));
+                continue;
+            }
+        };
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["status", "--porcelain"])
+            .output();
+        let (dirty, untracked) = match status {
+            Ok(o) if o.status.success() => {
+                let text = String::from_utf8_lossy(&o.stdout);
+                let untracked = text.lines().filter(|l| l.starts_with("?? ")).count();
+                let dirty = text
+                    .lines()
+                    .filter(|l| !l.starts_with("?? ") && !l.trim().is_empty())
+                    .count();
+                (dirty, untracked)
+            }
+            _ => (0, 0),
+        };
+        let branch = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|| "?".to_string());
+        lines.push(format!(
+            "PROVENANCE component={rel} rev={rev} branch={branch} dirty-tracked={dirty} untracked={untracked}"
+        ));
+        if dirty > 0 {
+            reasons.push(format!("{rel}:dirty-tracked={dirty}"));
+        }
+        if untracked > 0 {
+            reasons.push(format!("{rel}:untracked={untracked}"));
+        }
+    }
+
+    // Patch-series identity. A revision alone does not say which series produced it, and the series is what a
+    // reviewer must be able to replay, so the profile's own files are hashed by name.
+    if let Some(ws) = workspace {
+        let patches = ws.join("patches").join(profile).join("patches.yml");
+        match sha256_file(&patches) {
+            Some(h) => lines.push(format!("PROVENANCE patches-yml={} sha256={h}", patches.display())),
+            None => {
+                lines.push(format!("PROVENANCE patches-yml={} state=missing", patches.display()));
+                reasons.push(format!("patches-yml:{profile}:missing"));
+            }
+        }
+        let vest = ws.join("west.lock.yml");
+        match sha256_file(&vest) {
+            Some(h) => lines.push(format!("PROVENANCE west-lock={} sha256={h}", vest.display())),
+            None => {
+                lines.push(format!("PROVENANCE west-lock={} state=missing", vest.display()));
+                reasons.push("west-lock:missing".to_string());
+            }
+        }
+        let locks = ws.join("locks");
+        let mut composition: Option<(String, String)> = None;
+        // The composition lock sits under locks/, but the registry directories under it are also named for
+        // their subject, so the search walks one level down instead of assuming a single flat directory.
+        let mut dirs = vec![locks.clone()];
+        if let Ok(rd) = std::fs::read_dir(&locks) {
+            for e in rd.flatten() {
+                if e.path().is_dir() {
+                    dirs.push(e.path());
+                }
+            }
+        }
+        for dir in dirs {
+            if composition.is_some() {
+                break;
+            }
+            if let Ok(rd) = std::fs::read_dir(&dir) {
+                for e in rd.flatten() {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if name.contains(profile) && name.contains("composition") {
+                        if let Some(h) = sha256_file(&e.path()) {
+                            composition = Some((e.path().display().to_string(), h));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        match composition {
+            Some((p, h)) => lines.push(format!("PROVENANCE composition={p} sha256={h}")),
+            None => {
+                lines.push(format!("PROVENANCE composition profile={profile} state=missing"));
+                reasons.push(format!("composition:{profile}:missing"));
+            }
+        }
+    } else {
+        lines.push("PROVENANCE workspace=<unset> patch-series identity unavailable".to_string());
+        reasons.push("workspace:unset".to_string());
+    }
+
+    // What is actually deployed, because a source identity says nothing about the binary a run executed.
+    if let Some(pfx) = prefix {
+        const ARTIFACTS: [&str; 5] = [
+            "bin/darlingserver",
+            "bin/mldr",
+            "libexec/darling/usr/libexec/darling/mldr",
+            "libexec/darling/usr/lib/system/libsystem_kernel.dylib",
+            "usr/lib/dyld",
+        ];
+        let mut found = 0usize;
+        for rel in ARTIFACTS {
+            let p = pfx.join(rel);
+            if let Some(h) = sha256_file(&p) {
+                lines.push(format!("PROVENANCE artifact={rel} sha256={h}"));
+                found += 1;
+            }
+        }
+        lines.push(format!("PROVENANCE prefix={} artifacts-hashed={found}", pfx.display()));
+        if found == 0 {
+            reasons.push("prefix:no-artifacts-hashed".to_string());
+        }
+    } else {
+        lines.push("PROVENANCE prefix=<unset> deployed artifact identity unavailable".to_string());
+        reasons.push("prefix:unset".to_string());
+    }
+
+    (reasons.is_empty(), reasons, lines)
+}
+
+fn sha256_file(path: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new("sha256sum").arg(path).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        .map(|s| s.to_string())
+}
+
 /// Answer "does this build tree compile this file?" from the build graph itself.
 ///
 /// The check is deliberately about the GENERATED build graph, not about timestamps: a target that imports a
@@ -800,6 +1070,44 @@ a run here would exercise the OLD artifact, not this source",
             }
         }
     }
+
+    if args.provenance {
+        let prefix = args
+            .prefix
+            .clone()
+            .or_else(|| std::env::var("DWDIAG_PREFIX").ok().map(PathBuf::from));
+        let workspace = args
+            .workspace
+            .clone()
+            .or_else(|| std::env::var("DWDIAG_WORKSPACE").ok().map(PathBuf::from));
+        let (canonical, reasons, lines) =
+            provenance_report(&build, prefix.as_deref(), workspace.as_deref(), &args.profile);
+        if args.json {
+            let items: Vec<String> = lines.iter().map(|l| format!("{:?}", l)).collect();
+            println!(
+                "{{\"provenance\":\"{}\",\"reasons\":[{}],\"fields\":[{}]}}",
+                if canonical { "CANONICAL" } else { "NON-CANONICAL" },
+                reasons
+                    .iter()
+                    .map(|r| format!("{:?}", r))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                items.join(",")
+            );
+        } else {
+            for l in &lines {
+                println!("{l}");
+            }
+            if canonical {
+                println!("PROVENANCE-CANONICAL build={}", build.display());
+            } else {
+                println!("PROVENANCE-NON-CANONICAL build={} reasons={}", build.display(), reasons.join(","));
+            }
+        }
+        if args.require_canonical && !canonical {
+            return Ok(ExitCode::from(2));
+        }
+    }
     if missing > 0 {
         return Ok(ExitCode::from(3));
     }
@@ -836,6 +1144,9 @@ fn run_watch(args: WatchArgs) -> Result<ExitCode> {
             capture_wchan: false,
             gap_seconds: 0,
             freeze_on_fail: false,
+            provenance: false,
+            require_canonical: false,
+            profile: "arch".to_string(),
         })
     });
 
