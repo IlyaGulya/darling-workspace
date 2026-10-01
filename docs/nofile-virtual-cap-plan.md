@@ -158,3 +158,21 @@ CONCLUSION: the floor is the GUEST's own baseline descriptor footprint (about 33
 not the transport. The server sits at 43 descriptors against a limit of more than a million and the hidden
 transport slope per thread is zero, so the strict-cap investigation is about the guest's baseline needs and the
 silence of the failure, not about per-thread transport growth.
+
+## Round six: the target metrics, and one measurement that did not work
+
+The Bead's architectural target has three parts, and all three now have direct measurements:
+
+| target | measurement |
+|---|---|
+| hidden transport FD slope per thread = 0 | server_peak 65 and guest_peak 10 at 1, 8, 16 and 32 live guest threads (round one) |
+| no temporary runtime NOFILE raise visible to a multithreaded guest | the raise exists and the server keeps it (38468 samples at nr_open), every guest held the truthful lowered value for its whole lifetime, and the window is closed by construction: one fork in the file, the restore runs inside the child before it becomes the guest (rounds two and three) |
+| process-level shared transport resources only | implied by the flat slope at four thread counts, and consistent with one doorbell eventfd per guest process |
+
+An inventory comparison at 48 and at 32 descriptors was attempted to name WHICH descriptors the failing guest
+lacks, and it did not work: the sampler accumulated a union of descriptor kinds per executable name across all
+samples of a run, so it merged different processes and different moments, and at limit 32 it reported the same
+shapes as at 48 -- which contradicts the three earlier failures at 32 and therefore says the sampler is wrong,
+not that the failures are. A future attempt should read one process's descriptor list at the frozen moment of
+failure, not a union over a run. Recorded here because a measurement that reports the opposite of the truth is
+worth less than no measurement, and the next reader must not build on it.
