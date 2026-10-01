@@ -13269,3 +13269,11 @@ which is why it is recorded here and not patched: the two obvious directions wer
 this work, and the scratch product tree is frozen until canonicalization completes. Repro:
 `dwdiag verdict --prefix P --mode basic --args 20`, with `DARLING_GUEST_CHECKIN_DIAG=1` for `[checkin-path]` and
 `[checkin-republish]`, and the ungated `[checkout-path]`/`[checkout-pubfail]` lines at the failure.
+
+One more measurement sharpened section 255's question to a protocol property: the `[release-drops-pending]` line that
+fires immediately before the fatal checkout is emitted by `DSERVER_PROCESS_CONTROL_RELEASE`'s own macro, and that
+macro prints precisely when `request_state` is still PENDING at release time. A bounded give-up therefore returns a
+slot to IDLE while the server still owns the request, and the next publisher's claim is answered by the previous
+request's stale DONE. The decision is whether to make abandonment safe (an ownership/generation token the server
+honours, so a late answer is discarded rather than delivered) or unnecessary (a longer bound, which the earlier 20 s
+attempt already showed blows the 30 s shellspawn handshake).
