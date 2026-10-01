@@ -1020,17 +1020,26 @@ fn main() -> Result<ExitCode> {
     // file, twice producing a wrong "the tool was silent" conclusion. The transcript still holds everything; this is
     // the part a person or a script actually asks for.
     if let RunnerCommand::Diag(cmd) = cli.command {
-        let code = diag::dispatch(cmd).map(|code| {
-            if code == ExitCode::SUCCESS {
-                ExitCode::SUCCESS
-            } else {
-                code
+        let code = match diag::dispatch(cmd) {
+            Ok(code) => code,
+            // AN ERROR MUST REACH THE CALLER, NOT ONLY THE TRANSCRIPT. MEASURED: a long-run command has stdout and
+            // stderr redirected into its transcript by design, so `dwdiag prefix --artifact <unknown-name>` failed with
+            // its reason visible only inside the file and the caller read `TRANSCRIPT=...` plus `ESSENTIALS 0 line(s)`
+            // as "nothing to do" -- the same silent-answer defect this file already fixed for clap's usage errors, one
+            // layer further in. The reason is written to the stream the caller is watching, and the exit code is a
+            // failure so a script cannot mistake it for success.
+            Err(e) => {
+                say(&format!("ERROR: {e:#}"));
+                if let Some(p) = transcript_path.as_deref() {
+                    echo_essentials(p);
+                }
+                return Ok(ExitCode::from(3));
             }
-        });
+        };
         if let Some(p) = transcript_path.as_deref() {
             echo_essentials(p);
         }
-        return code;
+        return Ok(code);
     }
     let (bundle, result) = match cli.command {
         RunnerCommand::Run(args) => {

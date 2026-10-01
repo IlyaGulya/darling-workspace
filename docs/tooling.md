@@ -713,3 +713,30 @@ Measured on the recorded failure: five candidate images hashed, `images-reportin
 `bin/darlingserver ... reports-dserver-crash-probe=y` and every guest image `no` -- i.e. the record belongs to
 the server, which is the fact that had to be established by hand before. No product change was needed for this,
 which matters because the scratch product tree is frozen until canonicalization completes.
+
+### An error, an exhausted retry, and a component name (2026-10-01)
+
+Three friction points found the hard way while chasing a guest abort, all fixed in the tool.
+
+**A runtime error must reach the caller, not only the transcript.** `dwdiag prefix` and `verdict` are long runs,
+so their stdout and stderr are redirected into `/tmp/dwdiag-transcript-*.out`. The clap usage errors were already
+routed around that redirection, but a command's own error was not: passing an unknown component name to
+`--artifact` made the whole invocation fail with `TRANSCRIPT=...` and `ESSENTIALS 0 line(s)` on the terminal and
+the reason inside the file, which reads as "there was nothing to do" and cost an install that silently did not
+happen. `main` now prints such an error through the same `say()` path the essentials use and exits 3. Verified:
+`--artifact nosuchcomponent=/bin/true` prints `ERROR: --artifact nosuchcomponent: unknown component; known:
+darlingserver, mldr, libsystem_kernel, dyld, libsystem_pthread.dylib` on the caller's stream with rc=3.
+
+**A component may be named by its library file name.** `--artifact` takes the component key
+(`libsystem_kernel`, `dyld`, `mldr`, `darlingserver`, `libsystem_pthread.dylib`), but what a caller has in front
+of them is the file they just built, and the lookup ran before any pair was installed, so
+`--artifact libsystem_kernel.dylib=...` aborted the invocation and a correct `dyld=...` beside it did nothing as
+well. Both spellings now resolve.
+
+**An exhausted plane retry is nameable.** `__dserver_plane_request_ex` retried nine times and printed
+`[plane-retry]` once per process, but the exit that actually decides the caller's fate -- the one that hands back
+-1 and sends the caller to the datagram fallback the hard socket gate then denies -- printed nothing, so "the
+plane refused once and then answered" and "the plane never answered at all" left the same log. It now prints a
+bounded `[plane-exhausted] n= op= tid= attempts=9 status=` line. Measured use: in a batch where the failing runs
+all carried `call=checkin image=loader`, this instrument stayed silent, which is itself the answer -- those
+failures are the loader's datagram-path checkin being denied, not a plane refusal.
