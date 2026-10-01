@@ -107,3 +107,32 @@ process-wide raise does not leak into multithreaded guests, and the contract's "
 visible to a multithreaded guest" holds for the creation paths this build has. The raise/lower design remains
 forbidden by the Bead for any NEW work; what is established here is only that the existing one is not currently
 observable by guests.
+
+## Round four: the boot-compat floor under a strict guest NOFILE
+
+The Bead is titled "strict guest NOFILE virtual cap (boot-compat investigation)", so the first thing the new
+topology needs is its floor. One run per value, `r2 8` (eight guest threads parked), run's soft limit lowered
+alone, hard left at `nr_open`:
+
+| run soft limit | verdict |
+|---|---|
+| 256 | PASS (three times) |
+| 160 | PASS |
+| 128 | PASS |
+| 96 | PASS |
+| 64 | PASS |
+| 48 | PASS |
+| 32 | BOOT-FAIL (shellspawn) |
+| 24 | BOOT-FAIL (shellspawn) |
+| 16 | BOOT-FAIL (shellspawn), denied=1 |
+
+So the topology boots and parks eight threads with only 48 descriptors, and the floor sits between 33 and 48.
+The failure mode is NOT a plain descriptor exhaustion: the failing log ends with
+`[dring-uds-reason] ... reason=NO_LANE_ENTRY`, an `[rpc-socket-DENIED] ... call=set_thread_handles ... denied=1`,
+and then the launcher's `Rootless shellspawn did not become ready within 30000ms` -- i.e. the ring lane for the
+thread is never established and the boot stalls, rather than some open() reporting EMFILE. That is the shape the
+next investigation has to explain, using the existing read-only instruments (the trace ring, the stall dump,
+`dwdiag denials`, `dwdiag trace`) rather than new probes, because the product tree is frozen until
+canonicalization completes.
+
+Caveat: all of this was measured on the non-canonical scratch runtime.
