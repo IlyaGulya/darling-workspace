@@ -136,3 +136,25 @@ next investigation has to explain, using the existing read-only instruments (the
 canonicalization completes.
 
 Caveat: all of this was measured on the non-canonical scratch runtime.
+
+## Round five: who actually hits the strict cap (frozen state)
+
+The strict-limit failure was frozen and inspected with the existing instruments. At soft=32, with the run
+failing on shellspawn:
+
+| process | open descriptors | soft limit |
+|---|---|---|
+| `darlingserver` | 43 | 1048576 (raised, as designed) |
+| `mldr` `/sbin/launchd` | 29 | 32 |
+| `mldr` `/bin/launchctl bootstrap` | 22 | 32 |
+| `mldr` `/sbin/launchd` (second) | 32 | 32 -- exactly at the cap |
+
+No `EMFILE`, no `NO_LANE_ENTRY` and no stall-dump body appeared in this instance; shellspawn's step marks are
+absent and the launcher reports it never became ready. So the descriptor that cannot be obtained is being
+requested by the guest side, from a process already holding the whole limit, and whatever fails there does not
+print a reason -- which is why the log looks like a silent stall.
+
+CONCLUSION: the floor is the GUEST's own baseline descriptor footprint (about 33 at this point of the boot),
+not the transport. The server sits at 43 descriptors against a limit of more than a million and the hidden
+transport slope per thread is zero, so the strict-cap investigation is about the guest's baseline needs and the
+silence of the failure, not about per-thread transport growth.
