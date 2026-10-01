@@ -4175,7 +4175,19 @@ fn run_prefix(args: PrefixArgs) -> Result<ExitCode> {
     for (name, built) in &args.artifact {
         let destinations = layout
             .iter()
-            .find(|(n, _)| n == name)
+            .find(|(n, dests)| {
+                // THE COMPONENT KEY OR THE LIBRARY'S OWN FILE NAME. The key is the documented spelling, but what a
+                // caller has in front of them is the file they just built (`libsystem_kernel.dylib`), and MEASURED: the
+                // file-name spelling aborted the whole invocation before any component in it was installed, so a
+                // correct `dyld=...` pair next to it silently did nothing as well. Accept both spellings.
+                *n == name
+                    || dests.iter().any(|d| {
+                        std::path::Path::new(d)
+                            .file_name()
+                            .and_then(|f| f.to_str())
+                            == Some(name.as_str())
+                    })
+            })
             .map(|(_, d)| *d)
             .with_context(|| {
                 format!(
