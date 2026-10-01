@@ -58,3 +58,29 @@ guest, and the observation window has to cover the whole bootstrap.
 The FD slope and the guest limits above were taken on the frozen scratch runtime, so they are a NON-CANONICAL
 baseline (see the provenance witness): they describe this topology, and no NOFILE conclusion may rest on them
 until they are repeated on a canonical materialization.
+
+## Round two: the raise, and what each side actually obeys (measured 2026-10-01)
+
+The first round could not answer the question because this host's default soft limit already equals `nr_open`,
+so the server's raise changes nothing. The question was made askable by lowering the run's soft limit only
+(`ulimit -S -n 4096`, hard left at `nr_open`) -- lowering both, as `ulimit -n` does, makes the raise fail with
+`Operation not permitted`, which the server logs as `Warning: failed to increase FD rlimit` and then tolerates.
+
+With the soft limit lowered for the run and the hard limit at `nr_open`:
+
+| process | soft limit observed | how |
+|---|---|---|
+| `darlingserver` | 1048576 for 38468 samples, 4096 for 19 | tight watcher from the moment the process appears |
+| `launchd`, `shellspawn`, the ring workload (all `mldr`) | 4096 for the whole run | `/proc/<pid>/limits` sampled while the workload held 8 threads parked |
+| launcher `darling`, harness `dash`/`timeout`, the tool | 4096 | same sampling |
+
+So: the raise is real and succeeds when the hard limit allows it, and the server KEEPS it -- from its own point
+of view the limit is raised for the whole run, not temporarily. Every guest process nevertheless held the
+truthful inherited value, which is what the contract demands: the child that becomes launchd is restored to the
+default before it is spawned, and no guest was ever observed with the raised value.
+
+What is still open, and is the actual contract question: the window between the server's raise and that restore.
+A process created inside that window would inherit 1048576; the launchd child does not, which shows the restore
+precedes that particular spawn, but the window is not proven empty for every creation path. That is the next
+measurement, and it is a timing question about the server's own bootstrap rather than a question about guests
+holding threads.
