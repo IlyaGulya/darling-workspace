@@ -376,6 +376,11 @@ pub struct CycleArgs {
     /// run's boot, which is a distinct piece of friction this option removes.
     #[arg(long, default_value_t = 0)]
     gap_seconds: u64,
+    /// DIAGNOSTIC: leave the prefix and its processes ALIVE when a run fails, so the failing incarnation can
+    /// be inspected instead of destroyed. The cycle stops at the first frozen failure, because the prefix is
+    /// held by that run and a following run would collide with it.
+    #[arg(long)]
+    freeze_on_fail: bool,
 }
 
 fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
@@ -463,6 +468,7 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
         log: None,
         repeat: 1,
         list_modes: false,
+        freeze_on_fail: args.freeze_on_fail,
         json: args.json,
     };
     /* HOST-SIDE WCHAN SAMPLER (see the flag). Started before the runs and stopped after the loop, so the
@@ -557,6 +563,17 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
                 for line in g.iter().rev().take(8).collect::<Vec<_>>().iter().rev() {
                     println!("CAPTURE-WCHAN tail {line}");
                 }
+            }
+            // A FROZEN FAILURE HOLDS THE PREFIX. Continuing would start the next run against a prefix this one
+            // owns and is the exact collision the one-prefix-at-a-time rule forbids, so the loop stops and says
+            // so, with the log that has to be inspected before any cleanup.
+            if args.freeze_on_fail {
+                println!(
+                    "CYCLE-FROZEN run={tag} prefix={} log={} -- inspect now, then clean up with the harness' printed command",
+                    prefix.display(),
+                    v.log.display()
+                );
+                break;
             }
         }
         // The witness, read from the log the run itself produced. `workload_lines` counts the workload's own
@@ -818,6 +835,7 @@ fn run_watch(args: WatchArgs) -> Result<ExitCode> {
             json: false,
             capture_wchan: false,
             gap_seconds: 0,
+            freeze_on_fail: false,
         })
     });
 
@@ -1566,9 +1584,18 @@ pub struct VerdictArgs {
     repeat: u64,
     /// Print the workload modes THIS prefix's fixture actually contains, with the argument shape and the marker each mode
     /// emits, then exit. The list is read out of the fixture's own strings, so it cannot drift from the binary that will
-    /// run: the tool answers "what can I ask for, and what will it print" without anyone grepping a source tree.
+    /// run: the tool answers "what can I ask for, and what will it print" without anyone grepping a source file.
     #[arg(long)]
     list_modes: bool,
+    /// DIAGNOSTIC: when the verdict fails, pass --freeze-on-fail to the boot harness so the prefix and its
+    /// processes stay ALIVE for inspection (darling-debug, native stacks, host wchan). WHY THIS IS IN THE
+    /// TOOL: the harness already implemented the freeze, but the tool did not forward it, so catching a
+    /// failure for inspection meant abandoning the tool and reconstructing its command by hand -- and the
+    /// command it builds carries MLDR_DIAG_LOG, one --cmd argument, and the deployment identity, which a
+    /// hand-rolled invocation gets wrong. A frozen prefix is left running on purpose; clean it up with the
+    /// command the harness prints.
+    #[arg(long)]
+    freeze_on_fail: bool,
     #[arg(long)]
     json: bool,
 }
@@ -2030,6 +2057,13 @@ fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
     c.env("MLDR_DIAG_LOG", &log);
     // A marker that can never appear: the harness exits non-zero, and the VERDICT below is ours, not its marker test.
     c.arg("--marker").arg("__dwdiag_never__");
+    // FREEZE IS A DIAGNOSTIC POLICY, AND IT IS PASSED THROUGH RATHER THAN REIMPLEMENTED: the harness owns the
+    // prefix lifecycle, so it owns leaving the failing incarnation alive. Silence here was measured friction:
+    // the only way to inspect a caught failure was to retype the harness command by hand, which loses
+    // MLDR_DIAG_LOG and the single-argument --cmd shape this builder exists to get right.
+    if args.freeze_on_fail {
+        c.arg("--freeze-on-fail");
+    }
     let out = c
         .output()
         .with_context(|| format!("running {}", args.boot_runner.display()))?;
@@ -2472,6 +2506,7 @@ fn run_suite(args: SuiteArgs) -> Result<ExitCode> {
             repeat: 1,
             list_modes: false,
             json: false,
+            freeze_on_fail: false,
             log: None,
         };
         let mut v = run_one_workload(&va, "")?;
@@ -3895,6 +3930,7 @@ fn run_prefix(args: PrefixArgs) -> Result<ExitCode> {
         repeat: 1,
         list_modes: false,
         json: args.json,
+        freeze_on_fail: false,
         log: None,
     };
     let code = run_verdict(va);
