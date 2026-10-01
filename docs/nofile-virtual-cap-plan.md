@@ -84,3 +84,26 @@ A process created inside that window would inherit 1048576; the launchd child do
 precedes that particular spawn, but the window is not proven empty for every creation path. That is the next
 measurement, and it is a timing question about the server's own bootstrap rather than a question about guests
 holding threads.
+
+## Round three: the window is closed by construction, not by timing
+
+The remaining question was whether a process created between the server's raise and the restore can inherit the
+raised limit. Reading the code answers it more cheaply than timing it, and the answer is structural:
+
+* `darlingserver.cpp` contains exactly ONE `fork()` in the whole file (line 1446), which creates the child that
+  becomes launchd;
+* the raise to `nr_open` happens earlier, at server startup (line 1330);
+* the lower back to the default happens at line 1495 -- INSIDE THE CHILD, which does it after the fork, before
+  it hands over the green light and becomes the guest.
+
+So the raised value exists in the child for the short window between the fork and its own restore, during which
+that child is a single-threaded process that has not yet become a guest. A multithreaded guest cannot observe
+it, because the guest's threads are created later, after the limit has already been lowered by the child
+itself. The measurement agrees with the structure: with the run's soft limit lowered to 4096, every guest
+process held 4096 for its whole lifetime while the server held 1048576.
+
+CONCLUSION SO FAR (non-canonical runtime, and therefore a hypothesis to re-confirm on the canonical build): the
+process-wide raise does not leak into multithreaded guests, and the contract's "no temporary runtime raise
+visible to a multithreaded guest" holds for the creation paths this build has. The raise/lower design remains
+forbidden by the Bead for any NEW work; what is established here is only that the existing one is not currently
+observable by guests.
