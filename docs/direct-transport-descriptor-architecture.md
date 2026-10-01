@@ -13215,3 +13215,27 @@ instrumentation alone could not name them.
 Measured trajectory: 4/100 boots failing before the fixes, 4/100 after the first two (a third variant),
 then **100/100 and a second 100/100** on the deployed fixed build, with acceptance 9/9 first attempt on the
 same build. The frozen `darling-debug` MVP was used read-only throughout; its ABI was not extended.
+
+## The server timerfd was starving every timed wait (fix, 2026-10-01)
+
+MEASURED, and it is the root cause of the stall that the boot flap and the `stress_mixed` HANG shared. A guest
+thread of `launchd` was parked in `semaphore_timedwait` (30 s) with `waiting_for_reply=1 suspended=1`, and the
+stall dump reported `timer=1 tactive=1` for it -- a timer was armed -- while the server sat alive in
+`epoll_wait` and `dtape_timer_fired()` never ran. The server's own timerfd said why: `ticks: 0` (it had never
+expired) and its remaining time fell linearly from ~450 ms and then jumped back to ~500 ms every ~450 ms.
+Something re-armed it with a fresh ~500 ms deadline faster than it could expire, and that cadence is the
+`epoll_wait` timeout the loop uses while the stall watchdog is enabled -- so enabling that watchdog *provoked*
+the fault it was written to observe, which is why the failure rate rose whenever it was on.
+
+A timerfd pushed forward forever never expires, so `timer_queue_expire()` never runs and EVERY pending deadline
+in the queue is starved: a 30 s semaphore timeout never times out and its thread is never woken.
+
+FIX (`dtape_hook_timer_arm`): an override arm that carries a deadline LATER than the one already armed is
+clamped to the armed deadline. A deadline can still be pulled earlier, and a real disarm (`deadline_ns == 0`,
+the `UINT64_MAX` mapping) is still honoured, so a cancelled timer costs at most one spurious fire that runs an
+expire pass finding nothing due. The previous rule guarded only non-override arms, and the queue's
+cancel/re-assign path arms with `override = true` -- which is how an earlier pending deadline was postponed.
+
+Verification: the armed remaining time now counts down in real time (~29 s and falling, instead of ~450 ms
+resetting), the provoked series that previously passed 7 of 20 runs passed 12 of 12, and the acceptance suite
+reported `rows=9 failures=0 require_zero_creations=1`.

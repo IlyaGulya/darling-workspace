@@ -641,3 +641,33 @@ What the attributed captures DO show, in all three: the prefix's own
 `pipe_read`, and nothing is blocked on a host resource. Two of the three failures
 had `denied=0`; one had `denied=1`. So the flap is the guest shell pair failing to
 complete its work, not the host stalling underneath it.
+
+## Freeze-on-fail is now reachable from the diagnostic tool, and the snapshot is taken by the catcher (2026-10-01)
+
+Two pieces of friction were solved in the same session, both because a caught failure was being destroyed
+before it could be read.
+
+* `dwdiag cycle` gained `--freeze-on-fail`. The boot harness has implemented the freeze for a while, but the
+  tool that builds the harness command did not forward it, so holding a failure for inspection meant
+  abandoning the tool and retyping the harness invocation by hand -- which loses `MLDR_DIAG_LOG`, the
+  single-argument `--cmd` shape, and the deployment identity the tool records into the run's own log. The
+  cycle stops at the first frozen failure and prints `CYCLE-FROZEN` with the log to inspect, because the
+  frozen run owns the prefix and a following run would collide with it. Default is off: acceptance never
+  freezes, and a frozen prefix is left running on purpose, to be cleaned with the command the harness prints.
+
+* `snap-on-freeze.sh` (diagnostic only) takes the server snapshot in the same process that catches the
+  freeze. WHY: the harness wraps the launcher in `timeout 150`, so a frozen incarnation is destroyed roughly
+  a minute after the freeze is announced. The first attempt read the interesting fact from a second tool call
+  and lost that race -- by inspection time the server process was gone, and the question (was the semaphore
+  timed wait's timerfd armed, with which deadline, and had it ticked) could not be re-asked without another
+  run. The script reads `/proc/<server>/fdinfo/<timerfd>` twice, two seconds apart, then the debugger's
+  identity queries, so the armed deadline and the tick count are captured while the server is still alive.
+
+Measured on the frozen failure (current build, `stress_mixed 20`): a guest thread of `launchd` (pid 1) sits
+with `active_call` 62 `semaphore_timedwait`, `waiting_for_reply=true`, `suspended=true`, while the stall dump
+reports `timer=1 tactive=1` for it -- a timer IS armed for the wait -- and the server's main loop is in
+`epoll_wait` (which uses a 500 ms timeout whenever the stall dump is enabled, so the loop is cycling). The
+workload's own boot-side evidence in the same window is `shellspawn` stopped after its last instrumented
+step, which is NOT evidence of anything: that step is followed by a blocking `accept()` by design, and the
+instrumentation simply ends there. Likewise `release-drops-pending` is background noise: it fires 19-26
+times in a passing `basic` run and 70-102 times in a passing `stress_mixed` run.
