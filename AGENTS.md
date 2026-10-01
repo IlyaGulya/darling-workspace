@@ -699,6 +699,15 @@ digest check catches; a literal only reports that the derivation ran.
     `... pass=1` line is present; a missing line is FAIL/HANG and never PASS.
     Use `--json` to compose the result instead of scraping it, and do not
     hand-roll symbolizing, crash parsing or per-mode verdicts in shell.
+  - Live thread state in a running guest - what the server believes about ONE
+    thread, correlated with the host Linux tid and the guest identity:
+    `darling-debug --prefix PREFIX thread --host-tid TID` (also `list`, `wait`,
+    `transport`, `identity-map`), or the same commands from upstream LLDB via
+    `tools/darling-lldb/darling.py`. It is read-only, needs
+    `DSERVER_DEBUG_ABI=1` in the launcher's environment, and reports state it
+    cannot supply as `unavailable` rather than guessing. It forms the
+    hypothesis; `dwdiag` is still what proves the fix. See
+    `docs/darling-debugger.md`.
 - `west test` treats an empty selection as fatal, including a label filter that
 matches nothing. Never narrow a selection to make a failing test disappear:
 that converts a real signal into silence.

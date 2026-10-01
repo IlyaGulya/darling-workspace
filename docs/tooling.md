@@ -5,6 +5,12 @@ are in `docs/direct-transport-descriptor-architecture.md` (sections 148-155 and
 onward). The operational guidance an agent loads is the `darling-diagnostics`
 skill; this file is the durable index it points at.
 
+For the **interactive** counterpart to these batch tools — attaching to a live
+runtime and asking what the server believes about one guest thread — see
+`docs/darling-debugger.md`. The two are complementary: this file's tools produce
+repeatable regression evidence, while the debugger inspects live state to form
+the hypothesis that a regression then pins.
+
 ## Tools
 
 | tool | answers | notes |
