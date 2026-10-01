@@ -180,6 +180,7 @@ def assert_plan(
     outer_revision: str,
     nested_revision: str,
     branch: str,
+    skip_lfs_smudge: bool = False,
 ) -> None:
     assert set(plan) == dev_start._TOP_LEVEL_FIELDS, plan
     assert plan["schema_version"] == dev_start.SCHEMA_VERSION == 1
@@ -194,8 +195,9 @@ def assert_plan(
     inputs = plan["inputs"]
     assert set(inputs) == {
         "source", "destination", "evidence", "requested_base", "resolved_base",
-        "branch", "bead", "module", "destination_parent_identity",
-        "evidence_parent_identity", "repositories", "forbidden_roots",
+        "branch", "bead", "module", "skip_lfs_smudge",
+        "destination_parent_identity", "evidence_parent_identity",
+        "repositories", "forbidden_roots",
     }
     assert inputs["source"] == str(source.resolve())
     assert inputs["destination"] == str(destination.resolve())
@@ -204,6 +206,7 @@ def assert_plan(
     assert inputs["resolved_base"] == outer_revision
     assert inputs["branch"] == branch and inputs["bead"] == "bd-contract"
     assert inputs["module"] == "modules/widget"
+    assert inputs["skip_lfs_smudge"] is skip_lfs_smudge
     assert inputs["forbidden_roots"] == [str(source.resolve())]
     repositories = inputs["repositories"]
     assert [(item["relative_path"], item["revision"]) for item in repositories] == [
@@ -243,6 +246,8 @@ def build_plan(
     outer_revision: str,
     nested_revision: str,
     branch: str,
+    *,
+    skip_lfs_smudge: bool = False,
 ) -> dict[str, Any]:
     before_entries = sorted(path.name for path in destination.parent.iterdir())
     plan = dev_start.build_start_plan(
@@ -254,6 +259,7 @@ def build_plan(
         "modules/widget",
         evidence,
         [source],
+        skip_lfs_smudge=skip_lfs_smudge,
     )
     after_entries = sorted(path.name for path in destination.parent.iterdir())
     assert before_entries == after_entries, "planning created a filesystem path"
@@ -262,7 +268,16 @@ def build_plan(
     assert not evidence.exists() and not evidence.is_symlink()
     assert not evidence.with_name(evidence.name + ".tmp").exists()
     assert not staging.exists() and not staging.is_symlink()
-    assert_plan(plan, source, destination, evidence, outer_revision, nested_revision, branch)
+    assert_plan(
+        plan,
+        source,
+        destination,
+        evidence,
+        outer_revision,
+        nested_revision,
+        branch,
+        skip_lfs_smudge=skip_lfs_smudge,
+    )
     return plan
 
 
@@ -277,7 +292,7 @@ arguments = sys.argv[1:]
 log = os.environ.get("START_COMMAND_LOG")
 if log:
     with open(log, "a", encoding="utf-8") as stream:
-        stream.write(json.dumps({{"argv": arguments, "no_replace": os.environ.get("GIT_NO_REPLACE_OBJECTS")}}) + "\\n")
+        stream.write(json.dumps({{"argv": arguments, "no_replace": os.environ.get("GIT_NO_REPLACE_OBJECTS"), "lfs_skip": os.environ.get("GIT_LFS_SKIP_SMUDGE"), "git_foo": os.environ.get("GIT_FOO")}}) + "\\n")
 target = os.environ.get("START_FAIL_TARGET")
 if target and "clone" in arguments and arguments[-1] == target:
     sys.stderr.write("discarded-prefix:" + "x" * 12000 + "\\nCONTROLLED_NESTED_CLONE_FAILURE\\n")
@@ -311,6 +326,12 @@ def main() -> None:
                     "TMPDIR": str(scratch),
                     "LC_ALL": "C",
                     "CONTRACT_REAL_GIT": REAL_GIT,
+                    # A hostile caller must not be able to inject Git policy.
+                    # The inherited environment is stripped for every start
+                    # transaction; the only way to act on LFS is the explicit
+                    # `skip_lfs_smudge` plan input.
+                    "GIT_LFS_SKIP_SMUDGE": "1",
+                    "GIT_FOO": "evil",
                 }
             )
             GIT_ENV.clear()
@@ -465,6 +486,10 @@ def main() -> None:
                 for line in success_command_log.read_text(encoding="utf-8").splitlines()
             ]
             assert success_calls and all(call["no_replace"] == "1" for call in success_calls), success_calls
+            # Default policy: a caller-supplied GIT_LFS_SKIP_SMUDGE and any other
+            # GIT_* entry never reach a Git subprocess.
+            assert all(call["lfs_skip"] is None for call in success_calls), success_calls
+            assert all(call["git_foo"] is None for call in success_calls), success_calls
             persisted = json.loads(evidence.read_text(encoding="utf-8"))
             assert committed == persisted
             assert set(committed) == dev_start._TOP_LEVEL_FIELDS
@@ -525,6 +550,91 @@ def main() -> None:
             assert recovered_committed == committed
             assert filesystem_snapshot(destination) == destination_before_recover
             assert evidence.read_bytes() == evidence_before_recover
+
+            # Explicit opt-in: only the smudge-capable materialization commands
+            # receive GIT_LFS_SKIP_SMUDGE, the journal records the policy, and a
+            # hostile caller still cannot inject any other Git variable.
+            lfs_destination = temp / "lfs-skipped-checkout"
+            lfs_evidence = temp / "start-lfs-skipped.json"
+            lfs_command_log = temp / "lfs-git-environment.jsonl"
+            lfs_command_log.touch()
+            os.environ["START_COMMAND_LOG"] = str(lfs_command_log)
+            try:
+                lfs_plan = build_plan(
+                    source,
+                    lfs_destination,
+                    lfs_evidence,
+                    outer_revision,
+                    nested_revision,
+                    "dev/lfs-skip-contract",
+                    skip_lfs_smudge=True,
+                )
+                lfs_committed = dev_start.execute_start(lfs_plan)
+            finally:
+                os.environ.pop("START_COMMAND_LOG", None)
+            assert lfs_committed["state"] == "committed"
+            assert lfs_committed["returncode"] == 0
+            assert lfs_committed["created_paths"] == [str(lfs_destination)]
+            persisted_lfs = json.loads(lfs_evidence.read_text(encoding="utf-8"))
+            assert persisted_lfs == lfs_committed
+            assert persisted_lfs["inputs"]["skip_lfs_smudge"] is True
+            assert_result_schema(lfs_committed["results"])
+            lfs_calls = [
+                json.loads(line)
+                for line in lfs_command_log.read_text(encoding="utf-8").splitlines()
+            ]
+            assert lfs_calls, "skip-smudge scenario recorded no Git call"
+            assert all(call["git_foo"] is None for call in lfs_calls), lfs_calls
+            assert all(call["no_replace"] == "1" for call in lfs_calls), lfs_calls
+            checkout_calls = [call for call in lfs_calls if "checkout" in call["argv"]]
+            assert checkout_calls, "skip-smudge scenario ran no checkout"
+            assert all(call["lfs_skip"] == "1" for call in checkout_calls), checkout_calls
+            # darling detach, nested detach, nested branch activation.
+            assert len(checkout_calls) == 3, checkout_calls
+            assert sum("--detach" in call["argv"] for call in checkout_calls) == 2, checkout_calls
+            assert sum("-b" in call["argv"] for call in checkout_calls) == 1, checkout_calls
+            lfs_destination_nested = lfs_destination / "modules/widget"
+            assert (lfs_destination / "outer.txt").read_bytes() == (source / "outer.txt").read_bytes()
+            assert (lfs_destination_nested / "widget.txt").read_bytes() == (nested / "widget.txt").read_bytes()
+            lfs_destination_before_recover = filesystem_snapshot(lfs_destination)
+            lfs_evidence_before_recover = lfs_evidence.read_bytes()
+            assert dev_start.recover_start(lfs_evidence) == lfs_committed
+            assert filesystem_snapshot(lfs_destination) == lfs_destination_before_recover
+            assert lfs_evidence.read_bytes() == lfs_evidence_before_recover
+
+            # The opt-in changes only the Git environment: a failed transaction
+            # still rolls back and leaves no owned path behind.
+            lfs_failed_destination = temp / "lfs-failed-checkout"
+            lfs_failed_evidence = temp / "start-lfs-failed.json"
+            lfs_failed_plan = build_plan(
+                source,
+                lfs_failed_destination,
+                lfs_failed_evidence,
+                outer_revision,
+                nested_revision,
+                "dev/lfs-failure-contract",
+                skip_lfs_smudge=True,
+            )
+            lfs_failed_staging = dev_start._staging_path(
+                lfs_failed_destination.resolve(), lfs_failed_plan["transaction_id"]
+            )
+            os.environ["START_FAIL_TARGET"] = str(lfs_failed_staging / "modules/widget")
+            try:
+                lfs_failed_payload = dev_start.execute_start(lfs_failed_plan)
+            finally:
+                os.environ.pop("START_FAIL_TARGET", None)
+            assert lfs_failed_payload["state"] == "rolled_back"
+            assert lfs_failed_payload["returncode"] == 73
+            assert lfs_failed_payload["created_paths"] == []
+            assert lfs_failed_payload["destination_identity"] is None
+            assert not lfs_failed_destination.exists() and not lfs_failed_destination.is_symlink()
+            assert not lfs_failed_staging.exists() and not lfs_failed_staging.is_symlink()
+            lfs_failed_quarantine = dev_start._quarantine_path(
+                lfs_failed_destination.resolve(), lfs_failed_plan["transaction_id"]
+            )
+            assert not lfs_failed_quarantine.exists() and not lfs_failed_quarantine.is_symlink()
+            assert not lfs_failed_evidence.with_name(lfs_failed_evidence.name + ".tmp").exists()
+            assert json.loads(lfs_failed_evidence.read_text(encoding="utf-8")) == lfs_failed_payload
 
             failed_destination = temp / "failed-checkout"
             failed_evidence = temp / "start-failed.json"

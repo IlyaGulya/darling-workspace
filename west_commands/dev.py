@@ -434,6 +434,14 @@ class DarlingDev(WestCommand):
         start.add_argument("--bead", required=True)
         start.add_argument("--module", required=True)
         start.add_argument("--evidence", type=Path, required=True)
+        start.add_argument(
+            "--skip-lfs-smudge",
+            action="store_true",
+            help=(
+                "materialize Git LFS pointer files without fetching their content; "
+                "the start journal records that LFS objects were left unsmudged"
+            ),
+        )
         start.add_argument("--dry-run", action="store_true")
         start.add_argument("--json", action="store_true")
         recover = subparsers.add_parser(
@@ -536,6 +544,7 @@ class DarlingDev(WestCommand):
                     forbidden_roots=_active_repository_roots(
                         self.manifest, manifest_repo
                     ),
+                    skip_lfs_smudge=args.skip_lfs_smudge,
                 )
                 if args.dry_run:
                     result = plan

@@ -150,7 +150,15 @@ def _is_within(path: Path, root: Path) -> bool:
     return True
 
 
-def _safe_git_environment() -> dict[str, str]:
+def _safe_git_environment(*, skip_lfs_smudge: bool = False) -> dict[str, str]:
+    """Build a Git environment that forwards no caller-controlled ``GIT_*`` value.
+
+    The inherited environment is stripped of every ``GIT_*`` entry, so a caller
+    cannot smuggle Git policy (credential helpers, protocol overrides, filters)
+    into a start transaction. The opt-in ``GIT_LFS_SKIP_SMUDGE`` is the single
+    exception, and it is set here from an explicit validated argument rather
+    than copied from the caller's environment.
+    """
     environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     environment.update(
         {
@@ -160,6 +168,8 @@ def _safe_git_environment() -> dict[str, str]:
             "LC_ALL": "C",
         }
     )
+    if skip_lfs_smudge:
+        environment["GIT_LFS_SKIP_SMUDGE"] = "1"
     return environment
 
 
@@ -235,6 +245,7 @@ def _run_command(
     allowed_returncodes: tuple[int, ...] = (0,),
     timeout: int = _COMMAND_TIMEOUT_SECONDS,
     output_limit: int = _OUTPUT_LIMIT,
+    skip_lfs_smudge: bool = False,
 ) -> bytes:
     if not argv or not all(isinstance(item, str) and item for item in argv):
         raise StartError(f"{name} has an invalid argv")
@@ -246,7 +257,7 @@ def _run_command(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=_safe_git_environment(),
+            env=_safe_git_environment(skip_lfs_smudge=skip_lfs_smudge),
             start_new_session=True,
         )
     except OSError as error:
@@ -337,6 +348,7 @@ def _git(
     allowed_returncodes: tuple[int, ...] = (0,),
     timeout: int = _COMMAND_TIMEOUT_SECONDS,
     output_limit: int = _OUTPUT_LIMIT,
+    skip_lfs_smudge: bool = False,
 ) -> bytes:
     return _run_command(
         name,
@@ -347,6 +359,7 @@ def _git(
         allowed_returncodes=allowed_returncodes,
         timeout=timeout,
         output_limit=output_limit,
+        skip_lfs_smudge=skip_lfs_smudge,
     )
 
 
@@ -734,8 +747,13 @@ def build_start_plan(
     module: str,
     evidence: Path,
     forbidden_roots: list[Path],
+    *,
+    skip_lfs_smudge: bool = False,
 ) -> dict:
     """Build a pure, exact-OID start plan without creating transaction paths."""
+
+    if not isinstance(skip_lfs_smudge, bool):
+        raise StartError("skip_lfs_smudge must be a boolean")
 
     source = _real_directory(source.expanduser().resolve(), "canonical source")
     destination = _unused_path(destination, "destination")
@@ -808,6 +826,7 @@ def build_start_plan(
             "branch": branch,
             "bead": bead,
             "module": module,
+            "skip_lfs_smudge": skip_lfs_smudge,
             "destination_parent_identity": _identity(destination.parent),
             "evidence_parent_identity": _identity(evidence.parent),
             "repositories": repositories,
@@ -864,6 +883,7 @@ def _validate_artifact(payload: object, *, evidence: Path | None = None) -> dict
         "branch",
         "bead",
         "module",
+        "skip_lfs_smudge",
         "destination_parent_identity",
         "evidence_parent_identity",
         "repositories",
@@ -908,6 +928,8 @@ def _validate_artifact(payload: object, *, evidence: Path | None = None) -> dict
     if not isinstance(inputs.get("bead"), str) or not _BEAD_RE.fullmatch(inputs["bead"]):
         raise StartError("start artifact bead is invalid")
     _validate_module_text(inputs.get("module"))
+    if not isinstance(inputs.get("skip_lfs_smudge"), bool):
+        raise StartError("start artifact skip_lfs_smudge is invalid")
     _validate_identity(inputs.get("destination_parent_identity"), allow_none=False)
     _validate_identity(inputs.get("evidence_parent_identity"), allow_none=False)
     forbidden_roots = inputs.get("forbidden_roots")
@@ -1706,6 +1728,8 @@ def _delete_local_heads(
     label: str,
     steps: list[dict[str, Any]],
     results: list[dict[str, Any]],
+    *,
+    skip_lfs_smudge: bool = False,
 ) -> None:
     output = _git(
         target,
@@ -1714,6 +1738,7 @@ def _delete_local_heads(
         steps,
         results,
         mutating=False,
+        skip_lfs_smudge=skip_lfs_smudge,
     )
     for ref in output.decode("utf-8", errors="strict").splitlines():
         if not ref.startswith("refs/heads/") or "\x00" in ref:
@@ -1725,6 +1750,7 @@ def _delete_local_heads(
             steps,
             results,
             mutating=True,
+            skip_lfs_smudge=skip_lfs_smudge,
         )
 
 
@@ -1735,6 +1761,8 @@ def _materialize_repository(
     branch: str,
     steps: list[dict[str, Any]],
     results: list[dict[str, Any]],
+    *,
+    skip_lfs_smudge: bool = False,
 ) -> None:
     relative = repository["relative_path"]
     label = "darling" if relative == "." else relative
@@ -1754,6 +1782,7 @@ def _materialize_repository(
         results,
         mutating=True,
         timeout=_CLONE_TIMEOUT_SECONDS,
+        skip_lfs_smudge=skip_lfs_smudge,
     )
     _require_repo(target, f"clone-{label}", steps, results)
     _require_commit(target, repository["revision"], f"clone-{label}", steps, results)
@@ -1764,8 +1793,9 @@ def _materialize_repository(
         steps,
         results,
         mutating=True,
+        skip_lfs_smudge=skip_lfs_smudge,
     )
-    _delete_local_heads(target, label, steps, results)
+    _delete_local_heads(target, label, steps, results, skip_lfs_smudge=skip_lfs_smudge)
     if selected:
         _git(
             target,
@@ -1774,14 +1804,29 @@ def _materialize_repository(
             steps,
             results,
             mutating=True,
+            skip_lfs_smudge=skip_lfs_smudge,
         )
     head = _decode_line(
-        _git(target, f"verify_head:{label}", ["rev-parse", "HEAD"], steps, results),
+        _git(
+            target,
+            f"verify_head:{label}",
+            ["rev-parse", "HEAD"],
+            steps,
+            results,
+            skip_lfs_smudge=skip_lfs_smudge,
+        ),
         "git rev-parse HEAD",
     )
     if head != repository["revision"]:
         raise StartError(f"materialized repository has the wrong HEAD: {label}")
-    dirty = _git(target, f"verify_clean:{label}", ["status", "--porcelain"], steps, results)
+    dirty = _git(
+        target,
+        f"verify_clean:{label}",
+        ["status", "--porcelain"],
+        steps,
+        results,
+        skip_lfs_smudge=skip_lfs_smudge,
+    )
     if dirty:
         raise StartError(f"materialized repository is dirty: {label}")
 def _verify_materialized_closure(
@@ -1893,6 +1938,7 @@ def execute_start(plan: dict) -> dict:
             _fsync_directory(staging)
 
             module = payload["inputs"]["module"]
+            skip_lfs_smudge = payload["inputs"]["skip_lfs_smudge"]
             for repository in repositories:
                 relative = repository["relative_path"]
                 label = "darling" if relative == "." else relative
@@ -1905,6 +1951,7 @@ def execute_start(plan: dict) -> dict:
                     payload["inputs"]["branch"],
                     payload["steps"],
                     payload["results"],
+                    skip_lfs_smudge=skip_lfs_smudge,
                 )
                 _durable_write(evidence, payload)
             _verify_materialized_closure(
