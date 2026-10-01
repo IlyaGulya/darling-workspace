@@ -13162,3 +13162,56 @@ Tooling in the same round (because two readings were being withheld, not because
 instrument (`[urgent-service]`, one line per serviced slot) and its census row carries a proof token, and the census's
 default artifact set includes the SERVER binary, so "quiet" and "instrument absent from the deployed artifact" are no
 longer the same reading.
+
+
+## Transport ledger — authoritative state (2026-10-01)
+
+Measured on the deployed build (mldr, libsystem_kernel.dylib, dyld and darlingserver from one build tree,
+sha256-verified at deploy time). Every line below has a direct measurement behind it.
+
+| path | transport | evidence |
+| --- | --- | --- |
+| ordinary / thread RPC | SPSC Ring | acceptance suite 9/9 first attempt with `rpc-socket created` = 0 on every row |
+| blocking family | Ring + fiber/futex | `sem_block`, `sem_timed`, `sem_wait_signal`, `sem_timedwait_signal`, `sem_gap` rows PASS |
+| caller-S2C | duplex SHM | `mach_port_deallocate` and `mach_port_mod_refs` ride the existing duplex lane, no denial |
+| bootstrap / lifecycle | process management SHM | `SET_DYLD_INFO` direct-serviced; `SET_EXECUTABLE_PATH`, `ATTACH_LANE`, `CHECKIN` on the plane |
+| urgent / reentrant | shared urgent slots | `PING`/urgent publish path in use during boot |
+| real descriptor | process SCM_RIGHTS courier | 11 process-level courier connections per run, stable across iterations |
+| wake | process eventfd (doorbell) | 33 plane doorbell adoptions per run |
+| ordinary AF_UNIX RPC | **0** | zero `AF_UNIX`/legacy occurrences across 200 run logs |
+| per-thread AF_UNIX | **nonexistent** | `created` = 0 across 200 run logs; `DARLING_GUEST_RING_MACH_MSG=0` is no longer a runnable arm |
+| FD slope per thread | **0** | `darling-fd-slope.sh`: server peak 65/65/65/65 and guest peak 9/10/10/10 for 1/8/16/32 threads |
+
+## What the centralized plane retry actually handles
+
+`__dserver_plane_request_ex` wraps `..._once` with nine bounded attempts. Classification from 200 run logs:
+the retry marker fired 15 times, always on **op=7 (`SET_EXECUTABLE_PATH`)** or **op=13**, i.e. on the loader's
+own early boot publishes, and never on a workload path. `denied` = 0, `created` = 0 and
+`plane-token-missing` = 0 in the same 200 runs.
+
+Conclusion: this is **transient slot contention** on the single management slot while several boot-time
+publishers are in flight, so a bounded retry is legitimate policy rather than a mask for a lifecycle defect.
+The invariant that keeps it safe is the one already implemented: a request is a transaction keyed by
+`(pid, seq)`, so a re-published request is a new transaction and no completion can be mis-attributed.
+
+## The two residual boot-stall defects and their fixes
+
+Both were silent: no denial, no fatal signal, no registration on the server — which is why guest-side
+instrumentation alone could not name them.
+
+1. **A descriptor-bearing plane route could claim success without its descriptor.** The server handlers for
+   `KQCHAN_MACH_PORT_OPEN`, `KQCHAN_PROC_OPEN` and `CONSOLE_OPEN` left `status = 0` when
+   `sendFdCourierBundleToGuest` returned no token (they only closed the descriptor), so the guest was told the
+   channel existed. Fixed: the completion is now `-EIO` with a named `plane-token-missing` line whenever the
+   courier returns no token.
+2. **The guest wrapper returned success with `*out_socket` unset** when the token existed but the courier
+   receive failed (`[kqchan-plane] status=0 token=<n> fd=-1 out=0`; every passing run in the same batch had
+   `fd=positive`). Fixed: the transfer is retried a bounded number of times with a fresh sequence per attempt,
+   and the call reports `-LINUX_EIO` if the descriptor still does not arrive.
+3. **The loader treated its own `-2` (answer not its own) as fatal**: `Failed to tell darlingserver about our
+   executable path` and `exit(1)`, the 15-line boot failure. Fixed: bounded retry of `-2` only — a real server
+   status is an answer and is returned unchanged.
+
+Measured trajectory: 4/100 boots failing before the fixes, 4/100 after the first two (a third variant),
+then **100/100 and a second 100/100** on the deployed fixed build, with acceptance 9/9 first attempt on the
+same build. The frozen `darling-debug` MVP was used read-only throughout; its ABI was not extended.
