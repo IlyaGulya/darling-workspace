@@ -758,3 +758,12 @@ What they answered when set: in crashing and passing runs alike the deferred che
 (`checkin-publish BEGIN` then `deferred-checkin status=0 ready=1`), so the deferred checkin is not the call
 that dies, and a run that reports `denied=1` can still PASS -- the denial is a correlation with the crash, not
 its cause, and any explanation of that failure class has to name the call site.
+
+### `handoff/` deletes files it does not own (2026-10-01)
+
+`west dw handoff` regenerates `handoff/*.bundle` and, in doing so, removes files in that directory it does not
+recognize. Measured twice: preservation diffs committed under `handoff/` were gone from the working tree after
+the next `west dw handoff`, unstaged and unannounced, which is exactly the loss the archives existed to
+prevent. Keep anything durable outside that directory; the preservation copies of the xnu mach_msg delta now
+live in `artifacts/xnu-ring-mach-msg/`, and one `west dw handoff` run confirms they survive it (2 files still
+present, 0 diff files left in `handoff/`).
