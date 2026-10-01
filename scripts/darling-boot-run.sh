@@ -42,6 +42,11 @@ while [ $# -gt 0 ]; do
 		--cmd) CMD="$2"; shift 2 ;;
 		--hatch) HATCH=1; shift ;;
 		--env) EXTRA_ENV="$EXTRA_ENV $2"; shift 2 ;;
+		# DIAGNOSTIC ONLY (default off): when the marker verdict fails, leave the prefix and its
+		# processes ALIVE so an external observer (darling-debug, LLDB, host wchan) can inspect the
+		# failing incarnation. Acceptance never sets this; it exists because a watchdog stop followed
+		# immediately by a shutdown destroys exactly the state the investigation needs.
+		--freeze-on-fail) FREEZE_ON_FAIL=1; shift ;;
 		--assert-prefix-maps) ASSERT_MAPS=1; shift ;;
 		--verify-probe) VERIFY_PROBES="$VERIFY_PROBES
 $2"; shift 2 ;;
@@ -267,6 +272,14 @@ echo "socket denials:    $(grep -c 'rpc-socket-DENIED' "$LOG" 2>/dev/null)"
 echo "urgent timeouts:   $(grep -c 'urgent-wait-TIMEOUT' "$LOG" 2>/dev/null)"
 echo "courier misses:    $(grep -c 'fd-courier-recv. MISS' "$LOG" 2>/dev/null)"
 echo "log lines:         $(wc -l < "$LOG")"
+
+if [ "${FREEZE_ON_FAIL:-0}" -eq 1 ] && [ "$verdict" -ne 0 ]; then
+	STAGE=freeze; echo "== freeze-on-fail (diagnostic) =="
+	echo "FREEZE-ON-FAIL prefix=$PREFIX log=$LOG verdict=$verdict"
+	echo "FREEZE-ON-FAIL inspect now, then clean up with: west darling-prefix-repair --prefix $PREFIX --cleanup-mounts"
+	echo "FREEZE-ON-FAIL or: DPREFIX=$PREFIX DARLING_PREFIX=$PREFIX DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 $PREFIX/bin/darling --rootless shutdown"
+	exit 1
+fi
 
 STAGE=cleanup; echo "== cleanup =="
 witness "TEARDOWN stage=shutdown-enter self=$$ parent=$PPID harness=$(caller_id $$)"
