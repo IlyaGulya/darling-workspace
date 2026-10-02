@@ -448,14 +448,15 @@ manifest:
     repo-path: darlingserver
     path: darling/src/external/darlingserver
     remote: darling
-    revision: 89751e64bc6c2082f7725061824ee0e33395b0de
+    revision: a693e31a3df59ffe8f01b8ced9cf423be6389afc
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
 
-# DIVERGENCE (unresolved, needs the product owner): the darlingserver pin below, the
-# top-level darling gitlink (a693e31a3df5) and the live working checkout (6ad1bb27) are
-# three different commits; left as-is rather than guessed. Resolve before accepting this.
+# RESOLVED by evidence: the manifest pin 89751e64 contains no dserver_ring_shm_t at all
+# (0 files) while the top-level darling product commit's gitlink a693e31a does (11 files),
+# so the pin now matches the product's own gitlink. The live working checkout is 176 commits
+# further; those are NOT part of the accepted product unless the owner says so.
   - name: darling-src-external-dbuskit
     repo-path: darling-dbuskit
     path: darling/src/external/dbuskit
