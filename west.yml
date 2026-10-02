@@ -16,7 +16,7 @@ manifest:
     repo-path: darling
     path: darling
     remote: darling-next
-    revision: 4aa9b4ddcd2d4b54a54d6797061d53d62370dad0
+    revision: 9ef131b2de45be69cdac0fb8c491a73e670b2e9e
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -448,7 +448,7 @@ manifest:
     repo-path: darlingserver
     path: darling/src/external/darlingserver
     remote: darling
-    revision: a693e31a3df59ffe8f01b8ced9cf423be6389afc
+    revision: 6bedae813d2608944bb43a3b1922587308850970
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
@@ -733,7 +733,7 @@ manifest:
     repo-path: darling-libmalloc
     path: darling/src/external/libmalloc
     remote: darling
-    revision: a57991e2651226a675654bd96e5d9ab6bec288c5
+    revision: 15f5405f735a2c0fa4bdd1d21b341bd4db123279
     userdata:
       kind: darling-source
       upstream-repository: darling-libmalloc
@@ -1291,7 +1291,7 @@ manifest:
     repo-path: darling-xnu
     path: darling/src/external/xnu
     remote: darling-next
-    revision: 97dd9e57f04340530f2a11060bc8849a61f062ca
+    revision: 5c01c2f64445b96bac00f4c91845b7c67f73317e
     userdata:
       kind: darling-source
       upstream-repository: darling-xnu
