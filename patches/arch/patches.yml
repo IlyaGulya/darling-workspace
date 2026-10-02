@@ -94,7 +94,7 @@ patches:
 - path: darlingserver/a0-arch-redesign.patch
   module: darling/src/external/darlingserver
   source-branch: fix/a0-arch-redesign
-  source-base: f4530b5f635672a815eff0f344ec7c91bc1ec12b
+  source-base: 6ad1bb2703a3e1f99af9313ab632ad9cc94f6138
   bead: dar-a0arch-redesign-253u
   publication-status: blocked
   publication-blocker: 'A0-ARCH wake/wait protocol redesign (stages 0-3: fuzzer, typed wake tokens, MicroState machine + taped XNU wait-state funnel, interrupt-as-cancellation replacing jumpToResime stack-borrowing). Eliminates the #114 storm-on-condvar SEGV crash class. 40 commits. LANDED, deployed d81b5cf1; synth 16/16, quick gate 19/19, perf A/B no-regression, stage 4 no-go. Wants design review before upstreaming. See dar-a0arch-redesign-253u + tests/A0-ARCH-STAGE{1,2,3}.md.'
@@ -113,7 +113,7 @@ patches:
     - darling-prefix
     note: Long guest acceptance gate from the A0-ARCH stage docs; run manually/guarded, not as a fast local default.
   source-commit: 3b5d17af7c671707000cc3bd09fd34889bba281d
-  sha256sum: f0cc679818dd3adc6d7cf553360cc190d0f6f89b605be1e0e4f7acb654c67a1f
+  sha256sum: a0109ebdb1504822ab3351542a4ad39a631c5eb1f7b41bfb5717d7435480eac0
 - path: darlingserver/standard-signal-coalescing.patch
   module: darling/src/external/darlingserver
   source-branch: fix/standard-signal-coalescing
