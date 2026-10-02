@@ -411,7 +411,16 @@ def _require_exact_replay(repo: Path, proof: dict[str, Any], before: str, after:
         if re.match(r"^\s*\d+:\s+", line)
     ]
     if len(rows) != len(proof["ordered_commits"]) or any(" = " not in line for line in rows):
-        raise LockFirstError("immutable patch identity differs after profile replay")
+        # NAME THE ROW. MEASURED: this error said only that the identity differs, so a locked commit whose
+        # replayed patch differed in metadata alone (the author line, as a hand replay showed) read exactly like a
+        # wrong base, a wrong order or a stale lock -- three causes with three different remedies. The rows, the two
+        # ranges and the count are what decide which one it is, and they cost one line to print.
+        detail = (
+            f"rows={len(rows)} expected={len(proof['ordered_commits'])} "
+            f"locked={proof['base_oid'][:12]}..{proof['source_oid'][:12]} "
+            f"replayed={before[:12]}..{after[:12]} :: " + " | ".join(row.strip() for row in rows)
+        )
+        raise LockFirstError(f"immutable patch identity differs after profile replay: {detail}")
     if _stable_patch_id(repo, proof["base_oid"], proof["source_oid"]) != _stable_patch_id(repo, before, after):
         raise LockFirstError("stable patch identity differs after profile replay")
 
