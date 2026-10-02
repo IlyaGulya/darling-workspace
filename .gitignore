@@ -19,3 +19,11 @@ testkit/build/
 
 # vendored tool build output
 tools/darling-debug-runner/target/
+
+# Handoff keeper bundles: recovery artefacts whose place is the disk, not the
+# published repository. Measured (dar-b5pe): 174 tracked bundles / 1.57 GB, six
+# to eight rewritten by every handoff, and files above GitHub's 100 MB limit --
+# a push of a branch carrying them cannot succeed. The bundles stay on disk;
+# only their history inside this repository is under review.
+handoff/
+source-bundles/
