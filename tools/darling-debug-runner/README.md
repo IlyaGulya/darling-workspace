@@ -615,3 +615,18 @@ it matched its OWN command line, because `--prefix <path>` sits in its argv, and
 prefix; and it inherited nothing else from the cleanup rule it belongs to. It now excludes its own pid and its whole
 ancestor chain, read from `/proc` before any process is examined -- the same rule that, in an earlier session, a
 cleanup script violated by killing a grandparent and returning 137.
+
+## An inlined crash probe: how to localize it, and why the tool refuses instead of guessing
+
+The `dserver_crash_probe` is `static` and inlined at -O2, so it can be absent from the symbol table; `crash` then
+reports `dserver_crash_probe not in the symbol table: cannot derive the file offset` and stops. That refusal is
+deliberate -- a base fitted loosely from a crash line's code pointers also fits bases that are wrong, and a wrong
+`symbol + offset` is worse than an error, which is the same honesty bound the disassembly path already enforces.
+
+The method that does work, done by hand and verified once: take the line's `pc`, `w5` and `w7` (all three are code
+addresses inside the image, unlike `sp`/`w0`), and find the single page-aligned base for which **all three** land inside
+the image's symbol range; the largest such base is the answer, and it must be cross-checked against the fact that the
+other pointers on the line (`w1` is typically an allocator pointer and must NOT be included). Applying that to the
+loader crash of run r2 (`pc=0x55e25915b9af`, `w5=0x55e25914a4f5`, `w7=0x55e259103847`) gives base `0x55e259101000` and
+`main_dthread + 0x115f` with a null-ish dereference at `si_addr=0x6c8` -- the same signature as the earlier
+`ipc_port_destroy + 0x3c`/`si_addr=0x684` case.
