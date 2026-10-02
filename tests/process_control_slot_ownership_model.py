@@ -2,18 +2,22 @@
 """Deterministic host-level model of the process-control request slot (dar-b5pe).
 
 WHY A MODEL AND NOT A GUEST RUN. The defect this test exists for appeared in roughly a third of twelve-thread
-boots and its evidence is a race between two publishers of one shared page, so a guest run can only report that
-it happened, never which interleaving caused it. This file encodes the protocol as it is written in
-`include/darlingserver/rpc-supplement.h` -- the two-state request word (IDLE/PENDING with CLAIMED written by the
-server on ownership transfer and DONE on completion), the separate reply word with its own sequence, and the
-client's RELEASE, which is a plain store of IDLE -- and then forces the interleavings by ordering the operations
-explicitly instead of by sleeping.
+boots and its evidence is a race between two publishers of one shared page, so a guest run can only report that it
+happened, never which interleaving caused it. This file encodes the protocol as written in
+`include/darlingserver/rpc-supplement.h` -- the request word with its states (IDLE, PENDING, CLAIMED written by the
+server on ownership transfer, DONE on completion), the separate reply word with its own sequence, and the client's
+RELEASE -- and forces the interleavings by ordering operations explicitly instead of sleeping.
 
-WHAT IT PROVES. Each case below is one interleaving and each assertion is one sentence of the required invariant:
-a client that gives up waiting must not hand a slot to the next publisher while an older server transaction can
-still publish its completion, and a late completion must never satisfy or mutate a newer generation. Cases A and
-B pass on the current protocol; C, D, E and F fail on it, which is the point: this test is the RED proof for the
-generation/ownership-safe abandonment the protocol still owes.
+TWO ARMS, ONE REQUIRED OUTCOME.
+  v1 = the protocol in the tree today: RELEASE is a plain store of IDLE, so a client that gives up after the server
+       claimed the slot hands it to the next publisher. Case C FAILS here, which is the RED proof.
+  v2 = the required algorithm: release is a compare-and-swap from PENDING (it can never take the slot away from the
+       server), a publisher claims only IDLE or a DONE whose generation is older than its own, and a completion
+       carries the generation it answers. Every case must PASS here.
+
+The invariant both arms are judged by is one sentence: a client giving up waiting does not make the shared slot safe
+to re-use while an older server transaction can still publish a completion, and a late completion for generation A
+must never satisfy or mutate generation B.
 
 Run directly (`python3 tests/process_control_slot_ownership_model.py`) or through the shell contract next to it.
 """
@@ -34,134 +38,168 @@ class Page:
         self.reply_state = IDLE
         self.reply_seq = 0
         self.reply_status = 0
-        self.owner: int | None = None  # the server's record of which generation it claimed
+        self.owner: int | None = None  # what the server recorded when it took ownership
 
 
 class Failure(AssertionError):
     pass
 
 
-def publish(page: Page, generation: int, op: int) -> bool:
-    """Client publish: claim the slot (IDLE, or a DONE left by a completed earlier request) and write the request."""
-    if page.request_state not in (IDLE, DONE):
-        return False
-    page.request_state = PENDING
-    page.request_seq = generation
-    page.request_op = op
-    return True
+class Protocol:
+    """One protocol version; `generation_safe` selects the algorithm under test."""
+
+    def __init__(self, generation_safe: bool) -> None:
+        self.generation_safe = generation_safe
+
+    def publish(self, page: Page, generation: int, op: int) -> bool:
+        if self.generation_safe:
+            if page.request_state == IDLE:
+                pass
+            elif page.request_state == DONE and page.reply_seq < generation:
+                pass  # the previous owner's completion is spent; a newer generation may take the slot
+            else:
+                return False
+        elif page.request_state not in (IDLE, DONE):
+            return False
+        page.request_state = PENDING
+        page.request_seq = generation
+        page.request_op = op
+        return True
+
+    def release(self, page: Page) -> None:
+        """Give up waiting. The generation-safe form may only take back a slot nobody else claimed."""
+        if self.generation_safe:
+            if page.request_state == PENDING:
+                page.request_state = IDLE
+                page.request_seq = 0
+            # CLAIMED belongs to the server from here on: the client stops waiting and leaves it alone.
+            return
+        page.request_state = IDLE
+        page.request_seq = 0
+
+    def server_claim(self, page: Page) -> int | None:
+        if page.request_state != PENDING:
+            return None
+        page.request_state = CLAIMED
+        page.owner = page.request_seq
+        return page.owner
+
+    def server_complete(self, page: Page, generation: int, status: int) -> None:
+        page.reply_seq = generation
+        page.reply_status = status
+        page.reply_state = DONE
+        page.request_state = DONE
+
+    def consume(self, page: Page, generation: int) -> int | None:
+        if page.reply_state != DONE or page.reply_seq != generation:
+            return None
+        return page.reply_status
 
 
-def release(page: Page) -> None:
-    """The client's RELEASE today: a plain store of IDLE, with no notion of who else may still own the slot."""
-    page.request_state = IDLE
-    page.request_seq = 0
-
-
-def server_claim(page: Page) -> int | None:
-    """Ownership transfer. From here the server owns the request whatever the client does."""
-    if page.request_state != PENDING:
-        return None
-    page.request_state = CLAIMED
-    page.owner = page.request_seq
-    return page.owner
-
-
-def server_complete(page: Page, generation: int, status: int) -> None:
-    """The server publishes its completion. Nothing in the protocol stops a late completion from landing on a slot
-    the next publisher already re-used, which is the defect these cases expose."""
-    page.reply_seq = generation
-    page.reply_status = status
-    page.reply_state = DONE
-    page.request_state = DONE
-
-
-def consume(page: Page, generation: int) -> int | None:
-    """Client consume: read the reply only if it belongs to this generation."""
-    if page.reply_state != DONE or page.reply_seq != generation:
-        return None
-    return page.reply_status
-
-
-def case_a_normal() -> None:
+def case_a_normal(p: Protocol) -> None:
     page = Page()
-    assert publish(page, 1, op=8), "A: publish failed"
-    assert server_claim(page) == 1, "A: server did not claim"
-    server_complete(page, 1, status=0)
-    if consume(page, 1) != 0:
+    assert p.publish(page, 1, op=8), "A: publish failed"
+    assert p.server_claim(page) == 1, "A: server did not claim"
+    p.server_complete(page, 1, status=0)
+    if p.consume(page, 1) != 0:
         raise Failure("A: normal completion was not consumable")
 
 
-def case_b_abandon_before_claim() -> None:
+def case_b_abandon_before_claim(p: Protocol) -> None:
     page = Page()
-    assert publish(page, 1, op=8), "B: publish failed"
-    release(page)  # the client gives up before anybody claimed it
+    assert p.publish(page, 1, op=8), "B: publish failed"
+    p.release(page)  # give up before anybody claimed it
     if page.request_state != IDLE:
         raise Failure("B: abandonment before claim left the slot not reusable")
-    assert publish(page, 2, op=7), "B: the slot was not reusable after an unclaimed abandonment"
-    if server_claim(page) != 2:
+    assert p.publish(page, 2, op=7), "B: the slot was not reusable after an unclaimed abandonment"
+    if p.server_claim(page) != 2:
         raise Failure("B: the server claimed the wrong generation")
 
 
-def case_c_abandon_after_claim() -> None:
+def case_c_abandon_after_claim(p: Protocol) -> None:
     page = Page()
-    assert publish(page, 1, op=8), "C: publish A failed"
-    if server_claim(page) != 1:
+    assert p.publish(page, 1, op=8), "C: publish A failed"
+    if p.server_claim(page) != 1:
         raise Failure("C: the server did not take ownership of A")
-    release(page)  # THE DEFECT: the client releases a slot the server still owns
-    assert publish(page, 2, op=7), "C: B could not publish into a slot whose owner is still the server"
-    server_complete(page, 1, status=0)  # A's completion arrives late, after B published
-    if page.reply_seq == 1 and page.request_seq == 2:
-        raise Failure(
-            "C: a late completion for generation A landed on generation B's slot "
-            f"(reply_seq={page.reply_seq}, request_seq={page.request_seq})"
-        )
+    p.release(page)  # the client gives up AFTER the server owns the request
+    if page.request_state == CLAIMED and not p.generation_safe:
+        pass  # v1 stores IDLE here, which is the defect; v2 leaves CLAIMED alone
+    published = p.publish(page, 2, op=7)
+    if published and page.request_seq != 2:
+        raise Failure("C: B's own request was overwritten while publishing")
+    if published and page.request_state == CLAIMED and page.owner == 1:
+        raise Failure("C: B published into a slot the server still owns for generation A")
+    p.server_complete(page, 1, status=0)  # A's completion arrives late
+    if p.generation_safe:
+        if page.request_state == PENDING and page.request_seq == 2 and page.reply_seq == 1:
+            raise Failure("C: a late completion for A landed on generation B's pending request")
+        # The point of the rule: B was refused while ownership was ambiguous, and once A's completion arrives the
+        # slot is publishable again for a NEWER generation. B must then complete normally, not be starved.
+        if not p.publish(page, 2, op=7):
+            raise Failure("C: generation B could not publish after A's completion released the slot")
+        if p.server_claim(page) != 2:
+            raise Failure("C: the server could not claim generation B after A's late completion")
+        p.server_complete(page, 2, status=0)
+        if p.consume(page, 2) != 0:
+            raise Failure("C: generation B could not consume its own completion")
+    else:
+        if page.reply_seq == 1 and page.request_seq == 2:
+            raise Failure(
+                "C: a late completion for generation A landed on generation B's slot "
+                f"(reply_seq={page.reply_seq}, request_seq={page.request_seq})"
+            )
 
 
-def case_d_late_completion_must_not_satisfy_b() -> None:
+def case_d_late_completion_must_not_satisfy_b(p: Protocol) -> None:
     page = Page()
-    assert publish(page, 1, op=8) and server_claim(page) == 1
-    release(page)
-    assert publish(page, 2, op=7), "D: B could not publish"
-    server_complete(page, 1, status=0)
-    if consume(page, 2) is not None:
+    assert p.publish(page, 1, op=8) and p.server_claim(page) == 1
+    p.release(page)
+    published = p.publish(page, 2, op=7)
+    if not p.generation_safe and not published:
+        raise Failure("D: B could not publish")
+    p.server_complete(page, 1, status=0)
+    if p.consume(page, 2) is not None:
         raise Failure("D: B consumed A's reply")
 
 
-def case_e_stale_done_during_publication() -> None:
+def case_e_stale_done_during_publication(p: Protocol) -> None:
     """A's completion is already DONE when B publishes. B must never read it as its own."""
     page = Page()
-    assert publish(page, 1, op=8) and server_claim(page) == 1
-    server_complete(page, 1, status=0)
-    if not publish(page, 2, op=7):
+    assert p.publish(page, 1, op=8) and p.server_claim(page) == 1
+    p.server_complete(page, 1, status=0)
+    if not p.publish(page, 2, op=7):
         raise Failure("E: B could not publish over a completed request")
-    if consume(page, 2) is not None:
+    if p.consume(page, 2) is not None:
         raise Failure("E: a foreign DONE satisfied generation B")
-    if server_claim(page) != 2:
+    if p.server_claim(page) != 2:
         raise Failure("E: the server could not claim B after A's stale DONE")
 
 
-def case_f_repeated_generations() -> None:
-    """Repeated A/B/C generations under forced scheduling must never wedge the slot nor leak a generation."""
+def case_f_repeated_generations(p: Protocol) -> None:
+    """Repeated generations under forced scheduling must never wedge the slot nor leak one into another."""
     page = Page()
     for generation in range(1, 40):
         if generation % 3 == 0:
-            # abandon before claim
-            assert publish(page, generation, op=8), f"F: publish {generation} failed"
-            release(page)
-            assert page.request_state == IDLE, f"F: slot wedged after abandoning {generation}"
+            assert p.publish(page, generation, op=8), f"F: publish {generation} failed"
+            p.release(page)  # abandon before claim
+            if p.generation_safe and page.request_state not in (IDLE, DONE):
+                raise Failure(f"F: slot wedged after abandoning {generation}: state={page.request_state}")
             continue
-        assert publish(page, generation, op=8), f"F: publish {generation} failed"
-        if server_claim(page) != generation:
+        assert p.publish(page, generation, op=8), f"F: publish {generation} failed"
+        if p.server_claim(page) != generation:
             raise Failure(f"F: the server claimed the wrong generation at {generation}")
         if generation % 3 == 1:
-            release(page)  # abandonment after claim: the unsafe path
-        server_complete(page, generation, status=0)
-        if page.reply_state == DONE and page.reply_seq == generation:
-            continue
-        raise Failure(f"F: generation {generation} left no completion")
+            p.release(page)  # abandonment after claim
+        p.server_complete(page, generation, status=0)
+        if not (page.reply_state == DONE and page.reply_seq == generation):
+            raise Failure(f"F: generation {generation} left no completion")
+        if p.consume(page, generation) != 0:
+            raise Failure(f"F: generation {generation} could not consume its own completion")
 
 
-def main() -> int:
+def run(generation_safe: bool) -> int:
+    proto = Protocol(generation_safe)
+    label = "v2-generation-safe" if generation_safe else "v1-current"
     cases = [
         ("A normal request", case_a_normal),
         ("B abandonment before claim", case_b_abandon_before_claim),
@@ -173,16 +211,27 @@ def main() -> int:
     failures = 0
     for name, fn in cases:
         try:
-            fn()
+            fn(proto)
         except Failure as exc:
             failures += 1
-            print(f"FAIL {name}: {exc}")
+            print(f"FAIL [{label}] {name}: {exc}")
         else:
-            print(f"PASS {name}")
-    if failures:
-        print(f"SLOT-OWNERSHIP failures={failures} of {len(cases)} -- the current protocol is not ownership-safe")
-        return 1
-    print(f"SLOT-OWNERSHIP failures=0 of {len(cases)} -- the protocol is ownership-safe")
+            print(f"PASS [{label}] {name}")
+    print(f"{label}: failures={failures} of {len(cases)}")
+    return failures
+
+
+def main() -> int:
+    v1 = run(generation_safe=False)
+    v2 = run(generation_safe=True)
+    # The contract: the current protocol MUST fail the ownership cases, and the required algorithm MUST pass all.
+    if v1 == 0:
+        print("SLOT-OWNERSHIP INVALID: the current protocol passed every case, so this test proves nothing")
+        return 2
+    if v2 != 0:
+        print(f"SLOT-OWNERSHIP FAILED: the generation-safe algorithm left {v2} failures")
+        return 3
+    print(f"SLOT-OWNERSHIP ok: current protocol fails {v1} case(s); generation-safe algorithm is clean")
     return 0
 
 
