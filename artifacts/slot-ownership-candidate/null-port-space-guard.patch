@@ -1,0 +1,22 @@
+--- a/duct-tape/src/thread.c
++++ b/duct-tape/src/thread.c
+@@ -217,6 +217,19 @@
+ };
+ 
+ dtape_thread_t* dtape_thread_for_port(uint32_t thread_port) {
++	/* A PORT NAME CAN ONLY BE TRANSLATED IN A THREAD THAT HAS A PORT SPACE (dar-b5pe). MEASURED: the management
++	 * plane's PTHREAD_KILL handler runs where a Call on a lane would run, which is NOT an XNU thread, so
++	 * port_name_to_thread called ipc_port_translate_send(current_space()) with a null space and the SERVER crashed
++	 * -- fault at si_addr=0x6c8 inside port_name_to_thread+0x2f, stack Registry<Thread>::scopedLock+0x27,
++	 * dtape_thread_for_port+0x15, over three runs in forty. THAT is also why the crash was intermittent rather
++	 * than constant: the plane only takes that handler when the request lands there. The honest answer in such a
++	 * context is "no such thread", which every caller already maps to -ESRCH (Thread::threadForPort returns
++	 * nullptr, and the plane reports the refusal rather than servicing the request against a guessed thread),
++	 * which is the same refusal the ordinary path produces for an unknown port. A silent null dereference is not
++	 * a refusal, so it must not be the behaviour here. */
++	if (current_thread() == NULL || current_space() == NULL) {
++		return NULL;
++	}
+ 	thread_t xnu_thread = port_name_to_thread(thread_port, PORT_TO_THREAD_NONE);
+ 	if (!xnu_thread) {
+ 		return NULL;
