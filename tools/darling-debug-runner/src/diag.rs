@@ -4035,6 +4035,102 @@ fn run_trace(args: TraceArgs) -> Result<ExitCode> {
     Ok(if total == 0 { ExitCode::from(1) } else { ExitCode::SUCCESS })
 }
 
+/// Report the processes a PREFIX owns, matched by executable path AND command line, and refuse to call a prefix
+/// clean on a name match alone.
+///
+/// MEASURED motivation: a stale-process check written as `pgrep -c shellspawn` reported zero while three guest
+/// launchers from three earlier runs were still alive, because the launcher's process NAME is not `shellspawn` and a
+/// name pattern that matches nothing is indistinguishable from a clean prefix. The count that told the truth came from
+/// the cleanup tool's prefix-owned census -- five, not zero. That is the same class of false negative the verdict rule
+/// exists to prevent (absence of a marker is not PASS), so the census belongs here, beside the other verdicts, and it
+/// prints the executable and the command line it matched on rather than a bare number.
+#[derive(Args, Debug)]
+pub struct ProcessesArgs {
+    /// Prefix to census.
+    #[arg(long)]
+    prefix: PathBuf,
+    /// Print one line per matching process.
+    #[arg(long)]
+    list: bool,
+    #[arg(long)]
+    json: bool,
+}
+
+fn run_processes(args: ProcessesArgs) -> Result<ExitCode> {
+    let wanted = args.prefix.to_string_lossy().to_string();
+    let canonical = fs::canonicalize(&args.prefix)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| wanted.clone());
+    let mut rows: Vec<(i32, String, String)> = Vec::new();
+    for entry in fs::read_dir("/proc").context("reading /proc")? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let name = entry.file_name().to_string_lossy().to_string();
+        let pid: i32 = match name.parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        // The EXECUTABLE PATH is the handle that survives a rewritten argv, and the COMMAND LINE is the handle that
+        // survives a re-exec; a stale-process rule needs both, which is why both are matched here and printed.
+        let exe = fs::read_link(entry.path().join("exe"))
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let cmdline = fs::read(entry.path().join("cmdline"))
+            .map(|b| {
+                String::from_utf8_lossy(&b)
+                    .replace('\0', " ")
+                    .trim_end()
+                    .to_string()
+            })
+            .unwrap_or_default();
+        let owned = (!exe.is_empty() && (exe.contains(&wanted) || exe.contains(&canonical)))
+            || cmdline.contains(&wanted)
+            || cmdline.contains(&canonical);
+        if owned {
+            rows.push((pid, exe, cmdline));
+        }
+    }
+    rows.sort_by_key(|r| r.0);
+    if args.json {
+        let items: Vec<String> = rows
+            .iter()
+            .map(|(pid, exe, cmd)| {
+                format!(
+                    "{{\"pid\":{pid},\"exe\":\"{}\",\"cmdline\":\"{}\"}}",
+                    jesc(exe),
+                    jesc(cmd)
+                )
+            })
+            .collect();
+        crate::say(&format!(
+            "{{\"prefix\":\"{}\",\"count\":{},\"clean\":{},\"processes\":[{}]}}",
+            jesc(&wanted),
+            rows.len(),
+            rows.is_empty() as u8,
+            items.join(",")
+        ));
+    } else {
+        if args.list {
+            for (pid, exe, cmd) in &rows {
+                crate::say(&format!("PREFIX-PROCESS pid={pid} exe={exe} cmdline={cmd}"));
+            }
+        }
+        crate::say(&format!(
+            "PREFIX-PROCESSES prefix={} count={} clean={}",
+            wanted,
+            rows.len(),
+            rows.is_empty() as u8
+        ));
+    }
+    Ok(if rows.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
+}
+
 pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
     match cmd {
         DiagCommand::Source(a) => run_source_check(a),
@@ -4052,6 +4148,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Prefix(a) => run_prefix(a),
         DiagCommand::Denials(a) => run_denials(a),
         DiagCommand::Trace(a) => run_trace(a),
+        DiagCommand::Processes(a) => run_processes(a),
     }
 }
 
@@ -4397,6 +4494,9 @@ pub enum DiagCommand {
     /// install the test assets, then run ONE workload on it. Prints a PREFIX-STAGE line before every step, so a gate that
     /// dies part way says where it died instead of going silent.
     Prefix(PrefixArgs),
+    /// Report the processes a PREFIX owns, matched by executable path AND command line: a name match that finds
+    /// nothing is not a clean prefix, and the count this prints is the one a stale-process claim may rest on.
+    Processes(ProcessesArgs),
 }
 
 // A tiny helper used by the table so a caller can see the set in a stable order under --json too.

@@ -767,3 +767,11 @@ the next `west dw handoff`, unstaged and unannounced, which is exactly the loss 
 prevent. Keep anything durable outside that directory; the preservation copies of the xnu mach_msg delta now
 live in `artifacts/xnu-ring-mach-msg/`, and one `west dw handoff` run confirms they survive it (2 files still
 present, 0 diff files left in `handoff/`).
+
+## `dwdiag processes` (added with the stale-process correction)
+
+A prefix-process census matched by executable path AND command line, `--list` and `--json`, exit 1 when the prefix is
+not clean. Added because `pgrep -c <name>` said a prefix was empty while it held three stale guest launchers: the
+launcher's process name is not the pattern, so the count was zero for the same reason a broken instrument is silent.
+Use it before any claim that a prefix is clean, and use `scripts/prefix-cleanup.sh` -- which prints its own
+prefix-owned before/after counts -- to act on the result.
