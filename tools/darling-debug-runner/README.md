@@ -588,3 +588,11 @@ What the attributed captures DO show, in all three: the prefix's own
 `pipe_read`, and nothing is blocked on a host resource. Two of the three failures
 had `denied=0`; one had `denied=1`. So the flap is the guest shell pair failing to
 complete its work, not the host stalling underneath it.
+
+## A trap this tool's users keep hitting: counting stale processes by name
+
+`pgrep -c <name>` matches the process NAME, which for the guest launcher is not `shellspawn`, so a prefix holding three
+stale launcher processes reports zero. The count to trust is the one the platform's own cleanup prints --
+`prefix-owned processes before/after`, which matches the executable path and the command line, as the workspace rule
+requires -- and the tool that gives it is `scripts/prefix-cleanup.sh`, not a hand-rolled `pgrep`. A zero from a name
+pattern is not evidence of a clean prefix.
