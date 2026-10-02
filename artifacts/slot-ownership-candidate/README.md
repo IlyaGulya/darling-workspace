@@ -26,3 +26,20 @@ WHAT IS NOT YET MEASURED: the effect of the conditional store on the failure cla
 batch that would answer it was interrupted, so the comparison against the 7 PASS / 4 CRASH / 1 HANG baseline is open.
 Nothing here is landed in a profile patch; the design and its deterministic test live in
 `tests/process_control_slot_ownership_model.py`.
+
+## The change as an appliable patch
+
+`conditional-store.patch` is the surviving fix in unified-diff form, against a clean copy of the same file. Verified,
+not assumed: applying it with `patch -p1` to the pre-change file reproduces the measured source byte for byte
+(`cmp` reports identical). It touches only the three client give-up sites; the loader's copy of the same rule and its
+ungated marker are extra instrumentation that the measurement used and that a product patch does not need.
+
+Apply with:
+
+```
+patch -p1 < conditional-store.patch      # from a tree rooted at the same relative path
+```
+
+or carry the same three hunks into a profile patch, where they land in the XNU entry that owns the plane/ring client
+(`dserver-ring.c`) -- and note that the measured result was taken with the deploy pair rebuilt together
+(`libsystem_kernel.dylib` plus `dyld`) and all four prefix copies installed with a sha256 check.
