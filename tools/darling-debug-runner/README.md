@@ -596,3 +596,16 @@ stale launcher processes reports zero. The count to trust is the one the platfor
 `prefix-owned processes before/after`, which matches the executable path and the command line, as the workspace rule
 requires -- and the tool that gives it is `scripts/prefix-cleanup.sh`, not a hand-rolled `pgrep`. A zero from a name
 pattern is not evidence of a clean prefix.
+
+## `dwdiag processes` -- the stale-process census, because a name match is not a clean prefix
+
+    dwdiag processes --prefix /tmp/dr-on-matched [--list] [--json]
+
+Matches a process to the prefix by its **executable path AND its command line** and prints
+`PREFIX-PROCESSES prefix=... count=N clean=0|1`, exiting non-zero when the count is not zero. Exists because the same
+mistake was made by hand twice in one session: `pgrep -c shellspawn` reported zero while three guest launchers from
+three earlier runs were still alive (the launcher's NAME is not `shellspawn`), and a zero from a pattern that matches
+nothing is indistinguishable from a clean prefix. The truth came from the cleanup tool's prefix-owned census -- five,
+not zero -- so the census now lives here beside the other verdicts, with the exe and the command line it matched on
+printed rather than a bare number. Demonstrated the same minute it was added: with a suite in flight it reported
+`count=5 clean=0` where the hand-rolled name count reported nothing.
