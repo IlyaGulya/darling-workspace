@@ -21,7 +21,7 @@ frozen_manifest:
   sha256: 5718c32c76a180b9078a206b93d93e70f478a5ada0034cd6afcc789c447e055d
 mapping:
   path: lock-first-series-perf-v2.yml
-  sha256: c265865cdb8343893b04f5326b130bb9f91098f4c6c79e75fc4b43b32cd3b820
+  sha256: 9d7d453df5841fad9fa0c87622b5b6afe01d554311320321624491d3d0068d22
   batch_id: darling-perf-lock-first-batch-1
   expected_count: 7
 modules:
@@ -30,7 +30,7 @@ modules:
     tree: 966e9119dfa0ffe536f28f86cde3b58779969e02
   series:
   - patch: darling/mldr-compact-fd-band.patch
-    lock: darling-mldr-compact-fd-band-v1.yml
+    lock: darling-mldr-compact-fd-band-profile-v6.yml
     expected_applied_tree: 1fce0600b329d7f866872082268c8a9a98fbb8b9
   final_tree: 1fce0600b329d7f866872082268c8a9a98fbb8b9
   integration_final_tree: 1fce0600b329d7f866872082268c8a9a98fbb8b9
