@@ -4076,6 +4076,28 @@ fn run_processes(args: ProcessesArgs) -> Result<ExitCode> {
     let canonical = fs::canonicalize(&args.prefix)
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| wanted.clone());
+    // THE CENSUS MUST NOT MATCH ITSELF OR ITS ANCESTORS. This command's own argv carries the prefix path, so a
+    // straight cmdline match reported the census as a prefix process (measured: count=1 clean=0 on an idle prefix);
+    // the same mistake, one level up, is the guard that killed a grandparent and returned 137. The excluded set is
+    // this pid and the chain that leads to it, read from /proc before any process is examined.
+    let mut excluded: Vec<i32> = vec![std::process::id() as i32];
+    {
+        let mut cur = std::process::id() as i32;
+        for _ in 0..64 {
+            let stat = fs::read_to_string(format!("/proc/{cur}/stat")).unwrap_or_default();
+            let ppid = stat
+                .rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().nth(1))
+                .and_then(|p| p.parse::<i32>().ok());
+            match ppid {
+                Some(p) if p > 0 => {
+                    excluded.push(p);
+                    cur = p;
+                }
+                _ => break,
+            }
+        }
+    }
     let mut rows: Vec<(i32, String, String)> = Vec::new();
     for entry in fs::read_dir("/proc").context("reading /proc")? {
         let entry = match entry {
@@ -4087,6 +4109,9 @@ fn run_processes(args: ProcessesArgs) -> Result<ExitCode> {
             Ok(p) => p,
             Err(_) => continue,
         };
+        if excluded.contains(&pid) {
+            continue;
+        }
         // The EXECUTABLE PATH is the handle that survives a rewritten argv, and the COMMAND LINE is the handle that
         // survives a re-exec; a stale-process rule needs both, which is why both are matched here and printed.
         let exe = fs::read_link(entry.path().join("exe"))

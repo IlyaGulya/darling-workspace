@@ -609,3 +609,9 @@ nothing is indistinguishable from a clean prefix. The truth came from the cleanu
 not zero -- so the census now lives here beside the other verdicts, with the exe and the command line it matched on
 printed rather than a bare number. Demonstrated the same minute it was added: with a suite in flight it reported
 `count=5 clean=0` where the hand-rolled name count reported nothing.
+
+Two defects this verb had on the day it was added, both now fixed and both the same class as the mistake it exists for:
+it matched its OWN command line, because `--prefix <path>` sits in its argv, and reported `count=1 clean=0` on an idle
+prefix; and it inherited nothing else from the cleanup rule it belongs to. It now excludes its own pid and its whole
+ancestor chain, read from `/proc` before any process is examined -- the same rule that, in an earlier session, a
+cleanup script violated by killing a grandparent and returning 137.
