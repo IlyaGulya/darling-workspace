@@ -1667,7 +1667,7 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
     let binary = args
         .binary
         .as_ref()
-        .context("a loader-side dserver-CRASH line needs --binary <image> (a guest fatal signal does not)")?;
+        .context("a dserver-CRASH line is written by the SERVER: pass --binary pointing at the darlingserver binary (the loader image does not contain this probe, and pointing at it produced two wrong answers in one session)")?;
     let syms = load_symbols(binary)?;
 
     // The probe reports `self` (a known symbol's runtime address) precisely so that the runtime pc can be turned into an
