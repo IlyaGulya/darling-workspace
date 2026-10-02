@@ -786,3 +786,26 @@ is (a) the tool's own per-run logs under `/tmp/dwdiag-verdict-*.log`, each carry
 --list` now prints with the executable and command line it matched on. If no tool process is alive and the logs are
 complete, the job is over no matter what the board says; if the tool does linger after its last run, its per-run logs
 are still the result, and the outer timeout is only there to reclaim the process.
+
+## Attributing a hang that the log cannot explain (the recipe)
+
+When a workload never speaks and its log ends in ordinary traffic, the log tail is exhausted as evidence -- chasing
+the last marker is how this session spent three rounds on a non-cause (`[pc-nothreads]` is a normal early return, and
+the repeated `[pc-entry]` pairs are courier wakeups: the plane's publish path does `sendto`, `sendto` calls
+`CANCELATION_POINT()`, and that calls `sys_pthread_canceled(0)`, which answers `-EINVAL` in a process without
+threads). What is left is to ask the RUNNING state, not a finished file:
+
+1. `dwdiag verdict --prefix P --mode M --args A --repeat N` and let it time out. The watchdog kills the workload, so
+   the interesting process is gone by the time the run ends -- which is why this does not work retroactively.
+2. Instead, run with a wait long enough to catch it: the per-run `--wait` is what bounds the workload, so raise it and
+   drive ONE run at a time, keeping the tool in the foreground of a job whose output is not consumed.
+3. While it is stuck: `dwdiag processes --prefix P --list` lists what the prefix still owns, by executable and command
+   line. That names the process -- the tool's own `pid` is excluded from the census.
+4. For the named pid: read `/proc/<pid>/wchan` (what it blocks in) and `/proc/<pid>/stack` if readable, then
+   `dwdiag progress --log <run log>` for what the guest and the server last did, and `dwdiag trace --log <run log> --pid
+   <pid>` for that process's own chronology in the log.
+5. `dwdiag crash --log <run log> --binary <PREFIX>/bin/darlingserver` if a `[dserver-CRASH ...]` line is present --
+   with the SERVER binary, since that line is the server's.
+
+The point of writing this down: the heuristic that works on a crash (read the last line of the log) does not work on a
+hang, and the difference cost this session repeated attempts before it was stated plainly.
