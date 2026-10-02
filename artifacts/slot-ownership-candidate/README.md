@@ -43,3 +43,18 @@ patch -p1 < conditional-store.patch      # from a tree rooted at the same relati
 or carry the same three hunks into a profile patch, where they land in the XNU entry that owns the plane/ring client
 (`dserver-ring.c`) -- and note that the measured result was taken with the deploy pair rebuilt together
 (`libsystem_kernel.dylib` plus `dyld`) and all four prefix copies installed with a sha256 check.
+
+## The complete change as one appliable patch
+
+`three-parts.patch` (168 lines, six hunks) is the whole shape in unified-diff form against clean copies of both files:
+the client give-up sites and the loader's copy of the same rule (both in
+`src/external/xnu/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c`), and the two
+generation-conditional completion guards (in `src/external/darlingserver/src/server.cpp`). It supersedes the earlier
+client-only `conditional-store.patch`, which was verified to apply and reproduce the measured source byte for byte; the
+same method applies here (`patch -p1` from a tree rooted at each file's relative path).
+
+Measured state when this patch was in the tree and deployed (pair rebuilt together through the tool, server installed
+with a sha256 check, all twelve runs tool-owned): twelve PASS of twelve at basic 20, denied=0, created=0, against a
+baseline of seven PASS, four CRASH ABRT and one HANG in twelve. The reclaim and completion-discarded paths were NOT
+exercised by those runs -- their instruments reported zero hits -- so their evidence is the host model (current protocol
+fails case C, generation-safe passes all seven), not this batch. Read the count that way.
