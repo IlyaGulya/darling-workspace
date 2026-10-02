@@ -1,0 +1,80 @@
+--- a/src/external/xnu/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c
++++ b/src/external/xnu/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c
+@@ -1629,7 +1629,24 @@
+ 				uint32_t seenSeq = page->reply_seq;
+ 	{ uint32_t _st = __atomic_load_n(&(page)->request_state, __ATOMIC_ACQUIRE); if (_st == DSERVER_PROCESS_CONTROL_PENDING) { static const char _m[] = "[release-drops-pending] site=dserver-ring.c:1518\n"; long _a = 1, _d = 2, _s = (long)_m, _n = sizeof(_m) - 1; __asm__ volatile("syscall" : "+a"(_a), "+D"(_d), "+S"(_s), "+d"(_n) : : "rcx", "r11", "memory"); } }
+ 				__MLDR_PLANE_STEP("K-snapshot", DSERVER_PROCESS_CONTROL_OP_ATTACH_LANE);
+-	DSERVER_PROCESS_CONTROL_RELEASE(page);
++	/* A GIVE-UP MUST NOT TAKE BACK A SLOT THE SERVER OWNS (dar-b5pe), AND IT MUST STILL RETURN A SPENT ONE. MEASURED:
++	 * a CAS release from PENDING alone broke the boot twelve times out of twelve, because the plain store it
++	 * replaced also returned a slot left at DONE -- and the code's own comment records that leaving a slot at DONE
++	 * breaks the boot worse than any other choice. So the only thing this changes is the CLAIMED case: the server
++	 * owns the request, and the slot stays as it is until its completion arrives. */
++	if (__atomic_load_n(&(page)->reply_state, __ATOMIC_ACQUIRE) == DSERVER_PROCESS_CONTROL_CLAIMED) {
++		static int __release_held = 0;
++		if (!__release_held) {
++			__release_held = 1;
++			__simple_fprintf(2, "[release-held-claimed] op=%u state=%u rstate=%u tid=%d\n",
++				(unsigned)__atomic_load_n(&(page)->request_op, __ATOMIC_ACQUIRE),
++				(unsigned)__atomic_load_n(&(page)->request_state, __ATOMIC_ACQUIRE),
++				(unsigned)__atomic_load_n(&(page)->reply_state, __ATOMIC_ACQUIRE),
++				(int)LINUX_SYSCALL(__NR_gettid));
++		}
++	} else {
++		DSERVER_PROCESS_CONTROL_RELEASE(page);
++	}
+ 	__MLDR_PLANE_STEP("L-released", DSERVER_PROCESS_CONTROL_OP_ATTACH_LANE);
+ 				if (seenState == DSERVER_PROCESS_CONTROL_DONE &&
+ 				    seenSeq == mine) {
+@@ -3179,7 +3196,24 @@
+ 					(unsigned)op, plane_attempts,
+ 					(unsigned)__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE),
+ 					(unsigned)page->reply_seq, (int)LINUX_SYSCALL(__NR_gettid));
+-	DSERVER_PROCESS_CONTROL_RELEASE(page);
++				/* A GIVE-UP MUST NOT TAKE BACK A SLOT THE SERVER OWNS (dar-b5pe), AND IT MUST STILL RETURN A SPENT ONE. MEASURED:
++	 * a CAS release from PENDING alone broke the boot twelve times out of twelve, because the plain store it
++	 * replaced also returned a slot left at DONE -- and the code's own comment records that leaving a slot at DONE
++	 * breaks the boot worse than any other choice. So the only thing this changes is the CLAIMED case: the server
++	 * owns the request, and the slot stays as it is until its completion arrives. */
++	if (__atomic_load_n(&(page)->reply_state, __ATOMIC_ACQUIRE) == DSERVER_PROCESS_CONTROL_CLAIMED) {
++		static int __release_held = 0;
++		if (!__release_held) {
++			__release_held = 1;
++			__simple_fprintf(2, "[release-held-claimed] op=%u state=%u rstate=%u tid=%d\n",
++				(unsigned)__atomic_load_n(&(page)->request_op, __ATOMIC_ACQUIRE),
++				(unsigned)__atomic_load_n(&(page)->request_state, __ATOMIC_ACQUIRE),
++				(unsigned)__atomic_load_n(&(page)->reply_state, __ATOMIC_ACQUIRE),
++				(int)LINUX_SYSCALL(__NR_gettid));
++		}
++	} else {
++		DSERVER_PROCESS_CONTROL_RELEASE(page);
++	}
+ 				goto plane_request_again;
+ 			}
+ 			if (++slow >= 5000 && !planeSlowReported) {
+@@ -3200,7 +3234,24 @@
+ 	uint64_t seenReply0 = page->reply_payload[0];
+ 	uint64_t seenReply1 = page->reply_payload[1];
+ 	{ uint32_t _st = __atomic_load_n(&(page)->request_state, __ATOMIC_ACQUIRE); if (_st == DSERVER_PROCESS_CONTROL_PENDING) { static const char _m[] = "[release-drops-pending] site=dserver-ring.c:2752\n"; long _a = 1, _d = 2, _s = (long)_m, _n = sizeof(_m) - 1; __asm__ volatile("syscall" : "+a"(_a), "+D"(_d), "+S"(_s), "+d"(_n) : : "rcx", "r11", "memory"); } }
+-	DSERVER_PROCESS_CONTROL_RELEASE(page);
++	/* A GIVE-UP MUST NOT TAKE BACK A SLOT THE SERVER OWNS (dar-b5pe), AND IT MUST STILL RETURN A SPENT ONE. MEASURED:
++	 * a CAS release from PENDING alone broke the boot twelve times out of twelve, because the plain store it
++	 * replaced also returned a slot left at DONE -- and the code's own comment records that leaving a slot at DONE
++	 * breaks the boot worse than any other choice. So the only thing this changes is the CLAIMED case: the server
++	 * owns the request, and the slot stays as it is until its completion arrives. */
++	if (__atomic_load_n(&(page)->reply_state, __ATOMIC_ACQUIRE) == DSERVER_PROCESS_CONTROL_CLAIMED) {
++		static int __release_held = 0;
++		if (!__release_held) {
++			__release_held = 1;
++			__simple_fprintf(2, "[release-held-claimed] op=%u state=%u rstate=%u tid=%d\n",
++				(unsigned)__atomic_load_n(&(page)->request_op, __ATOMIC_ACQUIRE),
++				(unsigned)__atomic_load_n(&(page)->request_state, __ATOMIC_ACQUIRE),
++				(unsigned)__atomic_load_n(&(page)->reply_state, __ATOMIC_ACQUIRE),
++				(int)LINUX_SYSCALL(__NR_gettid));
++		}
++	} else {
++		DSERVER_PROCESS_CONTROL_RELEASE(page);
++	}
+ 	if (seenState != DSERVER_PROCESS_CONTROL_DONE || seenSeq != mine) {
+ 		return -1;
+ 	}
