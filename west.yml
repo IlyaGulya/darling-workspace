@@ -16,7 +16,7 @@ manifest:
     repo-path: darling
     path: darling
     remote: darling-next
-    revision: 4aa9b4ddcd2d4b54a54d6797061d53d62370dad0
+    revision: 9ef131b2de45be69cdac0fb8c491a73e670b2e9e
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -447,16 +447,11 @@ manifest:
   - name: darling-src-external-darlingserver
     repo-path: darlingserver
     path: darling/src/external/darlingserver
-    remote: darling
-    revision: a693e31a3df59ffe8f01b8ced9cf423be6389afc
+    remote: darling-next
+    revision: 6bedae813d2608944bb43a3b1922587308850970
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
-
-# RESOLVED by evidence: the manifest pin 89751e64 contains no dserver_ring_shm_t at all
-# (0 files) while the top-level darling product commit's gitlink a693e31a does (11 files),
-# so the pin now matches the product's own gitlink. The live working checkout is 176 commits
-# further; those are NOT part of the accepted product unless the owner says so.
   - name: darling-src-external-dbuskit
     repo-path: darling-dbuskit
     path: darling/src/external/dbuskit
@@ -484,8 +479,8 @@ manifest:
   - name: darling-src-external-dyld
     repo-path: darling-dyld
     path: darling/src/external/dyld
-    remote: darling-next
-    revision: 323ba11611e074b0a412b133ece0685862e9b00e
+    remote: darling
+    revision: 63f667cf06d7ed59553adebb0c8d70a117135ac9
     userdata:
       kind: darling-source
       upstream-repository: darling-dyld
@@ -604,8 +599,8 @@ manifest:
   - name: darling-src-external-installer
     repo-path: darling-installer
     path: darling/src/external/installer
-    remote: darling-next
-    revision: aa310ef30ddcd35f8ab43474325316e40b1e24f8
+    remote: darling
+    revision: 88764e6149f92f1747442c27ab00231f40de278c
     userdata:
       kind: darling-source
       upstream-repository: darling-installer
@@ -732,8 +727,8 @@ manifest:
   - name: darling-src-external-libmalloc
     repo-path: darling-libmalloc
     path: darling/src/external/libmalloc
-    remote: darling
-    revision: a57991e2651226a675654bd96e5d9ab6bec288c5
+    remote: darling-next
+    revision: 15f5405f735a2c0fa4bdd1d21b341bd4db123279
     userdata:
       kind: darling-source
       upstream-repository: darling-libmalloc
@@ -756,16 +751,16 @@ manifest:
   - name: darling-src-external-libplatform
     repo-path: darling-libplatform
     path: darling/src/external/libplatform
-    remote: darling-next
-    revision: 300fba26032d9e78287f69f4ca02ef79fd80913c
+    remote: darling
+    revision: 5a3e5b529d25c70257dcfa97e94f1826e71e9f40
     userdata:
       kind: darling-source
       upstream-repository: darling-libplatform
   - name: darling-src-external-libpthread
     repo-path: darling-libpthread
     path: darling/src/external/libpthread
-    remote: darling-next
-    revision: 2f5a78cfc482c7e69b87138a48980cab97e387dc
+    remote: darling
+    revision: f07f265bfbcf071c1adfc808de971e053ea5edc5
     userdata:
       kind: darling-source
       upstream-repository: darling-libpthread
@@ -805,7 +800,7 @@ manifest:
     repo-path: darling-libressl
     path: darling/src/external/libressl-2.8.3
     remote: darling-next
-    revision: 277ea7e0abcf1076f327a885daa2267423e5da08
+    revision: 2a56b36b77a00573c53ccd8e6932eb136172c950
     userdata:
       kind: darling-source
       upstream-repository: darling-libressl
@@ -1096,8 +1091,8 @@ manifest:
   - name: darling-src-external-perl
     repo-path: darling-perl
     path: darling/src/external/perl
-    remote: darling-next
-    revision: 7c83779599e7c658e30dcabbe73b1f8bfa0c8cc3
+    remote: darling
+    revision: a65d68be2146d85928e511aabc8f3a2b05e564ba
     userdata:
       kind: darling-source
       upstream-repository: darling-perl
@@ -1291,7 +1286,7 @@ manifest:
     repo-path: darling-xnu
     path: darling/src/external/xnu
     remote: darling-next
-    revision: 97dd9e57f04340530f2a11060bc8849a61f062ca
+    revision: 5c01c2f64445b96bac00f4c91845b7c67f73317e
     userdata:
       kind: darling-source
       upstream-repository: darling-xnu
@@ -1322,7 +1317,7 @@ manifest:
   - name: darling-debug-runner
     path: darling-debug-runner
     remote: darling-next
-    revision: 5d106d347b719a5c5b66f0356e2fa9d4e894d8de
+    revision: dbcd8ebfbb63a94e5f3f21fb6df570b831425b33
     groups:
     - private
     - debug-tools
