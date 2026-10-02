@@ -10,7 +10,5 @@ mirror:
   source_ref: refs/tags/patch-stack/v1/sources/78cf1a0ebca04b1c91ed4130408f7ea4973cbddf
   source_oid: 78cf1a0ebca04b1c91ed4130408f7ea4973cbddf
 source_commit: 78cf1a0ebca04b1c91ed4130408f7ea4973cbddf
-ordered_commits:
-  - 4f94da7e3cf7d212bed23edafcf87fae518be3de
-  - 718d9a8dceb50d272e1879ca960855b5bd66e369
+ordered_commits: [78cf1a0ebca04b1c91ed4130408f7ea4973cbddf]
 expected_tree: 429385ea640da77cbb9adf73478220dc22ce07bf
