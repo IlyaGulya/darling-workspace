@@ -52,9 +52,12 @@ class MirrorUnreachableError(MaterializeError):
 # raise it with ``WEST_PATCH_IMMUTABLE_FETCH_TIMEOUT=<seconds>``.
 IMMUTABLE_FETCH_TIMEOUT_SECONDS = 300.0
 IMMUTABLE_FETCH_TIMEOUT_ENV = "WEST_PATCH_IMMUTABLE_FETCH_TIMEOUT"
-# The short first attempt at a FULL transfer, before the blobless fallback in
-# fetch_immutable() takes over.  See immutable_fetch_probe_seconds().
-IMMUTABLE_FULL_FETCH_PROBE_SECONDS = 120.0
+# The first attempt at a full transfer, before the blobless fallback in fetch_immutable() takes over.
+# MEASURED (dar-b5pe): 120s was too short.  Most mirrors serve the blobless transfer and fail the full one, but
+# github.com/darling-next/darling.git is the reverse -- its full transfer is the path that works, and it takes
+# longer than two minutes, so a 120s bound turned the one mirror that needs it into "unreachable".  The per-mirror
+# memo means a failing mirror pays this bound once per run rather than once per ref.
+IMMUTABLE_FULL_FETCH_PROBE_SECONDS = 300.0
 IMMUTABLE_FULL_FETCH_PROBE_ENV = "WEST_PATCH_IMMUTABLE_FULL_FETCH_PROBE"
 # Reachability probes run once per distinct mirror before any replay, so their
 # bound stays short: a blackholed mirror must fail the gate almost immediately.
@@ -223,15 +226,27 @@ def fetch_immutable(repo: Path, remote: str, specs: Sequence[str], *, url: str |
     probe = immutable_fetch_probe_seconds()
     mirror_key = url or remote
 
-    # A BLOBLESS FETCH IS TRIED FIRST, BECAUSE IT IS THE ONE THAT WORKS HERE. MEASURED (dar-b5pe), same tag and
-    # mirror minutes apart: the unfiltered transfer dies mid-pack with "unexpected disconnect while reading
-    # sideband packet", then "early EOF" and "invalid index-pack output", after three minutes eighteen seconds,
+    # FULL FIRST, THEN BLOBLESS: the order is measured, not preferred, and it is not the same for every mirror.
+    # MEASURED (dar-b5pe): most mirrors here serve the metadata-only transfer -- a full transfer from them dies
+    # mid-pack with "unexpected disconnect while reading sideband packet", then "early EOF" and "invalid
+    # index-pack output" -- while github.com/darling-next/darling.git is the REVERSE: its blobless transfer does
+    # not complete and its full one is the path that works. Both orders were tried and each broke the other half.
     # while the same ref with --filter=blob:none completes in 3.9s and leaves the commit present. A replay reads
-    # commits and trees before it writes anything, so metadata is what it needs; if a later checkout wants a
-    # blob, Git asks the same mirror on demand. The order matters beyond speed: a full transfer that is KILLED
-    # mid-pack leaves the destination holding a partial transfer, and the retry that used to run second then had
-    # to succeed on top of that state -- which is exactly how a fallback that works in isolation reported the
-    # mirror unreachable inside a replay. Trying the metadata-only transfer first never creates that state.
+    # commits and trees before it writes anything, so metadata is what it needs; and a mirror that cannot serve the
+    # full transfer is remembered for the rest of the run, so that cost is paid once per mirror, not once per ref.
+    # A killed transfer also leaves a partial state behind, which is why the attempt order is fixed per mirror for
+    # the whole run instead of being decided per ref.
+    if mirror_key not in _FULL_FETCH_FAILED_MIRRORS:
+        try:
+            _git(repo, "fetch", "--no-tags", remote, *specs, timeout=probe)
+            return
+        except (GitTimeout, MaterializeError):
+            _FULL_FETCH_FAILED_MIRRORS.add(mirror_key)
+            print(
+                f"patch-stack: the full transfer from {mirror_key} did not complete in this run; "
+                "fetching with --filter=blob:none instead"
+            )
+
     try:
         _git(repo, "fetch", "--no-tags", "--filter=blob:none", remote, *specs)
         if mirror_key not in _BLOBLESS_ANNOUNCED_MIRRORS:

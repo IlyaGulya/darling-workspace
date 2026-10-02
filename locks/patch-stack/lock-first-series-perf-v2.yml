@@ -7,7 +7,7 @@ series:
   - profile: perf
     module: darling
     patch: darling/mldr-compact-fd-band.patch
-    lock: darling-mldr-compact-fd-band-v1.yml
+    lock: darling-mldr-compact-fd-band-profile-v6.yml
   - profile: perf
     module: darling/src/external/xnu
     patch: xnu/shmem-ring-guest.patch
