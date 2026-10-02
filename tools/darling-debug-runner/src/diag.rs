@@ -3383,6 +3383,21 @@ const INSTRUMENTS: &[(&str, &str, &str)] = &[
         r"\[release-drops-pending\] site=",
         "guest/server: a completed request whose slot was released while still pending, by site",
     ),
+    (
+        "plane-reclaim",
+        r"\[plane-reclaim\] ",
+        "guest: a PENDING slot older than the publisher's generation was taken back -- the case-G path, whose absence in a clean run is the expected reading",
+    ),
+    (
+        "plane-claim-iter",
+        r"\[plane-claim-iter ",
+        "guest: the rotation of the plane slot, behind the plane-steps switch -- silent unless DARLING_GUEST_PLANE_STEPS is on",
+    ),
+    (
+        "completion-discarded",
+        r"process-control-stale-completion",
+        "server: a completion dropped because the slot no longer carries the sequence it answers -- the server half of case G",
+    ),
 ];
 
 /// Count each registered instrument's lines in `text`, and keep one sample per instrument for the human to read.
