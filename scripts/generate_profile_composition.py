@@ -172,7 +172,14 @@ def _replay_profile(
         lock_first.materialize_batch_into(
             worktrees[module],
             module_entries,
-            reset_to_first_base=fresh,
+            # ALWAYS RESET, NOT ONLY WHEN THE WORKTREE IS NEW (dar-b5pe). MEASURED: this replay shares one
+            # worktree per module across the profiles of a single run -- homebrew replays a module, then arch
+            # replays the same module -- and passing reset_to_first_base only for a freshly created worktree left
+            # the second profile's first commit applying onto the FIRST profile's final tree. That is the conflict
+            # that looked like a bad patch: git am for the arch entry failed against a HEAD that was not the
+            # entry's declared base at all. These worktrees are disposable and lifecycle-owned by this run, which
+            # is precisely the case the flag exists for, so the reset belongs on every replay.
+            reset_to_first_base=True,
             record=captured,
         )
         if module not in captured:

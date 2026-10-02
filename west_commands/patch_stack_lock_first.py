@@ -93,7 +93,24 @@ def _cherry_pick(repo: Path, commit: str, *, git_options: tuple[str, ...] = ()) 
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         if result.returncode:
-            raise LockFirstError(f"git am for immutable {commit} failed ({result.returncode}): {result.stderr.strip()}")
+            # ATTRIBUTABLE FAILURE (dar-b5pe). MEASURED: this error used to say only that git am failed for a
+            # commit, and the scratch worktree is removed on the way out, so the failing hunk could not be read
+            # afterwards -- which turned one conflict into an afternoon of guessing about bases. The repository,
+            # the commit the worktree is actually ON, and the first lines of the patch that would not apply are
+            # what make the next attempt start from evidence instead of a hypothesis.
+            context = ""
+            try:
+                head = subprocess.run(["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
+                                      capture_output=True, text=True).stdout.strip()
+                failing = subprocess.run(["git", "-C", str(repo), "am", "--show-current-patch=diff"],
+                                         capture_output=True, text=True).stdout
+                preview = "\n".join(failing.splitlines()[:8])
+                context = f"\n  repo={repo}\n  head={head}\n  failing-patch:\n{preview}"
+            except Exception:
+                pass
+            raise LockFirstError(
+                f"git am for immutable {commit} failed ({result.returncode}): {result.stderr.strip()}{context}"
+            )
     finally:
         if mbox is not None:
             Path(mbox).unlink(missing_ok=True)
