@@ -58,3 +58,19 @@ with a sha256 check, all twelve runs tool-owned): twelve PASS of twelve at basic
 baseline of seven PASS, four CRASH ABRT and one HANG in twelve. The reclaim and completion-discarded paths were NOT
 exercised by those runs -- their instruments reported zero hits -- so their evidence is the host model (current protocol
 fails case C, generation-safe passes all seven), not this batch. Read the count that way.
+
+## The fourth part: a null port space is not a crash
+
+`null-port-space-guard.patch` adds two lines to `dtape_thread_for_port` in `duct-tape/src/thread.c`, the single funnel every
+`Thread::threadForPort` goes through: if there is no current thread or no current port space, return NULL instead of
+letting `port_name_to_thread` dereference a null space. The caller already maps NULL to `-ESRCH`, which is the same
+refusal the ordinary path produces for an unknown port, so the change turns a server crash into an honest refusal.
+
+Evidence: the crash it removes was measured exactly -- `port_name_to_thread + 0x2f`, `si_addr=0x6c8`, stack
+`Registry<Thread>::scopedLock + 0x27`, `dtape_thread_for_port + 0x15` -- and after the guard was deployed with the
+server (sha256 `3d1c41ea21e3`), a forty-run soak at basic 20 produced 36 PASS, 4 HANG, 0 BOOT-FAIL and **zero**
+crash lines, against 37 PASS, 2 HANG, 1 BOOT-FAIL and one crash line before it. Stated carefully: the crash class is
+removed by construction and the guarded batch shows no crash, but the difference in hang count (2 vs 4 in forty runs)
+is not significant, and the hangs are a different failure -- their runs report `workload=absent`, meaning the workload
+never spoke at all. Also recorded: the plane's own `pthread-kill-direct` marker did not fire in any of the forty runs
+of the first batch, so the crash's caller was most likely an ordinary Call rather than the plane handler.
