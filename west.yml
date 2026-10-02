@@ -447,7 +447,7 @@ manifest:
   - name: darling-src-external-darlingserver
     repo-path: darlingserver
     path: darling/src/external/darlingserver
-    remote: darling
+    remote: darling-next
     revision: 6bedae813d2608944bb43a3b1922587308850970
     userdata:
       kind: darling-source
@@ -732,7 +732,7 @@ manifest:
   - name: darling-src-external-libmalloc
     repo-path: darling-libmalloc
     path: darling/src/external/libmalloc
-    remote: darling
+    remote: darling-next
     revision: 15f5405f735a2c0fa4bdd1d21b341bd4db123279
     userdata:
       kind: darling-source
