@@ -775,3 +775,14 @@ not clean. Added because `pgrep -c <name>` said a prefix was empty while it held
 launcher's process name is not the pattern, so the count was zero for the same reason a broken instrument is silent.
 Use it before any claim that a prefix is clean, and use `scripts/prefix-cleanup.sh` -- which prints its own
 prefix-owned before/after counts -- to act on the result.
+
+## When a long `dwdiag` job "is still running" but is not
+
+Two waits in one session were spent on a job board rather than on work: the suite had finished all nine modes and its
+per-run logs were written, the process was gone (`pgrep` found nothing), and the board still said running -- once for
+over an hour. The rule is the same one the verdict logic follows: a status line is a claim, not evidence. The evidence
+is (a) the tool's own per-run logs under `/tmp/dwdiag-verdict-*.log`, each carrying its mode's machine-readable
+`pass=1` line, and (b) whether a tool process is actually alive for the prefix, which `dwdiag processes --prefix P
+--list` now prints with the executable and command line it matched on. If no tool process is alive and the logs are
+complete, the job is over no matter what the board says; if the tool does linger after its last run, its per-run logs
+are still the result, and the outer timeout is only there to reclaim the process.
