@@ -84,7 +84,35 @@ class Protocol:
         page.owner = page.request_seq
         return page.owner
 
+    def reclaim_expired_claim(self, page: Page, generation: int) -> bool:
+        """The second half of ownership safety, and the half a measurement demanded.
+
+        A claim the server never completes (its transaction died, its thread was killed, its work was dropped) would
+        otherwise hold the single process-scoped slot forever. MEASURED: without this, an ownership-safe release turned
+        twelve of twelve boots into BOOT-FAIL. The reclaim is generation-scoped: a claim left by generation X may be
+        taken by generation Y > X, because the reclaiming generation is strictly newer and its own request can never be
+        confused with the abandoned one -- the invariant is that a late completion for X must not satisfy Y, and that
+        holds here because Y writes its own generation before anything can complete X.
+        """
+        if not self.generation_safe:
+            return False
+        if page.request_state != CLAIMED or page.owner is None:
+            return False
+        if generation <= page.owner:
+            return False
+        page.request_state = PENDING
+        page.request_seq = generation
+        page.owner = None
+        return True
+
     def server_complete(self, page: Page, generation: int, status: int) -> None:
+        # THE COMPLETION IS GENERATION-CONDITIONAL. MEASURED need (case G): once a stale claim can be reclaimed by a
+        # newer generation, an unconditional completion for the OLD generation would write DONE over the new
+        # generation's PENDING request and strand it -- the same class of harm as the client-side release stealing a
+        # slot, arriving from the other end. A server that can no longer see its own generation in the slot has lost
+        # the slot to a newer generation, and its answer must be discarded rather than published.
+        if self.generation_safe and page.request_seq != generation:
+            return
         page.reply_seq = generation
         page.reply_status = status
         page.reply_state = DONE
@@ -175,6 +203,45 @@ def case_e_stale_done_during_publication(p: Protocol) -> None:
         raise Failure("E: the server could not claim B after A's stale DONE")
 
 
+# G. A CLAIMED REQUEST THE SERVER NEVER COMPLETES MUST NOT WEDGE THE SLOT. This case comes from a measurement rather
+# than from reasoning: an ownership-safe release that simply leaves a claimed slot alone was deployed and measured,
+# and it turned twelve of twelve boots into BOOT-FAIL because the release had been the only thing returning those
+# slots. So ownership safety needs its second half -- a generation-scoped reclaim -- and a protocol that passes A-F
+# while wedging here is not finished.
+
+# The reclaim rule the case below demands: a slot whose claim is older than the generation about to publish may be
+# reclaimed, because the reclaiming generation is strictly newer and so cannot be confused with the abandoned one.
+RECLAIM_NEEDS_GENERATION = True
+
+
+def case_g_claimed_never_completed(p: Protocol) -> None:
+    page = Page()
+    assert p.publish(page, 1, op=8), "G: publish A failed"
+    assert p.server_claim(page) == 1, "G: the server did not claim A"
+    p.release(page)  # the client gives up while the server owns A
+    if not p.generation_safe:
+        # v1 returns the slot to IDLE, so B publishes immediately and can be answered by A's late completion.
+        assert p.publish(page, 2, op=7), "G: v1 should let B publish"
+        return
+    # v2 leaves the claim alone, which is correct while A can still complete -- but if A never completes, the slot
+    # must not stay claimed forever. The generation-scoped reclaim is what closes that hole, and this case fails
+    # while it is missing, which is exactly what the twelve-of-twelve BOOT-FAIL measurement showed.
+    if not p.reclaim_expired_claim(page, generation=2):
+        raise Failure(
+            "G: a claim the server never completed wedged the slot -- ownership safety without a "
+            "generation-scoped reclaim turns every boot into a failure"
+        )
+    # The reclaim IS the publication: it takes the slot for generation B and writes B's request in one step, which is
+    # why the next call is not a publish but a check that the slot now carries B.
+    if page.request_state != PENDING or page.request_seq != 2:
+        raise Failure("G: the reclaim did not publish generation B")
+    p.server_complete(page, 1, status=0)  # A's completion still arrives late
+    if page.request_state == PENDING and page.request_seq == 2 and page.reply_seq == 1:
+        raise Failure("G: the reclaimed slot let A's late completion land on generation B")
+    if p.server_claim(page) != 2:
+        raise Failure("G: the server could not claim generation B after the reclaim")
+
+
 def case_f_repeated_generations(p: Protocol) -> None:
     """Repeated generations under forced scheduling must never wedge the slot nor leak one into another."""
     page = Page()
@@ -207,6 +274,7 @@ def run(generation_safe: bool) -> int:
         ("D late completion must not satisfy B", case_d_late_completion_must_not_satisfy_b),
         ("E stale DONE during publication", case_e_stale_done_during_publication),
         ("F repeated generations", case_f_repeated_generations),
+        ("G claimed never completed", case_g_claimed_never_completed),
     ]
     failures = 0
     for name, fn in cases:
