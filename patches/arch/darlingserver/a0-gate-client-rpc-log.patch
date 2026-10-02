@@ -1,4 +1,4 @@
-From cbb7d64fcd17d8498f2c5f374e3771a26d979db5 Mon Sep 17 00:00:00 2001
+From f1419bc3a8a0cb484f8d4fcecb38d1802051d0c7 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 7 Jul 2026 18:25:15 +0000
 Subject: [PATCH] a0: capture client RPC log per synth leg

@@ -58,9 +58,13 @@ def main(argv: list[str]) -> int:
     written = 0
     for name, source in rows:
         lock = LOCKS / f"darlingserver-{name}-profile-v6.yml"
-        if not lock.exists():
-            print(f"SKIP {name}: no {lock.name}")
-            continue
+        # CREATION AS WELL AS REFRESH (dar-b5pe). MEASURED: three arch entries -- the flood-progress entry and the
+        # two that continue the chain after it -- had no -profile-v6 lock at all, so a refresh that only updated
+        # existing files skipped them and left the profile with locks from other profiles. A lock this script can
+        # derive to the same standard as the rest is a lock it should write, not one it should refuse to consider;
+        # every field still comes from the repository and the tags are still required to exist locally, so creating
+        # one cannot invent an anchor.
+        creating = not lock.exists()
         base = git("rev-parse", f"{source}^")
         base_tag = f"refs/tags/patch-stack/v1/bases/{base}"
         source_tag = f"refs/tags/patch-stack/v1/sources/{source}"

@@ -1,12 +1,12 @@
 schema_version: 2
 project: {name: darlingserver, path: .}
-upstream: {url: https://github.com/darlinghq/darlingserver.git, base_commit: 6ad1bb2703a3e1f99af9313ab632ad9cc94f6138}
+upstream: {url: https://github.com/darlinghq/darlingserver.git, base_commit: 47be9978d37afc387b999d8a052d1f1c08ef5a5d}
 mirror:
   url: https://github.com/darling-next/darlingserver.git
-  base_ref: refs/tags/patch-stack/v1/bases/6ad1bb2703a3e1f99af9313ab632ad9cc94f6138
-  base_oid: 6ad1bb2703a3e1f99af9313ab632ad9cc94f6138
-  source_ref: refs/tags/patch-stack/v1/sources/3b5d17af7c671707000cc3bd09fd34889bba281d
-  source_oid: 3b5d17af7c671707000cc3bd09fd34889bba281d
-source_commit: 3b5d17af7c671707000cc3bd09fd34889bba281d
-ordered_commits: [3b5d17af7c671707000cc3bd09fd34889bba281d]
-expected_tree: d415bb9218bd066f36bc54d6d6fb4abb5508dfc5
+  base_ref: refs/tags/patch-stack/v1/bases/47be9978d37afc387b999d8a052d1f1c08ef5a5d
+  base_oid: 47be9978d37afc387b999d8a052d1f1c08ef5a5d
+  source_ref: refs/tags/patch-stack/v1/sources/5288c5cd0d131b2bcb51db192e3953d9bd7932df
+  source_oid: 5288c5cd0d131b2bcb51db192e3953d9bd7932df
+source_commit: 5288c5cd0d131b2bcb51db192e3953d9bd7932df
+ordered_commits: [5288c5cd0d131b2bcb51db192e3953d9bd7932df]
+expected_tree: 38c9d9c0d640397f5a8c937272c9c2453bbb52aa

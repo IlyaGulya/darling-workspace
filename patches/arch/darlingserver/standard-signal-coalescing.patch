@@ -1,4 +1,4 @@
-From 695ed8c479df1561fa2f46efde1d0e5c30150103 Mon Sep 17 00:00:00 2001
+From 51add588931a4c32d268ff07aa3e2396d868dd2e Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 7 Jul 2026 15:33:38 +0000
 Subject: [PATCH] darlingserver: coalesce selected standard signals
@@ -9,10 +9,10 @@ Subject: [PATCH] darlingserver: coalesce selected standard signals
  2 files changed, 30 insertions(+)
 
 diff --git a/internal-include/darlingserver/thread.hpp b/internal-include/darlingserver/thread.hpp
-index 693777e3b45726cdf0aeac2c5c212ed2b7cb3c64..88e85da969e8d14b781af1517482d78661289a2c 100644
+index 581a97910f8fa79f9c1b9859df4dbc3c26c17cbe..123c8155fa7831b70334b9c3cf98e8b7b111148d 100644
 --- a/internal-include/darlingserver/thread.hpp
 +++ b/internal-include/darlingserver/thread.hpp
-@@ -279,6 +279,7 @@ namespace DarlingServer {
+@@ -266,6 +266,7 @@ namespace DarlingServer {
  		std::stack<InterruptContext> _interrupts;
  		std::queue<std::shared_ptr<Call>> _pendingInterrupts;
  		std::optional<Message> _pendingSavedReply = std::nullopt;
@@ -21,10 +21,10 @@ index 693777e3b45726cdf0aeac2c5c212ed2b7cb3c64..88e85da969e8d14b781af1517482d786
  		std::shared_ptr<Thread> _selfReference = nullptr;
  
 diff --git a/src/thread.cpp b/src/thread.cpp
-index 04663af002f460269d670ff3b2f4edcad85d9c3e..dec609628ed6ad6d327fd4172244ea88075295ca 100644
+index fdd7b328b7424fcd16ed0caecbfce075bdc7df06..5b051513c29679faa7296d515007fdda040ac95f 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
-@@ -1858,6 +1858,17 @@ void DarlingServer::Thread::processSignal(int bsdSignalNumber, int linuxSignalNu
+@@ -1844,6 +1844,17 @@ void DarlingServer::Thread::processSignal(int bsdSignalNumber, int linuxSignalNu
  		_processingSignal = true;
  	}
  
@@ -42,7 +42,7 @@ index 04663af002f460269d670ff3b2f4edcad85d9c3e..dec609628ed6ad6d327fd4172244ea88
  	dtape_thread_process_signal(_dtapeThread, bsdSignalNumber, linuxSignalNumber, code, signalAddress);
  
  	// LLDB commonly suspends the thread upon reception of an exception and assumes
-@@ -2940,12 +2951,30 @@ void DarlingServer::Thread::sendSignal(int signal) const {
+@@ -2910,12 +2921,30 @@ void DarlingServer::Thread::sendSignal(int signal) const {
  	if (isDead()) {
  		return;
  	}

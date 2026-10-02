@@ -1,4 +1,4 @@
-From 447579f0c84b04aa06d9c0779a50099ef44d191e Mon Sep 17 00:00:00 2001
+From 93392fef36adf2857e0ca9c813881db6f23aab68 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 8 Jul 2026 06:41:31 +0000
 Subject: [PATCH] tests: cover recent signal and RPC contracts

@@ -1,4 +1,4 @@
-From c72d9d8412800ed6a9d2e343ed3a3884f87ede51 Mon Sep 17 00:00:00 2001
+From 1b806454d58b3e4a36c8507c8bfcd545bead5582 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 8 Jul 2026 06:36:05 +0000
 Subject: [PATCH] a0: add focused synth filter and exit markers
@@ -8,7 +8,7 @@ Subject: [PATCH] a0: add focused synth filter and exit markers
  1 file changed, 66 insertions(+), 1 deletion(-)
 
 diff --git a/tests/a0-repro/a0-gate.sh b/tests/a0-repro/a0-gate.sh
-index 592960dbc861a5372600846bc4e0635348306711..c3344161e7fd90cc6b5ff1bd7e5fa5d15755c9aa 100755
+index 592960dbc861a5372600846bc4e0635348306711..f34684c87ed6a69c31b46946715d644624655722 100755
 --- a/tests/a0-repro/a0-gate.sh
 +++ b/tests/a0-repro/a0-gate.sh
 @@ -36,6 +36,7 @@
@@ -49,7 +49,7 @@ index 592960dbc861a5372600846bc4e0635348306711..c3344161e7fd90cc6b5ff1bd7e5fa5d1
  run_synth() { # name src cflags secs [ring]
  	local name="$1" src="$2" cf="$3" secs="$4" ring="${5:-$RING}"
 +	if ! want_synth "$name"; then
-+		return
++		return 0
 +	fi
  	# A0-ARCH stage 2a: surface shadow state-machine violations. Fuzz legs run with
  	# DSERVER_MSTATE_ABORT=1 (violation = crash = RED); all legs also log at err level

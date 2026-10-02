@@ -93,8 +93,10 @@ patches:
   sha256sum: 865d4d4984839bc8b64ecb98771116b655e9a22235b38720c201b6137d8f02dd
 - path: darlingserver/a0-arch-redesign.patch
   module: darling/src/external/darlingserver
-  source-branch: fix/a0-arch-redesign
-  source-base: 6ad1bb2703a3e1f99af9313ab632ad9cc94f6138
+  source-branch: fix/arch-series/01
+
+  source-base: 47be9978d37afc387b999d8a052d1f1c08ef5a5d
+
   bead: dar-a0arch-redesign-253u
   publication-status: blocked
   publication-blocker: 'A0-ARCH wake/wait protocol redesign (stages 0-3: fuzzer, typed wake tokens, MicroState machine + taped XNU wait-state funnel, interrupt-as-cancellation replacing jumpToResime stack-borrowing). Eliminates the #114 storm-on-condvar SEGV crash class. 40 commits. LANDED, deployed d81b5cf1; synth 16/16, quick gate 19/19, perf A/B no-regression, stage 4 no-go. Wants design review before upstreaming. See dar-a0arch-redesign-253u + tests/A0-ARCH-STAGE{1,2,3}.md.'
@@ -112,11 +114,14 @@ patches:
     requires:
     - darling-prefix
     note: Long guest acceptance gate from the A0-ARCH stage docs; run manually/guarded, not as a fast local default.
-  source-commit: 3b5d17af7c671707000cc3bd09fd34889bba281d
-  sha256sum: a0109ebdb1504822ab3351542a4ad39a631c5eb1f7b41bfb5717d7435480eac0
+  source-commit: 5288c5cd0d131b2bcb51db192e3953d9bd7932df
+
+  sha256sum: 0b0b8099c6e6abbfe0e54fd53b29058bc627ee4a9fe912741eb3ada715c283d8
 - path: darlingserver/standard-signal-coalescing.patch
   module: darling/src/external/darlingserver
-  source-branch: fix/standard-signal-coalescing
+  source-branch: fix/arch-series/02
+  source-base: 5288c5cd0d131b2bcb51db192e3953d9bd7932df
+
   bead: dar-rpc-correctness-z27x.8
   publication-status: blocked
   publication-blocker: focused a0 synth gate is currently red independent of this patch; see dar-a0-focused-synth-forkwait-cvstorm-red-swcg
@@ -136,12 +141,15 @@ patches:
     reason: source-contract-only
     scope: standard signal coalescing source contract
     note: This script currently proves source shape only; a process-level signal oracle is tracked by dar-rpc-correctness-z27x.8.
-  source-commit: 695ed8c479df1561fa2f46efde1d0e5c30150103
-  sha256sum: d4a8e94dfbac1906c0e2764915d74f97dba88920e2679a45419f9e387f31f17e
+  source-commit: 51add588931a4c32d268ff07aa3e2396d868dd2e
+
+  sha256sum: 79d84e339a1e2d639129d2fdf55159fe5667f5cc8f29210f032989e8172ab540
 - path: darlingserver/a0-gate-shellspawn-retry.patch
   module: darling/src/external/darlingserver
-  source-branch: fix/a0-gate-shellspawn-retry
-  source-base: b7f63db18fe3efaac16286544aa0df1cd13991b3
+  source-branch: fix/arch-series/03
+
+  source-base: 51add588931a4c32d268ff07aa3e2396d868dd2e
+
   bead: dar-xl0d
   publication-status: blocked
   publication-blocker: local a0 gate harness stabilization for cleanboot/shellspawn flakes
@@ -149,12 +157,15 @@ patches:
     reason: harness-only
     scope: A0 shellspawn retry harness reliability instrumentation
     note: A0 gate reliability instrumentation; validated by the A0 gate itself rather than a separate red-test.
-  source-commit: 6e231d6477b334b4bb482b92e00a90661eb7e2f0
-  sha256sum: 98ba25ca417bb755d99b86105f47130373ddc959b31c9e5e84bc8fd632864d1b
+  source-commit: 8e72db007790419b36af1db70e0c68da16910870
+
+  sha256sum: 5fc53b5d68aead070a69a9ecca6fc073694a4b595680d3914370afaa093cacc3
 - path: darlingserver/ring-committed-unknown-gate.patch
   module: darling/src/external/darlingserver
-  source-branch: fix/ring-committed-unknown-gate
-  source-base: 6e231d6477b334b4bb482b92e00a90661eb7e2f0
+  source-branch: fix/arch-series/04
+
+  source-base: 8e72db007790419b36af1db70e0c68da16910870
+
   bead: dar-rpc-correctness-z27x.2
   publication-status: blocked
   publication-blocker: static contract gate for experimental ring/duplex transport; publish only with the underlying ring ABI review.
@@ -172,12 +183,15 @@ patches:
     reason: source-contract-only
     scope: ring committed-or-unknown static gate
     note: This gate is intentionally source-only; behavioral ring transport coverage is owned by dar-rpc-correctness-z27x.2.
-  source-commit: ea28bd095742be30f96b3d73510321f7c8124a51
-  sha256sum: 64ea94c9b9e5a3e6d3c7ef191343a8254a1c6299efa3b0e1f7feb79ff7a301ee
+  source-commit: 03038154d97be0a2a7b5c7ba08beb45a2b5f410b
+
+  sha256sum: a9d49368adfe8c0e686952a94580a3d60b6200b89ee7c79c45fb14164d568aef
 - path: darlingserver/duct-tape-fail-closed-stubs.patch
   module: darling/src/external/darlingserver
-  source-branch: fix/duct-tape-fail-closed-stubs
-  source-base: ea28bd095742be30f96b3d73510321f7c8124a51
+  source-branch: fix/arch-series/05
+
+  source-base: 03038154d97be0a2a7b5c7ba08beb45a2b5f410b
+
   bead: dar-rpc-correctness-z27x.4
   publication-status: blocked
   publication-blocker: local fail-closed duct-tape policy sweep; needs broader Darwin-policy parity review before upstreaming.
@@ -195,12 +209,15 @@ patches:
     reason: source-contract-only
     scope: duct-tape fail-closed stub source gate
     note: The script does not execute the server; behavioral reachable-stub coverage is owned by dar-rpc-correctness-z27x.4.
-  source-commit: e8ad65c9feb96b95551b9eb3ce24daacaad42b83
-  sha256sum: 1e3ea456f90debbb3fdac5061600ccf798d292913d9ed5a396256c04423753d1
+  source-commit: 54640a382eb9d14414f3f48dded6f179853160a0
+
+  sha256sum: 75f39aa017d1509e1ac12fd67d342a72a36d0ce688a5d4c4866e33af68393b67
 - path: darlingserver/rpc-uds-packed-correlation.patch
   module: darling/src/external/darlingserver
-  source-branch: fix/rpc-uds-packed-correlation
-  source-base: e8ad65c9feb96b95551b9eb3ce24daacaad42b83
+  source-branch: fix/arch-series/06
+
+  source-base: 54640a382eb9d14414f3f48dded6f179853160a0
+
   bead: dar-rpc-correctness-z27x.1
   publication-status: blocked
   publication-blocker: local RPC correctness hardening; needs soak under fork/signal storm and broader UDS/ring transport review before upstreaming.
@@ -218,12 +235,15 @@ patches:
     reason: source-contract-only
     scope: packed UDS correlation source gate
     note: This static check cannot prove reply accounting; behavioral transport coverage is owned by dar-rpc-correctness-z27x.1.
-  source-commit: 03fbc437f6da90297ef0f3055cea90e2373c3786
-  sha256sum: b7bb60ec1e15006ce53e5e737c36f89c345e8e719aa01ed574ae3b00c48c7d7c
+  source-commit: f41af247723c284a0ef7609008ec62c4605153c1
+
+  sha256sum: ec9da4c329cb6eb8d61340590f10993e8e7e62c86b04c5a98e3beb38cdfe349d
 - path: darlingserver/a0-gate-client-rpc-log.patch
   module: darling/src/external/darlingserver
-  source-branch: fix/a0-gate-client-rpc-log
-  source-base: 03fbc437f6da90297ef0f3055cea90e2373c3786
+  source-branch: fix/arch-series/07
+
+  source-base: f41af247723c284a0ef7609008ec62c4605153c1
+
   bead: dar-rpc-correctness-z27x.6
   publication-status: blocked
   publication-blocker: local A0 repro instrumentation for the nestwait/interrupt_enter -111 class; not a correctness fix.
@@ -231,12 +251,15 @@ patches:
     reason: instrumentation-only
     scope: A0 client RPC log and digest diagnostics
     note: Adds A0 RPC log/digest diagnostics; no behavior fix to red-test directly.
-  source-commit: cbb7d64fcd17d8498f2c5f374e3771a26d979db5
-  sha256sum: 64c655f9651af3d3ce831887b3ccfa1a22b5e1a236bf7b60c71d23ac885289a8
+  source-commit: f1419bc3a8a0cb484f8d4fcecb38d1802051d0c7
+
+  sha256sum: 8126de8aae49e32631745713935e5ebc9b38988af778dbb0a0e328792a94a815
 - path: darlingserver/rpc-interruptible-disconnect-eintr.patch
   module: darling/src/external/darlingserver
-  source-branch: fix/rpc-transport-interrupt-contract
-  source-base: cbb7d64fcd17d8498f2c5f374e3771a26d979db5
+  source-branch: fix/arch-series/08
+
+  source-base: f1419bc3a8a0cb484f8d4fcecb38d1802051d0c7
+
   bead: dar-rpc-correctness-z27x.6
   publication-status: blocked
   publication-blocker: local RPC teardown/interrupt correctness hardening; needs broader fork/signal storm soak before upstreaming.
@@ -254,12 +277,15 @@ patches:
     reason: source-contract-only
     scope: disconnect send-to-EINTR source contract
     note: This is a source-only drift guard; behavioral coverage is owned by dar-rpc-correctness-z27x.6.
-  source-commit: 9956c99a8228a7540a4cefd9da52517f245d06ad
-  sha256sum: b8f4510c8016e625c0106f307d7099144b283c1ef744dc138f9aa93d519c13ed
+  source-commit: 24546ba90dbe4592f9c6c1d228078daa5698ea86
+
+  sha256sum: 9d4e20744713cff802919dab12b75c7c387efe0419c086e31ae3572e1e1750b2
 - path: darlingserver/stack-pool-empty-stack-handle.patch
   module: darling/src/external/darlingserver
-  source-branch: fix/dserver-stack-pool-empty-handle
-  source-base: 9956c99a8228a7540a4cefd9da52517f245d06ad
+  source-branch: fix/arch-series/09
+
+  source-base: 24546ba90dbe4592f9c6c1d228078daa5698ea86
+
   bead: dar-9f8b
   publication-status: blocked
   publication-blocker: local darlingserver crash hardening for A0 ring-on fork/wait storm; needs longer soak before upstreaming.
@@ -271,12 +297,15 @@ patches:
     runner: west-build
     target: dserver_stack_pool_tests_run
     note: Fails on the pre-fix parent because StackPool::free(empty) accepts an invalid handle; passes with the fix.
-  source-commit: 142b89c011bc3cae3b9e1d72035d2d0081f6f42b
-  sha256sum: 3477a387be03d4f3f2606c174043bc9816817870c986af85f98240b23dd7c537
+  source-commit: a60da290ee3f18790b17194d01919251eafbfd1a
+
+  sha256sum: efb6f988aa3acc15c6eab71f1b231c8b37a933a1045a435a21c1b9e6dc152b07
 - path: darlingserver/a0-gate-focused-synth-markers.patch
   module: darling/src/external/darlingserver
-  source-branch: fix/a0-gate-focused-synth-markers
-  source-base: 142b89c011bc3cae3b9e1d72035d2d0081f6f42b
+  source-branch: fix/arch-series/10
+
+  source-base: a60da290ee3f18790b17194d01919251eafbfd1a
+
   bead: dar-9f8b
   publication-status: blocked
   publication-blocker: local A0 repro instrumentation for focused ring-on fork/wait crash diagnosis; not a correctness fix.
@@ -284,12 +313,15 @@ patches:
     reason: instrumentation-only
     scope: focused A0 synth marker diagnostics
     note: Adds focused A0 synth filter/markers used by dar-9f8b; no behavior fix to red-test directly.
-  source-commit: c72d9d8412800ed6a9d2e343ed3a3884f87ede51
-  sha256sum: 1e102e56d45708fa57edaad27c98845c0173e65294ebfe14e810ce5a37426b13
+  source-commit: 1b806454d58b3e4a36c8507c8bfcd545bead5582
+
+  sha256sum: 35c53f5343840fb661208640a5a6086aa9f887e1480f5cf5d120959a73ebfdc6
 - path: darlingserver/recent-signal-rpc-contract-tests.patch
   module: darling/src/external/darlingserver
-  source-branch: fix/dserver-recent-contract-tests
-  source-base: c72d9d8412800ed6a9d2e343ed3a3884f87ede51
+  source-branch: fix/arch-series/11
+
+  source-base: 1b806454d58b3e4a36c8507c8bfcd545bead5582
+
   bead: dar-rpc-correctness-z27x.8
   publication-status: blocked
   publication-blocker: follow-up committed red tests for local standard-signal coalescing and RPC disconnect-send contracts.
@@ -316,13 +348,17 @@ patches:
     reason: source-contract-only
     scope: follow-up static signal and disconnect contract assets
     note: The patch adds source-level test assets only; behavioral work remains under dar-rpc-correctness-z27x.8 and dar-rpc-correctness-z27x.6.
-  source-commit: 447579f0c84b04aa06d9c0779a50099ef44d191e
-  sha256sum: 8471aad9374219d03fcbe3aca7fba2cc6609d037c91f3d1648389fafa514f53a
+  source-commit: 93392fef36adf2857e0ca9c813881db6f23aab68
+
+  sha256sum: f7ef2b4d8a9878d097d44b086a86c7058a717b6a681147d4ad37b6d270c05227
 - path: darlingserver/message-ctrunc-reject.patch
   module: darling/src/external/darlingserver
-  source-branch: fix/message-ctrunc-reject
-  source-base: fcb9f33f721772b358a2077dbe7da938b5474f3b
-  source-commit: d231a7cdacd1b643e1941b6dcde9f83f135484dc
+  source-branch: fix/arch-series/12
+
+  source-base: 93392fef36adf2857e0ca9c813881db6f23aab68
+
+  source-commit: a0877988b130f665ffbf9ee921482c2cbd67f925
+
   bead: dar-rpc-correctness-z27x.5
   publication-status: blocked
   publication-blocker: local RPC cleanup hardening; should be reviewed with the broader typed reply/message-ingest lifecycle cleanup before upstreaming.
@@ -356,12 +392,15 @@ patches:
     - -Wno-unused-parameter
     - -Wno-sign-compare
     note: Host behavior contract for the real MessageQueue SCM_RIGHTS receive path; proves push_reply-sized fd messages survive SO_PASSCRED and oversized/truncated control data is not accepted.
-  sha256sum: 8b9915b55966aec778ed8b730ef1d2f2a281733763da885464518616159339b6
+  sha256sum: 81ddbced00b0593a096015cd6fc614f4724ed488585cdfcab90e47a6902545d4
 - path: darlingserver/standard-signal-coalescing-flood-progress.patch
   module: darling/src/external/darlingserver
-  source-branch: fix/standard-signal-coalescing-flood-progress
+  source-branch: fix/arch-series/13
+
   source-base: a0877988b130f665ffbf9ee921482c2cbd67f925
+
   source-commit: b545cdbe9e2f6c16828f484c36a5bef177b2b61a
+
   bead: dar-cvstorm2-flood-lost-progress-s41p
   publication-status: blocked
   publication-blocker: requires reviewed immutable hosted closure and explicit ARCH_ONLY ownership acceptance.
@@ -440,9 +479,9 @@ patches:
   sha256sum: e0d73401b3bc72f36117384f0e7e754f5afdb9b74f37c30e2233f1cc9298262a
 - path: darling/ci-host-regression-tests.patch
   module: darling
-  source-branch: fix/ci-host-regression-tests
-  source-base: ef8429103cfd792e05449eeaf3607622838984b8
-  source-commit: b41159e56b046772fe5d6a715e948e6ae94028cb
+  source-branch: fix/arch-series/darling-01
+  source-base: 92724cffeeec2e1fff3f7fa861cee74e41746dff
+  source-commit: 30835a356bc7f310e4580d4f05c1ab9112235c87
   bead: dar-test-infra-sp5.6.1
   publication-status: blocked
   publication-blocker: local Tier 0 CI/test transport; requires an actual clean Jenkins execution before publication review.
@@ -465,12 +504,12 @@ patches:
       Source-owned Tier 0 CTest suite builds the selected production mldr reset
       source and the thread-checkin harness, verifies the explicit busy-spin RED
       arm, and runs without a Darling prefix or Docker runtime.
-  sha256sum: 8055faccfc4adf20cef6f036f2fe8da5fa243ee9f0067e684fbcb0d09d340f8b
+  sha256sum: e3e0cbaa1f063570a0e4a13f4cb6e32b8d0aaded6aefc69640d3198c143a8999
 - path: darling/shellspawn-exit-status.patch
   module: darling
-  source-branch: fix/shellspawn-exit-status
-  source-base: 8b40e1ed6bd3d4647a1c1ad561c394fc40ad172b
-  source-commit: 3d1eb2e44307a76cc87541205f0a2d9c0ce35227
+  source-branch: fix/arch-series/darling-02
+  source-base: 30835a356bc7f310e4580d4f05c1ab9112235c87
+  source-commit: 78cf1a0ebca04b1c91ed4130408f7ea4973cbddf
   bead: dar-mu8f
   publication-status: blocked
   publication-blocker: Runtime RED->GREEN proof is pending a normal-capacity local Darling source forest; no remote publication is requested.
@@ -501,4 +540,4 @@ patches:
       returncode: 134
     requires:
     - darling-prefix
-  sha256sum: c93cbbc3bb527f6b911a5d04847e5c33b06834d48603e8941558bc4f7e0d7f24
+  sha256sum: 941a6382ef4a883830cf49b3994b25b73db342279b258ec83bfcc33bafda6f9a

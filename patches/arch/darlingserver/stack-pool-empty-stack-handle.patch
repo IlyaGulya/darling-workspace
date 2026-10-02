@@ -1,4 +1,4 @@
-From 142b89c011bc3cae3b9e1d72035d2d0081f6f42b Mon Sep 17 00:00:00 2001
+From a60da290ee3f18790b17194d01919251eafbfd1a Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 8 Jul 2026 06:35:59 +0000
 Subject: [PATCH] dserver: guard stack pool against empty stack handles
@@ -13,11 +13,11 @@ Subject: [PATCH] dserver: guard stack pool against empty stack handles
  create mode 100644 tests/stack-pool-null-regression.cpp
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 4fd913b3c050aebb2b60aad03b18ddd2ee73c2b5..91628af08e8196f6c8b159e6fea8bb4e6682af25 100644
+index aa0271ccf88db7a2ec2c39c4468e36f11bd79beb..d6fb787fc295ef3917be44456917fef147c4d056 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -132,6 +132,20 @@ add_executable(darlingserver
- 	src/ring.cpp
+@@ -146,6 +146,20 @@ add_custom_target(dserver_process_identity_tests_run
+ 	DEPENDS dserver_process_identity_tests
  )
  
 +add_executable(dserver_stack_pool_tests
@@ -38,7 +38,7 @@ index 4fd913b3c050aebb2b60aad03b18ddd2ee73c2b5..91628af08e8196f6c8b159e6fea8bb4e
  	generate_dserver_rpc_wrappers
  	rtsig_h
 diff --git a/src/darlingserver.cpp b/src/darlingserver.cpp
-index 8b2a5cac8485ac1b281ed9ecc870236faa69d714..d82aa147e40a7b62bc67ac2cf3bd7f7f5ff33891 100644
+index 08d702b2453504a240e3c4e96d61be0a5245f0bc..603f8818aafcdbb98c266f04d7d6b8e37f5ae96a 100644
 --- a/src/darlingserver.cpp
 +++ b/src/darlingserver.cpp
 @@ -38,6 +38,8 @@
@@ -151,7 +151,7 @@ index 8b2a5cac8485ac1b281ed9ecc870236faa69d714..d82aa147e40a7b62bc67ac2cf3bd7f7f
  void fixPermissionsRecursive(const char* path, uid_t originalUID, gid_t originalGID)
  {
  	DIR* dir;
-@@ -498,6 +594,8 @@ static void handle_sigusr1(int signum) {
+@@ -536,6 +632,8 @@ static void handle_sigusr1(int signum) {
  #endif
  
  int main(int argc, char** argv) {
@@ -249,7 +249,7 @@ index af895bece84deab5ee948dea0afe333dddfc66e9..3af6e75dd1eb41f2078808c7e273690d
  	assert(stack.size == _stackSize);
  	assert(stack.usesGuardPages == _useGuardPages);
 diff --git a/src/thread.cpp b/src/thread.cpp
-index 572b7eaba8d7779f6711dcb9d053219c5fd43acd..d8d61843a3e2b133448872d821d16eabcffeb263 100644
+index 5b051513c29679faa7296d515007fdda040ac95f..8f0f8647b4f0e05310fa9f130f6127e430d9b52e 100644
 --- a/src/thread.cpp
 +++ b/src/thread.cpp
 @@ -52,6 +52,7 @@

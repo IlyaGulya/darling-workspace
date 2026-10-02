@@ -1,4 +1,4 @@
-From 03fbc437f6da90297ef0f3055cea90e2373c3786 Mon Sep 17 00:00:00 2001
+From f41af247723c284a0ef7609008ec62c4605153c1 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 7 Jul 2026 17:36:39 +0000
 Subject: [PATCH] rpc: tag UDS replies with packed call serial
@@ -11,7 +11,7 @@ Subject: [PATCH] rpc: tag UDS replies with packed call serial
  create mode 100755 tests/rpc_serial_contract_test.sh
 
 diff --git a/scripts/generate-rpc-wrappers.py b/scripts/generate-rpc-wrappers.py
-index 4a1b07f580436d97b4000f04e9bdefcacd76144b..96c85fe82623984bbfdb7e8e86a2d8842d228c86 100755
+index 6151f255ba8342779a3a0ba315baa4234c7c450d..7d90d8240c5ff649962f42ae9f27dae18dd16330 100755
 --- a/scripts/generate-rpc-wrappers.py
 +++ b/scripts/generate-rpc-wrappers.py
 @@ -796,7 +796,11 @@ extern "C" {
@@ -70,7 +70,7 @@ index 4a1b07f580436d97b4000f04e9bdefcacd76144b..96c85fe82623984bbfdb7e8e86a2d884
  internal_header.write("#define DSERVER_VALID_CALLNUM_CASES \\\n")
  for call in calls:
  	call_name = call[0]
-@@ -1087,7 +1120,7 @@ for call in calls:
+@@ -1110,7 +1143,7 @@ for call in calls:
  			int fdIndex = 0; \\
  			reply.setAddress(_replyAddress); \\
  			auto replyStruct = reinterpret_cast<dserver_rpc_reply_{0}_t*>(reply.data().data()); \\
@@ -79,7 +79,7 @@ index 4a1b07f580436d97b4000f04e9bdefcacd76144b..96c85fe82623984bbfdb7e8e86a2d884
  			replyStruct->header.code = resultCode; \\
  			"""), '\t\t\t').format(call_name))
  
-@@ -1261,7 +1294,7 @@ for call in calls:
+@@ -1296,7 +1329,7 @@ for call in calls:
  internal_header.write("\n")
  
  public_header.write("__attribute__((always_inline)) static const char* dserver_callnum_to_string(dserver_callnum_t callnum) {\n")
@@ -88,7 +88,7 @@ index 4a1b07f580436d97b4000f04e9bdefcacd76144b..96c85fe82623984bbfdb7e8e86a2d884
  public_header.write("\t\tcase dserver_callnum_s2c: return \"dserver_callnum_s2c\";\n")
  public_header.write("\t\tcase dserver_callnum_push_reply: return \"dserver_callnum_push_reply\";\n")
  for call in calls:
-@@ -1375,7 +1408,7 @@ for call in calls:
+@@ -1410,7 +1443,7 @@ for call in calls:
  				.architecture = dserver_rpc_hooks_get_architecture(),
  				.pid = dserver_rpc_hooks_get_pid(),
  				.tid = dserver_rpc_hooks_get_tid(),
@@ -97,7 +97,7 @@ index 4a1b07f580436d97b4000f04e9bdefcacd76144b..96c85fe82623984bbfdb7e8e86a2d884
  			}},
  		"""), '\t').format(call_name))
  
-@@ -1570,14 +1603,14 @@ for call in calls:
+@@ -1605,14 +1638,14 @@ for call in calls:
  		library_source.write("\t\treturn dserver_rpc_hooks_get_communication_error_status();\n")
  		library_source.write("\t}\n\n")
  
@@ -115,10 +115,10 @@ index 4a1b07f580436d97b4000f04e9bdefcacd76144b..96c85fe82623984bbfdb7e8e86a2d884
  		library_source.write("\t}\n\n")
  
 diff --git a/src/call.cpp b/src/call.cpp
-index 3c8ea0d37b8bd1efe98c074b0d4f2b620d3e6e57..91c41f947a896e00ba77bace2578b26f4639061e 100644
+index fbf1deb0416fbc77b10574f0aa46e21998177396..36fcdd87e40da96631edae72a09d27fa44ca9fce 100644
 --- a/src/call.cpp
 +++ b/src/call.cpp
-@@ -135,12 +135,13 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -138,12 +138,13 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  	}
  
  	dserver_rpc_callhdr_t* header = reinterpret_cast<dserver_rpc_callhdr_t*>(requestMessage.data().data());
@@ -133,7 +133,7 @@ index 3c8ea0d37b8bd1efe98c074b0d4f2b620d3e6e57..91c41f947a896e00ba77bace2578b26f
  		case dserver_callnum_s2c:
  		case dserver_callnum_push_reply:
  		DSERVER_VALID_CALLNUM_CASES
-@@ -157,7 +158,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -166,7 +167,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  
  			int lifetimePipe = -1;
  
@@ -142,7 +142,7 @@ index 3c8ea0d37b8bd1efe98c074b0d4f2b620d3e6e57..91c41f947a896e00ba77bace2578b26f
  				auto checkinCall = reinterpret_cast<dserver_rpc_call_checkin_t*>(header);
  				if (checkinCall->body.lifetime_listener_pipe != -1) {
  					lifetimePipe = requestMessage.extractDescriptorAtIndex(checkinCall->body.lifetime_listener_pipe);
-@@ -191,7 +192,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -214,7 +215,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  
  			void* stackHint = nullptr;
  
@@ -151,7 +151,7 @@ index 3c8ea0d37b8bd1efe98c074b0d4f2b620d3e6e57..91c41f947a896e00ba77bace2578b26f
  				auto checkinCall = reinterpret_cast<dserver_rpc_call_checkin_t*>(header);
  				stackHint = reinterpret_cast<void*>(checkinCall->body.stack_hint);
  			}
-@@ -226,19 +227,19 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -249,19 +250,19 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  
  	auto pidString = (process) ? (std::to_string(process->id()) + " (" + std::to_string(process->nsid()) + ")") : (std::to_string(header->pid) + " (-1)");
  	auto tidString = (thread) ? (std::to_string(thread->id()) + " (" + std::to_string(thread->nsid()) + ")") : (std::to_string(header->tid) + " (-1)");
@@ -172,9 +172,9 @@ index 3c8ea0d37b8bd1efe98c074b0d4f2b620d3e6e57..91c41f947a896e00ba77bace2578b26f
 -	if (header->number == dserver_callnum_s2c) {
 +	if (callNumber == dserver_callnum_s2c) {
  		// this is an S2C reply
- 
  		{
-@@ -254,7 +255,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+ 			std::unique_lock lock(thread->_rwlock);
+@@ -276,7 +277,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  		dtape_semaphore_up(thread->_s2cReplySempahore);
  
  		return nullptr;
@@ -183,7 +183,7 @@ index 3c8ea0d37b8bd1efe98c074b0d4f2b620d3e6e57..91c41f947a896e00ba77bace2578b26f
  		// this is a reply push
  		// (used to send interrupted replies back to the server)
  
-@@ -345,7 +346,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -366,7 +367,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  	// send path -- by the message body's complex/descriptor shape (one cheap readMemory of the header,
  	// skipped entirely when the census is off so the hot path is byte-identical). The goal is to size
  	// the reclaimable fraction of the ~19% msg_overwrite hotness BEFORE designing any ring migration.
@@ -192,7 +192,7 @@ index 3c8ea0d37b8bd1efe98c074b0d4f2b620d3e6e57..91c41f947a896e00ba77bace2578b26f
  	    Metrics::shared().msgCensusOn.load(std::memory_order_relaxed) &&
  	    requestMessage.data().size() >= sizeof(dserver_rpc_call_mach_msg_overwrite_t)) {
  		auto* mc = reinterpret_cast<const dserver_rpc_call_mach_msg_overwrite_t*>(header);
-@@ -407,7 +408,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
+@@ -428,7 +429,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
  			result = std::make_shared<_className>(thread, reinterpret_cast<dserver_rpc_call_ ## _callName ## _t*>(header), std::move(requestMessage)); \
  		} break;
  

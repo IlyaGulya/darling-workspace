@@ -1,4 +1,4 @@
-From e8ad65c9feb96b95551b9eb3ce24daacaad42b83 Mon Sep 17 00:00:00 2001
+From 54640a382eb9d14414f3f48dded6f179853160a0 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 7 Jul 2026 17:16:26 +0000
 Subject: [PATCH] duct-tape: fail closed for reachable stubs
@@ -53,10 +53,10 @@ index a9eb4bc2741345f2b524409381005acae0b3d17c..1fe9c086749ff3543a909c0cacc39df1
  };
  
 diff --git a/duct-tape/src/thread.c b/duct-tape/src/thread.c
-index 8f829c1c4b83e46e756c24ac386c8c7e5e2bfaa5..882a574bc987ce9910fdf66e38541fbc3ee2637c 100644
+index 0c92d50c3bb1e85cc3043b9dec1f162027f63179..52fc9b308c0418c1e65415f5c08bf2a6b1c090d9 100644
 --- a/duct-tape/src/thread.c
 +++ b/duct-tape/src/thread.c
-@@ -473,7 +473,11 @@ kern_return_t handle_ux_exception(thread_t xthread, int exception, mach_exceptio
+@@ -459,7 +459,11 @@ kern_return_t handle_ux_exception(thread_t xthread, int exception, mach_exceptio
  	if (thread->processing_signal) {
  		dtape_hooks->thread_set_pending_signal(thread->context, ux_signal);
  	} else {
@@ -69,7 +69,7 @@ index 8f829c1c4b83e46e756c24ac386c8c7e5e2bfaa5..882a574bc987ce9910fdf66e38541fbc
  	}
  
  	return KERN_SUCCESS;
-@@ -1472,7 +1476,7 @@ kern_return_t thread_abort_safely(thread_t thread) {
+@@ -1466,7 +1470,7 @@ kern_return_t thread_abort_safely(thread_t thread) {
  	//       to replicate that, we'd probably have to use another
  	//       real-time signal with SA_RESTART off.
  	dtape_stub();
