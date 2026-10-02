@@ -205,6 +205,10 @@ def immutable_fetch_probe_seconds() -> float:
 # ref would pay the probe bound again before falling back.
 _FULL_FETCH_FAILED_MIRRORS: set[str] = set()
 
+# Mirrors already announced as fetched blobless in THIS process: the announcement
+# is one line per mirror, not one per ref, so a replay's output stays readable.
+_BLOBLESS_ANNOUNCED_MIRRORS: set[str] = set()
+
 
 def fetch_immutable(repo: Path, remote: str, specs: Sequence[str], *, url: str | None = None) -> None:
     """Fetch immutable refs through one bounded, non-interactive transfer.
@@ -218,51 +222,71 @@ def fetch_immutable(repo: Path, remote: str, specs: Sequence[str], *, url: str |
     limit = immutable_fetch_timeout()
     probe = immutable_fetch_probe_seconds()
     mirror_key = url or remote
-    first_error: BaseException
-    if mirror_key in _FULL_FETCH_FAILED_MIRRORS:
-        first_error = MaterializeError(
-            f"a full transfer from {mirror_key} already did not complete in this run"
-        )
-        first_kind = "immutable full fetch skipped (this mirror already failed once in this run)"
-    else:
-        try:
-            _git(repo, "fetch", "--no-tags", remote, *specs, timeout=probe)
-            return
-        except GitTimeout as error:
-            first_error = error
-            first_kind = f"immutable full fetch did not complete within its {probe:g}s probe bound"
-        except MaterializeError as error:
-            # MEASURED (dar-b5pe): a mirror can answer and still fail the transfer -- fetch-pack reports
-            # "unexpected disconnect while reading sideband packet", then "early EOF" and "invalid index-pack
-            # output", because the pack it starts serving for one ref is far larger than that ref needs. That is
-            # the same class of failure as a bound expiring (nothing arrived), so it takes the same fallback.
-            first_error = error
-            first_kind = "immutable full fetch failed"
-        _FULL_FETCH_FAILED_MIRRORS.add(mirror_key)
 
-    # A BLOBLESS RETRY, MEASURED TO WORK WHERE THE FULL TRANSFER DOES NOT. Against the same tag and mirror:
-    # the unfiltered fetch died mid-pack after 3m18s, while the same ref with --filter=blob:none completed in
-    # 3.9s and left the commit present. The replay reads commits and trees before it writes anything, so the
-    # metadata-only transfer is enough to get past this step; if a later checkout needs a blob, Git fetches it
-    # from the same mirror on demand, which is why this retry announces that it fell back rather than staying
-    # silent -- a later object miss has to be attributable to this decision.
+    # A BLOBLESS FETCH IS TRIED FIRST, BECAUSE IT IS THE ONE THAT WORKS HERE. MEASURED (dar-b5pe), same tag and
+    # mirror minutes apart: the unfiltered transfer dies mid-pack with "unexpected disconnect while reading
+    # sideband packet", then "early EOF" and "invalid index-pack output", after three minutes eighteen seconds,
+    # while the same ref with --filter=blob:none completes in 3.9s and leaves the commit present. A replay reads
+    # commits and trees before it writes anything, so metadata is what it needs; if a later checkout wants a
+    # blob, Git asks the same mirror on demand. The order matters beyond speed: a full transfer that is KILLED
+    # mid-pack leaves the destination holding a partial transfer, and the retry that used to run second then had
+    # to succeed on top of that state -- which is exactly how a fallback that works in isolation reported the
+    # mirror unreachable inside a replay. Trying the metadata-only transfer first never creates that state.
     try:
         _git(repo, "fetch", "--no-tags", "--filter=blob:none", remote, *specs)
-    except (GitTimeout, MaterializeError) as error:
-        elapsed = error.elapsed if isinstance(error, GitTimeout) else 0.0
+        if mirror_key not in _BLOBLESS_ANNOUNCED_MIRRORS:
+            _BLOBLESS_ANNOUNCED_MIRRORS.add(mirror_key)
+            print(
+                f"patch-stack: fetched immutable refs from {mirror_key} with --filter=blob:none "
+                "(the transfer shape this mirror serves reliably; a later blob request fetches on demand)"
+            )
+        return
+    except GitTimeout as error:
+        first_error: BaseException = error
+        first_kind = "immutable blobless fetch timed out"
+    except MaterializeError as error:
+        first_error = error
+        first_kind = "immutable blobless fetch failed"
+
+    # The full transfer is the fallback, tried once per mirror per process: a replay fetches many refs from the
+    # same few mirrors, and a mirror that already failed a full transfer does not need to fail again per ref.
+    if mirror_key in _FULL_FETCH_FAILED_MIRRORS:
         raise MirrorUnreachableError(
             mirror_unreachable_message(
-                url or remote,
-                operation=f"{first_kind}, and the blobless retry failed too",
-                elapsed=elapsed,
+                mirror_key,
+                operation=f"{first_kind}, and a full transfer from this mirror already failed in this run",
+                elapsed=0.0,
+                limit=limit,
+                env_name=IMMUTABLE_FETCH_TIMEOUT_ENV,
+            )
+        ) from first_error
+    try:
+        _git(repo, "fetch", "--no-tags", remote, *specs, timeout=probe)
+    except GitTimeout as error:
+        _FULL_FETCH_FAILED_MIRRORS.add(mirror_key)
+        raise MirrorUnreachableError(
+            mirror_unreachable_message(
+                mirror_key,
+                operation=f"{first_kind}, and the full fallback did not complete within its {probe:g}s probe bound",
+                elapsed=error.elapsed,
+                limit=limit,
+                env_name=IMMUTABLE_FETCH_TIMEOUT_ENV,
+            )
+        ) from first_error
+    except MaterializeError as error:
+        _FULL_FETCH_FAILED_MIRRORS.add(mirror_key)
+        raise MirrorUnreachableError(
+            mirror_unreachable_message(
+                mirror_key,
+                operation=f"{first_kind}, and the full fallback failed too",
+                elapsed=0.0,
                 limit=limit,
                 env_name=IMMUTABLE_FETCH_TIMEOUT_ENV,
             )
         ) from first_error
     print(
-        f"patch-stack: full immutable fetch of {url or remote} did not complete; "
-        "the same refs were fetched with --filter=blob:none instead "
-        "(measured: a mirror pack that drops mid-transfer answers this way in seconds)"
+        f"patch-stack: the blobless fetch from {mirror_key} did not complete; "
+        "the full transfer did (this mirror serves the larger transfer reliably)"
     )
 
 
