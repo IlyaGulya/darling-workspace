@@ -1,5 +1,5 @@
---- a/src/external/xnu/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c
-+++ b/src/external/xnu/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c
+--- a/dserver-ring.c
++++ b/dserver-ring.c
 @@ -1629,7 +1629,24 @@
  				uint32_t seenSeq = page->reply_seq;
  	{ uint32_t _st = __atomic_load_n(&(page)->request_state, __ATOMIC_ACQUIRE); if (_st == DSERVER_PROCESS_CONTROL_PENDING) { static const char _m[] = "[release-drops-pending] site=dserver-ring.c:1518\n"; long _a = 1, _d = 2, _s = (long)_m, _n = sizeof(_m) - 1; __asm__ volatile("syscall" : "+a"(_a), "+D"(_d), "+S"(_s), "+d"(_n) : : "rcx", "r11", "memory"); } }
@@ -26,7 +26,55 @@
  	__MLDR_PLANE_STEP("L-released", DSERVER_PROCESS_CONTROL_OP_ATTACH_LANE);
  				if (seenState == DSERVER_PROCESS_CONTROL_DONE &&
  				    seenSeq == mine) {
-@@ -3179,7 +3196,24 @@
+@@ -3044,16 +3061,43 @@
+ 	// Bounded: the first three iterations and every 500th after that.
+ 	static int __claim_iters = 0;
+ 	int slot = 0;
+-	for (int t = 0; t < 2000 && !slot; ++t) {
+-		uint32_t expect = (t % 2 == 0) ? DSERVER_PROCESS_CONTROL_IDLE : DSERVER_PROCESS_CONTROL_DONE;
++	static uint32_t claim_seq = 0;
++	uint32_t claim_gen = __atomic_add_fetch(&claim_seq, 1, __ATOMIC_RELAXED);
++	for (int t = 0; t < 2600 && !slot; ++t) {
++		uint32_t expect;
++		{
++			uint32_t obs = __atomic_load_n(&page->request_state, __ATOMIC_ACQUIRE);
++			if (obs == DSERVER_PROCESS_CONTROL_IDLE || obs == DSERVER_PROCESS_CONTROL_DONE) {
++				expect = obs;
++			} else if (t >= 2000 && obs == DSERVER_PROCESS_CONTROL_PENDING &&
++			           __atomic_load_n(&page->request_seq, __ATOMIC_ACQUIRE) < claim_gen) {
++				/* RECLAIM AN OLDER GENERATION THE SERVER NEVER COMPLETED (dar-b5pe, case G). Without this, the
++				 * conditional release above leaves such a slot PENDING forever and the boot cannot proceed --
++				 * measured: an ownership-safe release alone turned twelve of twelve boots into BOOT-FAIL. The
++				 * reclaim is generation-scoped, so a request that is merely slow keeps its slot: only a PENDING
++				 * slot whose published generation is older than this publisher's may be taken, and only after
++				 * the ordinary bound has expired. */
++				expect = obs;
++			} else {
++				expect = 0xffffffffu;
++			}
++		}
+ 		if (__plane_steps_enabled() && (t < 3 || (t % 500) == 0) && __claim_iters < 40) {
+ 			++__claim_iters;
+ 			uint32_t obs = __atomic_load_n(&page->request_state, __ATOMIC_ACQUIRE);
+ 			__simple_fprintf(2, "[plane-claim-iter n=%d t=%d obs=%u expect=%u page=%p op=%u tid=%d]\n",
+ 				__claim_iters, t, (unsigned)obs, (unsigned)expect, (void*)page, (unsigned)(op), __diag_ring_tid());
+ 		}
+-		if (__atomic_compare_exchange_n(&page->request_state, &expect,
+-		        DSERVER_PROCESS_CONTROL_PENDING, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) { slot = 1; break; }
++		if (expect != 0xffffffffu &&
++		    __atomic_compare_exchange_n(&page->request_state, &expect,
++		        DSERVER_PROCESS_CONTROL_PENDING, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
++			slot = 1;
++			if (t >= 2000) {
++				__simple_fprintf(2, "[plane-reclaim] op=%u t=%d gen=%u tid=%d\n",
++					(unsigned)op, t, (unsigned)claim_gen, __diag_ring_tid());
++			}
++			break;
++		}
+ 		long ts[2] = {0, 1000000L};
+ 		// MEASURED need: the thread died at this syscall and the program's SIGSEGV handler never ran. A
+ 		// synchronously-generated fatal signal that is BLOCKED kills the process at the next return to user mode
+@@ -3179,7 +3223,24 @@
  					(unsigned)op, plane_attempts,
  					(unsigned)__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE),
  					(unsigned)page->reply_seq, (int)LINUX_SYSCALL(__NR_gettid));
@@ -52,7 +100,7 @@
  				goto plane_request_again;
  			}
  			if (++slow >= 5000 && !planeSlowReported) {
-@@ -3200,7 +3234,24 @@
+@@ -3200,7 +3261,24 @@
  	uint64_t seenReply0 = page->reply_payload[0];
  	uint64_t seenReply1 = page->reply_payload[1];
  	{ uint32_t _st = __atomic_load_n(&(page)->request_state, __ATOMIC_ACQUIRE); if (_st == DSERVER_PROCESS_CONTROL_PENDING) { static const char _m[] = "[release-drops-pending] site=dserver-ring.c:2752\n"; long _a = 1, _d = 2, _s = (long)_m, _n = sizeof(_m) - 1; __asm__ volatile("syscall" : "+a"(_a), "+D"(_d), "+S"(_s), "+d"(_n) : : "rcx", "r11", "memory"); } }
@@ -78,3 +126,43 @@
  	if (seenState != DSERVER_PROCESS_CONTROL_DONE || seenSeq != mine) {
  		return -1;
  	}
+--- a/server.cpp
++++ b/server.cpp
+@@ -1886,6 +1886,16 @@
+ 						if (getenv("DARLING_SERVER_COURIER_LOG") != NULL) {
+ 							page->reply_payload[1] = 0xF00DF00Du;
+ 						}
++						// GENERATION-CONDITIONAL COMPLETION (dar-b5pe, case G), same rule as the main completion:
++						// the answer must not be published if the slot has moved on to a newer request.
++						if (page->request_seq != seq) {
++							if (getenv("DARLING_SERVER_COURIER_LOG") != NULL) {
++								static DarlingServer::Log staleLogC("process-control-stale-completion");
++								staleLogC.error() << "completion-discarded site=1 pid=" << pid
++									<< " seq=" << seq << " slot_seq=" << page->request_seq << staleLogC.endLog;
++							}
++							continue;
++						}
+ 						page->reply_seq = seq;
+ 						page->reply_status = status;
+ 						__atomic_store_n(&page->reply_state, DSERVER_PROCESS_CONTROL_DONE, __ATOMIC_RELEASE);
+@@ -3125,6 +3135,20 @@
+ 			static DarlingServer::Log markLog("process-control-marks");
+ 			markLog.error() << "completion-mark A pid=" << pid << " op=" << op << " seq=" << seq << markLog.endLog;
+ 		}
++		// DISCARD A COMPLETION FOR A GENERATION THAT NO LONGER OWNS THE SLOT (dar-b5pe, case G). Once a stale claim
++		// can be reclaimed by a newer generation, publishing this answer anyway would write DONE over that newer
++		// request and strand it -- the same harm as a client release stealing a claimed slot, arriving from the
++		// other end. If the slot no longer carries the sequence this completion answers, the answer is dropped and
++		// counted instead of published.
++		if (page->request_seq != seq) {
++			Metrics::shared().processControlRequests.fetch_add(1, std::memory_order_relaxed);
++			if (getenv("DARLING_SERVER_COURIER_LOG") != NULL) {
++				static DarlingServer::Log staleLog("process-control-stale-completion");
++				staleLog.error() << "completion-discarded pid=" << pid << " op=" << op
++					<< " seq=" << seq << " slot_seq=" << page->request_seq << staleLog.endLog;
++			}
++			continue;
++		}
+ 		page->reply_seq = seq;
+ 		page->reply_status = status;
+ 		if (getenv("DARLING_SERVER_COURIER_LOG") != NULL) {
