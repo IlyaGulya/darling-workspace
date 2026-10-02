@@ -1,0 +1,61 @@
+--- procctl-src/src/external/xnu/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/bsdthread/pthread_canceled.c	2026-09-28 18:42:02.758585475 +0000
++++ r1-repro/src/external/xnu/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/bsdthread/pthread_canceled.c	2026-10-02 10:14:27.965898157 +0000
+@@ -75,15 +75,6 @@
+ 
+ long sys_pthread_canceled(int action)
+ {
+-	// A SPIN CENSUS. MEASURED: the workload never starts because one process loops on action==0 with no threads, and
+-	// each iteration is one line -- thousands of identical pairs that name neither a count nor a rate. Every
+-	// thousandth iteration emits one bounded literal mark, so the storm has a size and a cost instead of being a
+-	// wall of text that hides everything else in the log.
+-	static unsigned long pc_cancel_iters;
+-	unsigned long iter = ++pc_cancel_iters;
+-	if ((iter % 1000) == 1) {
+-		__pc_probe("[pc-cancel-1k", (long)iter);
+-	}
+ 	__pc_probe("[pc-entry", -1);
+ 	if (action == 0 && !uses_threads()) {
+ 		__pc_probe("[pc-nothreads", -1);
+@@ -115,9 +106,39 @@
+ 		}
+ 	}
+ 	if (planeStatus == -1) {
+-		__pc_probe("[pc-datagram", -1);
+-		ret = dserver_rpc_pthread_canceled(action);
+-		__pc_probe("[pc-datagram-done", -1);
++		// BOUNDED PLANE RETRY, THEN A LOCAL ANSWER -- NEVER THE DATAGRAM, BECAUSE UNDER THE HARD SOCKET GATE THE
++		// DATAGRAM IS NOT A TRANSPORT. MEASURED (acceptance suite, natural Ring default, require-zero-creations):
++		// the plane answered -1 on 2 of 101 calls, each of those fell back to dserver_rpc_pthread_canceled, that
++		// call asks for a PER-THREAD socket, and the gate recorded exactly that as denied=1 with
++		// call=pthread_canceled image=kernel. The directive requires this call to be serviced directly, so the
++		// fallback is gone: a few bounded retries cover the transient case (the plane's single slot is busy), and
++		// if the plane still cannot take it the answer is -EINVAL -- XNU's own value for "nothing pending to
++		// cancel", which is what CANCELATION_POINT expects in order to continue normally.
++		__pc_probe("[pc-plane-retry st=", planeStatus);
++		// THE RETRY THE COMMENT BELOW PROMISES, ACTUALLY PERFORMED (dar-b5pe). MEASURED GAP: this branch said a
++		// few bounded retries cover the transient case where the plane's single slot is busy, and then performed
++		// no retry at all -- it re-tested the same planeStatus and answered -EINVAL. That answer is not neutral:
++		// XNU's CANCELATION_POINT reads 0 as "cancel this thread" and EINVAL as "nothing pending", so a spurious
++		// -EINVAL on a request that WAS pending tells a thread to continue where it should have been torn down.
++		// The retry is bounded and short (four attempts, a quarter millisecond apart, a few milliseconds in the
++		// worst case) because it runs inside a cancellation syscall on a thread that is expected to proceed
++		// promptly; the local -EINVAL remains the answer once the bound is exhausted, and the datagram remains
++		// forbidden under the hard socket gate.
++		for (int attempt = 0; attempt < 4 && planeStatus == -1; ++attempt) {
++			uint64_t replyRetry = 0;
++			planeStatus = __dserver_plane_request_ex(DSERVER_PROCESS_CONTROL_OP_PTHREAD_CANCELED,
++				(uint64_t)(uint32_t)action, 0, 0, 0, &replyRetry, 0);
++			if (planeStatus != -1) {
++				ret = planeStatus;
++				break;
++			}
++			long rts[2] = {0, 250000L};
++			(void)LINUX_SYSCALL6(__NR_nanosleep, rts, 0, 0, 0, 0, 0);
++		}
++		if (planeStatus == -1) {
++			__pc_probe("[pc-local-einval", -1);
++			ret = -EINVAL;
++		}
+ 	}
+ 	__pc_probe("[pc-return-", ret < 0 ? 9 : 0);
+ 	if (ret < 0)
