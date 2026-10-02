@@ -1,4 +1,4 @@
-From 3b5d17af7c671707000cc3bd09fd34889bba281d Mon Sep 17 00:00:00 2001
+From 5288c5cd0d131b2bcb51db192e3953d9bd7932df Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Sat, 4 Jul 2026 10:35:29 +0000
 Subject: [PATCH] A0-ARCH stage 3: perf A/B (the skipped check) -- NO

@@ -1,23 +1,23 @@
-From 3d1eb2e44307a76cc87541205f0a2d9c0ce35227 Mon Sep 17 00:00:00 2001
+From 78cf1a0ebca04b1c91ed4130408f7ea4973cbddf Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Sat, 11 Jul 2026 04:18:36 +0000
 Subject: [PATCH] shellspawn: preserve signal exit status
 
 ---
- src/shellspawn/shellspawn.c               | 11 ++++--
+ src/shellspawn/shellspawn.c               |  9 ++---
  src/shellspawn/wait_status.h              | 18 +++++++++
  tests/regression/CMakeLists.txt           | 12 ++++++
  tests/regression/run-host-regressions.sh  |  3 +-
  tests/regression/shellspawn_exit_status.c | 46 +++++++++++++++++++++++
- 5 files changed, 85 insertions(+), 5 deletions(-)
+ 5 files changed, 81 insertions(+), 7 deletions(-)
  create mode 100644 src/shellspawn/wait_status.h
  create mode 100644 tests/regression/shellspawn_exit_status.c
 
 diff --git a/src/shellspawn/shellspawn.c b/src/shellspawn/shellspawn.c
-index f5ba615bbc9c2a74c801ef5178fd2e4fd7b4a75f..8d99486bdd046449fa6b20ce6618765343003091 100644
+index 8e7be9aa7c0758928a57799df70d5081bf20b577..95487984ccbaf5c72fd7db8de461998d0c97919e 100644
 --- a/src/shellspawn/shellspawn.c
 +++ b/src/shellspawn/shellspawn.c
-@@ -35,6 +35,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
+@@ -34,6 +34,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
  #include <signal.h>
  #include "shellspawn.h"
  #include "duct_signals.h"
@@ -25,24 +25,25 @@ index f5ba615bbc9c2a74c801ef5178fd2e4fd7b4a75f..8d99486bdd046449fa6b20ce66187653
  
  #define DBG 0
  
-@@ -402,14 +403,16 @@ void spawnShell(int fd)
+@@ -77,11 +78,7 @@ static void closeFd(int* fd)
  
- 	// Reap the child
- 	int wstatus;
-+	int exit_status = 1;
- 	if (waitpid(shell_pid, &wstatus, 0) != shell_pid)
- 		perror("waitpid");
--	wstatus = WEXITSTATUS(wstatus);
--	
-+	else
-+		exit_status = shellspawn_exit_code_from_wait_status(wstatus);
-+
- 	// Report exit code back to the client
--	write(fd, &wstatus, sizeof(int));
-+	write(fd, &exit_status, sizeof(int));
+ static int shellExitCode(int status)
+ {
+-	if (WIFEXITED(status))
+-		return WEXITSTATUS(status);
+-	if (WIFSIGNALED(status))
+-		return 128 + WTERMSIG(status);
+-	return EXIT_FAILURE;
++	return shellspawn_exit_code_from_wait_status(status);
+ }
+ 
+ static int reapShell(pid_t shell_pid, int* status)
+@@ -503,7 +500,7 @@ void spawnShell(int fd)
+ 	if (wait_result == SHELL_WAIT_EXITED)
+ 		write(fd, &result, sizeof(result));
  
 -	if (DBG) printf("Shell terminated with exit code %d\n", wstatus);
-+	if (DBG) printf("Shell terminated with exit code %d\n", exit_status);
++	if (DBG) printf("Shell terminated with exit code %d\n", result.value);
  	close(fd);
  
  	reapAll();

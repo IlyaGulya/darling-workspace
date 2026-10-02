@@ -1,4 +1,4 @@
-From 85bfc3acdc0801ed5af1b8fbb3219426e4c7f344 Mon Sep 17 00:00:00 2001
+From 47898e2b5325e3b33f00573a4433d4c224a4106d Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Sat, 11 Jul 2026 03:59:51 +0000
 Subject: [PATCH] ci: add source-owned host regression stage
@@ -143,7 +143,7 @@ index 0000000000000000000000000000000000000000..70cac2eb7911273591d17385034fea70
 +	exit 1
 +fi
 
-From 3d22c6fd6a78c02e49c28f6eb89b1e1f89d9d390 Mon Sep 17 00:00:00 2001
+From d935790384bb486f355a19540a2e7e1732f14f11 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Sat, 11 Jul 2026 04:02:47 +0000
 Subject: [PATCH] test: share host regression runner
@@ -213,7 +213,7 @@ index 0000000000000000000000000000000000000000..5d9b324fdf68ae946ade6ae7ae1b59a8
 +	darling_host_glibc_fork_lock_reset
 +ctest --test-dir "$build_root" --output-on-failure -L '^env:host$'
 
-From b41159e56b046772fe5d6a715e948e6ae94028cb Mon Sep 17 00:00:00 2001
+From 30835a356bc7f310e4580d4f05c1ab9112235c87 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya.gulya@indriver.com>
 Date: Sat, 11 Jul 2026 04:06:57 +0000
 Subject: [PATCH] test: mark host regression runner executable

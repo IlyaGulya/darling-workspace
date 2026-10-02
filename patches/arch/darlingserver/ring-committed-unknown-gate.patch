@@ -1,4 +1,4 @@
-From ea28bd095742be30f96b3d73510321f7c8124a51 Mon Sep 17 00:00:00 2001
+From 03038154d97be0a2a7b5c7ba08beb45a2b5f410b Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 7 Jul 2026 17:09:14 +0000
 Subject: [PATCH] tests: pin ring committed-unknown no-retry contract

@@ -1,4 +1,4 @@
-From 6e231d6477b334b4bb482b92e00a90661eb7e2f0 Mon Sep 17 00:00:00 2001
+From 8e72db007790419b36af1db70e0c68da16910870 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Tue, 7 Jul 2026 15:55:32 +0000
 Subject: [PATCH] a0: retry transient shellspawn startup miss

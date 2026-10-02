@@ -1,4 +1,4 @@
-From 9956c99a8228a7540a4cefd9da52517f245d06ad Mon Sep 17 00:00:00 2001
+From 24546ba90dbe4592f9c6c1d228078daa5698ea86 Mon Sep 17 00:00:00 2001
 From: Ilya Gulya <ilya@gulya.me>
 Date: Wed, 8 Jul 2026 02:31:48 +0000
 Subject: [PATCH] a1: map interruptible RPC disconnect send to EINTR
@@ -9,7 +9,7 @@ Subject: [PATCH] a1: map interruptible RPC disconnect send to EINTR
  2 files changed, 37 insertions(+), 10 deletions(-)
 
 diff --git a/scripts/generate-rpc-wrappers.py b/scripts/generate-rpc-wrappers.py
-index 96c85fe82623984bbfdb7e8e86a2d8842d228c86..73ae932ff716f952e10d716e1597709694406522 100755
+index 7d90d8240c5ff649962f42ae9f27dae18dd16330..9aa1bbb3d3a101380884e590d5ec63f6d1534637 100755
 --- a/scripts/generate-rpc-wrappers.py
 +++ b/scripts/generate-rpc-wrappers.py
 @@ -17,6 +17,7 @@ UNMANAGED_CALL         = 1 << 6
@@ -87,7 +87,7 @@ index 96c85fe82623984bbfdb7e8e86a2d8842d228c86..73ae932ff716f952e10d716e15977096
  #ifndef dserver_rpc_hooks_close_fd
  DSERVER_RPC_HOOKS_ATTRIBUTE void dserver_rpc_hooks_close_fd(int fd);
  #endif
-@@ -1530,6 +1540,16 @@ for call in calls:
+@@ -1565,6 +1575,16 @@ for call in calls:
  	library_source.write("\t}\n\n")
  
  	library_source.write("\tif (long_status < 0) {\n")
