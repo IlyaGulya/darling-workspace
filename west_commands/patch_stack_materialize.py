@@ -52,6 +52,10 @@ class MirrorUnreachableError(MaterializeError):
 # raise it with ``WEST_PATCH_IMMUTABLE_FETCH_TIMEOUT=<seconds>``.
 IMMUTABLE_FETCH_TIMEOUT_SECONDS = 300.0
 IMMUTABLE_FETCH_TIMEOUT_ENV = "WEST_PATCH_IMMUTABLE_FETCH_TIMEOUT"
+# The short first attempt at a FULL transfer, before the blobless fallback in
+# fetch_immutable() takes over.  See immutable_fetch_probe_seconds().
+IMMUTABLE_FULL_FETCH_PROBE_SECONDS = 120.0
+IMMUTABLE_FULL_FETCH_PROBE_ENV = "WEST_PATCH_IMMUTABLE_FULL_FETCH_PROBE"
 # Reachability probes run once per distinct mirror before any replay, so their
 # bound stays short: a blackholed mirror must fail the gate almost immediately.
 MIRROR_PROBE_TIMEOUT_SECONDS = 20.0
@@ -165,11 +169,41 @@ def _run(repo: Path, *args: str, timeout: float | None = None) -> subprocess.Com
     return subprocess.CompletedProcess(["git", *args], process.returncode, stdout, stderr)
 
 
-def _git(repo: Path, *args: str) -> str:
-    result = _run(repo, *args)
+def _git(repo: Path, *args: str, timeout: float | None = None) -> str:
+    result = _run(repo, *args, timeout=timeout)
     if result.returncode:
         raise MaterializeError(f"git {' '.join(args)} failed ({result.returncode}): {result.stderr.strip()}")
     return result.stdout.strip()
+
+
+def immutable_fetch_probe_seconds() -> float:
+    """Bound the FULL immutable transfer before switching to a blobless one.
+
+    MEASURED (dar-b5pe): a mirror whose pack for a single ref is far larger than
+    that ref needs does not fail fast -- it starts serving, then drops the
+    connection, and the observed failure took three minutes eighteen seconds,
+    while the same ref fetched ``--filter=blob:none`` completed in 3.9s.  A
+    replay contacts several mirrors, so paying the full 600s bound per mirror
+    makes one replay spend an hour learning what a probe can learn in two
+    minutes.  A working full transfer answers in seconds, so a short first
+    attempt loses nothing that a retry below does not recover.
+    """
+    raw = os.environ.get(IMMUTABLE_FULL_FETCH_PROBE_ENV)
+    if raw is None or not raw.strip():
+        return IMMUTABLE_FULL_FETCH_PROBE_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        value = float("nan")
+    if not value > 0 or value == float("inf"):
+        return IMMUTABLE_FULL_FETCH_PROBE_SECONDS
+    return value
+
+
+# Mirrors whose full transfer already failed once in THIS process.  A replay
+# fetches many refs from the same handful of mirrors, and without this memo each
+# ref would pay the probe bound again before falling back.
+_FULL_FETCH_FAILED_MIRRORS: set[str] = set()
 
 
 def fetch_immutable(repo: Path, remote: str, specs: Sequence[str], *, url: str | None = None) -> None:
@@ -182,19 +216,29 @@ def fetch_immutable(repo: Path, remote: str, specs: Sequence[str], *, url: str |
     is reported as an unreachable mirror rather than as a bare Git failure.
     """
     limit = immutable_fetch_timeout()
-    try:
-        _git(repo, "fetch", "--no-tags", remote, *specs)
-        return
-    except GitTimeout as error:
-        first_error: BaseException = error
-        first_kind = "immutable fetch timed out"
-    except MaterializeError as error:
-        # MEASURED (dar-b5pe): a mirror can answer and still fail the transfer -- fetch-pack reports
-        # "unexpected disconnect while reading sideband packet", then "early EOF" and "invalid index-pack
-        # output", because the pack it starts serving for one ref is far larger than that ref needs. That is
-        # the same class of failure as a bound expiring (nothing arrived), so it takes the same fallback.
-        first_error = error
-        first_kind = "immutable fetch failed"
+    probe = immutable_fetch_probe_seconds()
+    mirror_key = url or remote
+    first_error: BaseException
+    if mirror_key in _FULL_FETCH_FAILED_MIRRORS:
+        first_error = MaterializeError(
+            f"a full transfer from {mirror_key} already did not complete in this run"
+        )
+        first_kind = "immutable full fetch skipped (this mirror already failed once in this run)"
+    else:
+        try:
+            _git(repo, "fetch", "--no-tags", remote, *specs, timeout=probe)
+            return
+        except GitTimeout as error:
+            first_error = error
+            first_kind = f"immutable full fetch did not complete within its {probe:g}s probe bound"
+        except MaterializeError as error:
+            # MEASURED (dar-b5pe): a mirror can answer and still fail the transfer -- fetch-pack reports
+            # "unexpected disconnect while reading sideband packet", then "early EOF" and "invalid index-pack
+            # output", because the pack it starts serving for one ref is far larger than that ref needs. That is
+            # the same class of failure as a bound expiring (nothing arrived), so it takes the same fallback.
+            first_error = error
+            first_kind = "immutable full fetch failed"
+        _FULL_FETCH_FAILED_MIRRORS.add(mirror_key)
 
     # A BLOBLESS RETRY, MEASURED TO WORK WHERE THE FULL TRANSFER DOES NOT. Against the same tag and mirror:
     # the unfiltered fetch died mid-pack after 3m18s, while the same ref with --filter=blob:none completed in
