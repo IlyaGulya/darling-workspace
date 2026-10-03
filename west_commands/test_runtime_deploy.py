@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
+from deploy_receipt import build_receipt, write_receipt
 from deploy_transaction import DeploymentTransaction, DeploymentTransactionError
 from test_runtime import (
     ROOTLESS_BOOTSTRAP_RESOURCE,
@@ -450,6 +451,7 @@ class RuntimeDeploymentService:
                 Path(temp) / "manifest.json", prefix, normalize_modes=True
             )
             try:
+                deployed_pairs: list[tuple[Path, Path]] = []
                 if create_mode_marker:
                     marker_source = Path(temp) / "runtime-mode-marker"
                     marker_source.write_bytes(mode_marker_content or b"")
@@ -461,6 +463,7 @@ class RuntimeDeploymentService:
                     )
                 for source, destination in self.deployment_plan(proof, build_root, prefix):
                     transaction.replace(source, destination)
+                    deployed_pairs.append((source, destination))
                     self._host.inf(f"  {label} deploy: {source} -> {destination}")
                 self._host.inf(
                     f"  runtime phase complete: {label} deploy "
@@ -470,6 +473,7 @@ class RuntimeDeploymentService:
                 succeeded = True
                 if not restore_deployment:
                     transaction.commit()
+                    self._write_deploy_receipt(prefix, build_root, deployed_pairs)
             except DeploymentTransactionError as error:
                 self._host.die(f"guest-runtime-deploy transaction failed: {error}")
             finally:
@@ -490,6 +494,33 @@ class RuntimeDeploymentService:
                 elif transaction.entries:
                     self._host.inf(f"  {label} deployment retained after successful smoke")
                 self._host._shutdown_runtime_prefix(prefix, extra_env=shutdown_env)
+
+    def _write_deploy_receipt(
+        self, prefix: Path, build_root: Path, deployed: list[tuple[Path, Path]]
+    ) -> None:
+        """Record a retained runtime deployment against the current build."""
+        manifest_repo = getattr(self._host, "manifest", None)
+        repo_abspath = getattr(manifest_repo, "repo_abspath", None)
+        topdir = getattr(self._host, "topdir", None)
+        if not repo_abspath or not topdir:
+            self._host.err(
+                "guest-runtime-deploy retained a deployment but cannot identify the "
+                "workspace; no deployment receipt written"
+            )
+            return
+        try:
+            receipt = build_receipt(
+                manifest_repo=Path(repo_abspath),
+                topdir=Path(topdir),
+                build_dir=Path(build_root),
+                prefix=Path(prefix),
+                deployed=deployed,
+            )
+            path = write_receipt(Path(prefix), receipt)
+        except (OSError, ValueError) as error:
+            self._host.err(f"guest-runtime-deploy could not write receipt: {error}")
+            return
+        self._host.inf(f"  deployment receipt: {path}")
 
     @staticmethod
     def _proof_lifecycle_env(proof: dict) -> dict[str, str]:

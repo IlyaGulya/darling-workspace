@@ -40,6 +40,7 @@ from typing import Any
 from west.commands import WestCommand
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from deploy_receipt import read_receipt, receipt_path, verify_receipt
 from prefix_repair import PrefixBootPhase, prefix_boot_phase, prefix_boot_prerequisite_problems
 
 _EXTRA_PREFIX_DYLIBS = [
@@ -115,6 +116,22 @@ class DarlingDoctor(WestCommand):
             "--no-baseline-file",
             action="store_true",
             help="ignore darling-workspace/deploy-baseline.md5 (only use flags/env)",
+        )
+        p.add_argument(
+            "--receipt-mode",
+            choices=("current", "historical"),
+            default="current",
+            help="how to verify deployed runtime artifacts: 'current' (default) "
+            "checks them against the build/deployment receipt written by the "
+            "deploy path; 'historical' compares md5s against "
+            "deploy-baseline.md5/flags, which is the regression mode. Explicit "
+            "--expect-*-md5 or --no-baseline-file also select 'historical'.",
+        )
+        p.add_argument(
+            "--deploy-receipt",
+            default=None,
+            help="explicit deployment receipt path (default: "
+            "<prefix>/.darling-deploy-receipt.json)",
         )
         p.add_argument(
             "--allow-drift",
@@ -293,6 +310,12 @@ class DarlingDoctor(WestCommand):
                 command.append(f"{option}={value}")
         if args.no_baseline_file:
             command.append("--no-baseline-file")
+        receipt_mode = getattr(args, "receipt_mode", None)
+        if receipt_mode and receipt_mode != "historical":
+            command.append(f"--receipt-mode={receipt_mode}")
+        deploy_receipt = getattr(args, "deploy_receipt", None)
+        if deploy_receipt:
+            command.append(f"--deploy-receipt={deploy_receipt}")
         for value in args.allow_drift:
             command.append(f"--allow-drift={value}")
         for value in args.extra_prefix:
@@ -323,6 +346,8 @@ class DarlingDoctor(WestCommand):
                 "extra_prefixes": [str(value) for value in args.extra_prefix],
                 "allow_drift": [str(value) for value in args.allow_drift],
                 "baseline_file_enabled": not args.no_baseline_file,
+                "receipt_mode": self._baseline_mode(args),
+                "deploy_receipt": getattr(args, "deploy_receipt", None),
                 "west_argv": list(self._invocation_west_argv),
             },
             "summary": {
@@ -556,8 +581,92 @@ class DarlingDoctor(WestCommand):
         for extra in args.extra_prefix:
             check_one(Path(extra), f"extra {extra}")
 
-    # -- CHECK 3: deployed binaries vs known-good baseline ----------------
+    # -- CHECK 3: deployed binaries vs current deploy receipt / baseline ---
+    def _baseline_mode(self, args) -> str:
+        mode = getattr(args, "receipt_mode", None) or "current"
+        if mode == "historical":
+            return "historical"
+        if (
+            getattr(args, "expect_dyld_md5", None)
+            or getattr(args, "expect_mldr_md5", None)
+            or getattr(args, "expect_dserver_md5", None)
+            or getattr(args, "no_baseline_file", False)
+        ):
+            # Explicit md5 expectations are the historical comparison request.
+            return "historical"
+        return "current"
+
     def _check_baseline(self, args):
+        if self._baseline_mode(args) == "historical":
+            self._check_baseline_historical(args)
+        else:
+            self._check_deploy_receipt(args)
+
+    def _workspace_commit(self) -> str | None:
+        repo = getattr(self.manifest, "repo_abspath", None)
+        if not repo:
+            return None
+        result = _run(["git", "-C", str(repo), "rev-parse", "HEAD"])
+        return result.stdout.strip() if result.returncode == 0 and result.stdout else None
+
+    def _deployed_markers(self, prefix: Path) -> list[Path]:
+        return [
+            prefix / "libexec/darling/usr/lib/dyld",
+            prefix / "usr/lib/dyld",
+            prefix / "libexec/darling/usr/libexec/darling/mldr",
+            prefix / "bin/darlingserver",
+        ]
+
+    def _check_deploy_receipt(self, args):
+        self._section("3. deployed binaries vs current deployment receipt")
+        prefix = Path(args.prefix)
+        explicit = getattr(args, "deploy_receipt", None)
+        path = Path(explicit) if explicit else receipt_path(prefix)
+        if not path.is_file():
+            if any(marker.exists() for marker in self._deployed_markers(prefix)):
+                self._problem(
+                    f"deployed runtime artifacts have no deployment receipt at {path}; "
+                    "deploy with west darling-build --deploy (or let west test deploy) "
+                    "so the deployed bytes are recorded against the current build"
+                )
+            else:
+                self._warn(f"no deployed runtime artifacts and no receipt at {path} (skip)")
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("receipt is not a JSON object")
+            if payload.get("schema_version") != 1:
+                raise ValueError(
+                    f"unsupported receipt schema {payload.get('schema_version')!r}"
+                )
+        except (ValueError, OSError) as error:
+            self._problem(f"deployment receipt unreadable at {path}: {error}")
+            return
+
+        self._detail(f"  (receipt from {path})")
+        recorded = (payload.get("workspace") or {}).get("manifest_commit")
+        current = self._workspace_commit()
+        if recorded and current and recorded != current:
+            self._warn(
+                f"receipt was written for workspace {recorded[:12]}; current manifest "
+                f"commit is {current[:12]} (redeploy to refresh the receipt)"
+            )
+        components = payload.get("components") or []
+        if components:
+            summary = ", ".join(
+                f"{row.get('path')}@{str(row.get('revision'))[:12]}"
+                for row in components
+                if isinstance(row, dict)
+            )
+            self._detail(f"  components: {summary}")
+        problems, notes = verify_receipt(payload)
+        for note in notes:
+            self._ok(note)
+        for problem in problems:
+            self._problem(f"{problem.label}: {problem.message}")
+
+    def _check_baseline_historical(self, args):
         self._section("3. deployed binaries vs known-good baseline")
         prefix = Path(args.prefix)
         bf = {} if args.no_baseline_file else self._baseline_file()

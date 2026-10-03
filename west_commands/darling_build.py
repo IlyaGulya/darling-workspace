@@ -37,10 +37,12 @@ from pathlib import Path
 
 from west.commands import WestCommand
 try:
+    from .deploy_receipt import build_receipt, receipt_path, write_receipt
     from .deploy_transaction import DeploymentTransaction, DeploymentTransactionError
     from .prefix_repair import prefix_mount_targets
     from .test_prefix import rootless_prefix_process_snapshot
 except ImportError:
+    from deploy_receipt import build_receipt, receipt_path, write_receipt
     from deploy_transaction import DeploymentTransaction, DeploymentTransactionError
     from prefix_repair import prefix_mount_targets
     from test_prefix import rootless_prefix_process_snapshot
@@ -225,7 +227,9 @@ class DarlingBuild(WestCommand):
                 except DeploymentTransactionError as error:
                     self.die(str(error))
             try:
-                self._deploy(
+                receipt_written = None
+                receipt_backup = None
+                deployed_pairs = self._deploy(
                     build_dir,
                     prefix,
                     closure_names=deploy_closure_names,
@@ -237,6 +241,13 @@ class DarlingBuild(WestCommand):
                     deploy_bootchain=args.deploy_bootchain,
                     extra_prefixes=extra_prefixes,
                     transaction=transaction,
+                )
+                # Record what was deployed BEFORE the post-deploy doctor runs:
+                # the doctor's default receipt mode verifies the deployed bytes
+                # against this deploy, not against the historical baseline.
+                receipt_backup = self._snapshot_receipt(prefix)
+                receipt_written = self._write_deploy_receipt(
+                    prefix, build_dir, deployed_pairs
                 )
                 # ---- 4. post-deploy doctor ----
                 if args.skip_post_doctor:
@@ -251,6 +262,8 @@ class DarlingBuild(WestCommand):
                     transaction.commit()
                     self.inf(f"transactional deploy manifest: {transaction.manifest_path}")
             except BaseException:
+                if receipt_written is not None:
+                    self._restore_receipt(prefix, receipt_backup)
                 if transaction is not None:
                     try:
                         transaction.rollback()
@@ -422,6 +435,38 @@ class DarlingBuild(WestCommand):
                 self.wrn(f"closure dylib not found in build tree: {name} (skipped)")
         return targets
 
+    def _write_deploy_receipt(self, prefix, build_dir, deployed_pairs):
+        """Record the deployed bytes against the current build/workspace."""
+        if not deployed_pairs:
+            return None
+        manifest = getattr(self, "manifest", None)
+        repo_abspath = getattr(manifest, "repo_abspath", None)
+        topdir = getattr(self, "topdir", None)
+        if not repo_abspath or not topdir:
+            self.wrn("cannot identify the workspace; no deployment receipt written")
+            return None
+        receipt = build_receipt(
+            manifest_repo=Path(repo_abspath),
+            topdir=Path(topdir),
+            build_dir=Path(build_dir),
+            prefix=Path(prefix),
+            deployed=deployed_pairs,
+        )
+        path = write_receipt(Path(prefix), receipt)
+        self.inf(f"deployment receipt: {path}")
+        return path
+
+    def _snapshot_receipt(self, prefix):
+        path = receipt_path(Path(prefix))
+        return path.read_bytes() if path.is_file() else None
+
+    def _restore_receipt(self, prefix, previous):
+        path = receipt_path(Path(prefix))
+        if previous is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(previous)
+
     def _deploy(self, build_dir, prefix, closure_names=None, deploy_dyld=True,
                 deploy_darlingserver=False, deploy_launcher=False, deploy_mldr=False,
                 deploy_shellspawn=False, deploy_bootchain=False,
@@ -525,39 +570,45 @@ class DarlingBuild(WestCommand):
         resolved = self._closure_targets(build_dir, closure_names)
         name_to_path = {Path(t).name: build_dir / t for t in resolved}
         copy_deployed_file = transaction.replace if transaction is not None else shutil.copy2
+        deployed_pairs: list[tuple[Path, Path]] = []
+
+        def deploy_file(source: Path, destination: Path) -> None:
+            copy_deployed_file(source, destination)
+            deployed_pairs.append((source, destination))
+
         for tree in [base] + roots:
             if deploy_dyld:
-                copy_deployed_file(dyld_src, tree / "usr/lib/dyld")
+                deploy_file(dyld_src, tree / "usr/lib/dyld")
             for name, src in name_to_path.items():
                 if name == "libSystem.B.dylib":
-                    copy_deployed_file(src, tree / "usr/lib/libSystem.B.dylib")
+                    deploy_file(src, tree / "usr/lib/libSystem.B.dylib")
                 else:
-                    copy_deployed_file(src, tree / "usr/lib/system" / name)
+                    deploy_file(src, tree / "usr/lib/system" / name)
         if deploy_darlingserver:
             for root in roots:
                 dst = root / "bin/darlingserver"
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                copy_deployed_file(dserver_src, dst)
+                deploy_file(dserver_src, dst)
         if deploy_launcher:
             for root in roots:
                 dst = root / "bin/darling"
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                copy_deployed_file(launcher_src, dst)
+                deploy_file(launcher_src, dst)
         if deploy_mldr:
             for src_rel, dst_rel in _MLDR_DEPLOYS:
                 dst = prefix / dst_rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                copy_deployed_file(build_dir / src_rel, dst)
+                deploy_file(build_dir / src_rel, dst)
         if deploy_shellspawn:
             src_rel, dst_rel = _SHELLSPAWN_DEPLOY
             dst = prefix / dst_rel
             dst.parent.mkdir(parents=True, exist_ok=True)
-            copy_deployed_file(build_dir / src_rel, dst)
+            deploy_file(build_dir / src_rel, dst)
         if deploy_bootchain:
             for src_rel, dst_rel in _BOOTCHAIN_DEPLOYS:
                 dst = prefix / dst_rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                copy_deployed_file(build_dir / src_rel, dst)
+                deploy_file(build_dir / src_rel, dst)
         dyld_note = "dyld + " if deploy_dyld else ""
         target_count = 1 + len(roots)
         dserver_note = " + darlingserver" if deploy_darlingserver else ""
@@ -566,5 +617,7 @@ class DarlingBuild(WestCommand):
         shellspawn_note = " + shellspawn" if deploy_shellspawn else ""
         bootchain_note = " + bootchain" if deploy_bootchain else ""
         self.inf(f"deployed {dyld_note}{len(name_to_path)} closure dylibs to {target_count} closure copies{dserver_note}{launcher_note}{mldr_note}{shellspawn_note}{bootchain_note}")
-        self.wrn("NOTE: this changes the SHARED base tree (affects all prefixes). If this is a new "
-                 "known-good set, update darling-workspace/deploy-baseline.md5.")
+        self.wrn("NOTE: this changes the SHARED base tree (affects all prefixes). The current "
+                 "deployment receipt records this deploy; update "
+                 "darling-workspace/deploy-baseline.md5 only for a new known-good regression set.")
+        return deployed_pairs

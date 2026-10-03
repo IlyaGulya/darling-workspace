@@ -55,6 +55,7 @@ CONTRACTS = (
     "tests/run-west-dev-output-contract.sh",
     "tests/run-west-doctor-output-contract.sh",
     "tests/run-west-doctor-prefix-contract.sh",
+    "tests/run-west-doctor-receipt-contract.sh",
     "tests/run-west-dw-beads-alias-contract.sh",
     "tests/run-west-extension-help-contract.sh",
     "tests/run-west-job-contract.sh",
