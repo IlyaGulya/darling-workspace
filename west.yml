@@ -16,7 +16,7 @@ manifest:
     repo-path: darling
     path: darling
     remote: darling-next
-    revision: 09d9722aca386ba5144991350451b00f0bde0867
+    revision: 386d18270423617d3a9e94da7660f8adb05d1c26
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -448,7 +448,7 @@ manifest:
     repo-path: darlingserver
     path: darling/src/external/darlingserver
     remote: darling
-    revision: cd963640de9cef076da3da59ee417f1f235dd4f5
+    revision: 9e8b49725930b536c338b18aa173eb5c6f8cf121
     userdata:
       kind: darling-source
       upstream-repository: darlingserver

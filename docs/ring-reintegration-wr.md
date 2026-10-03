@@ -469,3 +469,27 @@ and the reply code read back with `suppressedReplyCode()` -> `-22`. So the next 
 exception thrown while servicing that urgent sigprocess request (which is why the child's fault
 never reaches a handler and the fork child never checks in), not the resume decision that is now
 fixed and covered.
+
+### The urgent-plane sigprocess failure is `setPendingSignal()` throwing
+
+A temporary probe on the worker's exception guard (which maps any `std::exception` to `-EINVAL`,
+so the -22 never implied EINVAL) named the thrower in one run:
+
+```text
+[call-exc] call=12 std::exception what=Can't set pending signal with no active interrupts
+```
+
+`call 12` is `dserver_callnum_sigprocess`. The urgent-plane route reaches
+`Thread::setPendingSignal()` (`thread.cpp:1131`) on a thread whose interrupt stack is empty, that
+function throws `std::runtime_error`, the guard replies `-22`, the guest's sigexc handler sees the
+failure and hits `__simple_abort()` (the `[sigexc-fatal sig=4]` SIGILL), the fork child never
+checks in, and shellspawn never becomes ready.
+
+The class already treats that state as legal in two other places: `processSignal()` documents that
+an empty `_interrupts` only means there is no marker of this thread's to clear, and
+`pendingSignal()` already answers 0 for an empty stack. `setPendingSignal()` now agrees: report the
+anomaly once, return 0, never throw (both callers ignore the return value).
+
+MEASURED after the change (one canonical-harness smoke): `replying -22` gone from the server log,
+`[dserver-CRASH]` still 0. The guest child still dies on its own SIGSEGV, and the plane still ends
+at `[pc-return-9+]` before the shellspawn timeout, so the next boundary is the guest's own fault.
