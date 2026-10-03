@@ -172,18 +172,25 @@ use the archive when only the delta is needed.
   `dar-n8p7` (declined per-thread transport) and `dar-o1qj` (checkin/attach
   denial). Both the W0 ring-ON tree and this product tree end at the same
   shellspawn-readiness symptom.
-- Root cause narrowed: the process-control page is never published. `mldr`
-  prints `[plane-doorbell]` unconditionally (`mldr.c:1548`) only after
-  `memfd_create`/`ftruncate`/`mmap`/`__mldr_fd_courier_send_envelope(...,
-  DSERVER_FD_COURIER_KIND_PROCESS_CONTROL)` all succeed; that line is absent
-  from every run (0 occurrences), so `__mldr_process_control_create()` returns
-  -1 at or before the courier send, `__mldr_process_control_page()` returns NULL
-  through the elfcalls table, and the guest kernel image records `why=no-page`
-  (`dserver-ring.c:3009`). The server corroborates: every boot logs
-  `plane-doorbell-route pid=N socket=-1 ino=0 isLoader=0 conns=[]` — no courier
-  connection exists. The ring-lane seed still succeeds because its attach path
-  is separate (`[mldr-seed] attach rc=0`, `afunix-send ... scm=1 fdcnt=1`).
-  Deterministic: 3/3 runs, same op and same refusal.
+- Root cause of the `no-page` refusal: the guest environment had no prefix, so
+  the loader never opened the descriptor courier. `mldr` derives the courier
+  abstract name from `DARLING_PREFIX`/`DPREFIX` (`mldr.c:2172`), but the
+  launcher `unsetenv("DPREFIX")` (`src/startup/darling.c:214`) and only the
+  remaining environ reaches the guest; the workspace tooling sets **both**
+  variables (`west_commands/test_prefix.py:496`), so a smoke that exports only
+  `DPREFIX` fails. Evidence: `[fd-courier-conn]` (loader success instrument,
+  `mldr.c:2135`) appears 0 times without `DARLING_PREFIX` and once with it;
+  `plane-refuse`/`plane-exhausted`/`rpc-socket-DENIED` counts go from 10 to 0.
+  (A host-side `/proc/net/unix` probe for the name is not evidence: that file is
+  per-netns.) Two robustness defects remain: `__mldr_fd_courier_socket()` caches
+  a failed connect as `-1` for the whole process (`mldr.c:2109-2150`), and the
+  launcher does not export `DARLING_PREFIX` itself.
+- With `DARLING_PREFIX` exported the boot advances past the plane and stops at a
+  later failure: `vchroot.c:65 perror("execv")` -> `execv: Bad file descriptor`
+  -> `vchroot` exits 4 -> `[native-exit status=4]` -> shellspawn never becomes
+  ready. `vchroot` runs `open(argv[1])`/`fchdir`/`__darling_vchroot`/`close(dfd)`
+  and then `execv(argv[2], argv+2)`; the trace immediately before shows
+  `[open-path /proc/self/fd/3]` then `[open-path /sbin/launchd]`.
 
 ## The product line is the arch (`perf#30`) lineage
 
