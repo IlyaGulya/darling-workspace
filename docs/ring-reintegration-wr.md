@@ -98,6 +98,14 @@ pins (the nine recovered components above plus `libunwind`, `libplatform`,
 
 `r1-repro` is evidence only from this point: no further product edits there.
 
+## Checkpoint identity
+
+```text
+workspace  change/ring-reintegration-v1 @ 3e5562f9  (WR checkpoint + token-identity fix)
+xnu        f3e71f3997a898ea7962e43dfad32c500efae97e  fix/ring-courier-token-image-identity
+darling    30fa003112412ae9f7b4d72302eef1df0c242732  fix/ring-courier-token-image-identity
+```
+
 ## WR boot blocker resolved: cross-image fd-courier token collision
 
 The canonical-harness smoke **did** reproduce `vchroot: execv: Bad file
