@@ -54,6 +54,35 @@ Measured properties of this manifest commit:
 (`a91da1a`), so it is a fast-forward. The re-integration branch pins it in
 `west.yml`; without it no Git-only `rootless_bootstrap` build links.
 
+## Measured W0 status (2026-10-03)
+
+| step | result |
+| --- | --- |
+| Git-only configure + `ninja rootless_bootstrap` | rc=0 only after the libunwind pin; without it the dyld/system_loader link fails |
+| Git-only prefix bootstrap (runtime deployment planner over `darling-rootless-bootstrap.json`, 101 file copies) + product prefix init | ok, typed prefix state published |
+| ring-ON guest smoke | **fails**: darlingserver starts and reports `perf#18 shared-memory ring transport ACTIVE`, the boot reaches `shellspawn` and then `Rootless shellspawn did not become ready within 60000ms`. `DARLING_SERVER_FAST_OPS=0` does not change it. |
+| `DSERVER_RING_TRANSPORT=OFF` build | **does not compile**: `darlingserver/src/metrics.cpp` uses `dserver_ring_op_class` / `DSERVER_RING_CLASS_*` unconditionally, so the perf-line server requires the ring transport compiled in |
+
+Boot-path dependency measured while porting the loader plane: the accepted
+`mldr.c` snapshot calls `__mldr_fd_courier_send_envelope(..., DSERVER_FD_COURIER_KIND_PROCESS_CONTROL)`
+and reads `struct dserver_process_control`, i.e. the arch `rpc-supplement.h`
+surface. W0's darlingserver `a693e31a` has **no** `DSERVER_FD_COURIER_KIND_PROCESS_CONTROL`,
+so the loader plane cannot compile against W0's server; the snapshot's
+`rpc-supplement.h` is byte-identical (sha256 `10d6685a47bac712...`) to
+`ddc0bf7b:include/darlingserver/rpc-supplement.h`.
+
+Consequence: the layers are not independent in this codebase. The arch
+`darlingserver` surface (process-management plane + descriptor courier) is a
+hard prerequisite of the loader ring plane, so the W3 server foundation has to
+land with (or before) W1. W0's darlingserver is on the perf line and is not the
+product's server.
+
+The ported loader commit is kept on `darling fix/ring-plane-loader`
+(`45f4ed74`); it does not compile until the arch server surface is pinned or
+ported.
+
+
+
 ## The product line is the arch (`perf#30`) lineage
 
 The last accepted Ring runtime's deployed artifacts
