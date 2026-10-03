@@ -251,3 +251,18 @@ refs      keep each step a normal fork-side ref; never force-push, never upstrea
 
 Environment prerequisites: `swift` needs credentials for `https://git-lfs.darlinghq.org`
 (not needed by the core closure build); the fresh full update costs ~34 minutes and 5.8 GB.
+
+## 11. Outstanding coordination action
+
+`west dw handoff` was attempted for this session and **refused**:
+
+```text
+handoff: direct handoff requires every recursive submodule to be initialized and
+unconflicted; incomplete: src/external/...
+```
+
+The resume-tree `darling` checkout has uninitialized/partial recursive submodules, so no
+handoff bundle could be produced. Everything needed to reconstruct this session's state is
+in the git refs listed in sections 3 and 4 plus this document, so nothing is lost; the
+next session (or the operator) should initialize the submodules and rerun
+`west dw handoff` if a keeper bundle is required by convention.
