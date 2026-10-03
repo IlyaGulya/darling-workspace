@@ -854,7 +854,7 @@ manifest:
     repo-path: darling-libunwind
     path: darling/src/external/libunwind
     remote: darling
-    revision: a91da1a0e262e04eb601152a84228ff733e48422
+    revision: d5fbc8180ea2e06efa693ee03a768e532a98671f
     userdata:
       kind: darling-source
       upstream-repository: darling-libunwind
