@@ -536,3 +536,32 @@ The probes were reverted (both repos clean, loader rebuilt without them). The ne
 boundary should be the sanctioned in-namespace capture (`scripts/dwdiag run --capture-gdb
 --gdb-namespace`) rather than more log probes: the guest fault must be caught where it happens,
 with its stack, instead of being reconstructed from per-run offsets.
+
+### Working hypothesis for the remaining guest fault (to be tested, not assumed)
+
+Evidence in one place:
+
+```text
+launchd-RUNTIME_ENTER -> pid 453389 registers (srv-process-register #1, callnum=14, image=2)
+  -> ring attach succeeds (RING_ATTACH_END rc=0, plane-attach ok)
+  -> [sigexc-fatal sig=11 code=128 addr=0x0 pid=453389]
+  -> [sigexc-fatal sig=4 code=2 ...]      (the guest's abort)
+  -> [wait4 pid=453389 raw=0x84]          (parent sees WIFSIGNALED, SIGILL)
+  -> Rootless shellspawn did not become ready within 60000ms
+```
+
+So the crashing child is the one launchd spawns right after `RUNTIME_ENTER` — i.e. the process the
+shellspawn wait is for. Its fault is `si_code = 128 (SI_KERNEL)` with `si_addr = 0`, and the one
+instance resolved so far (`mldr + 0x6cf9` = `__mldr_fd_courier_send_envelope + 0xb9`) is an
+**aligned** `movaps %xmm0,0x30(%rsp)`, whose frame arithmetic says the caller must have had `rsp`
+one 8-byte slot off SysV alignment.
+
+A misaligned stack that appears *inside an otherwise correct native frame* is what a signal
+**resume** with a wrong `rsp` produces, and the guest signal machinery here is exactly the piece
+the last two fixes touched: Darling installs its own handler (running on `sigexc_altstack`, 4096-byte
+aligned, `sigexc.c:72/293`) and rewrites the BSD ucontext for the guest handler. The test is
+therefore not another grep but a capture: take the fault in-namespace (`scripts/dwdiag run
+--capture-gdb --gdb-namespace`, `--gdb-ex 'handle SIGSEGV stop print nopass'`) and read the
+interrupted frame, then compare the delivered `uc_mcontext.rsp` with the frame the instruction
+expects. Only if that shows an 8-byte loss is the resume path the defect; otherwise the alignment
+instance was incidental and the hunt goes back to the child's own code.
