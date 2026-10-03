@@ -238,3 +238,56 @@ Next: find the *first* fault in the child (the SIGSEGV at 0x0 that has no
 interrupt context) -- capture it with `dwdiag run --capture-gdb`, or instrument
 the child's startup after `RING_ATTACH_END`. The signal-delivery refusal itself
 (`sigprocess-no-interrupt`) is the second half of the same boundary.
+
+### The `[dserver-CRASH]` line is the SERVER's own fault, and it is now located
+
+`dserver_crash_probe` is installed by the server for SIGSEGV/SIGBUS/SIGILL/SIGABRT/SIGFPE
+(`darlingserver.cpp:1184`, `dserver_install_crash_probe`). It prints the **server's** registers,
+and its `self=` field is the address of `&dserver_crash_probe`, i.e. the server's own PIE slide.
+So the earlier reads of that line as a guest report were wrong; it is the server crashing.
+
+Measured run (`pc` and the same run's maps in one capture):
+
+```text
+[dserver-CRASH sig=b addr=0x0,self=0x625443cb76a0,ret=0x625443d68151,sp=0x78058bd9ad78,
+               w0=0x625443d68151,w1=0x625464344380,w2=0x625464344370,pc=0x78058ba4a994]
+```
+
+Resolved:
+
+```text
+static &dserver_crash_probe        = 0x1a6a0        (nm on the built server)
+slide                              = self - 0x1a6a0 = 0x625443c9d000
+ret - slide                        = 0xcb151  ->  Thread::_handleInterruptEnterForCurrentThread + 0x6d1
+pc                                 ->  /usr/lib/x86_64-linux-gnu/libc.so.6, mapping-relative 0x22994
+```
+
+The server instruction at that return site is `call setcontext@plt` with `rdi = this + 0x140`
+(the context being restored), and `gdb ptype /o DarlingServer::Thread` confirms
+`ucontext_t _resumeContext` is exactly at offset **0x140**. glibc's `setcontext` at `+0x34`
+is `fldenv (%rcx)` after `mov 0xe0(%rdx),%rcx`, i.e. it dereferences
+`uc->uc_mcontext.fpregs` --- and the fault is `addr=0x0`, so **that pointer is NULL**.
+
+`_resumeContext` is declared without an initializer (`thread.hpp:99`) and is only filled by
+`getcontext(&_resumeContext)` (thread.cpp:756, 868). A `setcontext(&_resumeContext)` on a Thread
+whose context was never captured therefore restores garbage, and glibc faults on
+`fpregs == NULL`. That matches the server-log line `[sigprocess-no-interrupt] delivering a
+signal without an interrupt context` and the following uncaught
+`dserver_callnum_sigprocess` exception (reply -22): the signal path resumes a thread for which
+no interrupt/resume context was ever saved.
+
+Full chain for this boundary:
+
+```text
+guest child faults in user mode (no emulated syscall in flight)
+  -> server Thread::deliverSignal finds _interrupts empty  -> [sigprocess-no-interrupt]
+  -> dserver_callnum_sigprocess throws, replies -22
+  -> the server's own resume path does setcontext(&_resumeContext) with fpregs == NULL
+  -> glibc setcontext+0x34 faults -> dserver_crash_probe -> [dserver-CRASH ...]
+  -> the child dies, PID 1 times out waiting for the fork child checkin,
+     shellspawn never becomes ready
+```
+
+Next: decide the semantic fix (guard the resume against a context that was never captured, or
+capture it on the paths that can be resumed) --- measured, not guessed, and verified with the
+same canonical-harness smoke.
