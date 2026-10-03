@@ -68,8 +68,14 @@ class RuntimeEvidenceSession:
         for repo, target in worktrees:
             try:
                 relative_target = target.relative_to(self._directory)
-            except ValueError as error:
-                raise ValueError(f"evidence worktree escapes its unit: {target}") from error
+            except ValueError:
+                # A source forest materialized into the identity-keyed build cache lives OUTSIDE this evidence
+                # unit, and the cache owns it: it registers those worktrees itself and reclaims them through its
+                # own maintenance path. Recording a path we cannot address relative to the unit made a fresh
+                # workspace fail with "evidence worktree escapes its unit" before the bootstrap could even start
+                # (MEASURED: west test --bootstrap-runtime-profile on a workspace whose cache root is not under
+                # the evidence root). Ownership is what GC needs, and this path is not ours to remove.
+                continue
             records.append({"repo": str(repo), "path": str(relative_target)})
         self._worktrees = records
         self._write_json(".worktrees.json", records)
