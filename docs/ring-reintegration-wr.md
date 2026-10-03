@@ -393,3 +393,55 @@ Open question for the next iteration: which path dispatches/handles an interrupt
 thread that was never suspended (so `_resumeContext` was never captured). Instrument
 `getcontext(&_resumeContext)` (756/868) and the `_suspended` transitions against the interrupt
 entry on one thread id, rather than adding more guards.
+
+## Interrupt/resume: the state machine, the contract, and the measured effect
+
+### Derived transitions (from `thread.cpp`)
+
+| # | State before InterruptEnter | How the continuation is represented | Legal resume | Result |
+|---|---|---|---|---|
+| A | interrupted call suspended in `suspend()` | `_resumeContext` captured; `_suspended` cleared by the dispatch that ran the interrupt | `jumpToResume()` -> `setcontext(&_resumeContext)` | call resumes at its suspension point; re-entry at `_syscallReturnHereDuringInterrupt`; cleanup frees the parked stack |
+| B | interrupted call suspended *with* a continuation callback | `_interruptedContinuation` (the callback), no live fiber to resume | run `localInterruptedContinuation()` | callback runs; nothing is restored |
+| C | interrupted call present but NEVER suspended (measured) | none: no captured context, no continuation | **no server-side resume** | interrupt bookkeeping only; the call stays owned by its own path |
+| D | InterruptEnter queued in `_pendingInterrupts` before the call was dispatched (documented at `thread.cpp:304`) | none yet | same as C | as C |
+| E | the interrupted call already ran to its syscall return | `_didSyscallReturnDuringInterrupt` | none | `_handlingInterruptedCall` is cleared; cleanup |
+| F | stacked/repeated interrupts | as above | any of A/B/C as classified | must stay balanced |
+
+The push site (`thread.cpp:570-578`) is what makes C reachable: it stores `_activeCall` into
+`_interrupts.top().interruptedCall` **without checking that the call ever suspended**, and a Thread
+created for an already-running post-exec image never runs `setupKernelThread()`/`suspend()` at all
+(its `_resumeContext` is still the value-initialized one, `fpregs == NULL`, which is exactly what
+glibc faulted on).
+
+### Contract
+
+`dserver_interrupt_resume_tests` (`src/external/darlingserver/tests/interrupt_resume_test.cpp`)
+drives A-F through the shipped pure decision `InterruptResume::classify()`, asserts
+"no restore of an uncaptured context" over all 16 state combinations, and carries an explicit
+pre-fix model as its RED arm. Output:
+
+```text
+RED/GREEN arm: pre-fix restores an uncaptured context, shipped decision does not
+interrupt/resume contract: OK
+```
+
+### Measured effect of the fix (one canonical-harness smoke)
+
+```text
+before: [dserver-CRASH ...] per failing run, shellspawn never ready
+after : dserver-CRASH = 0 ; launchd reaches BOOTSTRAPPER_SCHEDULED and RUNTIME_ENTER
+```
+
+The guest child still dies on its own SIGSEGV (`[sigexc-fatal sig=11 ...]`, then the SIGILL) and
+`Rootless shellspawn did not become ready within 60000ms` is still the verdict, so the boot is not
+green. The plane also keeps answering `-9` (`[pc-return-9+]`), which is the next thing to attribute
+before any reliability sample.
+
+### Still open (recorded, not guessed)
+
+`interruptedCall` ownership for case C: the interrupt cleanup (`thread.cpp:2756-2762`) still frees
+the parked stack and clears `interruptedCall` unconditionally, while in case C the interrupted call
+was never resumed and is therefore still owned by its own path. During the handler `_activeCall` is
+the *InterruptEnter* call itself, which is why ownership cannot simply be copied back inside the
+handler; the handoff has to be settled against the deactivation path
+(`_deactivateCallLocked()` keys off `_interruptedForSignal`) before it is changed.
