@@ -194,3 +194,47 @@ requires `owner_tid == tid`, so the record is ignored.
 
 Next step: instrument the plane-attach success path in the child (or capture the
 guest fault with `dwdiag run --capture-gdb`), not the courier/token path.
+
+### The child's death is a signal-delivery failure, not a ring transport failure
+
+The launcher's captured stderr does not carry the whole story; the prefix's
+`private/var/log/dserver.log` does. For the crashing child (pid 390425 in that
+run) the server recorded:
+
+```text
+plane-doorbell-sent pid=390425 token=... via=envelope
+attach-lane-op pid=390425 tid=390425 size=2816 status=0 reject=0 token=...
+[sigprocess-no-interrupt] delivering a signal without an interrupt context tid=390425 nstid=390425
+Uncaught exception from processCall (call dserver_callnum_sigprocess); replying -22
+fd-courier-conn-closed fd=23 ... peerPid=390425 isLoader=1
+[P:390370(1)]: timed out waiting 30 seconds for fork child checkin
+```
+
+So the ring attach and the lane it created were fine (`status=0`): the child's
+fatal path is that it faulted (SIGSEGV, `addr=0x0`) while the thread had **no
+interrupt context** (`thread.cpp:1134`), so the server could not deliver the
+signal, `dserver_callnum_sigprocess` threw, the reply was `-22`, and the child
+died. PID 1 then timed out waiting for that forked child's checkin.
+
+Fault address resolution (same-run `/proc/<pid>/maps` union, sampled at 20 ms
+for comm `mldr`/`launchd`/`vchroot`/`shellspawn`): the secondary SIGILL
+`addr=0x708273EFE6D8` falls in
+
+```text
+mldr  prefix/usr/lib/system/libsystem_platform.dylib  708273ef9000-708273eff000
+      -> offset 0x56d8 = _os_unfair_lock_recursive_abort + 0x4
+```
+
+i.e. the dying process reached libplatform's deliberate
+"Trying to recursively lock an os_unfair_lock" trap, consistent with the signal
+failing to be delivered and the process aborting rather than reporting.
+
+Scratch harnesses used for this round live outside the product tree:
+`/home/ilyagulya/work/ring-reint-state/wr_smoke_maps.py` (smoke + maps union)
+and `wr_maps_watch.py` (standalone sampler). Nothing in the product tree was
+changed for this measurement.
+
+Next: find the *first* fault in the child (the SIGSEGV at 0x0 that has no
+interrupt context) -- capture it with `dwdiag run --capture-gdb`, or instrument
+the child's startup after `RING_ATTACH_END`. The signal-delivery refusal itself
+(`sigprocess-no-interrupt`) is the second half of the same boundary.
