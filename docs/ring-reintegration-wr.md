@@ -493,3 +493,33 @@ anomaly once, return 0, never throw (both callers ignore the return value).
 MEASURED after the change (one canonical-harness smoke): `replying -22` gone from the server log,
 `[dserver-CRASH]` still 0. The guest child still dies on its own SIGSEGV, and the plane still ends
 at `[pc-return-9+]` before the shellspawn timeout, so the next boundary is the guest's own fault.
+
+### The remaining guest fault is an ALIGNMENT fault, not a null dereference
+
+The guest-side probe now prints `gregs.rip`, and the same-run `/proc/<pid>/maps` union records each
+mapping's **file offset** (the first attempt dropped it and resolved the wrong symbol twice).
+
+```text
+[fault sig=11 addr=0x0 sicode=128]
+[fault-rip rip=0x5B3DF4E85CF9 rsp=0x7FFFFFDFE9A8 rbp=0x4]
+
+comm=mldr  perms=r-xp  map_off=0x2000  file_off=0x6cf9
+  -> prefix/libexec/darling/usr/libexec/darling/mldr + 0x6cf9
+  -> __mldr_fd_courier_send_envelope + 0xb9  (mldr.c:1440)
+     instruction: `movaps %xmm0,0x30(%rsp)`   (aligned 16-byte store)
+```
+
+`si_code = 128 = SI_KERNEL` with `si_addr = 0` is the signature of an alignment fault, not of a
+null dereference, and the stack confirms it: the frame pushes 4 registers and subtracts 0x88, so a
+correct SysV call would leave `rsp` 16-byte aligned at that store, while the fault has
+`rsp = 0x…E9A8` (8 mod 16). The function was therefore called with a stack that was one 8-byte slot
+off, so the compiler's assumed alignment did not hold.
+
+Call chain (both callers are ordinary C calls in the loader):
+`__mldr_fd_courier_send_token()` (`mldr.c:1479`) -> `send_envelope`, called from the lane-backing
+attach (`mldr.c:2268`) and from the checkin token (`mldr.c:3001`).
+
+This is the fault that still kills the child after both server-side fixes; the signal is now
+delivered (no `-22`, no `[dserver-CRASH]`), the child aborts, and shellspawn never becomes ready.
+Next: find which caller runs with a misaligned stack (probe `rsp & 0xf` at entry in the loader and
+at its callers), rather than adding an alignment attribute blindly.
