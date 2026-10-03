@@ -191,6 +191,19 @@ use the archive when only the delta is needed.
   ready. `vchroot` runs `open(argv[1])`/`fchdir`/`__darling_vchroot`/`close(dfd)`
   and then `execv(argv[2], argv+2)`; the trace immediately before shows
   `[open-path /proc/self/fd/3]` then `[open-path /sbin/launchd]`.
+- `vchroot` characterisation (instrumented, then reverted; tree and prefix
+  restored pristine): `vchroot` is a guest Mach-O invoked as
+  `vchroot /proc/self/fd/3 /sbin/launchd`; it opens `argv[1]`, `fchdir`s,
+  `__darling_vchroot`s, `close(dfd)`, then `execv(argv[2], argv+2)` and dies in
+  `perror("execv")` with EBADF. Raw-write diagnostics at three points of the
+  guest `sys_execve` printed nothing, while the instrumented
+  `libsystem_kernel.dylib` was verifiably the deployed one (6 marker strings in
+  both prefix views) — so the failing `execv` never reaches the dynamic
+  `libsystem_kernel` `sys_execve`: it fails in the guest libc/loader exec path
+  (or the static `emulation_dyld` copy) before or instead of it. Next: instrument
+  the loader/libc `execv` entry and dump the fd table there; the EBADF points at
+  a descriptor the exec path expects, closed by `vchroot` immediately before
+  `execv`.
 
 ## The product line is the arch (`perf#30`) lineage
 
