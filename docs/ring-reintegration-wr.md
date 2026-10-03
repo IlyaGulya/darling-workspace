@@ -291,3 +291,29 @@ guest child faults in user mode (no emulated syscall in flight)
 Next: decide the semantic fix (guard the resume against a context that was never captured, or
 capture it on the paths that can be resumed) --- measured, not guessed, and verified with the
 same canonical-harness smoke.
+
+### Which source site that is
+
+`ret - slide = 0xcb151` sits immediately after `call setcontext@plt`, whose argument is
+`this + 0x140` = `&_resumeContext`. In source, the only `setcontext(&_resumeContext)` inside the
+microthread machinery is `thread.cpp:636`, guarded at `thread.cpp:607` by
+
+```cpp
+if (_suspended && (_pendingCallOverride || (!_pendingCall && hadResumePermit))) {
+    ...
+    if (_continuationCallback) {            // 616
+        _resumeContext.uc_stack... = ...;   // 622-625
+        makecontext(&_resumeContext, microthreadContinuation, 0);   // 626
+    } else {
+        assert(_stack.isValid());           // 629 (NDEBUG in RelWithDebInfo -> not a guard)
+    }
+    setcontext(&_resumeContext);            // 636
+```
+
+The context is only ever captured by `getcontext(&_resumeContext)` (thread.cpp:756, 868, each
+paired with `_suspended = true`), while the continuation arm only *rewrites* `uc_stack`/`uc_link`
+and calls `makecontext`. glibc requires the ucontext given to `makecontext` to come from
+`getcontext`; `makecontext` does not populate `uc_mcontext.fpregs`, so a context that was never
+captured keeps `fpregs == NULL` and `setcontext` faults exactly as measured. That makes the
+continuation arm (or any resume on a Thread whose context was never captured) the defect, not
+the guest and not the courier.
