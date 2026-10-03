@@ -355,3 +355,41 @@ executed with no interrupt context?** A local `_interrupts.empty()` guard at 273
 server crash but suppress the symptom rather than fix the push path, so no product change was
 made here. `thread.cpp` is back to its committed state (the probe was removed and the server
 rebuilds clean).
+
+### CORRECTION: `_interrupts` is NOT empty at the failing resume; `_resumeContext` was never captured
+
+A temporary probe at both sides of the interrupt machinery settled the empty-stack guess (it was
+wrong):
+
+```text
+[irq-probe] push  tid=404904 size=1                    (thread.cpp:571, the push happened)
+[irq-probe] entry tid=404904 size=1 override=0 pending=0 interruptedCont=0   (thread.cpp:2734)
+```
+
+So on the failing thread the interrupt stack has one real entry at the entry point, and
+`_interrupts.top()` at 2737 is *not* undefined. What is invalid is the context the resume
+restores: `jumpToResume()` (`thread.cpp:2512`) is exactly
+
+```cpp
+setcontext(&_resumeContext);          // stack/stackSize are used only under DSERVER_ASAN
+```
+
+and `_resumeContext` is captured ONLY by `getcontext(&_resumeContext)` at `thread.cpp:756`/`868`,
+each paired with `_suspended = true`. glibc's `setcontext` then faults on
+`uc_mcontext.fpregs == NULL`, so on the failing path **the thread reached the interrupt resume
+without ever having been suspended**.
+
+Re-measured on the clean tree (4 consecutive canonical-harness smokes): all four failed with the
+same record, `ret - slide = 0xcb151` (the same `setcontext` site inside
+`_handleInterruptEnterForCurrentThread`), plus `[sigexc-fatal sig=11 …]` and
+`Rootless shellspawn did not become ready within 60000ms`. One earlier run of the same tree did
+reach `WEST_PREFIX_BOOTSTRAP_OK`, so the boot is *intermittent*, not uniformly failing.
+
+Also measured (guest side, temporary probe printing `gregs.rip` at the fault): the guest fault
+that starts the chain is inside the loader itself,
+`mldr → __mldr_process_control_request` (mldr.c:1824 region), not in the ring code.
+
+Open question for the next iteration: which path dispatches/handles an interrupt enter for a
+thread that was never suspended (so `_resumeContext` was never captured). Instrument
+`getcontext(&_resumeContext)` (756/868) and the `_suspended` transitions against the interrupt
+entry on one thread id, rather than adding more guards.
