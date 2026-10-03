@@ -447,7 +447,7 @@ manifest:
   - name: darling-src-external-darlingserver
     repo-path: darlingserver
     path: darling/src/external/darlingserver
-    remote: darling
+    remote: darling-next
     revision: 32aca765c2f8d410eab1de514dc269738ba3c09e
     userdata:
       kind: darling-source
@@ -716,7 +716,7 @@ manifest:
   - name: darling-src-external-libkqueue
     repo-path: darling-libkqueue
     path: darling/src/external/libkqueue
-    remote: darling
+    remote: darling-next
     revision: f673c801cbc4011d3ae35301bb8b5073eb41c103
     userdata:
       kind: darling-source
@@ -732,7 +732,7 @@ manifest:
   - name: darling-src-external-libmalloc
     repo-path: darling-libmalloc
     path: darling/src/external/libmalloc
-    remote: darling
+    remote: darling-next
     revision: a57991e2651226a675654bd96e5d9ab6bec288c5
     userdata:
       kind: darling-source
