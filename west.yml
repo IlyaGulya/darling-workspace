@@ -15,8 +15,8 @@ manifest:
   - name: darling
     repo-path: darling
     path: darling
-    remote: darling
-    revision: 5f2d7401d878455cf3c3c0865ee5a4290dfa03f0
+    remote: darling-next
+    revision: ae69ff639424a4431e4e0422c63f790c79d1c11d
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -447,8 +447,8 @@ manifest:
   - name: darling-src-external-darlingserver
     repo-path: darlingserver
     path: darling/src/external/darlingserver
-    remote: darling
-    revision: 89751e64bc6c2082f7725061824ee0e33395b0de
+    remote: darling-next
+    revision: 6ad1bb2703a3e1f99af9313ab632ad9cc94f6138
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
@@ -479,8 +479,8 @@ manifest:
   - name: darling-src-external-dyld
     repo-path: darling-dyld
     path: darling/src/external/dyld
-    remote: darling
-    revision: 63f667cf06d7ed59553adebb0c8d70a117135ac9
+    remote: darling-next
+    revision: 323ba11611e074b0a412b133ece0685862e9b00e
     userdata:
       kind: darling-source
       upstream-repository: darling-dyld
@@ -711,7 +711,7 @@ manifest:
   - name: darling-src-external-libkqueue
     repo-path: darling-libkqueue
     path: darling/src/external/libkqueue
-    remote: darling
+    remote: darling-next
     revision: f673c801cbc4011d3ae35301bb8b5073eb41c103
     userdata:
       kind: darling-source
@@ -727,7 +727,7 @@ manifest:
   - name: darling-src-external-libmalloc
     repo-path: darling-libmalloc
     path: darling/src/external/libmalloc
-    remote: darling
+    remote: darling-next
     revision: a57991e2651226a675654bd96e5d9ab6bec288c5
     userdata:
       kind: darling-source
@@ -1285,8 +1285,8 @@ manifest:
   - name: darling-src-external-xnu
     repo-path: darling-xnu
     path: darling/src/external/xnu
-    remote: darling
-    revision: 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
+    remote: darling-next
+    revision: 97dd9e57f04340530f2a11060bc8849a61f062ca
     userdata:
       kind: darling-source
       upstream-repository: darling-xnu
