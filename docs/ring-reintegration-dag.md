@@ -9,7 +9,9 @@ manifest commit whose `west.yml` pins their exact SHAs
 
 The previous patch/profile/lock layer is `FROZEN_LEGACY`
 (`docs/2026-10-03-ring-source-and-workflow-cutover.md`). Old metadata under
-`patches/` and `locks/patch-stack/` is provenance evidence only.
+`patches/` and `locks/patch-stack/` is provenance evidence only. It is
+nevertheless the most complete record of the product line, and this document
+uses it only to recover source commit identities, ordering and dependencies.
 
 ## W0 — bootable baseline
 
@@ -25,104 +27,156 @@ Workspace branch `change/ring-reintegration-v1`, created from
 | dyld | `darling/src/external/dyld` | `323ba11611e074b0a412b133ece0685862e9b00e` |
 | libsystem | `darling/src/external/libsystem` | `08df454b6eb0df9400aa4c39839a7efd6efd2c3c` |
 
-Notes measured on this manifest commit:
+Measured properties of this manifest commit:
 
-- W0's xnu **already enables the guest-side ring transport by default**
-  (`DARLING_RING_TRANSPORT` default ON,
-  `xnu/darling/src/libsystem_kernel/emulation/CMakeLists.txt`), and W0's
-  darlingserver already compiles `src/ring.cpp` and the A0 corrections. The
-  broad perf#18 ring transport (`P3`..`D18a`) and the server consolidation are
-  therefore *in* W0.
+- W0's xnu **already enables the guest-side perf#18 ring transport by default**
+  (`DARLING_RING_TRANSPORT`, default ON, `xnu/.../emulation/CMakeLists.txt`), and
+  W0's darlingserver compiles `src/ring.cpp` plus the A0 corrections
+  (`perf: consolidate shared-memory ring transport`, `fix: consolidate A0 hang
+  corrections`, the postfork ownership gate). The broad perf#18 ring transport
+  (`P3`..`D18a`, duplex lane, per-thread lanes) is therefore *in* W0.
 - W0's `darling` loader has **no loader-side ring plane**: `src/startup/mldr`
-  contains no `DSERVER_RING_TRANSPORT`. The loader plane and the later
-  attribution fixes survive only as the diagnostics snapshot and the migration
-  bridges (see "Evidence anchors").
-- Component topic tips are built on synthetic `patch-stack/v1/bases/*`
-  snapshots of the frozen `wget-residual` chain, so pinning a topic tip does
-  not recreate the product. Each topic commit below was checked against W0's
-  ancestry (`git log --format=%s` subject set) to separate genuine additions
-  from re-created copies; only the additions are listed.
+  contains no `DSERVER_RING_TRANSPORT` and no `signal_atomic.h`. The loader
+  plane and its later attribution fixes survive only as exact file snapshots.
+- Component topic tips in the surviving `fix/*` refs are built on synthetic
+  `patch-stack/v1/bases/*` snapshots of the frozen `wget-residual` chain, so
+  pinning a topic tip does not recreate the product. Each topic commit below was
+  checked against W0's ancestry (subject set) to separate genuine additions from
+  re-created copies; only the additions are listed.
 
-## Missing work, grouped by function
+### W0 build prerequisite (already required to build, not just to boot)
 
-### A. Ring/RPC foundation (shared structures, ABI, compile-time gates)
+| component | commit | why |
+| --- | --- | --- |
+| libunwind | `d5fbc818` | `-fno-jump-tables` on `unwind_static`; without it the `dyld`/`system_loader` link fails with `ld: chained binds not implemented yet in l_reltable._ZN9libunwind...` (dar-rru4, dar-ofka, dar-deploy-gate-broad-build-fails-ukvp) |
 
-| component | commit | subject | files |
+`d5fbc81` is a single commit directly on top of W0's libunwind pin
+(`a91da1a`), so it is a fast-forward. The re-integration branch pins it in
+`west.yml`; without it no Git-only `rootless_bootstrap` build links.
+
+## The product line is the arch (`perf#30`) lineage
+
+The last accepted Ring runtime's deployed artifacts
+(`mldr=52b03b0ac229 libsystem_kernel.dylib=ab8a45074848 dyld=be43e3e77534
+darlingserver=339583b74931`) were produced by the **`perf#30` process-control
+plane / descriptor-courier** work, i.e. the `patches/arch` lineage, not by the
+perf#18 ring-comparison topics. Evidence:
+
+- the diagnostics bundle's `rpc-supplement.h` pre-edit sha256 (`8ff5faaf...`)
+  equals the `r1-repro` materialized-forest file, and its shipped content maps to
+  `patches/arch/darlingserver/plane-courier-port.patch`, whose source commit is
+  `ddc0bf7b` (`fix/plane-courier-port`, bead `dar-ssr1`);
+- the diagnostic `srv-process-register`/`srv-checkin`/`srv-lane-attach`/
+  `srv-kthread-create` instruments exist only in that lineage;
+- the accepted `mldr.c`/`threads.c` snapshots carry a process-control client,
+  a bounded thread-self-bootstrap retry, the atomic reply-state protocol and
+  published-vs-seen reply attribution, and **no** committed patch or branch in
+  this workspace carries that loader delta.
+
+Consequence: the re-integration target is `W0 + arch lineage + ring-comparison
+correctness fixes`, and the loader plane has to be re-landed from the
+diagnostics snapshot as an ordinary committed change.
+
+### Arch chain (source commits, in order; recovered from `patches/arch/patches.yml`)
+
+| component | commit | subject |
+| --- | --- | --- |
+| libunwind | `d5fbc818` | build: avoid jump tables in static libunwind for dyld |
+| xnu | `8d746cb7` | xnu: stop ring retries after publish |
+| xnu | `aadfa984` | a1: classify RPC send disconnects for interruptible waits |
+| xnu | `8becacfa` | tests: cover RPC disconnect status contract |
+| darlingserver | `5288c5cd` | A0-ARCH stage 3: perf A/B (the skipped check) -- NO REGRESSION |
+| darlingserver | `51add588` | darlingserver: coalesce selected standard signals |
+| darlingserver | `8e72db00` | a0: retry transient shellspawn startup miss |
+| darlingserver | `03038154` | tests: pin ring committed-unknown no-retry contract |
+| darlingserver | `54640a38` | duct-tape: fail closed for reachable stubs |
+| darlingserver | `f41af247` | rpc: tag UDS replies with packed call serial |
+| darlingserver | `f1419bc3` | a0: capture client RPC log per synth leg |
+| darlingserver | `24546ba9` | a1: map interruptible RPC disconnect send to EINTR |
+| darlingserver | `a60da290` | dserver: guard stack pool against empty stack handles |
+| darlingserver | `1b806454` | a0: add focused synth filter and exit markers |
+| darlingserver | `93392fef` | tests: cover recent signal and RPC contracts |
+| darlingserver | `a0877988` | message: reject truncated control data |
+| darlingserver | `b545cdbe` | darlingserver: coalesce pending SIGUSR1 |
+| darlingserver | `305781e7` | timer: stop starving the timerfd |
+| darlingserver | `ddc0bf7b` | darlingserver: land the process-management plane and descriptor courier (product subset) |
+| darling | `30835a35` | test: mark host regression runner executable |
+| darling | `78cf1a0e` | shellspawn: preserve signal exit status |
+
+The arch chain is on a **different genealogy** from W0's components: e.g.
+darlingserver `ddc0bf7b` and W0's `a693e31a` diverge at `14a9d364` (57 commits
+one way), xnu `8becacfa` and W0's `97dd9e57` diverge at `5f26a4c2`, darling
+`78cf1a0e` and W0's `4aa9b4dd` diverge at `5f2d7401`. W0's darlingserver is a
+*consolidation* of the A0-ARCH work (`fix: consolidate A0 hang corrections`), so
+the arch chain and W0 overlap semantically and must be ported, not pinned
+wholesale.
+
+## Ring-comparison correctness fixes absent from W0
+
+| component | commit | subject | layer |
 | --- | --- | --- | --- |
-| darlingserver | `3dc3a97d` | Generate paired RPC headers instead of skipping host ring gates | `tests/run-ring-shm-validate.sh` |
-| xnu | `877025a2` | Preserve nonreplay completion semantics in corrected ring guest composition | emulation `CMakeLists.txt`, `dserver-ring.h/.c`, tests |
-| xnu | `42e78ffd` | Generate paired RPC headers for completion regression | `darling/tests/ring-completion/run.py` |
-| xnu | `756a62fb` | Expose a semantic failure marker for published RPC replay | `darling/tests/ring-completion/fixture.c` |
-| xnu | `19c387f5` | Resolve paired profile headers in isolated completion proofs | `darling/tests/ring-completion/run.py` |
-| darling | `69bb6aed4e` | Own ring wake descriptors in the shared loader across fork | `mldr.c`, `elfcalls/elfcalls.c/.h` |
-| darling | `a74bec2e33` | Defer guest signals while holding the shared FD registry | `mldr.c`, `mldr/signal_atomic.h` (new), `dserver-rpc-defs.h` |
-| darling | `9ef131b2de` | Build both loaders after generated signal definitions | `mldr/CMakeLists.txt` |
-| xnu | `5c01c2f6` | Defer guest signals across descriptor guard table locks | `common/signal_atomic.h` (new), `dserver-rpc-defs.h`, `dserver-ring` |
-| xnu | `e0c157b0` | Transfer ring FD lifetime to the shared loader owner | `elfcalls_wrapper.h`, `guarded/table.c`, ring |
-| xnu | `aaa1c29a` | Document loader-owned fork descriptor retirement | `dserver-ring.h/.c` |
+| darling | `69bb6aed4e` | Own ring wake descriptors in the shared loader across fork | foundation |
+| darling | `a74bec2e33` | Defer guest signals while holding the shared FD registry | foundation |
+| darling | `9ef131b2de` | Build both loaders after generated signal definitions | build |
+| xnu | `bc21f8ca` | xnu: stop ring retries after publish | ordinary path |
+| xnu | `877025a2` | Preserve nonreplay completion semantics in corrected ring guest composition | foundation |
+| xnu | `42e78ffd` | Generate paired RPC headers for completion regression | test |
+| xnu | `756a62fb` | Expose a semantic failure marker for published RPC replay | test |
+| xnu | `19c387f5` | Resolve paired profile headers in isolated completion proofs | test |
+| xnu | `044dd407` | Respect generated RPC tail padding in ring completions | ordinary path |
+| xnu | `0360502b` | Stop publishing to lanes retired by another guest image | ordinary path |
+| xnu | `e0c157b0` | Transfer ring FD lifetime to the shared loader owner | foundation |
+| xnu | `aaa1c29a` | Document loader-owned fork descriptor retirement | foundation |
+| xnu | `5c01c2f6` | Defer guest signals across descriptor guard table locks | foundation |
+| darlingserver | `3dc3a97d` | Generate paired RPC headers instead of skipping host ring gates | foundation |
+| darlingserver | `800fd28f` | Keep physical execution exit out of logical XNU wait state | process control |
+| darlingserver | `546d0a07` | Retire superseded thread rings before replacing their ownership | ordinary path |
+| darlingserver | `0a6cfd07` | Canonicalize stats socket identity across rootless prefix capabilities | process control |
+| darlingserver | `b59b1cfd` | Keep ring port traps on fibers across contended IPC locks | ordinary path |
+| darlingserver | `6bedae81` | Retire obsolete guest-local FD teardown model | ordinary path |
+| libmalloc | `5981f906` | Retain immutable region hash generations for concurrent readers | later fix |
+| libmalloc | `15f5405f` | Build retained rack generation regression as native Darling executable | later fix |
 
-`a74bec2e33` (darling loader) and `5c01c2f6` (xnu guest) are the two halves of
-one invariant: guest signals are deferred while a shared FD-registry / guard
-table lock is held.
+Cross-component pairs: loader FD ownership (`darling 69bb6aed` <-> `xnu
+e0c157b0`/`aaa1c29a`), signal deferral (`darling a74bec2e` <-> `xnu 5c01c2f6`,
+both adding `signal_atomic.h`), lane retirement (`darlingserver 546d0a07` <->
+`xnu 0360502b`), paired generated RPC headers (`darlingserver 3dc3a97d` <->
+`xnu 42e78ffd`/`19c387f5`).
 
-### B. Ordinary/blocking ring path
-
-| component | commit | subject |
-| --- | --- | --- |
-| xnu | `bc21f8ca` | xnu: stop ring retries after publish |
-| xnu | `044dd407` | Respect generated RPC tail padding in ring completions |
-| xnu | `0360502b` | Stop publishing to lanes retired by another guest image |
-| darlingserver | `546d0a07` | Retire superseded thread rings before replacing their ownership |
-| darlingserver | `b59b1cfd` | Keep ring port traps on fibers across contended IPC locks |
-| darlingserver | `6bedae81` | Retire obsolete guest-local FD teardown model |
-
-### C. Process control / bootstrap ownership
-
-| component | commit | subject |
-| --- | --- | --- |
-| darlingserver | `800fd28f` | Keep physical execution exit out of logical XNU wait state |
-| darlingserver | `0a6cfd07` | Canonicalize stats socket identity across rootless prefix capabilities |
-
-`800fd28f` is the scheduler/execution-ownership correction recorded as
-`dar-gwn.7.7.3` (physical-release projection removed; the canonical refresh on
-`fix/ring-comparison-server` carries the same change as `4b12bfd5`).
-
-### D. Later measured correctness fixes
-
-| component | commit | subject |
-| --- | --- | --- |
-| libmalloc | `5981f906` | Retain immutable region hash generations for concurrent readers |
-| libmalloc | `15f5405f` | Build retained rack generation regression as native Darling executable |
-
-libmalloc is `dar-gwn.7.7.4`; the allocator correction is already accepted on
-its own line and is independent of the ring transport.
-
-### E. Loader plane + attribution fixes (snapshot only)
+## Loader plane + attribution fixes (snapshot only)
 
 Surviving only as exact file snapshots + patches:
-`diagnostics/ring-loader-fixes-20260930/` (MANIFEST carries sha256 values).
+`diagnostics/ring-loader-fixes-20260930/` (the MANIFEST carries sha256 values
+and the pre-edit hash each patch applies to). These are the perf#30/plane
+lineage plus an uncommitted `r1-repro` loader delta:
 
-| file | what it carries |
+| file | carries |
 | --- | --- |
-| `src/startup/mldr/mldr.c` | the loader ring plane (`DSERVER_RING_TRANSPORT`), the deferred/second checkin ordering, atomic process-slot protocol, `[checkout-reply-unseen]` / `[checkin-reply-unseen]` reply attribution, bounded retry of the main-thread-port read |
+| `src/startup/mldr/mldr.c` | loader ring plane (`DSERVER_RING_TRANSPORT`), deferred/second checkin ordering, atomic process-slot protocol, `[checkout-reply-unseen]`/`[checkin-reply-unseen]` reply attribution, bounded retry of the main-thread-port read |
 | `src/startup/mldr/elfcalls/threads.c` | loader-side thread/wake plumbing for the plane |
 | `src/external/darlingserver/include/darlingserver/rpc-supplement.h` | psynch family classified on the ring (`SIMPLE_C2S` / `SIMPLE_C2S\|BLOCKING`) |
 | `src/external/darlingserver/src/call.cpp` | server-side request/reply attribution |
 | `src/external/darlingserver/src/server.cpp` | server-side recordings used as instruments (diagnostic, not a functional fix) |
 
-Deployed artifacts of the passing run (RUN-ENV of the passing runs):
-`mldr=52b03b0ac229 libsystem_kernel.dylib=ab8a45074848 dyld=be43e3e77534 darlingserver=339583b74931`.
+The `integration/accepted-transport-content` bridges (`darling 705c5630`,
+`darlingserver 32aca765`) carry the four loader/server snapshots + the elfcalls
+hooks; `darling 705c5630`'s `mldr.c` and `threads.c` are byte-identical to the
+snapshot files (sha256 verified). The bridge does **not** add
+`src/startup/mldr/signal_atomic.h`, which the snapshot `mldr.c` includes, so
+that file still has to be ported from `darling a74bec2e33`.
 
-## Layer plan (conceptual; boundaries derived from the evidence above)
+## Layer plan (conceptual; boundaries derived from the evidence)
 
 ```text
-W0  bootable baseline (this manifest commit)
-W1  foundation: paired RPC headers, loader ring plane + wake/FD ownership,
-    shared signal deferral halves, ring-completion oracle scaffolding
-W2  ordinary/blocking ring path correctness: publish/retire/tail-padding,
-    superseded-ring retirement, fiber-trapped port ops, obsolete teardown removal
-W3  process control / bootstrap: execution-exit ownership, stats-socket identity
-W4  later measured fixes: libmalloc generation ownership, psnr classification,
+W0  bootable baseline + libunwind build fix (this manifest commit)
+W1  foundation: paired RPC headers + host ring gates, loader ring plane with
+    wake/FD ownership, the two signal-deferral halves, ring-completion oracle
+W2  ordinary/blocking ring path: publish/retire/tail-padding, superseded-ring
+    retirement, fiber-trapped port ops, obsolete teardown removal
+W3  process control/bootstrap: the arch process-management plane + descriptor
+    courier + urgent slots + descriptor adoption, execution-exit ownership,
+    stats-socket identity
+W4  later measured fixes: libmalloc generation ownership, psynch classification,
     reply attribution and bounded retries from the snapshot
 W5  final accepted Ring product checkpoint
 ```
@@ -133,16 +187,20 @@ Each layer gets a component commit set and a manifest checkpoint commit on
 ## Evidence anchors
 
 - diagnostics snapshot bundle: `diagnostics/ring-loader-fixes-20260930/`
+- arch packaging (source-commit identities only):
+  `patches/arch/patches.yml`, `locks/patch-stack/`
 - migration experiments (input, not product):
-  `integration/accepted-transport-bridge` (`ae69ff63`),
-  `integration/accepted-transport-content` (`705c5630`),
-  darlingserver `integration/accepted-transport-content` (`32aca765`),
-  and workspace branches `change/current-accepted-transport` (`1ed32f34`),
+  `darling integration/accepted-transport-bridge` (`ae69ff63`),
+  `darling integration/accepted-transport-content` (`705c5630`),
+  `darlingserver integration/accepted-transport-content` (`32aca765`),
+  workspace branches `change/current-accepted-transport` (`1ed32f34`),
   `change/ring-line` (`66b36bb1`), `change/ring-line-accepted` (`22b8c497`).
 - surviving topic tips: `fix/ring-fd-ownership` (`9ef131b2`),
   `fix/ring-comparison-server-refreshed` (`6bedae81`),
   `fix/ring-comparison-guest` (`5c01c2f6`),
-  `fix/malloc-region-generation` (`15f5405f`).
-- owning Beads: `dar-1il` (perf#18), `dar-gwn.7.7` and children,
-  `dar-rpc-correctness-z27x`, `dar-ssr1`, `dar-dar6x4-perf-5dq.30`,
-  `dar-n8p7` (psynch classification).
+  `fix/malloc-region-generation` (`15f5405f`),
+  `fix/plane-courier-port` (`ddc0bf7b`).
+- owning Beads: `dar-1il` (perf#18), `dar-ssr1` (perf#30 plane/courier),
+  `dar-gwn.7.7` and children, `dar-rpc-correctness-z27x`,
+  `dar-dar6x4-perf-5dq.30`, `dar-n8p7` (psynch classification),
+  `dar-rru4`/`dar-ofka` (libunwind link).
