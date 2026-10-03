@@ -83,6 +83,42 @@ ported.
 
 
 
+### Arch-line Git trees are themselves incomplete
+
+Pinning the arch components directly does **not** yield a buildable tree:
+`darlingserver ddc0bf7b`'s `CMakeLists.txt` references
+`tests/exec_completion_test.cpp`, which is absent from the `ddc0bf7b` Git tree
+(`git ls-tree`), so the arch tip depended on untracked materialized-forest
+files. Mixing the arch `darlingserver`/`xnu` with the perf-line `darling` also
+fails to configure for the same reason. The arch lineage is a source of
+semantic intent, not a pinnable product state.
+
+## Recovery input: the r1 transport source archive
+
+The lost materialized-forest content survives:
+`/home/ilyagulya/work/darling-dev/evidence/r1-transport-sources-LATEST` ->
+`r1-transport-sources-20260928T112410Z.tar.gz` (438 non-directory paths) with a
+matching `.sha256` manifest. It carries the transport delta:
+
+| area | paths | notable files |
+| --- | --- | --- |
+| `src/external/darlingserver` | 128 | `src/ring.cpp`, `src/darlingserver.cpp`, `src/server.cpp`, `include/darlingserver/rpc-supplement.h`, `tests/exec_completion_test.cpp` (the file the arch Git tree is missing) |
+| `src/external/xnu` | 143 | `emulation/.../dserver-ring.{c,h}`, `emulation/include/common/signal_atomic.h` |
+| `src/startup/mldr` | 19 | `mldr.c`, `signal_atomic.h`, `resources/dserver-rpc-defs.h` |
+| others | ~148 | `src/launchd/src`, `src/external/libmalloc`, `src/external/dyld`, `src/external/installer`, `src/external/perl`, `src/external/libressl-2.8.3`, `src/external/libkqueue`, `Developer/Platforms/MacOSX.platform` |
+
+The archive records `base=/home/ilyagulya/work/r1-clean-ref` and an empty
+`pinned` field, so the base revision must be re-derived before the delta is
+applied; `scripts/r1-clean-base-reproduction.sh` is the existing tool for the
+"materialize a pinned revision + apply a content delta" shape (its own
+`SRC_REPO` is a different, older tree).
+
+Recommended re-integration method: materialize the archive's base, apply this
+delta, apply the later 2026-09-30 loader-fix patches
+(`diagnostics/ring-loader-fixes-20260930/patches/`), then land the result as
+ordinary component commits with the archive and its sha256 manifest as the
+recorded provenance, and verify build + ring-ON boot smoke before layering.
+
 ## The product line is the arch (`perf#30`) lineage
 
 The last accepted Ring runtime's deployed artifacts
