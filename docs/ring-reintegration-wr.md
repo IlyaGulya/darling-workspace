@@ -166,3 +166,31 @@ Rootless shellspawn did not become ready within 60000ms
 
 That crash is the next thing to diagnose; no instrumentation has been added for
 it yet.
+
+### Next-boundary measurements (plane attach)
+
+The child that crashes does so right after a **successful** plane attach:
+
+```text
+[dring-plane-attach] ok tid=365580 rc=0 reject=0 wake=24
+[sigexc-fatal sig=11 code=128 addr=0x0 pid=365580 tid=365580]
+[dserver-CRASH sig=b addr=0x0 ... pc=0x75fa2b04a994 ...]
+[sigexc-fatal sig=4 code=2 addr=0x7DEB9A6796D8 pid=365580 tid=365580]
+```
+
+Control run with `DARLING_GUEST_PLANE_ATTACH_OFF=1` (the guest-side hatch at
+`dserver-ring.c:672`): **no `sigexc-fatal` appears at all**, but boot also stops
+earlier -- the plane is refused (`[dring-plane-attach] no-page` ->
+`[dring-attach-fail] plane-unanswered-no-uds`) and launchd reaches
+`RUNTIME_INIT_DONE` but never `RUNTIME_ENTER`/`BOOTSTRAPPER_SCHEDULED`. That
+run's tail shows the UDS fallback with `reason=ATTACH_FAILED lane_state=0`, so
+the control is suggestive (the crash needs a live plane) but not conclusive:
+the plane-off workload never executes the instruction that faults.
+
+Inherited, non-usable state is visible in the same probe and is NOT the cause:
+the child reports `b0_active=1 b0_owner=<parent pid> b0_borrowed=1`, i.e. it
+inherited the parent's `g_borrowed[0]` record across fork; `gr_borrowed_lane_usable()`
+requires `owner_tid == tid`, so the record is ignored.
+
+Next step: instrument the plane-attach success path in the child (or capture the
+guest fault with `dwdiag run --capture-gdb`), not the courier/token path.
