@@ -68,8 +68,9 @@ pins (the nine recovered components above plus `libunwind`, `libplatform`,
 
 ## Checkpoint state
 
-- workspace commit: `WR` = the `change/ring-reintegration-v1` commit that
-  records this file (see Beads `dar-jj6s` for the exact SHA).
+- workspace commit: `WR` = `795451d1` on `change/ring-reintegration-v1` (the
+  manifest-pins checkpoint; later documentation-only commits do not change the
+  pin set).
 - resolved component SHAs: the table above (also `west list`).
 - `west manifest --freeze` digest:
   `sha256 8dd3170bf3819cb8b30eca7514333d4029e6e3f653517c0fd6502f36a907730c`
