@@ -16,7 +16,7 @@ manifest:
     repo-path: darling
     path: darling
     remote: darling-next
-    revision: 4aa9b4ddcd2d4b54a54d6797061d53d62370dad0
+    revision: dfc302f60232a436624887d61745b58394ec9321
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -448,7 +448,7 @@ manifest:
     repo-path: darlingserver
     path: darling/src/external/darlingserver
     remote: darling
-    revision: a693e31a3df59ffe8f01b8ced9cf423be6389afc
+    revision: 9e1d3d989caf5a918c91cb399e5a3efea947e729
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
@@ -485,7 +485,7 @@ manifest:
     repo-path: darling-dyld
     path: darling/src/external/dyld
     remote: darling-next
-    revision: 323ba11611e074b0a412b133ece0685862e9b00e
+    revision: 7f0fd6d9672b08bfcab9fe53453d565f5f6eb7c7
     userdata:
       kind: darling-source
       upstream-repository: darling-dyld
@@ -605,7 +605,7 @@ manifest:
     repo-path: darling-installer
     path: darling/src/external/installer
     remote: darling-next
-    revision: aa310ef30ddcd35f8ab43474325316e40b1e24f8
+    revision: bb68430c98dd295c6f3a91c4a4796be99cf92423
     userdata:
       kind: darling-source
       upstream-repository: darling-installer
@@ -717,7 +717,7 @@ manifest:
     repo-path: darling-libkqueue
     path: darling/src/external/libkqueue
     remote: darling
-    revision: f673c801cbc4011d3ae35301bb8b5073eb41c103
+    revision: 660ebc3ae078a264503f1f54a9b76f65d46bfe2f
     userdata:
       kind: darling-source
       upstream-repository: darling-libkqueue
@@ -733,7 +733,7 @@ manifest:
     repo-path: darling-libmalloc
     path: darling/src/external/libmalloc
     remote: darling
-    revision: a57991e2651226a675654bd96e5d9ab6bec288c5
+    revision: 8c3d3863f2add948cbcb9667a8fb767969a2d688
     userdata:
       kind: darling-source
       upstream-repository: darling-libmalloc
@@ -765,7 +765,7 @@ manifest:
     repo-path: darling-libpthread
     path: darling/src/external/libpthread
     remote: darling-next
-    revision: 2f5a78cfc482c7e69b87138a48980cab97e387dc
+    revision: 8fd9324b044470a6f659f02477785df2c89160eb
     userdata:
       kind: darling-source
       upstream-repository: darling-libpthread
@@ -805,7 +805,7 @@ manifest:
     repo-path: darling-libressl
     path: darling/src/external/libressl-2.8.3
     remote: darling-next
-    revision: 277ea7e0abcf1076f327a885daa2267423e5da08
+    revision: 45f14a83115947ba36a33572e29975a8dd811eb5
     userdata:
       kind: darling-source
       upstream-repository: darling-libressl
@@ -1097,7 +1097,7 @@ manifest:
     repo-path: darling-perl
     path: darling/src/external/perl
     remote: darling-next
-    revision: 7c83779599e7c658e30dcabbe73b1f8bfa0c8cc3
+    revision: 6c27f05a29fa6dc76fd14e485c4a76f100e6be3e
     userdata:
       kind: darling-source
       upstream-repository: darling-perl
@@ -1291,7 +1291,7 @@ manifest:
     repo-path: darling-xnu
     path: darling/src/external/xnu
     remote: darling-next
-    revision: 97dd9e57f04340530f2a11060bc8849a61f062ca
+    revision: 3ef268818f870cff7a1fd315004220389b4b2bb9
     userdata:
       kind: darling-source
       upstream-repository: darling-xnu
