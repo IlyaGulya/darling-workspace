@@ -16,7 +16,7 @@ manifest:
     repo-path: darling
     path: darling
     remote: darling-next
-    revision: dfc302f60232a436624887d61745b58394ec9321
+    revision: 30fa003112412ae9f7b4d72302eef1df0c242732
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -1291,7 +1291,7 @@ manifest:
     repo-path: darling-xnu
     path: darling/src/external/xnu
     remote: darling-next
-    revision: 3ef268818f870cff7a1fd315004220389b4b2bb9
+    revision: f3e71f3997a898ea7962e43dfad32c500efae97e
     userdata:
       kind: darling-source
       upstream-repository: darling-xnu

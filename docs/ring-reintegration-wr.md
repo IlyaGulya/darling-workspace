@@ -97,3 +97,64 @@ pins (the nine recovered components above plus `libunwind`, `libplatform`,
    acceptance.
 
 `r1-repro` is evidence only from this point: no further product edits there.
+
+## WR boot blocker resolved: cross-image fd-courier token collision
+
+The canonical-harness smoke **did** reproduce `vchroot: execv: Bad file
+descriptor` (resolving the open question in step 3 above), so it is a product
+defect, not a manual-harness artifact.
+
+Resolved boundary and measured chain (each step is a probe, not an inference):
+
+```text
+vchroot  execv("/sbin/launchd")
+  -> sys_execve            entered (fname=/sbin/launchd)
+  -> sys_open              ret=7   (openat resolved /home/.../prefix/sbin/launchd)
+  -> sys_read              ret=256 (Mach-O magic)
+  -> checkout              ret=-9  EBADF          <-- here
+  -> server case CHECKOUT: resolveFdCourierBundle(...) != Resolved -> status = -EBADF
+     [courier-store]        pid=242210 token=5189026761396706776 kind=1   (lane backing)
+     [courier-kindmismatch] pid=242210 token=5189026761396706776 want=2 got=1
+```
+
+Root cause: the token is `generation*A ^ pid*B ^ per-image counter`. mldr and
+libsystem_kernel are two copies of that formula inside **one** process: same
+pid, same generation, counters that both start at the same value. The loader's
+first lane-backing bundle (kind=1) and the guest's first execve checkout bundle
+(kind=2) therefore carried the **same** token; the server keys a pending
+descriptor by token, dropped the checkout envelope as a duplicate, and the
+checkout then resolved as `KindMismatch` (want=2 got=1) -> `-EBADF` -> boot
+stopped before shellspawn, with launchd never reaching its runtime.
+
+Retired hypothesis (measured, not assumed): `vchroot` closing its root `dfd`
+(`orig=4 valid=1`, `dfd=3`, `same=0`). Closing it was restored after the
+experiment; the failure was identical with the fd left open.
+
+Fix (normal commits, both `fix/ring-courier-token-image-identity`):
+mix the per-image counter's own address into the token in both senders.
+
+```text
+xnu      f3e71f3997a898ea7962e43dfad32c500efae97e
+darling  30fa003112412ae9f7b4d72302eef1df0c242732
+```
+
+Verified: with the diagnostics reverted, the canonical-harness rootless
+bootstrap smoke reaches `launchd-RUNTIME_ENTER` with no
+`execv: Bad file descriptor`.
+
+## Next boundary (measured, not yet resolved)
+
+Boot now advances to launchd PID 1 runtime and then a launchd-spawned child
+(pid 365580 in that run) crashes after successfully attaching a ring lane:
+
+```text
+[srv-process-register #1 pid=365580 ...]
+[dring-attach] RING_ATTACH_END pid=365580 ... rc=0
+[sigexc-fatal sig=11 code=128 addr=0x0 pid=365580 tid=365580]
+[dserver-CRASH sig=b addr=0x0 ... pc=0x75fa2b04a994 ...]
+[sigexc-fatal sig=4 code=2 addr=0x7DEB9A6796D8 pid=365580 tid=365580]
+Rootless shellspawn did not become ready within 60000ms
+```
+
+That crash is the next thing to diagnose; no instrumentation has been added for
+it yet.
