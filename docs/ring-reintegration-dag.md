@@ -139,6 +139,40 @@ the "materialize a pinned revision + apply a content delta" shape (its own
 `SRC_REPO` is a different, older tree). Prefer `r1-repro` when it is available;
 use the archive when only the delta is needed.
 
+### Measured status of the recovered product tree
+
+- `ninja -C /home/ilyagulya/work/r1-repro-build rootless_bootstrap` -> rc=0
+  (1046 targets).
+- A Git-only prefix deploy + product prefix init succeeds (102 file copies).
+  The launcher bakes `INSTALL_PREFIX` at compile time, so the prefix must equal
+  `r1-repro-build`'s `CMAKE_INSTALL_PREFIX` (`/tmp/r1-repro-prefix`); deploying
+  to any other directory makes the launcher print
+  `Failed to start darlingserver` (it `execl`s
+  `INSTALL_PREFIX "/bin/darlingserver"`, `src/startup/darling.c:1139`).
+- Boot with the correct prefix reaches the ring plane: dserver logs
+  `perf#18 shared-memory ring transport ACTIVE ... fiber_dispatch=on`, and the
+  product instruments run — `[mldr-seed] seeded`, `[dring-adopt] post-claim ok`,
+  `[srv-lane-attach]`, `[srv-checkin]`, `[afunix-send] scm=1 fdcnt=1`.
+- Boot then fails deterministically at the vchroot op:
+
+  ```text
+  [plane-refuse] n=8 why=no-page op=8 a=0 b=0 tid=... 
+  [plane-exhausted] n=1 op=8 tid=... attempts=9 status=-1
+  [rpc-socket-DENIED] ... call=vchroot image=kernel delta=0x28271 denied=1
+  vchroot: Undefined error: 0
+  [native-exit status=3 ...]
+  Rootless shellspawn did not become ready within 60000ms
+  ```
+
+  i.e. the urgent/reentrant plane has no page for the vchroot op at boot, the
+  bounded publish retry is exhausted (`attempts=9`), the request falls back to
+  the ordinary socket path where it is denied, and `vchroot` fails, so
+  shellspawn never becomes ready. This is the causal boot failure to fix; it is
+  the shape of the open Beads `dar-b5pe` (transiently held plane slot),
+  `dar-n8p7` (declined per-thread transport) and `dar-o1qj` (checkin/attach
+  denial). Both the W0 ring-ON tree and this product tree end at the same
+  shellspawn-readiness symptom.
+
 ## The product line is the arch (`perf#30`) lineage
 
 The last accepted Ring runtime's deployed artifacts
