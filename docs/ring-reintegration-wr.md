@@ -317,3 +317,41 @@ and calls `makecontext`. glibc requires the ucontext given to `makecontext` to c
 captured keeps `fpregs == NULL` and `setcontext` faults exactly as measured. That makes the
 continuation arm (or any resume on a Thread whose context was never captured) the defect, not
 the guest and not the courier.
+
+### Corrected site: `jumpToResume` through `_interrupts.top()`, not thread.cpp:636
+
+A temporary probe at `thread.cpp:636` (`setcontext(&_resumeContext)`, the microthread resume
+arm) printed `fpregs != 0` on every resume it saw, and no probe line preceded the crash, so the
+crashing call is a **second** `setcontext(&_resumeContext)`: `Thread::jumpToResume()`
+(`thread.cpp:2519`), inlined at its only caller
+
+```cpp
+2734: if (!self->_didSyscallReturnDuringInterrupt) {
+2735:     if (localInterruptedContinuation) {
+2736:         localInterruptedContinuation();
+2737:     } else if (self->_interrupts.top().interruptedCall) {   // _interrupts NOT checked for empty
+2738:         self->_handlingInterruptedCall = true;
+2739:         self->_pendingCallOverride = true;
+2740:         self->jumpToResume(self->_interrupts.top().savedStack.base, self->_interrupts.top().savedStack.size);
+2741:     }
+2742: } else if (self->_handlingInterruptedCall) {
+...
+2756:     if (self->_interrupts.top().savedStack.isValid()) {     // same unguarded top()
+2761:     self->_interrupts.top().interruptedCall = nullptr;
+```
+
+The compiled branch matches the measurement exactly: `cmpq $0x0,0x108(%rax)` off
+`_interrupts`' deque internals (`_interrupts` is at byte offset 3040, size 80), then two bool
+stores, then `call setcontext` with `rdi = this + 0x140` = `&_resumeContext`. `_interrupts` was
+measured **empty** on this path (`[sigprocess-no-interrupt]`, `thread.cpp:1134`), so `top()` is
+undefined; the garbage `interruptedCall` read as non-null, the branch was taken, and
+`_resumeContext` — only ever captured at `thread.cpp:756`/`868`, neither of which ran — had
+`fpregs == NULL`. glibc `setcontext+0x34` (`fldenv (%rcx)` after `mov 0xe0(%rdx),%rcx`) then
+faults at `addr=0x0` and the server dies in its own handler.
+
+The function is unguarded in **three** more places (2756, 2761) and it is entered with an empty
+interrupt stack, so the root question is one level up: **why is an interrupt-entry dispatch
+executed with no interrupt context?** A local `_interrupts.empty()` guard at 2737 would stop the
+server crash but suppress the symptom rather than fix the push path, so no product change was
+made here. `thread.cpp` is back to its committed state (the probe was removed and the server
+rebuilds clean).
