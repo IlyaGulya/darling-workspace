@@ -445,3 +445,27 @@ was never resumed and is therefore still owned by its own path. During the handl
 the *InterruptEnter* call itself, which is why ownership cannot simply be copied back inside the
 handler; the handoff has to be settled against the deactivation path
 (`_deactivateCallLocked()` keys off `_interruptedForSignal`) before it is changed.
+
+### Correction and the boundary that remains after the fix
+
+`[sigprocess-no-interrupt]` is **documented-benign** and is not the failure: `Thread::processSignal()`
+(`thread.cpp:1131-1148`) explains that an empty `_interrupts` for an arriving signal only means
+there is no interrupt marker of this thread's to clear, and that "the signal is still delivered
+below". It reports the anomaly once. Earlier readings of this line as the cause were wrong.
+
+What actually fails, on the same run, is:
+
+```text
+[sigprocess-no-interrupt] delivering a signal without an interrupt context tid=429646 nstid=429646
+Uncaught exception from processCall (call dserver_callnum_sigprocess); replying -22
+fd-courier-conn-closed fd=23 ino=1553574 peerPid=429646 isLoader=1 remaining=1
+[P:429590(1)]: timed out waiting 30 seconds for fork child checkin
+Rootless shellspawn did not become ready within 60000ms
+```
+
+The `sigprocess` call is dispatched from an **urgent slot** (`server.cpp:1686-1709`,
+`page->urgent_payload[u]`): it is created with `suppressReplyDelivery()`, run with `t->doWork()`,
+and the reply code read back with `suppressedReplyCode()` -> `-22`. So the next boundary is the
+exception thrown while servicing that urgent sigprocess request (which is why the child's fault
+never reaches a handler and the fork child never checks in), not the resume decision that is now
+fixed and covered.
