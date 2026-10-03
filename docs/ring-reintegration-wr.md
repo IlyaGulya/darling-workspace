@@ -523,3 +523,16 @@ This is the fault that still kills the child after both server-side fixes; the s
 delivered (no `-22`, no `[dserver-CRASH]`), the child aborts, and shellspawn never becomes ready.
 Next: find which caller runs with a misaligned stack (probe `rsp & 0xf` at entry in the loader and
 at its callers), rather than adding an alignment attribute blindly.
+
+### The alignment-path probe did NOT reproduce; the guest fault site is not yet stable
+
+A follow-up run with entry-parity probes in the loader (`__mldr_fd_courier_send_envelope` entry,
+the lane-backing call site and the checkin-token call site) produced **no** `[mldr-align]` line at
+all, while the same run still recorded one `fault sig=11`. So either the faulting path differs
+between runs or the fault does not go through the courier send every time; the single-run
+alignment attribution above is therefore a measured *instance*, not yet a stable signature.
+
+The probes were reverted (both repos clean, loader rebuilt without them). The next step for this
+boundary should be the sanctioned in-namespace capture (`scripts/dwdiag run --capture-gdb
+--gdb-namespace`) rather than more log probes: the guest fault must be caught where it happens,
+with its stack, instead of being reconstructed from per-run offsets.
