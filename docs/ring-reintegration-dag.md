@@ -172,6 +172,18 @@ use the archive when only the delta is needed.
   `dar-n8p7` (declined per-thread transport) and `dar-o1qj` (checkin/attach
   denial). Both the W0 ring-ON tree and this product tree end at the same
   shellspawn-readiness symptom.
+- Root cause narrowed: the process-control page is never published. `mldr`
+  prints `[plane-doorbell]` unconditionally (`mldr.c:1548`) only after
+  `memfd_create`/`ftruncate`/`mmap`/`__mldr_fd_courier_send_envelope(...,
+  DSERVER_FD_COURIER_KIND_PROCESS_CONTROL)` all succeed; that line is absent
+  from every run (0 occurrences), so `__mldr_process_control_create()` returns
+  -1 at or before the courier send, `__mldr_process_control_page()` returns NULL
+  through the elfcalls table, and the guest kernel image records `why=no-page`
+  (`dserver-ring.c:3009`). The server corroborates: every boot logs
+  `plane-doorbell-route pid=N socket=-1 ino=0 isLoader=0 conns=[]` — no courier
+  connection exists. The ring-lane seed still succeeds because its attach path
+  is separate (`[mldr-seed] attach rc=0`, `afunix-send ... scm=1 fdcnt=1`).
+  Deterministic: 3/3 runs, same op and same refusal.
 
 ## The product line is the arch (`perf#30`) lineage
 
