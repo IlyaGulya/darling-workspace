@@ -93,12 +93,38 @@ files. Mixing the arch `darlingserver`/`xnu` with the perf-line `darling` also
 fails to configure for the same reason. The arch lineage is a source of
 semantic intent, not a pinnable product state.
 
-## Recovery input: the r1 transport source archive
+## Recovery input: the surviving product source tree
 
-The lost materialized-forest content survives:
+The accepted product source tree **survives on disk**:
+
+- `/home/ilyagulya/work/r1-repro` — the materialized forest itself (Sep 30):
+  one empty `init` commit (`8f33c0c`), 21 untracked top-level entries, the whole
+  tree untracked. Its `src/startup/mldr/mldr.c` contains `DSERVER_RING_TRANSPORT`
+  and `src/external/darlingserver/include/darlingserver/rpc-supplement.h`
+  contains `DSERVER_FD_COURIER_KIND_PROCESS_CONTROL`, i.e. the loader ring plane
+  plus the process-control descriptor courier.
+- `/home/ilyagulya/work/r1-repro-build` — a build of that tree (configured
+  `CMAKE_HOME_DIRECTORY=/home/ilyagulya/work/r1-repro`, Debug,
+  `DARLING_RING_TRANSPORT=ON`, `DSERVER_RING_TRANSPORT=ON`, EUNION + rootless),
+  with built `darlingserver`, `mldr`, `dyld` dated 2026-10-02.
+- `/home/ilyagulya/work/r1-clean-base` — the earlier (Sep 28) reconstruction
+  (`darling 5f2d7401` + the `r1-transport-sources` delta); it differs from
+  `r1-repro` in 18 files (the later loader/guest fixes).
+- `/home/ilyagulya/work/r1-clean-ref` and `/home/ilyagulya/work/r1-clean-build`
+  also survive.
+
+Because `r1-repro` is a file tree and not Git history, re-integrating it means
+landing it as ordinary per-component commits: for each component (`darling`,
+`darlingserver`, `xnu`, `libmalloc`, `launchd`, `dyld`, `installer`, ...) diff
+`r1-repro` against the pinned base revision, commit onto that component's `fix/*`
+branch, then pin the resulting SHAs in a `darling-workspace` manifest checkpoint
+and verify build plus a ring-ON boot smoke.
+
+### Secondary recovery input: the r1 transport source archive
+
 `/home/ilyagulya/work/darling-dev/evidence/r1-transport-sources-LATEST` ->
 `r1-transport-sources-20260928T112410Z.tar.gz` (438 non-directory paths) with a
-matching `.sha256` manifest. It carries the transport delta:
+matching `.sha256` manifest. It carries the Sep-28 transport delta:
 
 | area | paths | notable files |
 | --- | --- | --- |
@@ -108,16 +134,10 @@ matching `.sha256` manifest. It carries the transport delta:
 | others | ~148 | `src/launchd/src`, `src/external/libmalloc`, `src/external/dyld`, `src/external/installer`, `src/external/perl`, `src/external/libressl-2.8.3`, `src/external/libkqueue`, `Developer/Platforms/MacOSX.platform` |
 
 The archive records `base=/home/ilyagulya/work/r1-clean-ref` and an empty
-`pinned` field, so the base revision must be re-derived before the delta is
-applied; `scripts/r1-clean-base-reproduction.sh` is the existing tool for the
-"materialize a pinned revision + apply a content delta" shape (its own
-`SRC_REPO` is a different, older tree).
-
-Recommended re-integration method: materialize the archive's base, apply this
-delta, apply the later 2026-09-30 loader-fix patches
-(`diagnostics/ring-loader-fixes-20260930/patches/`), then land the result as
-ordinary component commits with the archive and its sha256 manifest as the
-recorded provenance, and verify build + ring-ON boot smoke before layering.
+`pinned` field; `scripts/r1-clean-base-reproduction.sh` is the existing tool for
+the "materialize a pinned revision + apply a content delta" shape (its own
+`SRC_REPO` is a different, older tree). Prefer `r1-repro` when it is available;
+use the archive when only the delta is needed.
 
 ## The product line is the arch (`perf#30`) lineage
 
