@@ -690,3 +690,26 @@ built == deployed, and it agrees.)
    land under `evidence.source_root` and the same run passes. That is a tooling defect on the reuse
    path, recorded here rather than worked around silently; the proof above is the
    build-from-sources arm.
+
+## Focused host contracts on the fresh candidate (2026-10-04)
+
+Run in the fresh workspace's own build tree:
+
+```text
+dserver_interrupt_resume_tests      rc=0  interrupt/resume contract: OK   (decision A-F, ownership,
+                                          pending-signal; explicit pre-fix RED arm)
+dserver_exec_completion_tests       rc=0  DSERVER_EXEC_COMPLETION_CONTRACT_OK
+dserver_process_identity_tests      rc=0
+dserver_runtime_mode_tests          rc=0  DSERVER_RUNTIME_MODE_CONTRACT_OK
+tests/run-process-control-slot-ownership-contract.sh   rc=0
+    SLOT-OWNERSHIP ok: current protocol fails 1 case(s); generation-safe algorithm is clean
+tests/vchroot_fdless_rpc_invariant_contract.py         rc=0
+    VCHROOT_FDLESS_RPC_INVARIANT_OK (descriptor-bearing calls: checkin, checkout, console_open,
+    debug_*, kqchan_*)
+```
+
+Two RPC assets in the workspace (`tests/rpc_error_reply_contract.cpp`,
+`tests/rpc_sleep_account_contract.c`) have no host driver in this tree (no runner or registry
+reference), so they were not counted as executed contracts. The process-control model's
+"current protocol fails 1 case(s)" is reported by the contract itself and is pre-existing; it is
+not introduced by any change in this checkpoint.
