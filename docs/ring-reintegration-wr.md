@@ -713,3 +713,41 @@ Two RPC assets in the workspace (`tests/rpc_error_reply_contract.cpp`,
 reference), so they were not counted as executed contracts. The process-control model's
 "current protocol fails 1 case(s)" is reported by the contract itself and is pre-existing; it is
 not introduced by any change in this checkpoint.
+
+## Acceptance suite 9/9 on the fresh candidate (2026-10-04)
+
+Run against the fresh prefix with the fixture installed through the sanctioned asset path
+(`dwdiag prefix --asset ...=private/var/tmp/ring_mach_msg_test`), with **row retries disabled**
+(first attempt) and per-thread-socket creation forbidden:
+
+```text
+bash scripts/dwdiag suite --prefix /home/ilyagulya/work/wr-fresh/prefix --wait-base 60 \
+  --require-zero-creations --retry-failed-rows false -- \
+  'basic 20 :: sem_ready 2 :: sem_block 100 1 :: sem_timed 300 1 :: sem_wait_signal 4 ::
+   sem_timedwait_signal 300 1 :: sem_gap 5000 1 :: threadnoop 3 :: fsview'
+```
+
+```text
+RUN-ENV prefix=/home/ilyagulya/work/wr-fresh/prefix mldr=9855118cfc3a \
+        libsystem_kernel.dylib=e5de7cad4721 dyld=a133ea854ce1        (per row, from the deploy)
+basic 20                    PASS  0  0   RING_MACH_TEST mode=basic pass=1 iters=20
+sem_ready 2                 PASS  0  0   RING_MACH_TEST mode=sem_ready pass=1
+sem_block 100 1             PASS  0  0   RING_MACH_TEST mode=sem_block pass=1
+sem_timed 300 1             PASS  0  0   RING_MACH_TEST mode=sem_timed pass=1
+sem_wait_signal 4           PASS  0  0   RING_MACH_TEST mode=sem_wait_signal pass=1
+sem_timedwait_signal 300 1  PASS  0  0   RING_MACH_TEST mode=sem_timedwait_signal pass=1
+sem_gap 5000 1              PASS  0  0   RING_MACH_TEST mode=sem_gap pass=1
+threadnoop 3                PASS  0  0   RING_MACH_TEST mode=threadnoop pass=1
+fsview                      PASS  0  0   RING_MACH_TEST mode=fsview pass=1
+SUITE rows=9 failures=0 require_zero_creations=1
+SUITE-VERDICT PASS
+```
+
+(`PREFIX-PREREQ ok checked=5` for every row; the two counters printed per row are `denied` and
+`created`, both 0.)
+
+Row composition, declared because the historical suite is not spelled out verbatim anywhere in the
+retained docs: the seven rows the transport ledger names as PASS evidence (`basic`, `sem_ready` and
+the blocking family `sem_block`/`sem_timed`/`sem_wait_signal`/`sem_timedwait_signal`/`sem_gap`) plus
+`threadnoop` (ordinary/thread RPC path) and `fsview` (vchroot path), both real modes of the same
+fixture.
