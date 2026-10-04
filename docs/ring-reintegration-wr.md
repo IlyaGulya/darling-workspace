@@ -565,3 +565,36 @@ therefore not another grep but a capture: take the fault in-namespace (`scripts/
 interrupted frame, then compare the delivered `uc_mcontext.rsp` with the frame the instruction
 expects. Only if that shows an 8-byte loss is the resume path the defect; otherwise the alignment
 instance was incidental and the hunt goes back to the child's own code.
+
+## Remote reachability of the WR pins (2026-10-04)
+
+Every project the WR manifest pins was tested against its **declared** remote: five upstream pins
+are exact published tips (`libressl v2.2.9/v2.5.5/v2.6.5`, `neverbleed openssl111fix`,
+`python_modules master`), `darling-docs 14c841ef` is an ancestor of `darlinghq/darling-docs master`,
+and the local-only recovery pins were published create-only to the project forks:
+
+| project | pin | published ref | verified |
+|---|---|---|---|
+| darling | 386d18270423617d3a9e94da7660f8adb05d1c26 | `darling-next/darling recovery/ring-wr` | yes |
+| darling/src/external/xnu | f3e71f3997a898ea7962e43dfad32c500efae97e | `darling-next/darling-xnu recovery/ring-wr` | yes |
+| darlingserver | 9e8b49725930b536c338b18aa173eb5c6f8cf121 | `darling-next/darlingserver recovery/ring-wr` | yes |
+| dyld | 7f0fd6d9672b08bfcab9fe53453d565f5f6eb7c7 | `darling-next/darling-dyld recovery/ring-wr` | yes |
+| installer | bb68430c98dd295c6f3a91c4a4796be99cf92423 | `darling-next/darling-installer recovery/ring-wr` | yes |
+| libpthread | 8fd9324b044470a6f659f02477785df2c89160eb | `darling-next/darling-libpthread recovery/ring-wr` | yes |
+| libressl-2.8.3 | 45f14a83115947ba36a33572e29975a8dd811eb5 | `darling-next/darling-libressl recovery/ring-wr` | yes |
+| perl | 6c27f05a29fa6dc76fd14e485c4a76f100e6be3e | `darling-next/darling-perl recovery/ring-wr` | yes |
+| libkqueue | 660ebc3ae078a264503f1f54a9b76f65d46bfe2f | `darling-next/darling-libkqueue recovery/ring-wr` | yes |
+| libmalloc | 8c3d3863f2add948cbcb9667a8fb767969a2d688 | `darling-next/darling-libmalloc recovery/ring-wr` | yes |
+
+The workspace checkpoint itself is published: `IlyaGulya/darling-workspace`
+`change/ring-reintegration-v1` at `4e001066d3832fa312507a05ea5ee00df9e9b520`.
+
+`darling` (the manifest repository's own remote) already hosts `recovery/ring-wr`; the workspace
+remote hosts the checkpoint branch.
+
+**Three declared remotes had to change** for a genuinely fresh `west update` to succeed at all:
+`darlingserver`, `libkqueue` and `libmalloc` were declared against the **upstream** org
+(`darlinghq/*`), while their reviewed WR pins exist only on the forks. Pushing upstream is out of
+scope, so the manifest now declares `remote: darling-next` for those three, with the upstream
+repository still recorded in each entry's `userdata.upstream-repository`. That is the minimum
+change that makes the pinned revision obtainable from a declared remote.
