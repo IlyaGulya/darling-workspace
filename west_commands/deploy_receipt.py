@@ -76,10 +76,17 @@ def _worktree_identity(path: Path) -> dict[str, Any] | None:
     revision = _git(path, "rev-parse", "HEAD")
     if revision is None:
         return None
-    status = _git(path, "status", "--porcelain")
+    # DIRTY AND UNTRACKED ARE DIFFERENT FACTS and the receipt must not conflate them: a component
+    # whose only difference is an untracked file (measured: `darling/docs/`, a West project path
+    # materialized INSIDE the darling repository) is not a component with uncommitted edits, and a
+    # gate that cannot tell them apart cannot say which one it saw.
+    status = _git(path, "status", "--porcelain") or ""
+    entries = [line for line in status.splitlines() if line.strip()]
+    untracked = [line for line in entries if line.startswith("??")]
     return {
         "revision": revision,
-        "dirty": bool(status),
+        "dirty": bool(entries) and len(untracked) != len(entries),
+        "untracked": len(untracked),
     }
 
 
@@ -117,6 +124,7 @@ def build_receipt(
     prefix: Path,
     deployed: Iterable[tuple[Path, Path]],
     component_paths: Iterable[str] = DEFAULT_COMPONENT_PATHS,
+    runtime_verdict: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a receipt from deployed ``(source, destination)`` pairs."""
     build_dir = Path(build_dir)
@@ -135,7 +143,7 @@ def build_receipt(
                 "source_sha256": source_digest,
             }
         )
-    return {
+    receipt = {
         "schema_version": SCHEMA_VERSION,
         "workspace": workspace_identity(manifest_repo),
         "components": component_identity(topdir, component_paths),
@@ -143,6 +151,12 @@ def build_receipt(
         "prefix": str(prefix),
         "artifacts": artifacts,
     }
+    if runtime_verdict is not None:
+        # The verdict the deployment was accepted with, recorded by whoever owns it (the workload
+        # runner), never guessed here. `west manifest --freeze` stays DERIVED evidence: it is
+        # reproducible from workspace.manifest_commit, which is the product revision.
+        receipt["runtime_verdict"] = runtime_verdict
+    return receipt
 
 
 def write_receipt(prefix: Path, receipt: dict[str, Any]) -> Path:
