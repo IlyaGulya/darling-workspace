@@ -751,3 +751,32 @@ retained docs: the seven rows the transport ledger names as PASS evidence (`basi
 the blocking family `sem_block`/`sem_timed`/`sem_wait_signal`/`sem_timedwait_signal`/`sem_gap`) plus
 `threadnoop` (ordinary/thread RPC path) and `fsview` (vchroot path), both real modes of the same
 fixture.
+
+## Provenance: what identifies a tested product (2026-10-04, §10/§11/§17)
+
+The receipt the deploy path writes under `<prefix>/.darling-deploy-receipt.json` is the provenance
+record, and it now carries every fact §17 asks for, with `west manifest --freeze` left where it
+belongs -- DERIVED evidence reproducible from the manifest commit, stored as neither text nor a
+lockfile:
+
+| field | source |
+| --- | --- |
+| `workspace.manifest_commit`, `workspace.dirty` | the manifest repository (the product revision) |
+| `components[].revision`, `dirty`, `untracked` | each component worktree |
+| `build_dir` | the build tree the artifacts came from |
+| `artifacts[].source_sha256` | the BUILT artifact |
+| `artifacts[].deployed_sha256` | every deployed copy |
+| `runtime_verdict` | the workload runner, when one records it |
+
+`dirty` and `untracked` are reported separately because MEASURED they are different facts: a
+materialized West project path inside a component (`darling/docs/`) leaves untracked entries on an
+otherwise pinned component, and a single boolean cannot say which of the two a gate saw.
+
+`runtime_verdict` is written by `dwdiag suite --record-receipt <receipt>` (see `docs/tooling.md`);
+the runner adds that one field and refuses a receipt that already carries a verdict, so a receipt
+never describes a run that did not measure it.
+
+The doctor's deployed-artifact check keeps the receipt comparison as the DEFAULT
+(`--receipt-mode=current`) and the historical `deploy-baseline.md5` comparison as an explicit
+regression mode (`--receipt-mode=historical`, or any explicit `--expect-*-md5`) -- a development
+deployment is checked against the build it came from, not against a historical digest.
