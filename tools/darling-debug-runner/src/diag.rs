@@ -2863,6 +2863,13 @@ pub struct SuiteArgs {
     /// here (measured), and a retry that is printed is evidence, not silence.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     retry_failed_rows: bool,
+    /// Record this suite's verdict into the DEPLOY RECEIPT the deployment path wrote, so the provenance of a
+    /// tested product names the run it was accepted with. The receipt is owned by
+    /// `west_commands/deploy_receipt.py`: this tool adds exactly one field, never rewrites the rest, refuses a
+    /// receipt that already carries a verdict, and never creates one. Absent by default -- a run that records
+    /// nothing says nothing rather than inventing provenance.
+    #[arg(long)]
+    record_receipt: Option<PathBuf>,
 }
 
 fn split_chunks(modes: &[String]) -> Vec<String> {
@@ -2960,6 +2967,38 @@ fn run_suite(args: SuiteArgs) -> Result<ExitCode> {
         rows.push(v);
     }
     let pass = failures == 0;
+    if let Some(path) = &args.record_receipt {
+        let rows_json: Vec<String> = rows
+            .iter()
+            .map(|v| {
+                format!(
+                    "{{\"mode\":\"{}\",\"verdict\":\"{}\",\"denied\":{},\"created\":{}}}",
+                    v.mode, v.verdict, v.denied, v.created
+                )
+            })
+            .collect();
+        let verdict = format!(
+            "{{\"kind\":\"acceptance-suite\",\"verdict\":\"{}\",\"rows\":{},\"failures\":{},\"retry_failed_rows\":{},\"require_zero_creations\":{},\"detail\":[{}]}}",
+            if pass { "PASS" } else { "FAIL" },
+            rows.len(),
+            failures,
+            args.retry_failed_rows,
+            args.require_zero_creations,
+            rows_json.join(",")
+        );
+        let existing = fs::read_to_string(path)
+            .with_context(|| format!("read deploy receipt {}", path.display()))?;
+        let merged = merge_runtime_verdict(&existing, &verdict)
+            .with_context(|| format!("record the runtime verdict into {}", path.display()))?;
+        fs::write(path, merged).with_context(|| format!("write deploy receipt {}", path.display()))?;
+        println!(
+            "RECEIPT-RECORD {} verdict={} rows={} failures={}",
+            path.display(),
+            if pass { "PASS" } else { "FAIL" },
+            rows.len(),
+            failures
+        );
+    }
     if args.json {
         let rows: Vec<String> = rows
             .iter()
@@ -3264,11 +3303,6 @@ const INSTRUMENTS: &[(&str, &str, &str)] = &[
         "native-exit",
         r"^\[native-exit ",
         "guest: the boundary where the guest hands ITS OWN exit status to the host -- a 139 here would mean the guest decided it",
-    ),
-    (
-        "sigexc-in",
-        r"^\[sigexc-in ",
-        "guest: a GUEST linux signal number arriving in the guest's own signal machinery (sigexc_handler)",
     ),
     (
         "sem-site",
@@ -4803,6 +4837,59 @@ fn run_courier(args: CourierArgs) -> Result<ExitCode> {
     }
 }
 
+/// Merge a runtime verdict into the deploy receipt, byte-for-byte elsewhere.
+///
+/// WHY A TEXT MERGE: the receipt is JSON owned by `west_commands/deploy_receipt.py` and this tool has no JSON
+/// library (its other outputs are hand-written too). The rules that make a text merge safe are checked here and
+/// in `receipt_tests`: the document must be a JSON object, must not already carry `runtime_verdict` (a verdict is
+/// evidence about ONE build, and overwriting one makes the receipt describe a run it never measured), and every
+/// other byte is preserved.
+fn merge_runtime_verdict(existing: &str, verdict: &str) -> Result<String> {
+    let trimmed_end = existing.trim_end();
+    if !trimmed_end.ends_with('}') {
+        bail!("not a JSON object: no trailing '}}'");
+    }
+    if trimmed_end.contains("\"runtime_verdict\"") {
+        bail!("receipt already carries a runtime_verdict");
+    }
+    let body = trimmed_end.trim_end_matches('}');
+    let body_trimmed = body.trim_end();
+    let separator = if body_trimmed.ends_with('{') { "" } else { "," };
+    Ok(format!("{body_trimmed}{separator}\n  \"runtime_verdict\": {verdict}\n}}\n"))
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+
+    #[test]
+    fn merge_adds_the_verdict_and_preserves_everything_else() {
+        let receipt = "{\n  \"schema_version\": 1,\n  \"workspace\": {\"manifest_commit\": \"abc\"}\n}\n";
+        let merged = merge_runtime_verdict(receipt, "{\"rows\":9}").unwrap();
+        assert!(merged.contains("\"workspace\": {\"manifest_commit\": \"abc\"}"));
+        assert!(merged.contains("\"runtime_verdict\": {\"rows\":9}"));
+        assert!(merged.trim_end().ends_with('}'));
+    }
+
+    #[test]
+    fn merge_refuses_an_existing_verdict() {
+        let receipt = "{\"runtime_verdict\": {\"rows\":9}}";
+        assert!(merge_runtime_verdict(receipt, "{\"rows\":9}").is_err());
+    }
+
+    #[test]
+    fn merge_refuses_a_document_that_is_not_an_object() {
+        assert!(merge_runtime_verdict("not json", "{}").is_err());
+        assert!(merge_runtime_verdict("", "{}").is_err());
+    }
+
+    #[test]
+    fn merge_handles_an_empty_object() {
+        let merged = merge_runtime_verdict("{}", "{\"rows\":0}").unwrap();
+        assert_eq!(merged, "{\n  \"runtime_verdict\": {\"rows\":0}\n}\n");
+    }
+}
+
 #[cfg(test)]
 mod witness_tests {
     use super::*;
@@ -4819,8 +4906,42 @@ mod witness_tests {
         ),
         ("iter-marks", "ITER 1 tid=1282542 port=2307 create"),
         (
+            // Format copied from its emitter, `darling/src/startup/mldr/elfcalls/threads.c`
+            // (`mldr_thread_diagf("[dthread-mask q=%d segv_blocked=%d tid=%d]\n", ...)`): a sample
+            // invented here would pass this check while the real line stayed unmatched.
+            "dthread-mask",
+            "[dthread-mask q=0 segv_blocked=0 tid=1282542]",
+        ),
+        (
             "stall-dump",
             "[1790512650.010866](stall-dump, Error) stall-dump idle_ms=5136 serviced=571 processes=4 threads=8",
+        ),
+        // The eleven samples below were read out of their EMITTERS in the pinned product source, not built from
+        // the registry pattern: a sample derived from the pattern it checks is a tautology that passes after the
+        // emitter's format has already changed, which is the rot this table exists to catch.
+        //   src/external/xnu/.../linux_premigration/signal/sigexc.c,
+        //   .../linux_premigration/resources/dserver-ring.c,
+        //   .../emulation/src/conversion/signal/sigaction.c,
+        //   .../xnu_syscall/bsd/impl/signal/{sigaction,sigprocmask}.c,
+        //   .../xnu_syscall/bsd/impl/process/wait4.c,
+        //   .../xnu_syscall/mach/impl/mach_traps.c,
+        //   .../linux_premigration/elfcalls_wrapper.c,
+        //   src/external/darlingserver/src/server.cpp
+        ("sigexc-deliver", "[sigexc-deliver linux_sig=11 si_code=1]"),
+        ("sigexc-setup", "[sigexc-setup pid=1 tid=1282542 seq=3 libpage=0x7f0000000000]"),
+        ("setrestart", "[setrestart sig=11 ret=0 host_tid=1282542 libpage=0x7f0000000000]"),
+        ("native-exit", "[native-exit status=0 ra=0x71da7c883893]"),
+        ("plane-claim-iter", "[plane-claim-iter n=3 t=0 obs=7 expect=7 page=0x7f2c00000000 op=1 tid=1282542]"),
+        ("plane-reclaim", "[plane-reclaim] op=1 t=0 gen=9 tid=1282542"),
+        ("fault", "[fault sig=11 addr=0x0 sicode=1]"),
+        ("sigact", "[sigact pid=1 tid=1282542 bsd=11 linux=11 req=0x7fff0000 flags=0x0 ra=0x71da7c883893]"),
+        ("guest-handler", "[guest-handler linux_sig=11 segv_masked=0]"),
+        ("sigsegv-mask", "[sigsegv-mask how=0 ra=0x71da7c883893]"),
+        ("wait4", "[wait4 pid=1282542 raw=0x0]"),
+        ("segvdisp", "[segvdisp q=1 handler=0x71da7c883893 is_wrapper=0 is_bsd=1 is_sigexc=0 segv_masked=0 seq=4]"),
+        (
+            "completion-discarded",
+            "[1790512650.010866](process-control-stale-completion, Error) completion-discarded pid=42 op=7 seq=5 slot_seq=4",
         ),
         (
             "ring-dump",
@@ -4905,11 +5026,16 @@ mod witness_tests {
 
     #[test]
     fn every_instrument_has_a_sample() {
-        for (name, _, _) in INSTRUMENTS {
-            assert!(
-                SAMPLES.iter().any(|(n, _)| n == name),
-                "instrument {name} has no sample line, so its pattern is unchecked"
-            );
-        }
+        // EVERY missing name, not the first one: the one-at-a-time panic turns a registry gap into as many
+        // edit-rebuild cycles as there are gaps, which is how one missing sample stayed unnoticed.
+        let missing: Vec<&str> = INSTRUMENTS
+            .iter()
+            .filter(|(name, _, _)| !SAMPLES.iter().any(|(n, _)| n == name))
+            .map(|(name, _, _)| *name)
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "instruments with no sample line (their patterns are unchecked): {missing:?}"
+        );
     }
 }
