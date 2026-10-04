@@ -37,7 +37,12 @@ sys.modules.setdefault("west", west_module)
 sys.modules.setdefault("west.commands", west_commands_module)
 sys.path.insert(0, str(ROOT / "west_commands"))
 
-from west_commands.deploy_receipt import build_receipt, receipt_path, write_receipt
+from west_commands.deploy_receipt import (
+    build_receipt,
+    component_identity,
+    receipt_path,
+    write_receipt,
+)
 from west_commands.doctor import DarlingDoctor
 
 
@@ -115,6 +120,50 @@ with tempfile.TemporaryDirectory() as temp:
         deployed=[(dyld_source, dyld_destination), (dyld_source, shared_dyld)],
     )
     assert receipt["workspace"]["manifest_commit"] == commit
+
+    # DIRTY AND UNTRACKED ARE REPORTED SEPARATELY (checked in the real repository the contract just
+    # created): an untracked-only component must not be reported as dirty, and a tracked edit must.
+    # The synthetic repository has no `darling/` component, so build the one this check needs.
+    # A component is a WORKTREE (`.`git` present), so it has to be a repository of its own.
+    component_repo = repo / "darling"
+    component_repo.mkdir(exist_ok=True)
+    make_repo(component_repo)
+    (component_repo / "tracked-edit.txt").write_text("seed\n")
+    subprocess.run(["git", "-C", str(component_repo), "add", "tracked-edit.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(component_repo), "-c", "user.email=c@example.invalid",
+         "-c", "user.name=contract", "commit", "-q", "-m", "seed"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(component_repo), "reset", "-q", "--hard"], check=True)
+    components = component_identity(repo, ("darling",))
+    assert components and components[0]["dirty"] is False and components[0]["untracked"] == 0, components
+    component = components[0]
+    assert component["dirty"] is False and component["untracked"] == 0, component
+    (repo / "darling" / "untracked-only.txt").write_text("x\n")
+    components = component_identity(repo, ("darling",))
+    assert components[0]["dirty"] is False and components[0]["untracked"] == 1, components[0]
+    (repo / "darling" / "tracked-edit.txt").write_text("x\n")
+    subprocess.run(["git", "-C", str(repo / "darling"), "add", "tracked-edit.txt"], check=True)
+    components = component_identity(repo, ("darling",))
+    assert components[0]["dirty"] is True and components[0]["untracked"] == 1, components[0]
+    subprocess.run(["git", "-C", str(repo / "darling"), "reset", "-q"], check=True)
+    (repo / "darling" / "tracked-edit.txt").unlink()
+    (repo / "darling" / "untracked-only.txt").unlink()
+
+    # The runtime verdict is recorded only when its owner supplies it, and the freeze stays derived.
+    assert "runtime_verdict" not in receipt
+    with_verdict = build_receipt(
+        manifest_repo=repo,
+        topdir=root,
+        build_dir=build,
+        prefix=prefix,
+        deployed=[(dyld_source, dyld_destination)],
+        runtime_verdict={"rows": 9, "failures": 0},
+    )
+    assert with_verdict["runtime_verdict"] == {"rows": 9, "failures": 0}
+    assert "manifest_freeze" not in with_verdict
+
     write_receipt(prefix, receipt)
 
     fail, problems = check(repo, prefix)
