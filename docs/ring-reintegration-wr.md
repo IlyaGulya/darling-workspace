@@ -618,3 +618,75 @@ PENDING SIGNAL with no interrupt marker
 the product path. MEASURED: no deactivation mismatch ("Upon deactivating the active call ...") in
 any retained run, so no behavior changed for the states the implementation actually reaches; the
 `Keep` case is instrumented, not silently handled.
+
+## Fresh WR cutover proof (2026-10-04)
+
+Performed in a genuinely empty directory (`/home/ilyagulya/work/wr-fresh`), with no reuse of the
+long-lived workspace, its object databases, r1-repro or any old build tree:
+
+```text
+west init -m git@github.com:IlyaGulya/darling-workspace.git --mr change/ring-reintegration-v1
+west update
+  -> 163 / 163 projects at their exact manifest revisions (verified by HEAD == revision each)
+west manifest checkpoint 6b1f32a1b489521088267ebb6af1887a78c821d4
+component HEADs (fresh clones)
+  darling                     8bc594dfd5654568623cd09deb3b2ce7dc4b452b   == pin
+  darling/src/external/xnu    f3e71f3997a898ea7962e43dfad32c500efae97e   == pin
+  darling/src/external/darlingserver 2186bb43c59e7dbdd174e26567d696f1e052dd73 == pin
+  darling/src/external/dyld   7f0fd6d9672b08bfcab9fe53453d565f5f6eb7c7   == pin
+dirty tracked = 0 (darling, xnu, darlingserver)
+untracked = 0 except `darling/docs/` (a West project path materialized INSIDE the darling repo,
+             which git therefore reports as untracked; not stray product source)
+cmake configure OK (RelWithDebInfo, EUNION/RING/ROOTLESS_HOMEBREW/ROOTLESS_TOOLCHAIN,
+             DSERVER_RING_TRANSPORT, DSERVER_SINGLE_THREADED, SKIP_DRIFT_GATE)
+ninja rootless_bootstrap -> 4723/4723 OK
+```
+
+Canonical fresh prefix and smoke (`west test --prefix ... --bootstrap-runtime-profile
+homebrew-rootless-bootstrap-minimal`, the receipt-writing path that runs the workspace doctor, the
+deploy and a bounded guest smoke):
+
+```text
+prefix bootstrap guest stdout: WEST_PREFIX_BOOTSTRAP_OK
+prefix bootstrap phase complete: guest login shell (0.5s)
+prefix bootstrap phase complete: doctor (0.2s)
+prefix bootstrap passed for /home/ilyagulya/work/wr-fresh/prefix
+  deployment receipt: /home/ilyagulya/work/wr-fresh/prefix/.darling-deploy-receipt.json
+```
+
+Receipt verification (§7):
+
+```text
+manifest_commit 6b1f32a1b489521088267ebb6af1887a78c821d4   dirty=false
+components: darling 8bc594dfd565, darlingserver 2186bb43c59e, xnu f3e71f3997a8,
+            dyld 7f0fd6d9672b, libsystem 08df454b6eb0
+101 artifact rows
+mldr (2 deployed copies)              deployed == built, sha 9855118cfc3a
+darlingserver                         deployed == built, sha 7c86447db2ea
+libsystem_kernel.dylib (2 copies)     deployed == built, sha e5de7cad4721
+deployed probe census: mldr 0, darlingserver 0, libsystem_kernel 0
+```
+
+(The hashes differ from the long-lived tree's `build/runtime` outputs because the bootstrap built
+its own artifacts from its own materialized source forest. The receipt is the authority for
+built == deployed, and it agrees.)
+
+### Two conditions this proof ran under, and why
+
+1. `GIT_LFS_SKIP_SMUDGE=1`. `darling/src/external/swift` pins `471514f4b498...`, whose checkout
+   requires `libswiftAVFoundation.dylib` from `https://git-lfs.darlinghq.org/lubos/darling-swift`,
+   for which no credentials exist here ("Git credentials ... not found"). Without the skip, the
+   *runtime source forest* materializer fails on that smudge; with it, HEAD == the manifest pin and
+   the payload stays an LFS pointer. The runtime closure does not consume it: the closure configured
+   and linked `rootless_bootstrap` without it. `libunwind`, the other project that failed the first
+   update pass, materialized normally and IS required by the closure
+   (`src/CMakeLists.txt:186`).
+2. `WEST_RUNTIME_BUILD_CACHE=off`. The canonical bootstrap's cache-REUSE path is broken in this
+   framework state: with a warm `<manifest>/.west-test/runtime-build-cache`, it passes
+   `root=reuse_plan.source_entry` (inside the cache store) together with the *evidence unit* session,
+   and `test_runtime_evidence.py:72 record_worktrees()` then raises
+   `ValueError: evidence worktree escapes its unit:
+   <manifest>/.west-test/runtime-build-cache/source/<key>/darling`. Disabling reuse makes the forest
+   land under `evidence.source_root` and the same run passes. That is a tooling defect on the reuse
+   path, recorded here rather than worked around silently; the proof above is the
+   build-from-sources arm.
