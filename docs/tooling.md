@@ -389,6 +389,23 @@ Two tool defects, both measured on the acceptance table after the `_pthread_deal
   overwriting one makes the receipt describe a run it never measured, and it never creates a receipt. Absent the
   flag nothing is recorded: a run that records nothing says nothing rather than inventing provenance.
 
+### 2026-10-04: a workload that is not installed is not a hang, and `/usr/bin` is not where the fixture lives
+
+`dwdiag verdict` defaulted to `--guest-command /usr/bin/ring_mach_msg_test` -- the one path this tool's own
+documentation measures as INVISIBLE to a guest, because the guest's `/usr/bin` resolves through
+`/Volumes/SystemRoot` to the HOST's `/usr/bin`. Measured cost: a 200-run boot gate used that default, every run
+burned its full watchdog and reported `HANG (watchdog)`, and four hours of "product failures" were one wrong
+path; the fixture was installed, in the prefix, at `/private/var/tmp/ring_mach_msg_test`, which is where `prefix`
+and `suite` already look.
+
+* The default is now `/private/var/tmp/ring_mach_msg_test`, the guest-visible writable path.
+* `verdict` checks the workload's presence INSIDE THE PREFIX before it pays a boot: absence prints
+  `VERDICT-PREREQ workload=absent <host path>` and returns `NO-RUN (workload absent)` in seconds (measured: 5 s
+  against the 200-run gate's ~71 s), so a wrong path can no longer be laundered into a wait then a verdict about
+  the workload.
+* A guest shell's `rc=127` (command not found) is classified `NO-RUN rc=127 (workload not found)` instead of
+  `EXIT rc=127`, which read as the workload's own exit status.
+
 ### `darling-boot-run.sh --cmd` replaces the boot command, so the default markers do not appear
 
 Measured 2026-09-28: a churn run (`--cmd 'shell -c "…"'`) was reported `VERDICT FAIL` with `MARKER MISS HELLO=1` and

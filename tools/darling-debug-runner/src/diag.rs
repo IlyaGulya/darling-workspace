@@ -1964,7 +1964,13 @@ pub struct VerdictArgs {
     #[arg(long, default_value = "scripts/darling-boot-run.sh")]
     boot_runner: PathBuf,
     /// The guest workload binary the mode is an argument of.
-    #[arg(long, default_value = "/usr/bin/ring_mach_msg_test")]
+    ///
+    /// The default is the guest-visible path, NOT `/usr/bin/ring_mach_msg_test`: the guest's `/usr/bin` resolves
+    /// through `/Volumes/SystemRoot` to the HOST's `/usr/bin`, so a fixture installed inside the prefix is invisible
+    /// there and the run dies with `not found` (rc=127). MEASURED COST (2026-10-04): a gate of 200 runs used the
+    /// `/usr/bin` default, every run burned its full watchdog and reported `HANG (watchdog)`, and four hours of
+    /// "product failures" were one wrong path. `prefix` and `suite` already default to the writable guest path.
+    #[arg(long, default_value = "/private/var/tmp/ring_mach_msg_test")]
     guest_command: String,
     /// Image used to symbolize a denial's caller offset.
     #[arg(long)]
@@ -2178,6 +2184,9 @@ fn judge_run_log(text: &str, mode: &str) -> (String, String, Option<i32>) {
         } else {
             match (started, rc) {
                 (_, Some(c)) if c >= 128 => format!("CRASH {}", signal_name(c - 128)),
+                // 127 is the shell's "command not found": the run never executed the thing it claims to measure, so
+                // reporting `EXIT rc=127` (which reads as the workload's own exit) hides the harness mistake.
+                (_, Some(127)) => "NO-RUN rc=127 (workload not found)".to_string(),
                 (_, Some(c)) => format!("EXIT rc={c}"),
                 (true, None) => "HANG".to_string(),
                 (false, None) => "NO-RUN".to_string(),
@@ -2398,6 +2407,39 @@ fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
     let Some(prefix) = args.prefix.as_ref() else {
         bail!("running a workload needs --prefix; use --log to judge a log that already exists");
     };
+    // A WORKLOAD THAT IS NOT THERE IS NOT A HANG, AND ITS ABSENCE COSTS NO BOOT. The fixture is a TEST ASSET, so the
+    // prefix either has it or the run cannot mean anything; checking first turns a wrong path into an immediate
+    // verdict instead of a full watchdog wait followed by `HANG (watchdog)`. MEASURED (2026-10-04): 200 runs at one
+    // wrong path produced 200 such verdicts and no product information at all.
+    let guest_host = prefix.join(args.guest_command.trim_start_matches('/'));
+    if !guest_host.is_file() {
+        let log = std::env::temp_dir().join(format!(
+            "dwdiag-verdict-{}-{}{}.log",
+            std::process::id(),
+            args.mode,
+            tag
+        ));
+        let _ = fs::write(
+            &log,
+            format!(
+                "workload absent: {} (a test asset; install it into the prefix, it is not part of the runtime install)\n",
+                guest_host.display()
+            ),
+        );
+        eprintln!("VERDICT-PREREQ workload=absent {}", guest_host.display());
+        return Ok(Verdict {
+            mode: args.mode.clone(),
+            verdict: "NO-RUN (workload absent)".to_string(),
+            denied: 0,
+            created: 0,
+            line: String::new(),
+            denial_call: None,
+            denial_location: None,
+            log,
+            rc: None,
+            signal: None,
+        });
+    }
     let log = std::env::temp_dir().join(format!(
         "dwdiag-verdict-{}-{}{}.log",
         std::process::id(),
@@ -5037,5 +5079,28 @@ mod witness_tests {
             missing.is_empty(),
             "instruments with no sample line (their patterns are unchecked): {missing:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod workload_tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_workload_is_not_a_workload_failure() {
+        let text = "mode=basic\n/usr/bin/ring_mach_msg_test: not found\n__DWDIAG_RC=127\n";
+        let (line, verdict, rc) = judge_run_log(text, "basic");
+        assert!(line.is_empty(), "{line}");
+        assert!(verdict.starts_with("NO-RUN"), "{verdict}");
+        assert_eq!(rc, Some(127));
+    }
+
+    #[test]
+    fn a_pass_is_still_a_pass() {
+        let text = "mode=basic\nRING_MACH_TEST mode=basic pass=1\n__DWDIAG_RC=0\n";
+        let (line, verdict, rc) = judge_run_log(text, "basic");
+        assert!(line.contains("pass=1"), "{line}");
+        assert_eq!(verdict, "PASS");
+        assert_eq!(rc, Some(0));
     }
 }
