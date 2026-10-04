@@ -598,3 +598,23 @@ remote hosts the checkpoint branch.
 scope, so the manifest now declares `remote: darling-next` for those three, with the upstream
 repository still recorded in each entry's `userdata.upstream-repository`. That is the minimum
 change that makes the pinned revision obtainable from a declared remote.
+
+### Contract extensions before the gates (2026-10-04)
+
+`dserver_interrupt_resume_tests` now also decides and asserts:
+
+```text
+OWNERSHIP of the interrupted call at interrupt cleanup
+    resumed                      -> Retire (its own syscall-return re-entry is the completion)
+    not resumed, reply suppressed -> Retire (plane-serviced call: no waiter left)
+    not resumed, live reply      -> Keep   (this path cannot complete it; NAMED once in the server
+                                            as [interrupted-call-not-resumed] instead of being
+                                            dropped silently)
+PENDING SIGNAL with no interrupt marker
+    -> never raises, reports whether it mutated anything, never consumes the signal
+```
+
+`Thread::setPendingSignal()` routes its decision through that same rule, so the contract exercises
+the product path. MEASURED: no deactivation mismatch ("Upon deactivating the active call ...") in
+any retained run, so no behavior changed for the states the implementation actually reaches; the
+`Keep` case is instrumented, not silently handled.
