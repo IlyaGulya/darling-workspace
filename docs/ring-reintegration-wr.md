@@ -780,3 +780,14 @@ The doctor's deployed-artifact check keeps the receipt comparison as the DEFAULT
 (`--receipt-mode=current`) and the historical `deploy-baseline.md5` comparison as an explicit
 regression mode (`--receipt-mode=historical`, or any explicit `--expect-*-md5`) -- a development
 deployment is checked against the build it came from, not against a historical digest.
+
+## Tested identity for the gate runs (2026-10-04)
+
+The build/prefix tree used for the 9/9 suite and the boot gate is
+`/home/ilyagulya/work/wr-fresh`, whose manifest repository sits at `6b1f32a1` with
+`west.yml` sha256 `ad283b5cae176600262b180ebdef24cf61153e1903df5efbcb67b384e7081e7a` --
+byte-identical to `west.yml` on this branch (`git show 6b1f32a1:west.yml` and
+`git show HEAD:west.yml` agree), so the component pins the run used are this branch's pins.
+The deployed bytes are pinned independently of any commit by the prefix receipt and by each
+run's own `RUN-ENV prefix=… mldr=… libsystem_kernel.dylib=… dyld=…` line, which is what a
+claim about a specific build has to name.
