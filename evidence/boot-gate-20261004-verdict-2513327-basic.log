@@ -1,0 +1,46 @@
+[machport-open] before-rpc
+[machport-open] after-rpc
+[machport-open] after-fcntl
+[pcreate alloc-enter] pid=2514721
+[pcreate alloc-done] pid=2514721
+[pcreate add-enter] pid=2514721
+[add lock-enter] pid=2514721
+[add lock-done] pid=2514721
+[add unlock-done] pid=2514721
+[add intro-enter] pid=2514721
+[add intro-done] pid=2514721
+[pcreate add-done] pid=2514721
+[pcreate trap-enter] pid=2514721
+[pcreate alloc-enter] pid=2514721
+[pcreate alloc-done] pid=2514721
+[pcreate add-enter] pid=2514721
+[add lock-enter] pid=2514721
+[add lock-done] pid=2514721
+[add unlock-done] pid=2514721
+[add intro-enter] pid=2514721
+[add intro-done] pid=2514721
+[pcreate add-done] pid=2514721
+[pcreate trap-enter] pid=2514721
+[rmmt] start pid=2514729 host_pid=2514729 host_tid=2514729 mode=basic arg=20
+[pcreate alloc-enter] pid=2514729
+[pcreate alloc-done] pid=2514729
+[pcreate add-enter] pid=2514729
+[add lock-enter] pid=2514729
+[add lock-done] pid=2514729
+[add unlock-done] pid=2514729
+[add intro-enter] pid=2514729
+[add intro-done] pid=2514729
+[pcreate add-done] pid=2514729
+[pcreate trap-enter] pid=2514729
+[pcreate alloc-enter] pid=2514729
+[pcreate alloc-done] pid=2514729
+[pcreate add-enter] pid=2514729
+[add lock-enter] pid=2514729
+[add lock-done] pid=2514729
+[add unlock-done] pid=2514729
+[add intro-enter] pid=2514729
+[add intro-done] pid=2514729
+[pcreate add-done] pid=2514729
+[pcreate trap-enter] pid=2514729
+waited 60s of at most 60s
+[dwdiag-env prefix=/home/ilyagulya/work/wr-fresh/prefix mldr=9855118cfc3a libsystem_kernel.dylib=e5de7cad4721 dyld=a133ea854ce1]
