@@ -380,6 +380,14 @@ Two tool defects, both measured on the acceptance table after the `_pthread_deal
   individually, i.e. a row-level flake decided the suite verdict. `suite` retries a row that is not PASS **once**
   and prints `ROW-RETRY mode=<m> first=<v1> retry=<v2>`; the retry is announced, never silent, because hiding the
   first verdict is the same defect as a verdict that cannot fail. `--retry-failed-rows false` turns it off.
+* A suite verdict is provenance, and provenance that lives only in terminal scrollback cannot say which build it
+  belongs to. `suite --record-receipt <prefix>/.darling-deploy-receipt.json` merges this run into the receipt the
+  deployment path wrote: one `runtime_verdict` field (kind, verdict, rows, failures, retry setting, zero-creation
+  setting and the per-row table), printed as `RECEIPT-RECORD <path> verdict=… rows=… failures=…`. The receipt
+  belongs to `west_commands/deploy_receipt.py`, so the tool adds that one field and preserves every other byte; it
+  **refuses** a receipt that already carries a verdict, because a verdict is evidence about one build and
+  overwriting one makes the receipt describe a run it never measured, and it never creates a receipt. Absent the
+  flag nothing is recorded: a run that records nothing says nothing rather than inventing provenance.
 
 ### `darling-boot-run.sh --cmd` replaces the boot command, so the default markers do not appear
 
