@@ -791,3 +791,39 @@ byte-identical to `west.yml` on this branch (`git show 6b1f32a1:west.yml` and
 The deployed bytes are pinned independently of any commit by the prefix receipt and by each
 run's own `RUN-ENV prefix=… mldr=… libsystem_kernel.dylib=… dyld=…` line, which is what a
 claim about a specific build has to name.
+
+## Boot gate: 199/200 clean, one HANG inside the thread-create trap (2026-10-04)
+
+`basic 20`, one prefix boot per run, `--guest-command /private/var/tmp/ring_mach_msg_test`,
+`--wait 60`, no row retries, verdict judged per run:
+
+```text
+BOOT-GATE runs=200 pass=199 fail=1 crash=0 hang=1 bootfail=0 noverdict=0 created=0 denied=0
+```
+
+The failing run is `#014 verdict=HANG (watchdog) created=0 denied=0`; its log is
+`/tmp/dwdiag-verdict-2513327-basic.log` (preserved at
+`evidence/boot-gate-20261004-verdict-2513327-basic.log`). What the log actually shows:
+
+```text
+[rmmt] start pid=2514729 host_pid=2514729 host_tid=2514729 mode=basic arg=20
+[pcreate alloc-enter] pid=2514729
+[pcreate alloc-done]  pid=2514729
+[pcreate add-enter]   pid=2514729
+[add lock-enter] / [add lock-done] / [add unlock-done] / [add intro-enter] / [add intro-done]
+[pcreate add-done]    pid=2514729
+[pcreate trap-enter]  pid=2514729          <-- nothing follows it
+waited 60s of at most 60s
+```
+
+`[pcreate trap-enter]` is `libpthread/src/pthread.c` immediately before `__bsdthread_create(...)`
+(the guest thread-create trap): the sender thread `basic 20` creates per iteration never got its
+trap answered, and the workload then produced no result line at all. No `rpc-socket-DENIED`, no
+`dring-uds-reason`, no stall-dump body in that log, so the failure is SILENT on the guest side --
+the same signature class as the Bead's separately classified `stress_mixed 20` residual (a plane
+request released while still pending on a guest path).
+
+This is a causal issue for acceptance (`0 HANG` is a gate criterion), not a measurement artifact:
+the hunt is a repeated `basic 20` under `--freeze-on-fail` so the first reproduction leaves the
+prefix and its processes alive for the existing read-only instruments (`dwdiag progress`, server
+diag log slice, `darling-debug thread`, ring trace). No new probes.
