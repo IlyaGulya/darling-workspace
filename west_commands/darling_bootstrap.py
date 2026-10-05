@@ -88,6 +88,50 @@ _PLAN_KEYS = {
 _DEFINE_TRUE = {"ON", "TRUE", "1", "YES", "Y"}
 _DEFINE_FALSE = {"OFF", "FALSE", "0", "NO", "N", ""}
 _CMAKE_CACHE_ENTRY = re.compile(r"^([A-Za-z0-9_]+):[A-Za-z0-9_]+=(.*)$")
+_APPARMOR_USERNS_SETTING = "kernel.apparmor_restrict_unprivileged_userns"
+_APPARMOR_USERNS_SYSCTL = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+
+
+def unprivileged_userns_problem(probe=None, sysctl_path: Path = _APPARMOR_USERNS_SYSCTL) -> str | None:
+    """Return why this host cannot create an unprivileged user namespace, or None.
+
+    Darling's rootless runtime creates mount and PID namespaces, so a host that refuses unprivileged user
+    namespaces cannot boot ANY prefix. That is worth naming up front rather than discovering it as a
+    shellspawn readiness timeout: measured, one such host turned every bootstrap -- including a prefix that
+    had booted earlier the same day -- into `Rootless shellspawn did not become ready`, with the reason
+    (an AppArmor denial of `userns_create`) visible only in the kernel log.
+    """
+
+    if probe is None:
+        def probe() -> tuple[int, str]:
+            try:
+                result = subprocess.run(
+                    ["unshare", "--user", "--map-root-user", "true"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except (OSError, subprocess.TimeoutExpired) as error:
+                return 1, str(error)
+            return result.returncode, (result.stderr or result.stdout).strip()
+
+    code, detail = probe()
+    if code == 0:
+        return None
+    setting = ""
+    try:
+        value = sysctl_path.read_text().strip()
+        if value and value != "0":
+            setting = f" ({_APPARMOR_USERNS_SETTING}={value})"
+    except OSError:
+        pass
+    reason = detail.splitlines()[-1] if detail else "unshare --user failed"
+    return (
+        f"unprivileged user namespaces are unavailable{setting}: {reason}. "
+        "Darling's rootless runtime needs them to create mount and PID namespaces; "
+        "relax the restriction (for example: sysctl -w kernel.apparmor_restrict_unprivileged_userns=0) "
+        "and verify with `unshare --user --map-root-user true`."
+    )
 
 
 class BootstrapPlan:
@@ -361,6 +405,11 @@ class DarlingBootstrap(PrefixLifecycleMixin, RuntimePlanMixin, WestCommand):
         if not prefix.parent.is_dir():
             self.die(f"--prefix parent is not a directory: {prefix.parent}")
         self._prefix_env = dict(plan.launcher_env)
+
+        # 0. the host can actually boot a rootless prefix at all.
+        userns_problem = unprivileged_userns_problem()
+        if userns_problem is not None:
+            self.die(f"cannot bootstrap {prefix}: {userns_problem}")
 
         # 1. the build variant is explicit, and it is asserted, not assumed.
         cache = build_dir / "CMakeCache.txt"

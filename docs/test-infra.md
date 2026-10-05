@@ -131,6 +131,16 @@ defines are exactly the values the manifest-native Ring provider declares.
 CommandLineTools; the direct entrypoint covers the runtime closure, which is
 what a prefix needs in order to boot.
 
+The host must be able to create unprivileged user namespaces: Darling's rootless
+runtime creates mount and PID namespaces, and on a host that refuses them no
+prefix can boot at all. Measured: with
+`kernel.apparmor_restrict_unprivileged_userns=1` (the stock Ubuntu 24.04 value),
+every bootstrap — including a prefix that had booted earlier the same day —
+ended as `Rootless shellspawn did not become ready` with an AppArmor
+`userns_create` denial visible only in the kernel log. `west darling-bootstrap`
+checks this before it deploys and names the setting instead of timing out;
+`docs/suid-investigation.md` records the mechanism in full.
+
 ## CI execution contract
 
 `.github/workflows/test-infra.yml` keeps privilege and trust boundaries explicit:
