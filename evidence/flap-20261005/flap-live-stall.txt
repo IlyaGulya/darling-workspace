@@ -1,0 +1,277 @@
+### STALL DETECTED in /home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r124.log at 12:35:44
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+### ring: the last 45 one-second snapshots
+== pid=3248156 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3248156 wchan=ep_poll syscall=
+   tid=3248172 wchan=futex_wait_queue syscall=
+== pid=3248171 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/libexec/darling/usr/libexec/darling/mldr state=S threads=3
+   wchan=futex_wait_queue
+   tid=3248171 wchan=futex_wait_queue syscall=
+   tid=3248173 wchan=do_select syscall=
+   tid=3248174 wchan=futex_wait_queue syscall=
+== pid=3248156 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3248156 wchan=ep_poll syscall=
+   tid=3248172 wchan=futex_wait_queue syscall=
+== pid=3248171 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/libexec/darling/usr/libexec/darling/mldr state=S threads=3
+   wchan=futex_wait_queue
+   tid=3248171 wchan=futex_wait_queue syscall=
+   tid=3248173 wchan=do_select syscall=
+   tid=3248174 wchan=futex_wait_queue syscall=
+== pid=3248156 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3248156 wchan=ep_poll syscall=
+   tid=3248172 wchan=futex_wait_queue syscall=
+== pid=3248171 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/libexec/darling/usr/libexec/darling/mldr state=S threads=3
+   wchan=futex_wait_queue
+   tid=3248171 wchan=futex_wait_queue syscall=
+   tid=3248173 wchan=do_select syscall=
+   tid=3248174 wchan=futex_wait_queue syscall=
+== pid=3257177 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3257177 wchan=do_poll.constprop.0 syscall=
+== pid=3257178 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3257178 wchan=ep_poll syscall=
+   tid=3257194 wchan=futex_wait_queue syscall=
+== pid=3257193 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/libexec/darling/usr/libexec/darling/mldr state=S threads=3
+   wchan=futex_wait_queue
+   tid=3257193 wchan=futex_wait_queue syscall=
+   tid=3257195 wchan=do_select syscall=
+   tid=3257196 wchan=futex_wait_queue syscall=
+== pid=3257197 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/libexec/darling/usr/libexec/darling/mldr state=S threads=1
+   wchan=ep_poll
+   tid=3257197 wchan=ep_poll syscall=
+== pid=3257198 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/libexec/darling/usr/libexec/darling/mldr state=S threads=1
+   wchan=__skb_wait_for_more_packets
+   tid=3257198 wchan=__skb_wait_for_more_packets syscall=
+== pid=3257178 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3257178 wchan=ep_poll syscall=
+   tid=3257194 wchan=futex_wait_queue syscall=
+== pid=3257193 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/libexec/darling/usr/libexec/darling/mldr state=S threads=3
+   wchan=futex_wait_queue
+   tid=3257193 wchan=futex_wait_queue syscall=
+   tid=3257195 wchan=do_select syscall=
+   tid=3257196 wchan=futex_wait_queue syscall=
+== pid=3257197 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/libexec/darling/usr/libexec/darling/mldr state=S threads=1
+   wchan=pipe_write
+   tid=3257197 wchan=pipe_write syscall=
+== pid=3257198 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/libexec/darling/usr/libexec/darling/mldr state=S threads=1
+   wchan=pipe_write
+   tid=3257198 wchan=pipe_write syscall=
+== pid=3257869 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3257869 wchan=do_poll.constprop.0 syscall=
+== pid=3257178 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3257178 wchan=ep_poll syscall=
+   tid=3257194 wchan=futex_wait_queue syscall=
+== pid=3257193 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/libexec/darling/usr/libexec/darling/mldr state=T threads=3
+   wchan=do_signal_stop
+   tid=3257193 wchan=do_signal_stop syscall=
+   tid=3257195 wchan=do_signal_stop syscall=
+   tid=3257196 wchan=do_signal_stop syscall=
+== pid=3257198 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/libexec/darling/usr/libexec/darling/mldr state=S threads=1
+   wchan=pipe_write
+   tid=3257198 wchan=pipe_write syscall=
+== pid=3257869 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=hrtimer_nanosleep
+   tid=3257869 wchan=hrtimer_nanosleep syscall=
+== pid=3257178 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3257178 wchan=ep_poll syscall=
+   tid=3257194 wchan=futex_wait_queue syscall=
+== pid=3257193 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/libexec/darling/usr/libexec/darling/mldr state=S threads=3
+   wchan=futex_wait_queue
+   tid=3257193 wchan=futex_wait_queue syscall=
+   tid=3257195 wchan=do_select syscall=
+   tid=3257196 wchan=futex_wait_queue syscall=
+== pid=3257178 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3257178 wchan=ep_poll syscall=
+   tid=3257194 wchan=futex_wait_queue syscall=
+== pid=3257193 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/libexec/darling/usr/libexec/darling/mldr state=S threads=3
+   wchan=futex_wait_queue
+   tid=3257193 wchan=futex_wait_queue syscall=
+   tid=3257195 wchan=do_select syscall=
+   tid=3257196 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266758 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/libexec/darling/usr/libexec/darling/mldr state=S threads=1
+   wchan=pipe_write
+   tid=3266758 wchan=pipe_write syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266742 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3266742 wchan=do_poll.constprop.0 syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=
+== pid=3266743 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3266743 wchan=ep_poll syscall=
+   tid=3266759 wchan=futex_wait_queue syscall=

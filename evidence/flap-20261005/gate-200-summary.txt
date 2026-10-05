@@ -1,0 +1,409 @@
+dwdiag: tool=/home/ilyagulya/work/wr-fresh/darling-workspace/tools/darling-debug-runner binary=/home/ilyagulya/work/wr-fresh/darling-workspace/tools/darling-debug-runner/target/release/darling-debug-runner
+TRANSCRIPT=/tmp/dwdiag-transcript-2121891.out
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r1.log
+VERDICT[1/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r2.log
+VERDICT[2/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r3.log
+VERDICT[3/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r4.log
+VERDICT[4/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r5.log
+VERDICT[5/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r6.log
+VERDICT[6/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r7.log
+VERDICT[7/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r8.log
+VERDICT[8/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r9.log
+VERDICT[9/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r10.log
+VERDICT[10/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r11.log
+VERDICT[11/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r12.log
+VERDICT[12/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r13.log
+VERDICT[13/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r14.log
+VERDICT[14/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r15.log
+VERDICT[15/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r16.log
+VERDICT[16/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r17.log
+VERDICT[17/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r18.log
+VERDICT[18/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r19.log
+VERDICT[19/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r20.log
+VERDICT[20/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r21.log
+VERDICT[21/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r22.log
+VERDICT[22/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r23.log
+VERDICT[23/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r24.log
+VERDICT[24/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r25.log
+VERDICT[25/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r26.log
+VERDICT[26/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r27.log
+VERDICT[27/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r28.log
+VERDICT[28/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r29.log
+VERDICT[29/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r30.log
+VERDICT[30/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r31.log
+VERDICT[31/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r32.log
+VERDICT[32/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r33.log
+VERDICT[33/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r34.log
+VERDICT[34/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r35.log
+VERDICT[35/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r36.log
+VERDICT[36/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r37.log
+VERDICT[37/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r38.log
+VERDICT[38/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r39.log
+VERDICT[39/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r40.log
+VERDICT[40/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r41.log
+VERDICT[41/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r42.log
+VERDICT[42/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r43.log
+VERDICT[43/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r44.log
+VERDICT[44/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r45.log
+VERDICT[45/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r46.log
+VERDICT[46/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r47.log
+VERDICT[47/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r48.log
+VERDICT[48/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r49.log
+VERDICT[49/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r50.log
+VERDICT[50/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r51.log
+VERDICT[51/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r52.log
+VERDICT[52/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r53.log
+VERDICT[53/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r54.log
+VERDICT[54/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r55.log
+VERDICT[55/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r56.log
+VERDICT[56/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r57.log
+VERDICT[57/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r58.log
+VERDICT[58/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r59.log
+VERDICT[59/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r60.log
+VERDICT[60/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r61.log
+VERDICT[61/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r62.log
+VERDICT[62/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r63.log
+VERDICT[63/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r64.log
+VERDICT[64/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r65.log
+VERDICT[65/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r66.log
+VERDICT[66/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r67.log
+VERDICT[67/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r68.log
+VERDICT[68/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r69.log
+VERDICT[69/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r70.log
+VERDICT[70/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r71.log
+VERDICT[71/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r72.log
+VERDICT[72/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r73.log
+VERDICT[73/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r74.log
+VERDICT[74/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r75.log
+VERDICT[75/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r76.log
+VERDICT[76/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r77.log
+VERDICT[77/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r78.log
+VERDICT[78/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r79.log
+VERDICT[79/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r80.log
+VERDICT[80/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r81.log
+VERDICT[81/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r82.log
+VERDICT[82/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r83.log
+VERDICT[83/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r84.log
+VERDICT[84/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r85.log
+VERDICT[85/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r86.log
+VERDICT[86/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r87.log
+VERDICT[87/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r88.log
+VERDICT[88/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r89.log
+VERDICT[89/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r90.log
+VERDICT[90/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r91.log
+VERDICT[91/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r92.log
+VERDICT[92/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r93.log
+VERDICT[93/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r94.log
+VERDICT[94/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r95.log
+VERDICT[95/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r96.log
+VERDICT[96/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r97.log
+VERDICT[97/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r98.log
+VERDICT[98/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r99.log
+VERDICT[99/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r100.log
+VERDICT[100/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r101.log
+VERDICT[101/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r102.log
+VERDICT[102/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r103.log
+VERDICT[103/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r104.log
+VERDICT[104/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r105.log
+VERDICT[105/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r106.log
+VERDICT[106/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r107.log
+VERDICT[107/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r108.log
+VERDICT[108/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r109.log
+VERDICT[109/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r110.log
+VERDICT[110/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r111.log
+VERDICT[111/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r112.log
+VERDICT[112/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r113.log
+VERDICT[113/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r114.log
+VERDICT[114/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r115.log
+VERDICT[115/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r116.log
+VERDICT[116/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r117.log
+VERDICT[117/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r118.log
+VERDICT[118/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r119.log
+VERDICT[119/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r120.log
+VERDICT[120/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r121.log
+VERDICT[121/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r122.log
+VERDICT[122/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r123.log
+VERDICT[123/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r124.log
+VERDICT[124/200] mode=basic verdict=BOOT-FAIL (shellspawn) denied=0 created=0 rc=?
+VERDICT-STAGE workload=absent last-guest=[dwdiag-env prefix=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc mldr=c952d6498d91 libsystem_ke last-published-op=<none> last-served-op=<none> serviced=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r125.log
+VERDICT[125/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r126.log
+VERDICT[126/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r127.log
+VERDICT[127/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r128.log
+VERDICT[128/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r129.log
+VERDICT[129/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r130.log
+VERDICT[130/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r131.log
+VERDICT[131/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r132.log
+VERDICT[132/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r133.log
+VERDICT[133/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r134.log
+VERDICT[134/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r135.log
+VERDICT[135/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r136.log
+VERDICT[136/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r137.log
+VERDICT[137/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r138.log
+VERDICT[138/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r139.log
+VERDICT[139/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r140.log
+VERDICT[140/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r141.log
+VERDICT[141/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r142.log
+VERDICT[142/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r143.log
+VERDICT[143/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r144.log
+VERDICT[144/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r145.log
+VERDICT[145/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r146.log
+VERDICT[146/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r147.log
+VERDICT[147/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r148.log
+VERDICT[148/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r149.log
+VERDICT[149/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r150.log
+VERDICT[150/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r151.log
+VERDICT[151/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r152.log
+VERDICT[152/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r153.log
+VERDICT[153/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r154.log
+VERDICT[154/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r155.log
+VERDICT[155/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r156.log
+VERDICT[156/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r157.log
+VERDICT[157/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r158.log
+VERDICT[158/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r159.log
+VERDICT[159/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r160.log
+VERDICT[160/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r161.log
+VERDICT[161/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r162.log
+VERDICT[162/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r163.log
+VERDICT[163/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r164.log
+VERDICT[164/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r165.log
+VERDICT[165/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r166.log
+VERDICT[166/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r167.log
+VERDICT[167/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r168.log
+VERDICT[168/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r169.log
+VERDICT[169/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r170.log
+VERDICT[170/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r171.log
+VERDICT[171/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r172.log
+VERDICT[172/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r173.log
+VERDICT[173/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r174.log
+VERDICT[174/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r175.log
+VERDICT[175/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r176.log
+VERDICT[176/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r177.log
+VERDICT[177/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r178.log
+VERDICT[178/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r179.log
+VERDICT[179/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r180.log
+VERDICT[180/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r181.log
+VERDICT[181/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r182.log
+VERDICT[182/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r183.log
+VERDICT[183/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r184.log
+VERDICT[184/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r185.log
+VERDICT[185/200] mode=basic verdict=HANG (watchdog) denied=0 created=0 rc=?
+VERDICT-STAGE workload=absent last-guest=[dwdiag-env prefix=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc mldr=c952d6498d91 libsystem_ke last-published-op=<none> last-served-op=<none> serviced=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r186.log
+VERDICT[186/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r187.log
+VERDICT[187/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r188.log
+VERDICT[188/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r189.log
+VERDICT[189/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r190.log
+VERDICT[190/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r191.log
+VERDICT[191/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r192.log
+VERDICT[192/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r193.log
+VERDICT[193/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r194.log
+VERDICT[194/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r195.log
+VERDICT[195/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r196.log
+VERDICT[196/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r197.log
+VERDICT[197/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r198.log
+VERDICT[198/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r199.log
+VERDICT[199/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-2121891-basic-r200.log
+VERDICT[200/200] mode=basic verdict=PASS denied=0 created=0 rc=0
+ESSENTIALS 402 line(s) from /tmp/dwdiag-transcript-2121891.out
+gate rc=1
+    198 verdict=PASS denied
+      1 verdict=HANG (watchdog) denied
+      1 verdict=BOOT-FAIL (shellspawn) denied

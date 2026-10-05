@@ -1,0 +1,6 @@
+dwdiag: tool=/home/ilyagulya/work/wr-fresh/darling-workspace/tools/darling-debug-runner binary=/home/ilyagulya/work/wr-fresh/darling-workspace/tools/darling-debug-runner/target/release/darling-debug-runner
+TRANSCRIPT=/tmp/dwdiag-transcript-2004497.out
+LOG=/home/ilyagulya/work/wr-fresh/hunt/logs-flap/dwdiag-verdict-2004497-basic.log
+VERDICT mode=basic verdict=BOOT-FAIL (shellspawn) denied=0 created=0 rc=? :: <no result line>
+VERDICT-STAGE workload=absent last-guest=[dwdiag-env prefix=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc mldr=c952d6498d91 libsystem_ke last-published-op=<none> last-served-op=<none> serviced=0
+ESSENTIALS 3 line(s) from /tmp/dwdiag-transcript-2004497.out

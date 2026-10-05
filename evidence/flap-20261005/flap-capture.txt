@@ -1,0 +1,24 @@
+=== pid=2005772 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver
+    State:	S (sleeping)
+    Threads:	2
+    wchan=ep_poll
+    tid=2005772 wchan=ep_poll syscall=
+    tid=2005788 wchan=futex_wait_queue syscall=
+    fd lrwx------ 1 ilyagulya ilyagulya 64 Oct  5 11:54 14 -> socket:[4152767]
+    fd lrwx------ 1 ilyagulya ilyagulya 64 Oct  5 11:54 16 -> anon_inode:[eventfd]
+    fd lrwx------ 1 ilyagulya ilyagulya 64 Oct  5 11:54 17 -> anon_inode:[eventfd]
+    fd lrwx------ 1 ilyagulya ilyagulya 64 Oct  5 11:54 18 -> /dev/pts/0
+    fd l-wx------ 1 ilyagulya ilyagulya 64 Oct  5 11:54 2 -> /home/ilyagulya/work/wr-fresh/hunt/logs-flap/dwdiag-verdict-2004497-basic.log
+    fd lrwx------ 1 ilyagulya ilyagulya 64 Oct  5 11:54 20 -> /dev/pts/0
+    fd lrwx------ 1 ilyagulya ilyagulya 64 Oct  5 11:54 3 -> socket:[4152765]
+    fd l-wx------ 1 ilyagulya ilyagulya 64 Oct  5 11:54 4 -> /home/ilyagulya/work/wr-fresh/hunt/runs-flap/run-88.txt
+    fd lr-x------ 1 ilyagulya ilyagulya 64 Oct  5 11:54 5 -> /dev/urandom
+    fd lr-x------ 1 ilyagulya ilyagulya 64 Oct  5 11:53 6 -> /home/ilyagulya/work/wr-fresh/prefix-ring-a4dc
+    fd lr-x------ 1 ilyagulya ilyagulya 64 Oct  5 11:54 8 -> /home/ilyagulya/work/wr-fresh/prefix-ring-a4dc.workdir
+    fd lrwx------ 1 ilyagulya ilyagulya 64 Oct  5 11:54 9 -> anon_inode:[eventfd]
+=== also the harness/launcher processes of this prefix (by cmdline) ===
+  pid=2005772 wchan=ep_poll cmd=darlingserver 6 3 prefix-ring-a4dc 8 1000 1000 10 0 
+dwdiag: tool=/home/ilyagulya/work/wr-fresh/darling-workspace/tools/darling-debug-runner binary=/home/ilyagulya/work/wr-fresh/darling-workspace/tools/darling-debug-runner/target/release/darling-debug-runner
+error: a value is required for '--log <LOG>' but none was supplied
+
+For more information, try '--help'.
