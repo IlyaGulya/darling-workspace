@@ -262,6 +262,21 @@ def check_g_the_user_namespace_precondition_is_named() -> None:
     print("G ok: an unusable-namespace host is named up front instead of timing out")
 
 
+def check_h_the_inherited_nofile_is_recorded() -> None:
+    """A run must name the limit it passes on, and must not fail when the host cannot report one."""
+
+    soft, hard = darling_bootstrap.inherited_nofile_limits(
+        getrlimit=lambda _resource_id: (4096, 1048576)
+    )
+    assert (soft, hard) == (4096, 1048576), (soft, hard)
+
+    def refuse(_resource_id):
+        raise OSError("no such limit")
+
+    assert darling_bootstrap.inherited_nofile_limits(getrlimit=refuse) == (None, None)
+    print("H ok: the inherited NOFILE soft/hard is recorded, and an unreadable one is not fatal")
+
+
 def main() -> int:
     check_a_plan_declares_the_accepted_variant()
     check_b_a_source_selection_is_refused()
@@ -270,6 +285,7 @@ def main() -> int:
     check_e_ring_defines_match_the_manifest_provider()
     check_f_deploy_set_and_environment_match_the_manifest_provider()
     check_g_the_user_namespace_precondition_is_named()
+    check_h_the_inherited_nofile_is_recorded()
     print("PASS darling-bootstrap-contract")
     return 0
 

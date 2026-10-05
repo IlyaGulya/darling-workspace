@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import resource
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -132,6 +133,25 @@ def unprivileged_userns_problem(probe=None, sysctl_path: Path = _APPARMOR_USERNS
         "relax the restriction (for example: sysctl -w kernel.apparmor_restrict_unprivileged_userns=0) "
         "and verify with `unshare --user --map-root-user true`."
     )
+
+
+def inherited_nofile_limits(getrlimit=None) -> tuple[int | None, int | None]:
+    """The NOFILE soft/hard limit the bootstrap passes on to the runtime it starts.
+
+    Recorded because every boot-based NOFILE measurement depends on it: the server inherits this, keeps or
+    raises it, and restores it for its children, so a run whose receipt does not name it cannot be compared
+    with another run. A host that cannot report the limit is not an error -- the pair is then absent.
+    """
+
+    if getrlimit is None:
+        def getrlimit(resource_id):
+            return resource.getrlimit(resource_id)
+
+    try:
+        soft, hard = getrlimit(resource.RLIMIT_NOFILE)
+    except (OSError, ValueError):
+        return None, None
+    return soft, hard
 
 
 class BootstrapPlan:
@@ -406,6 +426,14 @@ class DarlingBootstrap(PrefixLifecycleMixin, RuntimePlanMixin, WestCommand):
             self.die(f"--prefix parent is not a directory: {prefix.parent}")
         self._prefix_env = dict(plan.launcher_env)
 
+        # The limit the runtime will inherit, named before anything runs: every boot-based NOFILE
+        # measurement is relative to it, and a run that fails must still say what it passed on.
+        inherited_soft, inherited_hard = inherited_nofile_limits()
+        self.inf(
+            f"inherited NOFILE soft/hard limit passed to the runtime: "
+            f"{inherited_soft}/{inherited_hard}"
+        )
+
         # 0. the host can actually boot a rootless prefix at all.
         userns_problem = unprivileged_userns_problem()
         if userns_problem is not None:
@@ -526,6 +554,8 @@ class DarlingBootstrap(PrefixLifecycleMixin, RuntimePlanMixin, WestCommand):
             "receipt-valid": not receipt_problems and receipt is not None,
             "runtime-doctor": "PASS" if runtime_doctor_ok else "FAIL",
             "smoke": "PASS",
+            "inherited-nofile-soft": inherited_soft,
+            "inherited-nofile-hard": inherited_hard,
         }
         if args.json:
             print(json.dumps(summary, sort_keys=True))
@@ -540,7 +570,8 @@ class DarlingBootstrap(PrefixLifecycleMixin, RuntimePlanMixin, WestCommand):
                 f"  receipt:   {receipt_file}\n"
                 f"  smoke:     PASS ({SMOKE_MARKER})\n"
                 f"  receipt:   {'valid' if not receipt_problems else 'INVALID'}\n"
-                f"  runtime:   {'doctor PASS' if runtime_doctor_ok else 'doctor FAIL'}"
+                f"  runtime:   {'doctor PASS' if runtime_doctor_ok else 'doctor FAIL'}\n"
+                f"  inherited NOFILE soft/hard: {inherited_soft}/{inherited_hard}"
             )
         if not runtime_doctor_ok:
             self.die(
