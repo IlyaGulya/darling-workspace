@@ -969,3 +969,28 @@ the older loader that the newer source has already changed. The corrective order
    correspondence test, independent of any cache key);
 3. re-run the focused contracts, 9/9 and the full 200-boot gate on those artifacts, recording the workspace SHA and
    the RUN-ENV identities.
+
+### Refinement: the receipt cannot detect the mismatch, and the forest that built it is gone (2026-10-05)
+
+Two more measured facts about the defect above, both of which say the receipt is not the authority it reads as:
+
+1. **The receipt mixes two identities.** `build_receipt()` composes `workspace` and `components` from the CALLING
+   workspace (`component_identity(topdir, ...)`), while `artifacts[]` records whatever `(source, destination)` pairs
+   the deploy handed it. When those artifacts came from a separately materialized forest, the receipt asserts the
+   workspace's revisions over bytes that forest did not produce -- which is exactly the observed case: the receipt
+   names `darling 8bc594dfd5` (whose `threads.c` contains the diagnostics, verified with `git show`, worktree clean,
+   sha256 `e2516fcf5f5c…`) while the deployed loader contains none of them. `deployed_sha256 == source_sha256` proves
+   only that the copy is faithful, not that the SOURCE is the pinned revision.
+2. **The forest it built from no longer exists.** The receipt's source path is
+   `.west-test/runtime-evidence/.inflight-hqrptnav/build/src/startup/mldr/mldr`, an inflight unit discarded after the
+   run; every evidence unit surviving in that workspace is `status: failed`
+   (`runtime-evidence-20261004T162547Z`, `…162807Z`, `…163056Z`, `runtime-evidence-20261005T075651Z`), and the
+   materialized forests they still hold DO contain the diagnostics (`darling` at `8bc594dfd`, markers present). So
+   the mismatch cannot be reconstructed from the surviving evidence, and no unit in that workspace records a
+   successful bootstrap.
+
+Both facts are why the correction below uses a **direct correspondence test** (does the deployed artifact contain a
+literal that only the pinned source compiles in?) instead of trusting the receipt, and why the from-source arm now
+runs with the two documented conditions together -- `GIT_LFS_SKIP_SMUDGE=1` *and* `WEST_RUNTIME_BUILD_CACHE=off`:
+the first omission failed the materializer on `src/external/swift`'s LFS objects
+(`fatal: libswiftAVFoundation.dylib: smudge filter lfs failed`), which is the same wall the 2026-10-04 notes hit.
