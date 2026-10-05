@@ -1,0 +1,43 @@
+diff --git a/src/startup/darling.c b/src/startup/darling.c
+index 1b287ad2c..2eec9f6d9 100644
+--- a/src/startup/darling.c
++++ b/src/startup/darling.c
+@@ -810,6 +810,38 @@ int connectToShellspawn(pid_t pidInit)
+ 				strerror(saved_errno));
+ 			exit(1);
+ 		}
++
++		// MEASURED (dar-jj6s): this directory is retained by descriptor so a replaced socket is not
++		// followed, but the guest can replace var/run itself during boot. The retained descriptor then
++		// points at an unlinked directory, every attempt sees ENOENT, and the launcher times out with
++		// "Rootless shellspawn did not become ready" while the live socket sits in the new directory --
++		// captured live as the launcher looping here while shellspawn listened in select(). If the path
++		// exists but the retained directory cannot see it, re-open the directory and retry.
++		{
++			struct stat pathStatus;
++			struct stat retainedStatus;
++			bool retainedMissing = (fstatat(socketDirectoryFD, "shellspawn.sock",
++					&retainedStatus, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT);
++			char statError[512] = {0};
++			if (retainedMissing &&
++				darling_runtime_mode_stat_relative(g_runtimePrefix,
++					"var/run/shellspawn.sock", &pathStatus, statError,
++					sizeof(statError)) == 0) {
++				int reopened = darling_runtime_mode_open_relative_directory(
++					g_runtimePrefix, "var/run", false, error, sizeof(error));
++				if (reopened >= 0) {
++					close(socketDirectoryFD);
++					socketDirectoryFD = reopened;
++					if (snprintf(addr.sun_path, sizeof(addr.sun_path),
++							"/proc/self/fd/%d/shellspawn.sock",
++							socketDirectoryFD) >= (int)sizeof(addr.sun_path)) {
++						close(socketDirectoryFD);
++						fprintf(stderr, "Retained shellspawn socket path is too long\n");
++						exit(1);
++					}
++				}
++			}
++		}
+ 		int sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+ 		if (sockfd == -1)
+ 		{
