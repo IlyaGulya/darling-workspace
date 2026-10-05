@@ -74,6 +74,12 @@ problem rows in the runtime evidence archive's `diagnostics/` directory before
 rollback; follow the artifact path reported by the failure handler.
 
 For the four supported scenarios, use `mise run dw dev run` below.
+`mise run west darling-bootstrap --prefix P --build-dir B` fills a prefix from an
+explicitly configured build directory and reads no runtime profile: the source
+state is the West manifest's pins, the build variant is the one `B` was
+configured with, and the plan it reads (`testkit/darling-bootstrap.yml`) selects
+no revision. See `docs/test-infra.md`, "Direct bootstrap from an explicit build
+directory".
 Advanced `mise run west darling-build` is a
 doctor-gated operator build interface, with `--deploy` for its supported install
 path. Do not bypass a failing gate to make a run proceed or refresh
