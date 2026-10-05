@@ -1052,3 +1052,44 @@ and is re-opened only if it reproduces on the actual manifest Ring product.
 Product fixes carried into the bridge commits that have their own deterministic host contracts
 (`dserver_interrupt_resume_tests` etc.) keep that status: **host-contract verified, Ring runtime validation
 pending**. Any claim that rested only on the ring-OFF runtime is narrowed to what it actually measured.
+
+## Ring acceptance checkpoint: the process-control slot wedge is fixed and re-measured (2026-10-05)
+
+Workspace `a4dc166cb0620c4dd54ee96334f204dd83c6acd9` (branch `change/ring-reintegration-v1`), profile
+`manifest-ring-baseline`, prefix `prefix-ring-a4dc`, runtime built with `WEST_RUNTIME_BUILD_CACHE=off`.
+
+RULES THIS CHECKPOINT ADDS (measured, not assumed):
+
+* A process-control give-up must RETURN a spent slot and must NOT take back a slot the server owns:
+  release is the plain store when `reply_state != CLAIMED`, and no store at all when it IS claimed. A
+  compare-and-swap release from PENDING alone leaves the slot at DONE (measured 12/12 BOOT-FAIL), and
+  the loader's two give-up sites carried exactly that CAS -- the wedge below.
+* The claim policy stays the tree's own (IDLE/DONE alternation at the main claim, IDLE at the early
+  sites). Widening every claim to accept DONE is not required for the fix and is not measured.
+* A verdict drawn from a runtime whose bytes do not correspond to the named source is not evidence.
+  Before quoting a verdict, grep the DEPLOYED loader for its own diagnostics (`checkin-republish`,
+  `plane-wake`, `release-drops-pending`, `checkin-diag`, `mldr-dthread pre`, `dthread-mask`) and build
+  with `WEST_RUNTIME_BUILD_CACHE=off` when the correspondence is in doubt.
+
+DEFECT: the loader's give-up release CAS raced the server's completion store (`request_state = DONE`),
+lost, and left the slot at DONE with no publisher left to read it; every later plane user in that
+process then found the slot unclaimable, fell back to the datagram route and aborted. Measured
+signature: `dring-plane-attach no-slot` -> `dring-attach-fail plane-unanswered-no-uds` ->
+`rpc-socket-DENIED call=checkin denied=1` -> ABRT, with the page at `req=0x2 rep=0x2` and `pub=0`.
+
+FIX: darling `9f6fd3373` (the two `mldr` give-up sites), manifest `a4dc166c`.
+
+VALID RUNTIME EVIDENCE (fresh pinned prefixes, same profile and workload):
+
+| measurement | result |
+| --- | --- |
+| `basic 20` before (workspace 44b580f0, mldr 8b45658066d7) | 3/3 CRASH ABRT, denied=1, rc=134 |
+| `basic 20` after (workspace a4dc166c) | 3/3 PASS, denied=0 created=0, rc=0 |
+| 9-mode suite, first attempt, ROW-RETRY 0, require-zero-creations | 8/9 PASS; every row that ran had denied=0 created=0; the failure is `fsview` BOOT-FAIL (shellspawn) |
+| boot gate, 200 boots, one prefix boot per run | 197 PASS, 3 HANG (watchdog), each with the shellspawn signature |
+
+REMAINING BLOCKER (`dar-jj6s`): the boot flap. The run stalls after
+`[shellspawn-step] after-setup-socket (bind+listen done)`; shellspawn's next step is
+`listenForConnections()`, so the readiness handshake is what is lost. The gate criterion is 0 HANG, so
+this stays open until it is reproduced with live state and fixed.
+
