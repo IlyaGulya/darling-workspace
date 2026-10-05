@@ -227,6 +227,41 @@ def check_f_deploy_set_and_environment_match_the_manifest_provider() -> None:
     )
 
 
+def check_g_the_user_namespace_precondition_is_named() -> None:
+    """A host that refuses unprivileged user namespaces must be named, not timed out.
+
+    Measured: such a host turned every bootstrap -- including a prefix that had booted earlier the same
+    day -- into a shellspawn readiness timeout whose cause was only in the kernel log.
+    """
+
+    handle = tempfile.NamedTemporaryFile("w", suffix="sysctl", prefix="userns-", delete=False)
+    handle.write("1\n")
+    handle.close()
+    problem = darling_bootstrap.unprivileged_userns_problem(
+        probe=lambda: (1, "unshare: write failed /proc/self/uid_map: Operation not permitted"),
+        sysctl_path=Path(handle.name),
+    )
+    assert problem is not None and "user namespaces are unavailable" in problem, problem
+    assert "apparmor_restrict_unprivileged_userns=1" in problem, problem
+    assert "mount and PID namespaces" in problem, problem
+    assert (
+        darling_bootstrap.unprivileged_userns_problem(
+            probe=lambda: (0, ""), sysctl_path=Path(handle.name)
+        )
+        is None
+    )
+    # A permissive sysctl must not turn a failing probe into success.
+    permissive = tempfile.NamedTemporaryFile("w", suffix="sysctl", prefix="userns-", delete=False)
+    permissive.write("0\n")
+    permissive.close()
+    problem = darling_bootstrap.unprivileged_userns_problem(
+        probe=lambda: (1, "unshare: Operation not permitted"),
+        sysctl_path=Path(permissive.name),
+    )
+    assert problem is not None and "unavailable" in problem, problem
+    print("G ok: an unusable-namespace host is named up front instead of timing out")
+
+
 def main() -> int:
     check_a_plan_declares_the_accepted_variant()
     check_b_a_source_selection_is_refused()
@@ -234,6 +269,7 @@ def main() -> int:
     check_d_the_configure_gate_is_real()
     check_e_ring_defines_match_the_manifest_provider()
     check_f_deploy_set_and_environment_match_the_manifest_provider()
+    check_g_the_user_namespace_precondition_is_named()
     print("PASS darling-bootstrap-contract")
     return 0
 
