@@ -817,8 +817,12 @@ waited 60s of at most 60s
 ```
 
 `[pcreate trap-enter]` is `libpthread/src/pthread.c` immediately before `__bsdthread_create(...)`
-(the guest thread-create trap): the sender thread `basic 20` creates per iteration never got its
-trap answered, and the workload then produced no result line at all. No `rpc-socket-DENIED`, no
+(the guest thread-create trap). The SUPPORTED conclusion is exactly this: **`__bsdthread_create`
+did not return before the watchdog**. Where inside it the transition was lost is NOT established
+by this run: the failing run did not have `DARLING_GUEST_CREATE_TRACE` enabled, so the loader-entry
+discriminator (`[bsc pre-loader ...]`, `[bsc post-loader ...]`) was off and the absence of loader
+marks cannot separate "the trap never reached the loader" from "the loader never printed".
+The workload produced no result line at all. No `rpc-socket-DENIED`, no
 `dring-uds-reason`, no stall-dump body in that log, so the failure is SILENT on the guest side --
 the same signature class as the Bead's separately classified `stress_mixed 20` residual (a plane
 request released while still pending on a guest path).
