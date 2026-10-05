@@ -14,7 +14,7 @@ from typing import Any
 
 import yaml
 
-from test_runtime_identity import runtime_identity
+from test_runtime_identity import MANIFEST_SOURCE_MODE, runtime_identity
 import test_runtime_cache
 
 
@@ -33,11 +33,6 @@ ROOTLESS_TOOLCHAIN_TARGET = "rootless_toolchain"
 ROOTLESS_TOOLCHAIN_MANIFEST = "darling-rootless-toolchain.json"
 GUEST_TOOLCHAIN_RESOURCE = "darling-command-line-tools"
 COMPILER_LAUNCHERS = frozenset({"ccache"})
-# Runtime profile source selection. `source-mode: manifest` takes the product source from the current West manifest's
-# pins (validated before any build); `source-profile: <name>` keeps the legacy patch/profile stack. The two are
-# mutually exclusive, and only the SOURCE PRODUCER differs -- build, closure resolution, prefix transaction,
-# launcher environment and the receipt are the same code for both.
-MANIFEST_SOURCE_MODE = "manifest"
 # Source owners whose patched revisions can provide Mach-O libraries in the
 # bootstrap closure. A materialized runtime forest must not leave them as live
 # symlinks, or it can build an unpatched provider while claiming profile parity.

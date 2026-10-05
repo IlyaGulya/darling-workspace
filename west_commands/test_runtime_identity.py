@@ -12,6 +12,11 @@ import yaml
 
 from patch_stack_lock_first import profile_dependency_chain
 
+# Runtime profile source selection: `source-mode: manifest` takes the product source from the current West
+# manifest's pins instead of the legacy patch/profile stack. The constant lives in this leaf module so both the
+# identity writer and the runtime planner can use it without an import cycle.
+MANIFEST_SOURCE_MODE = "manifest"
+
 
 def _sha256_file(path: Path) -> str | None:
     if not path.is_file() or path.is_symlink():
@@ -75,19 +80,24 @@ def runtime_identity(
         str(module): _git_head(topdir / str(module))
         for module in source_modules
     }
+    # A manifest-native provider applies NO patchset, so it records no patchset. Asking the patch layer for the
+    # dependency chain of a source mode it does not use is how the sentinel name reached a patch-profile loader and
+    # failed the bootstrap with "profile metadata path must be real and contained".
+    source_mode = definition.get("source-mode")
     patchsets = []
-    for profile in profile_dependency_chain(manifest_repo, definition["source-profile"]):
-        path = manifest_repo / "patches" / profile / "patches.yml"
-        patchsets.append({
-            "profile": profile,
-            "sha256": _sha256_file(path),
-            "patches": _patch_records(path),
-        })
+    if source_mode != MANIFEST_SOURCE_MODE:
+        for profile in profile_dependency_chain(manifest_repo, definition["source-profile"]):
+            path = manifest_repo / "patches" / profile / "patches.yml"
+            patchsets.append({
+                "profile": profile,
+                "sha256": _sha256_file(path),
+                "patches": _patch_records(path),
+            })
     runtime_manifest = manifest_repo / "testkit/runtime-profiles.yml"
     lock = manifest_repo / "west.lock.yml"
     if not lock.is_file():
         lock = manifest_repo / "west.yml"
-    return {
+    identity = {
         "schema": 2,
         "profile": profile_name,
         "source-profile": definition.get("source-profile"),
@@ -98,3 +108,15 @@ def runtime_identity(
         "runtime-profile-definition-sha256": _canonical_sha256(definition),
         "launcher-sha256": _sha256_file(launcher),
     }
+    if source_mode == MANIFEST_SOURCE_MODE:
+        # The evidence a manifest-native runtime needs: which workspace revision and provider produced it, what each
+        # Ring switch was set to at build time (so a RING claim can never rest on the provider's NAME), and what the
+        # manifest resolved to at that moment.
+        identity["source-mode"] = MANIFEST_SOURCE_MODE
+        identity["source-profile"] = None
+        identity["manifest-commit"] = _git_head(manifest_repo)
+        identity["ring-defines"] = {
+            key: definition.get("cmake-defines", {}).get(key)
+            for key in ("DARLING_RING_TRANSPORT", "DSERVER_RING_TRANSPORT")
+        }
+    return identity
