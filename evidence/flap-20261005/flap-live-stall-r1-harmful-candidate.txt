@@ -1,0 +1,86 @@
+### STALL DETECTED in /home/ilyagulya/work/wr-fresh/hunt/logs-gate/dwdiag-verdict-3527733-basic-r1.log at 13:16:52
+### ring: the last 45 one-second snapshots
+== pid=3526598 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darlingserver state=S threads=2
+   wchan=ep_poll
+   tid=3526598 wchan=ep_poll syscall=
+   tid=3526614 wchan=futex_wait_queue syscall=
+== pid=3526613 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/libexec/darling/usr/libexec/darling/mldr state=S threads=3
+   wchan=futex_wait_queue
+   tid=3526613 wchan=futex_wait_queue syscall=
+   tid=3526615 wchan=do_select syscall=
+   tid=3526616 wchan=futex_wait_queue syscall=
+== pid=3526618 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/libexec/darling/usr/libexec/darling/mldr state=S threads=1
+   wchan=pipe_write
+   tid=3526618 wchan=pipe_write syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
+== pid=3532322 exe=/home/ilyagulya/work/wr-fresh/prefix-ring-a4dc/bin/darling state=S threads=1
+   wchan=do_poll.constprop.0
+   tid=3532322 wchan=do_poll.constprop.0 syscall=
