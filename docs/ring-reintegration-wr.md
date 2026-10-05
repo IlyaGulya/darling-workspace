@@ -887,3 +887,85 @@ with the live-state capture ready. The phase that stalls is then named by the fr
 is ambiguous the same hunt repeats with the workload's own `RING_MACH_TEST_ITER_TRACE=1` hatch, which prints the
 per-iteration phase (`make_port`, `port=`, `created`, `received`, `joined`, `drop_enter`) -- evidence only, never a
 verdict.
+
+### Two instrument defects that made the first two readings of this HANG wrong (2026-10-05)
+
+**1. The `[pcreate ...]` marks are budgeted at 4096 per process, so a log that stops mid-cycle is the budget.**
+`libpthread/src/pthread.c`'s `__pcreate_mark` does `if (__atomic_fetch_add(&g_marks, 1, ...) >= 4096) return;`.
+The marks are 10 per `basic` iteration (5 `[pcreate ...]` + 5 `[add ...]`), so `basic 2000` exhausts the budget at
+about iteration 410 and the log's LAST LINE is then wherever the budget ran out -- not where the workload stalled.
+I read "the stall is inside `__pthread_add_thread`" out of exactly that artifact before checking the budget, and the
+code's own comment warns about the same class at an earlier bound of 48. Any reading of a long run's last mark must
+first compare the mark count with 4096.
+
+**2. The freeze snapshot was taken AFTER the harness's own kill, so it cannot show the server's stall-time state.**
+The harness's launcher command carries `timeout 120`; the tool's watchdog fires at 60 s and returns, so a capture
+taken in the next seconds is in time, while one taken minutes later (my first attempt, because the capture script
+had a syntax error and never ran) sees only the aftermath: the workload still blocked, `darlingserver` already
+`state=Z` (zombie), one `mldr` from the launcher still alive, the rest gone. What such a late capture still proves:
+
+```text
+workload (guest-declared host_pid 724048)
+    Threads: 1                     <-- NO second host thread exists at the stall
+    single thread: state=S  wchan=__skb_wait_for_more_packets   (a socket receive)
+    fds: exactly ONE socket, at fd 1048575 -- the top of the fd table, i.e. a loader-reserved number
+         socket:[1387560] = AF_UNIX SOCK_DGRAM, abstract name @bdc2f, scm_fds 0
+```
+
+So at the stall the workload has exactly one thread, and it is waiting for a datagram on a single per-process
+abstract DGRAM socket. Whether the *create* or the *receive* is what stalled is NOT established by this snapshot
+(the marks cannot say, for reason 1 above), and the server's own state is lost for reason 2 -- which is why the
+next reproduction is captured within seconds by the hunt itself rather than by hand.
+
+`__skb_wait_for_more_packets` is the AF_UNIX datagram receive wait, and `fd 1048575` is the loader's own reserved
+fd (mldr reserves lane descriptors from the top of the fd table with `F_DUPFD_CLOEXEC`, mldr.c:1375), so the
+descriptor is one of the process's own transport descriptors -- not an application fd.
+
+## PROVENANCE DEFECT: the deployed runtime does not correspond to the source revision the evidence names (2026-10-05)
+
+While preparing the decision table for the HANG I grepped the **deployed** loader for its own diagnostics and found
+none of them. Measured, same tree, same hour:
+
+| literal in `darling/src/startup/mldr/elfcalls/threads.c` | source | object `mldr.dir/elfcalls/threads.c.o` (16:22) | linked `build/runtime/src/startup/mldr/mldr` | **deployed `<prefix>/libexec/darling/usr/libexec/darling/mldr`** |
+| --- | --- | --- | --- | --- |
+| `checkin-republish` | 1 | 1 | 1 | **0** |
+| `plane-wake` | 3 | 1 | 1 | **0** |
+| `release-drops-pending` | 2 | 2 | 1 | **0** |
+| `checkin-diag` | 1 | 1 | 1 | **0** |
+| `mldr-dthread pre` | 1 | 1 | 1 | **0** |
+| `dthread-mask` | 1 | 1 | 1 | **0** |
+| `no-transport (declined)` | 1 | 1 | 1 | **0** |
+
+None of those statements is inside a preprocessor region (the file's only `#if`s are lines 99, 614-675, all
+unrelated), and the deployed binary is not stripped of string literals: it still contains `mldr is part of Darling`,
+the DWARF path `../source/darling/src/startup/mldr/elfcalls/threads.c`, and 70 other `mldr` strings. So the code that
+prints those lines is genuinely ABSENT from the deployed loader.
+
+The deploy receipt names that loader's origin, and it is NOT the WR build tree:
+
+```text
+dest  : <prefix>/libexec/darling/usr/libexec/darling/mldr
+source: /home/ilyagulya/work/wr-fresh/darling-workspace/.west-test/runtime-evidence/.inflight-hqrptnav/build/src/startup/mldr/mldr
+source_sha256 : 9855118cfc3a7d7c        deployed_sha256: 9855118cfc3a7d7c     (self-consistent)
+receipt components: darling revision 8bc594dfd5654568623cd09deb3b2ce7dc4b452b  (dirty: True)
+receipt workspace:  manifest_commit 6b1f32a1b489521088267ebb6af1887a78c821d4
+```
+
+The receipt is internally consistent (deployed bytes == the built bytes it copied) and the WR source tree at
+`8bc594dfd5` DOES contain the diagnostics, with the file clean in git. The materialization it copied from
+(`.west-test/runtime-evidence/.inflight-*`) is deleted by design after the run, and its loader content disagrees
+with that revision -- the signature of a **stale reuse**: the runtime was built from an older source identity and
+deployed as if it were the current one. (The 2026-10-04 bootstrap notes already recorded that the canonical
+bootstrap's cache-REUSE path was broken and needed `WEST_RUNTIME_BUILD_CACHE=off`; this is that defect's blast
+radius: the deployed runtime.)
+
+CONSEQUENCE, stated plainly: the 9/9 suite and the 199/200 boot gate were measured on a loader that is NOT the one
+the pinned source builds. They remain valid measurements OF THOSE BYTES (the RUN-ENV hashes and receipt are
+self-consistent), but they are not evidence about the pinned source, and the HANG being hunted may be a defect of
+the older loader that the newer source has already changed. The corrective order is therefore:
+
+1. rebuild the runtime from the current pinned source with `WEST_RUNTIME_BUILD_CACHE=off`;
+2. assert the deployed content corresponds to the source by the same literal check used above (a cheap, direct
+   correspondence test, independent of any cache key);
+3. re-run the focused contracts, 9/9 and the full 200-boot gate on those artifacts, recording the workspace SHA and
+   the RUN-ENV identities.
