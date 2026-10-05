@@ -84,11 +84,20 @@ def _git_output(
 
 
 def _matches_materialized_project(entry: str, nested_project_paths: set[str]) -> bool:
-    """Whether an untracked entry is simply ANOTHER materialized West project."""
+    """Whether an untracked entry is simply ANOTHER materialized West project.
+
+    Both directions count: git reports the TOP-LEVEL untracked directory when a
+    nested project is the only thing inside it (MEASURED: `docs/` for the project
+    at `docs/darling-docs`), and it can also report a file inside one.
+    """
 
     entry = entry.rstrip("/")
     for nested in nested_project_paths:
-        if entry == nested or entry.startswith(f"{nested}/"):
+        if (
+            entry == nested
+            or entry.startswith(f"{nested}/")
+            or nested.startswith(f"{entry}/")
+        ):
             return True
     return False
 
@@ -794,9 +803,15 @@ class RuntimeSourceMaterializer:
         projects: list[tuple[str, str, Path, bool]] = []
         nested_project_paths: dict[str, set[str]] = {}
         all_project_paths: list[str] = []
+        manifest_repo_path = str(host.manifest.repo_abspath)
         for project in host.manifest.projects:
             path = Path(project.abspath)
             name = str(project.name)
+            if name == "manifest" or str(path) == manifest_repo_path:
+                # The workspace repository is the REVISION ARBITER, not one of the pinned components: its own
+                # revision is symbolic (`HEAD`), and its identity is recorded separately as workspace-commit. Its
+                # tracked content must still be clean for a canonical run, checked below.
+                continue
             all_project_paths.append(str(project.path))
             is_product = (
                 str(project.path) in product_modules or name in product_modules
@@ -824,7 +839,20 @@ class RuntimeSourceMaterializer:
             )
         workspace_repo = Path(host.manifest.repo_abspath)
         workspace_commit = _git_output(workspace_repo, "rev-parse", "HEAD") or ""
-        workspace_dirty = bool(_git_output(workspace_repo, "status", "--porcelain"))
+        workspace_status = _git_output(workspace_repo, "status", "--porcelain") or ""
+        workspace_dirty = bool(workspace_status)
+        workspace_tracked_changes = [
+            line[3:].strip()
+            for line in workspace_status.splitlines()
+            if line.strip() and line[:2].strip() != "??"
+        ]
+        if workspace_tracked_changes:
+            host.die(
+                f"{anchor.get('path', module)}: source-mode manifest requires the "
+                "workspace manifest repository to be free of tracked modifications; "
+                "found: "
+                + ", ".join(workspace_tracked_changes[:8])
+            )
         freeze = subprocess.run(
             ["west", "manifest", "--freeze"],
             cwd=Path(host.topdir),
