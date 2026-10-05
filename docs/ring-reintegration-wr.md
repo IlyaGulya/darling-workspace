@@ -1052,3 +1052,83 @@ and is re-opened only if it reproduces on the actual manifest Ring product.
 Product fixes carried into the bridge commits that have their own deterministic host contracts
 (`dserver_interrupt_resume_tests` etc.) keep that status: **host-contract verified, Ring runtime validation
 pending**. Any claim that rested only on the ring-OFF runtime is narrowed to what it actually measured.
+
+## The manifest-native Ring product exists now, and its first honest measurement names a defect (2026-10-05)
+
+`source-mode: manifest` is implemented in the runtime-profile pipeline (source selection only; the
+build/closure/prefix-transaction/receipt half is shared with the legacy providers), and two
+manifest-native providers were added beside the legacy pair:
+
+```text
+manifest-ring-on        source-mode: manifest, RING ON,  CLT provisioning      (mirrors homebrew-ring-on's settings)
+manifest-ring-baseline  source-mode: manifest, RING ON,  prefix baseline, no CLT
+manifest-ring-off       source-mode: manifest, RING OFF, CLT provisioning      (the control)
+```
+
+A fresh prefix was bootstrapped from the **West manifest pins** with `manifest-ring-baseline`
+(rc=0, "deployment retained after successful smoke"), after the provider's correspondence check
+verified 163 projects at their manifest revisions with no tracked modification and no untracked source
+override, and after the configure phase showed the mode is not a patch profile at all.
+
+The runtime is Ring, established from its OWN configuration and its own transport witnesses rather
+than from a provider name:
+
+```text
+runtime identity : source-mode=manifest  DARLING_RING_TRANSPORT=True  DSERVER_RING_TRANSPORT=True
+                   manifest-commit=44b580f019767160a1559e1de8bc5a129e2b893f  (workspace dirty=false)
+deployed receipt : mldr built==deployed 8b45658066d7 ; darlingserver built==deployed 9bc788dce1c8
+guest transport  : [plane-wake] n=1 via=doorbell scm=0 fdcnt=0 payload=0 db=1048574
+                   [courier-send] n=1 scm=1 fdcnt=1 payload=24 direction=guest->server
+                   [rpc-socket] 0          <-- no legacy per-thread RPC socket, no denial
+```
+
+The identity oracle refuses the label otherwise: an identity with no Ring defines is `unknown`, not
+`on`, which is the measured failure it exists for (a ring-OFF runtime was previously accepted as Ring).
+
+**First Ring acceptance attempt — NOT green, with a named cause.** `dwdiag suite` (9 rows, no row
+retries, `--require-zero-creations`, verdict recorded into the deployment receipt):
+
+```text
+basic 20                   CRASH ABRT (guest reporter) denied=1
+sem_block 100 1            CRASH ABRT (guest reporter) denied=1
+sem_gap 5000 1             CRASH ABRT (guest reporter) denied=1
+threadnoop 3               CRASH ABRT (guest reporter) denied=1
+sem_ready 2 / sem_timed 300 1 / sem_wait_signal 4 / sem_timedwait_signal 300 1 / fsview   PASS
+SUITE rows=9 failures=4     (5/9)
+```
+
+The four failing rows are exactly the ones that create a thread or a port, and the log names the
+boundary in the guest's own words:
+
+```text
+[dring-attach] RING_ATTACH_BEGIN pid=1108707 tid=1108712 image=2 adopted_view=0 registry_found=0
+               registry_state=0 registry_gen=0 rc=0 reject=0
+[dring-attach] slots ... b0_active=1 b0_owner=1108707 b0_borrowed=1 pages=0x0
+[dring-attach] RING_ATTACH_RPC_SENT ...
+[dring-plane-attach] no-slot tid=1108712
+[dring-attach-fail] plane-unanswered-no-uds tid=1108712
+[dring-uds-reason] image=kernel callnum=35 name=gr_port_trap reason=ATTACH_FAILED lane_slot=0
+                   lane_gen=0 lane_state=0 lane_active=0
+[checkin-republish] tid=1108712 attempt=1 page=1 ready=1 req=0x2 rep=0x2 pub=0
+[checkin-republish] tid=1108712 attempt=2 page=1 ready=1 req=0x2 rep=0x2 pub=0
+[rpc-socket-DENIED] pid=1108707 tid=1108712 call=checkin image=loader denied=1 (no per-thread transport)
+[sigexc-fatal sig=6 code=-6 ...]        <-- the guest's own abort
+```
+
+Meanwhile the FIRST image's lane attach succeeds in the same build:
+
+```text
+[mldr-seed] attach pid=1108528 memfd=3 size=2816
+[srv-lane-attach #0 pid=1108528 tid=1108528 slots=8 slot_size=128]
+[mldr-seed] attach-rc pid=1108528 rc=0 reject=0 wake=11
+```
+
+So the boundary is: a thread of a later image finds no process-global lane registry entry
+(`registry_found=0`, `pages=0x0`), its own plane attach is never answered
+(`plane-unanswered-no-uds`), the thread-create checkin therefore cannot publish on the control page
+(`pub=0`), the loader takes its no-transport path, and the workload aborts. This is deterministic
+(4/9 every run, not intermittent) and it is a defect of the TRUE Ring product -- the ring-OFF runtime
+never reached this code at all.
+
+Not the old pthread hang: that one was measured on the ring-OFF runtime, is intermittent (1/200), and
+remains closed unless it reproduces here.
