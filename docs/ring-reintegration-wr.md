@@ -994,3 +994,40 @@ literal that only the pinned source compiles in?) instead of trusting the receip
 runs with the two documented conditions together -- `GIT_LFS_SKIP_SMUDGE=1` *and* `WEST_RUNTIME_BUILD_CACHE=off`:
 the first omission failed the materializer on `src/external/swift`'s LFS objects
 (`fatal: libswiftAVFoundation.dylib: smudge filter lfs failed`), which is the same wall the 2026-10-04 notes hit.
+
+## SUPERSEDES the previous two provenance sections: the runtime was built by the WRONG PROVIDER (2026-10-05)
+
+The content discrepancy is real, but its cause is not a stale cache and not the receipt. It is the runtime profile
+used to build the prefix.
+
+```text
+provider (used)                     source-profile    Ring defines
+homebrew-rootless-bootstrap-minimal homebrew (79 patches)  DARLING_EUNION only -- no DARLING_RING_TRANSPORT, no DSERVER_RING_TRANSPORT
+homebrew-ring-on                    ring-comparison (6)    DARLING_RING_TRANSPORT=True, DSERVER_RING_TRANSPORT=True  (+ EUNION, ROOTLESS_TOOLCHAIN, ROOTLESS_HOMEBREW, MALLOC_REGION_TEST)
+homebrew-ring-off                   ring-comparison (6)    the same defines with both RING switches False
+```
+
+All three come from `testkit/runtime-profiles.yml`; the patchsets come from `patches/<source-profile>/patches.yml`
+(`patches/homebrew` = 79 entries, `patches/ring-comparison` = 6). The prefix that every measurement in this document
+was taken on was bootstrapped with **`homebrew-rootless-bootstrap-minimal`** -- the profile whose own definition
+carries no Ring transport define and the legacy `homebrew` patchset. So:
+
+* the deployed loader containing none of the Ring/plane-era code (`[afunix-send]`, the `dthreads.c` path,
+  `checkin-republish`, `plane-wake`, "Failed to get main thread port from the process control plane", ~1150 code
+  strings a from-pin build has and it does not) is EXPECTED, not anomalous;
+* the guest blocking in an AF_UNIX **DGRAM** receive during a Mach receive is EXPECTED for that runtime: the datagram
+  transport the Ring work removes is still present in it;
+* the build is deterministic and reproducible -- a cache-off, LFS-skipped rebuild with the same provider produced the
+  same loader bytes (`9855118cfc3a`), which is why "stale cache" was the wrong explanation;
+* and, decisively for acceptance: **9/9, 199/200 and every HANG hunt in this document measured a ring-OFF, legacy
+  patchset runtime, not the Ring product.**
+
+The previous two sections are retained as the record of how the discrepancy was found; their cache/receipt
+explanation is superseded by this one. What still stands from them, because it was measured directly: the receipt
+mixes the calling workspace's component revisions with artifacts produced elsewhere, so a receipt alone cannot
+establish that deployed bytes came from the pinned revision -- the content test is what decides.
+
+Corrective order (in flight): bootstrap `homebrew-ring-on` on a fresh prefix with `GIT_LFS_SKIP_SMUDGE=1` and
+`WEST_RUNTIME_BUILD_CACHE=off`; then (1) verify the deployed artifacts contain the Ring-era code by the same direct
+literal test, (2) focused contracts, (3) 9/9 first attempt, (4) a fresh 200-boot gate from run 1. No measurement
+taken on the previous prefix is carried forward.
