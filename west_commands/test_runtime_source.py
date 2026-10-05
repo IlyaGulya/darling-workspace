@@ -9,6 +9,7 @@ profile patch application and worktree cleanup stay together here.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import signal
@@ -66,6 +67,87 @@ def record_runtime_source_marker(entry: Path, key: str, source_root: Path) -> st
         return None
     write_runtime_source_marker(entry, key, head)
     return head
+
+
+def _git_output(
+    cwd: Path, *args: str, run=subprocess.run
+) -> str | None:
+    result = run(
+        ["git", "-C", str(cwd), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def _matches_materialized_project(entry: str, nested_project_paths: set[str]) -> bool:
+    """Whether an untracked entry is simply ANOTHER materialized West project."""
+
+    entry = entry.rstrip("/")
+    for nested in nested_project_paths:
+        if entry == nested or entry.startswith(f"{nested}/"):
+            return True
+    return False
+
+
+def manifest_source_problems(
+    projects: list[tuple[str, str, Path, bool]],
+    *,
+    nested_project_paths: dict[str, set[str]],
+    run=subprocess.run,
+) -> list[str]:
+    """Return every way the workspace is NOT the manifest's product source.
+
+    ``projects`` is ``(name, revision, abspath, is_product)``. The precondition is
+    the one the manifest authority model needs: every managed component sits at
+    the revision the manifest resolved, the product source carries no tracked
+    modification, and no untracked file overrides product source.
+
+    An untracked entry that is another materialized project is NOT an override
+    (MEASURED: `darling/docs` is a West project materialized inside the darling
+    repository, so it appears as untracked in the parent repo while being a
+    normal, manifest-managed checkout), which is why the caller passes each
+    module's nested project paths.
+    """
+
+    problems: list[str] = []
+    for name, revision, path, is_product in projects:
+        if not path.is_dir():
+            problems.append(f"{name}: missing checkout at {path}")
+            continue
+        head = _git_output(path, "rev-parse", "HEAD", run=run)
+        if head is None:
+            problems.append(f"{name}: cannot read HEAD at {path}")
+            continue
+        if head != revision:
+            problems.append(
+                f"{name}: HEAD {head[:12]} != manifest revision "
+                f"{str(revision)[:12]}"
+            )
+        if not is_product:
+            continue
+        status = _git_output(path, "status", "--porcelain", run=run)
+        if status is None:
+            problems.append(f"{name}: cannot read git status at {path}")
+            continue
+        nested = nested_project_paths.get(name, set())
+        for line in status.splitlines():
+            if not line.strip():
+                continue
+            code, entry = line[:2], line[3:].strip()
+            entry = entry.split(" -> ")[-1].strip().strip('"')
+            if not entry:
+                continue
+            if code.strip() == "??":
+                if _matches_materialized_project(entry, nested):
+                    continue
+                problems.append(f"{name}: untracked source override {entry}")
+                continue
+            problems.append(f"{name}: tracked modification {entry}")
+    return problems
 
 
 class RuntimeSourceMaterializer:
@@ -683,6 +765,105 @@ class RuntimeSourceMaterializer:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+
+    @contextmanager
+    def manifest_product_source_root(
+        self,
+        definition: dict[str, Any],
+        anchor: dict[str, Any],
+        evidence_session: RuntimeEvidenceSession | None = None,
+    ) -> Iterator[Path]:
+        """Use the current West workspace AS the product source, verified first.
+
+        This is the manifest-native half of source selection: no profile stack, no
+        patch application, no immutable mirror, no disposable forest. The source
+        root is the workspace's own ``source-module`` checkout, and the build,
+        closure resolution, prefix transaction and receipt are the SAME code the
+        legacy provider path uses.
+
+        It fails BEFORE the build when the workspace is not the manifest's product
+        source, because a runtime built from anything else cannot be evidence
+        about the pinned revision -- the failure that motivated this mode.
+        """
+
+        host = self._host
+        module = str(definition["source-module"])
+        product_modules = {
+            str(candidate) for candidate in definition.get("source-modules") or [module]
+        }
+        projects: list[tuple[str, str, Path, bool]] = []
+        nested_project_paths: dict[str, set[str]] = {}
+        all_project_paths: list[str] = []
+        for project in host.manifest.projects:
+            path = Path(project.abspath)
+            name = str(project.name)
+            all_project_paths.append(str(project.path))
+            is_product = (
+                str(project.path) in product_modules or name in product_modules
+            )
+            projects.append((name, str(project.revision or ""), path, is_product))
+            if is_product:
+                prefix = f"{project.path}/"
+                nested_project_paths[name] = {
+                    str(other.path)[len(prefix) :]
+                    for other in host.manifest.projects
+                    if str(other.path).startswith(prefix)
+                }
+        problems = manifest_source_problems(
+            projects, nested_project_paths=nested_project_paths
+        )
+        if problems:
+            details = "\n".join(f"    {problem}" for problem in problems)
+            host.die(
+                f"{anchor.get('path', module)}: source-mode manifest requires the "
+                "workspace to be the manifest's product source; the following "
+                "disagreements were found before any build:\n"
+                f"{details}\n"
+                "  resolve them (west update, commit or remove the local changes) "
+                "or use a legacy source-profile provider"
+            )
+        workspace_repo = Path(host.manifest.repo_abspath)
+        workspace_commit = _git_output(workspace_repo, "rev-parse", "HEAD") or ""
+        workspace_dirty = bool(_git_output(workspace_repo, "status", "--porcelain"))
+        freeze = subprocess.run(
+            ["west", "manifest", "--freeze"],
+            cwd=Path(host.topdir),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        freeze_sha256 = (
+            hashlib.sha256(freeze.stdout.encode()).hexdigest()
+            if freeze.returncode == 0
+            else None
+        )
+        source_root = host._project_path(module)
+        evidence = {
+            "source-mode": "manifest",
+            "source-module": module,
+            "workspace-commit": workspace_commit,
+            "workspace-dirty": workspace_dirty,
+            "project-revisions": {
+                name: revision for name, revision, _, _ in projects
+            },
+            "west-manifest-freeze-sha256": freeze_sha256,
+            "ring-defines": {
+                key: definition.get("cmake-defines", {}).get(key)
+                for key in (
+                    "DARLING_RING_TRANSPORT",
+                    "DSERVER_RING_TRANSPORT",
+                )
+            },
+        }
+        if evidence_session is not None:
+            evidence_session._write_json("manifest-source.json", evidence)
+        host.inf(
+            "  runtime source mode: manifest "
+            f"(workspace {workspace_commit[:12]}, "
+            f"{len(projects)} projects at their manifest revisions, "
+            f"source {source_root})"
+        )
+        yield source_root
 
     @contextmanager
     def guest_runtime_source_forest(

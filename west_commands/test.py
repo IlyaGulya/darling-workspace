@@ -132,6 +132,7 @@ from guest_macho_validation import (
 from test_runtime import (
     applicability_preflight_advice,
     compose_ctest_runtime_profiles,
+    MANIFEST_SOURCE_MODE,
     merge_runtime_cmake_define_overrides,
     parse_runtime_cmake_define_overrides,
     preflight_retry_allowed,
@@ -1934,6 +1935,7 @@ class DarlingTest(
         assert definition is not None
         profile_name = definition["name"]
         source_profile = definition["source-profile"]
+        manifest_source = definition.get("source-mode") == MANIFEST_SOURCE_MODE
         proof = self._runtime_profile_proof(
             definition,
             omit_patch=omit_patch,
@@ -1989,7 +1991,17 @@ class DarlingTest(
             self._require_runtime_scratch_space(
                 f"{label_prefix} profile {profile_name}"
             )
-        if prematerialized_profile_verified:
+        if manifest_source:
+            # A manifest-native provider never touches the patch/profile stack: no `west patch verify`, no lock-first
+            # plan, no immutable-mirror probe, no disposable patched forest. Its source precondition is instead that
+            # the workspace IS the manifest's product source, checked in _manifest_runtime_source_root before any
+            # build. Skipping this call is the migration invariant: a manifest provider must succeed with no
+            # source-bundles/ directory at all.
+            self.inf(
+                f"  runtime source mode: manifest (no patch/profile preflight) "
+                f"for {label_prefix} profile {profile_name}"
+            )
+        elif prematerialized_profile_verified:
             self.inf(
                 f"  runtime profile preflight reuse: {source_profile} "
                 f"for {label_prefix} profile {profile_name}"
@@ -2001,17 +2013,29 @@ class DarlingTest(
         evidence_store = self._runtime_evidence_store()
         evidence = evidence_store.start(
             f"{label_prefix} runtime profile {profile_name}",
-            {"provider": profile_name, "source-profile": source_profile},
+            {"provider": profile_name, "source-profile": source_profile}
+            if not manifest_source
+            else {
+                "provider": profile_name,
+                "source-mode": MANIFEST_SOURCE_MODE,
+                "source-module": definition["source-module"],
+            },
         )
         scratch = evidence.directory
         evidence_failure = None
         previous_evidence = getattr(self, "_active_runtime_evidence", None)
         self._active_runtime_evidence = evidence
-        self._active_profile = source_profile
+        self._active_profile = None if manifest_source else source_profile
         try:
             self.inf(f"{label_prefix} runtime profile: {profile_name} ({source_profile})")
             reuse_plan = None
-            if prematerialized_source is not None:
+            if manifest_source:
+                # The workspace IS the source: no reuse store (a cached build tree is exactly the class of stale
+                # artifact this mode must not serve) and no patched forest.
+                source_context = self._manifest_runtime_source_root(
+                    definition, anchor, evidence
+                )
+            elif prematerialized_source is not None:
                 self.inf(
                     f"{label_prefix} prematerialized runtime source: "
                     f"{prematerialized_source}"
