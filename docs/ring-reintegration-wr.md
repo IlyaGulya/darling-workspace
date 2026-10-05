@@ -857,3 +857,33 @@ named iteration instead of an absence.
 Both harness defects above are the same class this session keeps meeting: a silent wait that reads as a product
 result. They are fixed in the hunt scripts (`/home/ilyagulya/work/wr-fresh/hunt/hunt3.sh`, `hunt5.sh`), and the
 freeze-time capture (`capture.sh`) answers the thread questions from live `/proc` state rather than from log text.
+
+### Correction: the last mark does NOT bound the stall to the create (2026-10-05)
+
+The earlier statement in this document -- that the failing run shows the thread-create trap "never returning" -- is
+stronger than the evidence supports, and the measurement that shows this is `threadnoop`.
+
+With the iteration trace off (which is how the gate ran), the workload prints NOTHING between the create trap entry
+and the next iteration's first mark: the receive, the join and the port teardown are MARK-FREE. So
+`[pcreate trap-enter]` being the last line bounds the stall only to the interval
+
+```text
+create trap entry  ->  <anything>  ->  next iteration's [pcreate alloc-enter]
+```
+
+which contains the create's return, the message round trip, the join AND the receive-right destruction.
+
+`threadnoop 2000` x 60 runs (120,000 create+join cycles, no ports and no messages, `--wait 60`, `--freeze-on-fail`,
+prefix cleaned between runs) was **0 stalls**. At the gate's measured order of one stall per ~4000 cycles of
+`basic 20`, 120,000 cycles would have reproduced it overwhelmingly if the bare lifecycle were sufficient. It is
+therefore NOT: the ingredient is the port/message round trip or the port teardown, exactly as the fixture's own
+comments already say about this family ("`stress_churn`/`basic` die at the receive right's destruction while
+`timeout` passes, so the ingredient is the round trip"; and the `stress_mixed` residual was "a plane request
+released while still pending on a guest path").
+
+The next hunt therefore uses the round-trip mode at high exposure: `basic 2000` (2000 create cycles AND 2000
+message round trips plus 2000 port teardowns per boot, ~100x one `basic 20` run), unhatched, `--freeze-on-fail`,
+with the live-state capture ready. The phase that stalls is then named by the frozen state, and if the live state
+is ambiguous the same hunt repeats with the workload's own `RING_MACH_TEST_ITER_TRACE=1` hatch, which prints the
+per-iteration phase (`make_port`, `port=`, `created`, `received`, `joined`, `drop_enter`) -- evidence only, never a
+verdict.
