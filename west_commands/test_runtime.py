@@ -605,6 +605,18 @@ def compose_ctest_runtime_profiles(
             "incompatible runtime source profiles: "
             + ", ".join(f"{name}={definitions[name]['source-profile']}" for name in selected)
         )
+    # The SOURCE MODE is part of the composition contract for the same reason the source profile is: a selection that
+    # mixed a manifest-native provider with a legacy one would have to pick one source producer for both, so it is
+    # refused instead. A manifest-native composition carries `source-mode: manifest` into the deployment context,
+    # which is what makes it skip the patch preflight.
+    source_modes = {definitions[name].get("source-mode") for name in selected}
+    if len(source_modes) != 1:
+        raise ValueError(
+            "incompatible runtime source modes: "
+            + ", ".join(
+                f"{name}={definitions[name].get('source-mode')}" for name in selected
+            )
+        )
     source_modules: list[str] = []
     artifacts: list[dict[str, Any]] = []
     deployed: dict[str, dict[str, Any]] = {}
@@ -693,6 +705,8 @@ def compose_ctest_runtime_profiles(
         "runtime-artifacts": artifacts,
         "bootstrap-smoke-timeout-seconds": bootstrap_smoke_timeout,
     }
+    if source_modes.pop() is not None:
+        result["source-mode"] = MANIFEST_SOURCE_MODE
     if cmake_defines:
         result["cmake-defines"] = cmake_defines
     if launcher_env:
