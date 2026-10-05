@@ -309,9 +309,19 @@ def collect_runtime_profiles(manifest_repo: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for raw_name, profile in profiles.items():
         name = _safe_name(raw_name, f"runtime profile in {relative_path}")
-        source_profile = _safe_name(
-            profile["source-profile"], f"source-profile for runtime profile {name!r}"
-        )
+        source_mode = profile.get("source-mode")
+        if source_mode is not None:
+            if source_mode != "manifest":
+                raise ProfileCatalogError(
+                    f"runtime profile {name!r} has unknown source-mode {source_mode!r}"
+                )
+            source_profile = _safe_name(
+                "manifest", f"source-mode for runtime profile {name!r}"
+            )
+        else:
+            source_profile = _safe_name(
+                profile["source-profile"], f"source-profile for runtime profile {name!r}"
+            )
         source_module = _safe_relative_value(
             profile["source-module"], f"source-module for runtime profile {name!r}"
         )

@@ -33,6 +33,11 @@ ROOTLESS_TOOLCHAIN_TARGET = "rootless_toolchain"
 ROOTLESS_TOOLCHAIN_MANIFEST = "darling-rootless-toolchain.json"
 GUEST_TOOLCHAIN_RESOURCE = "darling-command-line-tools"
 COMPILER_LAUNCHERS = frozenset({"ccache"})
+# Runtime profile source selection. `source-mode: manifest` takes the product source from the current West manifest's
+# pins (validated before any build); `source-profile: <name>` keeps the legacy patch/profile stack. The two are
+# mutually exclusive, and only the SOURCE PRODUCER differs -- build, closure resolution, prefix transaction,
+# launcher environment and the receipt are the same code for both.
+MANIFEST_SOURCE_MODE = "manifest"
 # Source owners whose patched revisions can provide Mach-O libraries in the
 # bootstrap closure. A materialized runtime forest must not leave them as live
 # symlinks, or it can build an unpatched provider while claiming profile parity.
@@ -350,6 +355,7 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
         if not isinstance(name, str) or not name or not isinstance(profile, dict):
             raise ValueError("each runtime profile needs a non-empty name and mapping")
         source_profile = profile.get("source-profile")
+        source_mode = profile.get("source-mode")
         source_module = profile.get("source-module")
         source_modules = profile.get("source-modules")
         artifacts = profile.get("runtime-artifacts")
@@ -359,6 +365,27 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
         compiler_launcher = profile.get("compiler-launcher")
         purpose = profile.get("purpose", "runtime")
         bootstrap_smoke_timeout = profile.get("bootstrap-smoke-timeout-seconds", 60)
+        # A runtime profile selects its SOURCE in exactly one of two ways, and the two are mutually exclusive:
+        # `source-profile` materializes the legacy patch/profile stack (its own locks and immutable mirrors), while
+        # `source-mode: manifest` takes the product source from the current West manifest's pins. RuntimeProfileSource
+        # selection is a PLUGGABLE concern: everything after it (cmake defines, targets, closure resolution, prefix
+        # transaction, launcher env, receipt) is shared, which is what makes the manifest workflow usable without
+        # reviving the frozen patch layer.
+        if source_profile is not None and source_mode is not None:
+            raise ValueError(
+                f"runtime profile {name!r} must not declare both source-profile and source-mode"
+            )
+        if source_mode is not None and source_mode != MANIFEST_SOURCE_MODE:
+            raise ValueError(
+                f"runtime profile {name!r} has unknown source-mode {source_mode!r}; "
+                f"allowed values: {MANIFEST_SOURCE_MODE}"
+            )
+        if source_profile is None and source_mode is None:
+            raise ValueError(
+                f"runtime profile {name!r} needs source-profile or source-mode"
+            )
+        if source_profile is None:
+            source_profile = MANIFEST_SOURCE_MODE
         if not isinstance(source_profile, str) or not source_profile:
             raise ValueError(f"runtime profile {name!r} needs source-profile")
         if not isinstance(source_module, str) or not source_module:
@@ -547,6 +574,8 @@ def load_ctest_runtime_profiles(path: Path) -> dict[str, dict[str, Any]]:
             "purpose": purpose,
             "bootstrap-smoke-timeout-seconds": bootstrap_smoke_timeout,
         }
+        if source_mode is not None:
+            normalized[name]["source-mode"] = source_mode
         if bootstrap is not None:
             normalized[name]["bootstrap"] = bootstrap
         if runtime_mode is not None:
@@ -1046,6 +1075,26 @@ class RuntimePlanMixin:
         return test_runtime_cache.RuntimeReusePlan(
             store=store, source_key=source_key, build_key=build_key
         )
+
+    @contextmanager
+    def _manifest_runtime_source_root(
+        self,
+        definition: dict[str, Any],
+        anchor: dict[str, Any],
+        evidence_session=None,
+    ):
+        """Expose the manifest-native runtime source producer to the deployment context.
+
+        Same shape as ``_guest_runtime_source_forest`` and the same consumer: the
+        deployment context hands this source root to the unchanged build, closure
+        and prefix-transaction code. What differs is only how the source came to
+        exist -- manifest pins instead of a patched disposable forest.
+        """
+
+        with self._runtime_source_materializer().manifest_product_source_root(
+            definition, anchor, evidence_session
+        ) as source_root:
+            yield source_root
 
     @contextmanager
     def _guest_runtime_source_forest(
