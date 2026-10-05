@@ -493,6 +493,32 @@ class PrefixLifecycleMixin:
         self._load_retained_prefix_env(Path(resolved))
         return resolved
 
+    def _resolve_darling_launcher(self, prefix: str | None) -> str | None:
+        """Resolve the launcher for one prefix, or for the ambient environment.
+
+        Shared by every command that must own or stop a prefix, so the two paths cannot drift: an explicit
+        prefix is a runtime identity, and falling back to another prefix's launcher would silently mix
+        launcher and DPREFIX.
+        """
+
+        if prefix:
+            candidate = Path(prefix).expanduser() / "bin" / "darling"
+            if candidate.exists():
+                return str(candidate)
+            # An explicit prefix is a runtime identity, not just an artifact
+            # directory. Falling back to another prefix's launcher silently
+            # mixes launcher and DPREFIX, which can make a broken named prefix
+            # appear usable for one test lifecycle.
+            return None
+        if os.environ.get("DARLING"):
+            return os.environ["DARLING"]
+        if os.environ.get("DARLING_LAUNCHER"):
+            return os.environ["DARLING_LAUNCHER"]
+        candidate = Path("~/work/darling-prefix/bin/darling").expanduser()
+        if candidate.exists():
+            return str(candidate)
+        return None
+
     def _darling_prefix_env(self, prefix: str | Path) -> dict[str, str]:
         prefix_text = str(prefix)
         env = {

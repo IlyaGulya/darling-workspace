@@ -587,25 +587,6 @@ class DarlingTest(
         verified.add(source_profile)
         self._verified_runtime_profile_stacks = verified
 
-    def _resolve_darling_launcher(self, prefix: str | None) -> str | None:
-        if prefix:
-            candidate = Path(prefix).expanduser() / "bin" / "darling"
-            if candidate.exists():
-                return str(candidate)
-            # An explicit prefix is a runtime identity, not just an artifact
-            # directory. Falling back to another prefix's launcher silently
-            # mixes launcher and DPREFIX, which can make a broken named prefix
-            # appear usable for one test lifecycle.
-            return None
-        if os.environ.get("DARLING"):
-            return os.environ["DARLING"]
-        if os.environ.get("DARLING_LAUNCHER"):
-            return os.environ["DARLING_LAUNCHER"]
-        candidate = Path("~/work/darling-prefix/bin/darling").expanduser()
-        if candidate.exists():
-            return str(candidate)
-        return None
-
     def _resolve_executor(self, explicit: str | None) -> str | None:
         if explicit:
             return str(Path(explicit).expanduser())

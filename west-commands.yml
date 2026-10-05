@@ -49,6 +49,11 @@ west-commands:
       - name: darling-build
         class: DarlingBuild
         help: Doctor-gated ninja build of dyld + closure, with opt-in deploy
+  - file: west_commands/darling_bootstrap.py
+    commands:
+      - name: darling-bootstrap
+        class: DarlingBootstrap
+        help: Fill a rootless prefix from an explicit build dir, without a runtime profile
   - file: west_commands/darling_source_worktree.py
     commands:
       - name: darling-source-worktree
