@@ -1093,3 +1093,33 @@ REMAINING BLOCKER (`dar-jj6s`): the boot flap. The run stalls after
 `listenForConnections()`, so the readiness handshake is what is lost. The gate criterion is 0 HANG, so
 this stays open until it is reproduced with live state and fixed.
 
+## Acceptance closed on the pinned checkpoint (2026-10-05, later the same day)
+
+Same prefix, runtime and launcher as the table above, with one change: the prefix was cleaned of
+leftover incarnations before the series (an exe-based, prefix-scoped cleanup). Both gates then passed on
+the first attempt:
+
+| gate | result |
+| --- | --- |
+| 9-mode suite, first attempt, ROW-RETRY 0, require-zero-creations | `SUITE rows=9 failures=0` -> `SUITE-VERDICT PASS` |
+| boot gate, one prefix boot per run | 200 runs, 0 readiness failures, 0 denials, 0 created, no stall captured |
+
+The flap is therefore a property of the TEST INFRASTRUCTURE, not of the product or of Ring: the
+isolation that matters is per prefix, and a run inherits the previous run's endpoints when the harness's
+clean start enumerates processes by `comm` (guest binaries have other names) and reuses one prefix for a
+whole series. It is tracked as `dar-agent-infra-hardening-twz1.24` -- whole-prefix isolation: one
+provisioned base read as the lower layer plus a thin per-run prefix, and an exe-based reaping step.
+
+NEXT UNIT OF WORK (`dar-dar6x4-perf-5dq.34`, NOFILE): the server-side runtime raise is at
+`src/external/darlingserver/src/darlingserver.cpp` (read the default limit, then set `rlim_cur =
+rlim_max = /proc/sys/fs/nr_open`; the default is restored for children around line 1495). The objective
+inherited from the Bead is a truthful guest RLIMIT_NOFILE with no temporary raise visible to a
+multithreaded guest, retaining zero transport FD slope per thread and separating the baseline bootstrap
+FD footprint from transport growth.
+
+SEPARATE TASK (`dar-dar6x4-perf-5dq.35`): the boot-time profile. Measured census of one boot: 11 guest
+processes, 68 thread checkins, 1594 process-control page polls, workload iterations in microseconds, and
+~15.9 s of wall clock per run including teardown. The Ring transport is not the cost; per-process
+loader/dyld/libSystem startup is the candidate.
+
+
