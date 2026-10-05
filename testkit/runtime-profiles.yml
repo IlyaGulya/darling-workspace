@@ -303,6 +303,61 @@ runtime-profiles:
     - module: darling/src/external/libmalloc
       build-targets: [rack_region_generation]
       deploy: [usr/libexec/rack_region_generation]
+  manifest-ring-baseline:
+    # Manifest-native Ring BASELINE: the Ring runtime without the guest toolchain step, because the acceptance
+    # gates (boot, 9-mode suite, long boot gate) do not compile inside the guest. `manifest-ring-on` stays the
+    # CLT-provisioning variant; this one exists because CLT provisioning is an environment dependency
+    # (com.apple.pkg.CLTools_SDK_OSX1012) that the Ring runtime itself does not need.
+    # The only prefix-baseline smoke: clean prefix, product bootstrap, no CLT.
+    purpose: prefix-baseline
+    bootstrap-smoke-timeout-seconds: 180
+    compiler-launcher: ccache
+    source-mode: manifest
+    bootstrap: rootless-no-mount
+    runtime-mode: rootless-eunion
+    source-module: darling
+    source-modules:
+    - darling
+    - darling/src/external/darlingserver
+    - darling/src/external/xnu
+    - darling/src/external/dyld
+    - darling/src/external/corefoundation
+    - darling/src/external/libsystem
+    - darling/src/external/bash
+    - darling/src/external/installer
+    - darling/src/external/perl
+    - darling/src/external/cfnetwork
+    - darling/src/external/security
+    - darling/src/external/coretls
+    - darling/src/external/text_cmds
+    - darling/src/external/libressl-2.8.3
+    - darling/src/external/libkqueue
+    - darling/src/external/libmalloc
+    cmake-defines:
+      DARLING_EUNION: true
+      DARLING_ROOTLESS_TOOLCHAIN: true
+      DARLING_ROOTLESS_HOMEBREW: true
+      DARLING_MALLOC_REGION_TEST: true
+      # The product tree carries its own drift gate that enforces the LEGACY patch composition; a
+      # manifest-native source has a different integrity contract, checked before the build by
+      # source-mode: manifest (every component at its resolved revision, product source clean). The gate's
+      # own failure message names this documented override.
+      DARLING_SKIP_DRIFT_GATE: true
+      DARLING_RING_TRANSPORT: true
+      DSERVER_RING_TRANSPORT: true
+    launcher-env:
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+      DARLING_ROOTLESS_SHELLSPAWN_READY_TIMEOUT_MS: '60000'
+      DARLING_SERVER_ATTACH_CENSUS: '1'
+      DARLING_SERVER_RPC_HEATMAP: '1'
+      DARLING_SERVER_MODE: balanced
+    runtime-artifacts:
+    - module: darling
+      build-targets:
+      - rootless_bootstrap
+      resource: rootless-bootstrap
   manifest-ring-on:
     # MANIFEST-NATIVE Ring provider: the source is the current West manifest's pins, verified before any build
     # (every managed component at its resolved revision, product source clean, no untracked source override), and
