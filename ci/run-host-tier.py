@@ -83,6 +83,7 @@ CONTRACTS = (
     "tests/run-lifecycle-operation-boundary-contract.sh",
     "tests/run-dwdiag-runner-tests-contract.sh",
     "tests/run-manifest-source-mode-contract.sh",
+    "tests/run-darling-bootstrap-contract.sh",
     "tests/run-lifecycle-trace-contract.sh",
     # Documented in AGENTS.md as focused contracts but invoked by no entrypoint.
     # run-west-test-testkit-contract.sh is the root of a family: the guest-macho,

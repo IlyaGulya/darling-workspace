@@ -1,0 +1,55 @@
+# Explicit deploy plan for `west darling-bootstrap`.
+#
+# This is not a runtime profile and it is deliberately not resolvable through the profile machinery: it
+# selects no source revision, names no source-profile, no patch and no lock, and the command that reads it
+# refuses any key that would. The source state is whatever West has checked out; this file only says which
+# build variant the build dir must have been configured with, which built targets produce the runtime
+# closure, and which component manifests and deploy paths make up the rootless prefix.
+#
+# The values are the accepted Ring variant. `cmake-defines` is asserted against the build dir's own
+# CMakeCache.txt, so a build dir configured for a different variant is refused instead of deployed.
+schema: 1
+
+# Built (in this order) in --build-dir before anything is deployed.
+build-targets:
+  - rootless_bootstrap
+  - rootless_toolchain
+  - rack_region_generation
+
+cmake-defines:
+  DARLING_EUNION: true
+  DARLING_ROOTLESS_TOOLCHAIN: true
+  DARLING_ROOTLESS_HOMEBREW: true
+  DARLING_MALLOC_REGION_TEST: true
+  DARLING_SKIP_DRIFT_GATE: true
+  DARLING_RING_TRANSPORT: true
+  DSERVER_RING_TRANSPORT: true
+
+# Typed lifecycle binding written into an empty prefix, and the launcher environment the runtime was
+# accepted with. A plan that names no runtime-mode deploys without the typed marker.
+runtime-mode: rootless-eunion
+launcher-env:
+  DARLING_ROOTLESS: '1'
+  DARLING_NOOVERLAYFS: '1'
+  DARLING_EUNION: '1'
+  DARLING_ROOTLESS_SHELLSPAWN_READY_TIMEOUT_MS: '60000'
+  DARLING_SERVER_MODE: balanced
+
+# One guest smoke; the deployment and its receipt are retained only if it passes.
+smoke-timeout-seconds: 300
+smoke-script: |
+  set -eu
+  printf '%s\n' WEST_PREFIX_BOOTSTRAP_OK
+
+# The deploy half is the same code the profile-coupled bootstrap runs: a `resource` names a CMake-owned
+# component manifest that the build writes, and an explicit `deploy` path is resolved as one built file.
+runtime-artifacts:
+  - module: darling
+    build-targets: [rootless_bootstrap]
+    resource: rootless-bootstrap
+  - module: darling
+    build-targets: [rootless_toolchain]
+    resource: rootless-toolchain
+  - module: darling/src/external/libmalloc
+    build-targets: [rack_region_generation]
+    deploy: [usr/libexec/rack_region_generation]
