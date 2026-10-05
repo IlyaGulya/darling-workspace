@@ -831,3 +831,29 @@ This is a causal issue for acceptance (`0 HANG` is a gate criterion), not a meas
 the hunt is a repeated `basic 20` under `--freeze-on-fail` so the first reproduction leaves the
 prefix and its processes alive for the existing read-only instruments (`dwdiag progress`, server
 diag log slice, `darling-debug thread`, ring trace). No new probes.
+
+## Reproducing the one HANG: hunt history and the exposure argument (2026-10-05)
+
+The hang must be reproduced before it can be fixed, and the first attempts each failed for a *harness* reason
+worth recording, because both were silent:
+
+| hunt | configuration | runs | result | what it established |
+| --- | --- | --- | --- | --- |
+| gate | `basic 20`, `--wait 60`, hatches off | 200 | **1 HANG** (run 14) | the failure is real; the log ends at `[pcreate trap-enter]` |
+| v2 | hatches on, `--freeze-on-fail` | 1 | none (blocked) | `--freeze-on-fail` leaves the prefix RUNNING after a PASS too, and its processes hold the caller's pipe open, so a command-substitution capture blocks on EOF forever |
+| v3 | hatches on, file redirect, prefix cleaned between runs | 308 | 0 HANG | consistent with a ~1/200 event (22% chance of 308 clean) OR with the extra per-create writes shifting the timing |
+| v4 | hatches OFF (original configuration), fixed harness | 12 | 0 HANG | stopped: 20 create cycles per run is the wrong exposure unit |
+| v5 | `threadnoop 2000`, hatches off, fixed harness | running | - | ~100x the create-cycle exposure of one `basic 20` run |
+
+The exposure argument is the reason v5 replaced v4, and it comes from the pinned tree, not from intuition:
+`ring_mach_msg_test.c` documents the defect it was written for as *a race whose stalling iteration moves between
+runs* ("3, then 16, 20, 24, 28, 32, 37 across batches"), and `threadnoop` is the mode that isolates it --
+"create+join a thread that does NOTHING (thread lifecycle alone)". One `basic 20` run performs 20 create cycles
+and hung at a thread-create trap, i.e. of order one stall per 4000 create cycles; `threadnoop 2000` performs
+2000 create cycles in one boot and names the stalling iteration itself (`[noop <i> pre-create]`,
+`[noop <i> post-create]`, plus the create/join durations), so the same boot cost buys ~100x the exposure and a
+named iteration instead of an absence.
+
+Both harness defects above are the same class this session keeps meeting: a silent wait that reads as a product
+result. They are fixed in the hunt scripts (`/home/ilyagulya/work/wr-fresh/hunt/hunt3.sh`, `hunt5.sh`), and the
+freeze-time capture (`capture.sh`) answers the thread questions from live `/proc` state rather than from log text.
