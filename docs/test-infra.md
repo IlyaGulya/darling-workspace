@@ -94,6 +94,43 @@ Homebrew installation refuses a prefix that already holds one.
 `--prefix-profile homebrew` is a shortcut to one prepared prefix, not a
 bootstrap.
 
+### Direct bootstrap from an explicit build directory
+
+`west darling-bootstrap` is the West-native path: the source state is whatever
+West has checked out, the build variant is whatever `--build-dir` was configured
+with, and the command turns that build into a working prefix without looking up
+a runtime profile, a source profile, a patch, a lock or a materialized forest.
+
+```sh
+mise run west darling-bootstrap --prefix /absolute/path/to/owned-prefix \
+  --build-dir /absolute/path/to/build-dir
+```
+
+It asserts that the build directory's own `CMakeCache.txt` carries the plan's
+configured defines and refuses a build directory for a different variant,
+naming the entry and printing the `cmake -S ... -B ...` line that would produce
+this one. It then builds the plan's targets, deploys through the same
+`RuntimeDeploymentService` transaction the profile bootstrap uses (typed mode
+marker, CMake component manifests, Mach-O closure resolution, the same
+deployment receipt), and runs one guest smoke inside that deployment, so the
+deployment and its receipt are retained only if the smoke passes. The doctor
+split is the usual one: `--scope workspace` before build/deploy, `--scope
+runtime` after the guest smoke, followed by an explicit receipt check.
+
+The plan is `testkit/darling-bootstrap.yml`, and it is not a runtime profile: it
+declares the build targets, the expected cmake defines, the typed runtime mode,
+the launcher environment and one component per closure resource, and it selects
+no source revision. A plan that names `source-mode`, `source-profile`,
+`source-modules`, `patch`, `lock`, `revision` or `materialize` is refused by
+name, and `tests/run-darling-bootstrap-contract.sh` pins that refusal, the
+malformed-plan refusals, the define gate and the fact that the plan's Ring
+defines are exactly the values the manifest-native Ring provider declares.
+
+`--bootstrap-runtime-profile` remains the profile-coupled path and the way the
+`guest-toolchain-provisioning` profile installs the reviewed guest
+CommandLineTools; the direct entrypoint covers the runtime closure, which is
+what a prefix needs in order to boot.
+
 ## CI execution contract
 
 `.github/workflows/test-infra.yml` keeps privilege and trust boundaries explicit:
