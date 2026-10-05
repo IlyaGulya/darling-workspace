@@ -1383,6 +1383,7 @@ struct CrashLine {
     self_: Option<u64>,
     pc: Option<u64>,
     stack: Vec<u64>,
+    frames: Vec<u64>,
     raw: String,
 }
 
@@ -1417,6 +1418,17 @@ fn parse_crash_line(line: &str) -> CrashLine {
         if let Some(i) = field.find("pc=0x") {
             let v = field[i + 5..].split_whitespace().next().unwrap_or("");
             c.pc = u64::from_str_radix(v, 16).ok();
+        }
+        // The server's caller chain: values are offsets from the address of its own crash probe (printed as
+        // `self=`), space separated so the whole list stays inside this one comma field. dwdiag converts each
+        // delta into a file offset by adding the probe's file address, which is a symbol it already has.
+        if let Some(i) = field.find("bt=0x") {
+            for tok in field[i + 5..].split_whitespace() {
+                let t = tok.trim_start_matches("0x");
+                if let Ok(v) = u64::from_str_radix(t, 16) {
+                    c.frames.push(v);
+                }
+            }
         }
         if let Some(i) = field.find('w') {
             let rest = &field[i + 1..];
@@ -1779,6 +1791,34 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
                 if let Some((si, o)) = locate(&syms, off) {
                     backtrace_frames
                         .push((off, format!("{} + 0x{:x}", symbol_name(&syms[si].name), o)));
+                }
+            }
+        }
+    }
+    // The server's own caller chain (`bt=`), converted from probe-relative deltas into file offsets. MEASURED need:
+    // an abort raised through libc names no caller in its own fields -- the pc is outside the image -- so the chain
+    // the handler captured is the only thing that says WHO reached the abort. The probe's own symbol gives the base
+    // for the conversion, and a delta that resolves to nothing is reported rather than dropped.
+    if !crash.frames.is_empty() {
+        match syms.iter().position(|s| s.name.contains("dserver_crash_probe")) {
+            Some(pi) => {
+                let base = syms[pi].addr;
+                for d in &crash.frames {
+                    let off = base.wrapping_add(*d);
+                    match locate(&syms, off) {
+                        Some((si, o)) => backtrace_frames
+                            .push((off, format!("{} + 0x{:x}", symbol_name(&syms[si].name), o))),
+                        None => backtrace_frames
+                            .push((off, format!("<no symbol at 0x{off:x}>"))),
+                    }
+                }
+            }
+            None => {
+                for d in &crash.frames {
+                    backtrace_frames.push((
+                        *d,
+                        "<probe symbol dserver_crash_probe not found; raw delta from self>".to_string(),
+                    ));
                 }
             }
         }
