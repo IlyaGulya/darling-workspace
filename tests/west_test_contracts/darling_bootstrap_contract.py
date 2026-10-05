@@ -200,12 +200,40 @@ def check_e_ring_defines_match_the_manifest_provider() -> None:
     )
 
 
+def check_f_deploy_set_and_environment_match_the_manifest_provider() -> None:
+    """The direct path replaces the profile LOOKUP, not the accepted runtime.
+
+    If the plan's closure or environment drifts from the accepted Ring provider, this entrypoint would
+    bootstrap something other than the runtime that was accepted, and no receipt would notice -- the receipt
+    records what was deployed, not what was intended.
+    """
+
+    plan = darling_bootstrap.load_bootstrap_plan(PLAN)
+    definitions = test_runtime.load_ctest_runtime_profiles(PROFILES)
+    reference = definitions["manifest-ring-on"]
+    assert plan.runtime_artifacts == reference["runtime-artifacts"], (
+        plan.runtime_artifacts,
+        reference["runtime-artifacts"],
+    )
+    assert plan.launcher_env == {
+        key: str(value) for key, value in reference["launcher-env"].items()
+    }, (plan.launcher_env, reference["launcher-env"])
+    assert plan.runtime_mode == reference["runtime-mode"], (
+        plan.runtime_mode,
+        reference["runtime-mode"],
+    )
+    print(
+        "F ok: the plan's deploy set, launcher environment and runtime mode are the accepted provider's"
+    )
+
+
 def main() -> int:
     check_a_plan_declares_the_accepted_variant()
     check_b_a_source_selection_is_refused()
     check_c_a_malformed_plan_is_refused()
     check_d_the_configure_gate_is_real()
     check_e_ring_defines_match_the_manifest_provider()
+    check_f_deploy_set_and_environment_match_the_manifest_provider()
     print("PASS darling-bootstrap-contract")
     return 0
 

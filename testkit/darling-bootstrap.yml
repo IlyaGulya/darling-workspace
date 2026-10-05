@@ -6,8 +6,10 @@
 # build variant the build dir must have been configured with, which built targets produce the runtime
 # closure, and which component manifests and deploy paths make up the rootless prefix.
 #
-# The values are the accepted Ring variant. `cmake-defines` is asserted against the build dir's own
-# CMakeCache.txt, so a build dir configured for a different variant is refused instead of deployed.
+# The values are the accepted Ring variant, and they are the same values the manifest-native
+# `manifest-ring-on` provider declares: this entrypoint replaces the profile LOOKUP, not the accepted
+# runtime. `cmake-defines` is asserted against the build dir's own CMakeCache.txt, so a build dir configured
+# for a different variant is refused instead of deployed.
 schema: 1
 
 # Built (in this order) in --build-dir before anything is deployed.
@@ -33,6 +35,8 @@ launcher-env:
   DARLING_NOOVERLAYFS: '1'
   DARLING_EUNION: '1'
   DARLING_ROOTLESS_SHELLSPAWN_READY_TIMEOUT_MS: '60000'
+  DARLING_SERVER_ATTACH_CENSUS: '1'
+  DARLING_SERVER_RPC_HEATMAP: '1'
   DARLING_SERVER_MODE: balanced
 
 # One guest smoke; the deployment and its receipt are retained only if it passes.
@@ -43,6 +47,12 @@ smoke-script: |
 
 # The deploy half is the same code the profile-coupled bootstrap runs: a `resource` names a CMake-owned
 # component manifest that the build writes, and an explicit `deploy` path is resolved as one built file.
+#
+# This is the accepted Ring variant's closure -- the same three artifacts the manifest-native
+# `manifest-ring-on` provider declares, and the set the accepted build dir was configured and built for.
+# The guest command set is part of it, and declaring it explicitly is also what resolves a build tree that
+# legitimately holds several built copies of one install-name (the bootstrap component alone would leave
+# `libperl.dylib` ambiguous, because Perl exists for 5.18 and 5.28 in the same tree).
 runtime-artifacts:
   - module: darling
     build-targets: [rootless_bootstrap]
