@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from test_manifest import ManifestError, load_test_profile
+from test_runtime_identity import MANIFEST_SOURCE_MODE
 
 
 class ProfileOperationsMixin:
@@ -18,6 +19,12 @@ class ProfileOperationsMixin:
         return Path(self.manifest.repo_abspath) / "patches" / profile / "patches.yml"
 
     def _load_profile(self, profile: str) -> dict:
+        # A manifest-native source selection is NOT a patch profile: it declares no patches, so every reader here
+        # (profile modules, profile stack, worktree checkout) must see an empty patch set rather than look for
+        # patches/<mode>/patches.yml. Without this, the mode's own name reached this loader and failed the bootstrap
+        # with "patch profile not found: .../patches/manifest/patches.yml".
+        if profile == MANIFEST_SOURCE_MODE:
+            return {"patches": []}
         path = self._profile_path(profile)
         if not path.is_file():
             self.die(f"patch profile not found: {path}")
