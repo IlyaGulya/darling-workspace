@@ -340,6 +340,11 @@ runtime-profiles:
       DARLING_ROOTLESS_TOOLCHAIN: true
       DARLING_ROOTLESS_HOMEBREW: true
       DARLING_MALLOC_REGION_TEST: true
+      # The product tree carries its own drift gate that enforces the LEGACY patch composition; a
+      # manifest-native source has a different integrity contract, checked before the build by
+      # source-mode: manifest (every component at its resolved revision, product source clean). The gate's
+      # own failure message names this documented override.
+      DARLING_SKIP_DRIFT_GATE: true
       DARLING_RING_TRANSPORT: true
       DSERVER_RING_TRANSPORT: true
     launcher-env:
@@ -393,6 +398,11 @@ runtime-profiles:
       DARLING_ROOTLESS_TOOLCHAIN: true
       DARLING_ROOTLESS_HOMEBREW: true
       DARLING_MALLOC_REGION_TEST: true
+      # The product tree carries its own drift gate that enforces the LEGACY patch composition; a
+      # manifest-native source has a different integrity contract, checked before the build by
+      # source-mode: manifest (every component at its resolved revision, product source clean). The gate's
+      # own failure message names this documented override.
+      DARLING_SKIP_DRIFT_GATE: true
       DARLING_RING_TRANSPORT: false
       DSERVER_RING_TRANSPORT: false
     launcher-env:
