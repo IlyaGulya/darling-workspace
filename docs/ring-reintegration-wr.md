@@ -1031,3 +1031,24 @@ Corrective order (in flight): bootstrap `homebrew-ring-on` on a fresh prefix wit
 `WEST_RUNTIME_BUILD_CACHE=off`; then (1) verify the deployed artifacts contain the Ring-era code by the same direct
 literal test, (2) focused contracts, (3) 9/9 first attempt, (4) a fresh 200-boot gate from run 1. No measurement
 taken on the previous prefix is carried forward.
+
+## ACCEPTANCE RECORD CORRECTION (2026-10-05): what each result is and is not
+
+The runtime all of this was measured on was built by `homebrew-rootless-bootstrap-minimal`
+(`source-profile: homebrew`, `DARLING_RING_TRANSPORT` and `DSERVER_RING_TRANSPORT` absent) and showed the
+datagram-transport behaviour of a ring-OFF runtime. Every result therefore carries this classification:
+
+| result | status |
+| --- | --- |
+| 9-mode suite `9/9`, first attempt, ROW-RETRY 0, created=0 denied=0 | VALID RUNTIME EVIDENCE, **NOT** Ring acceptance evidence |
+| boot gate `runs=200 pass=199 hang=1` | VALID RUNTIME EVIDENCE, **NOT** Ring acceptance evidence |
+| freeze-on-fail HANG investigation (Threads: 1, AF_UNIX DGRAM recv at fd 1048575, server in ep_poll) | valid observation OF THAT runtime; not a Ring acceptance blocker |
+| the `[pcreate ...]`-mark budget artefact (4096 per process) | instrument fact, independent of the provider |
+
+The logs, the preserved HANG log (`evidence/boot-gate-20261004-verdict-2513327-basic.log`) and the frozen-state
+captures are KEPT. They are not used to close or to block Ring. The 1/200 pthread-create HANG becomes non-blocking
+and is re-opened only if it reproduces on the actual manifest Ring product.
+
+Product fixes carried into the bridge commits that have their own deterministic host contracts
+(`dserver_interrupt_resume_tests` etc.) keep that status: **host-contract verified, Ring runtime validation
+pending**. Any claim that rested only on the ring-OFF runtime is narrowed to what it actually measured.
