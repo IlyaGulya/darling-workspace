@@ -1,0 +1,15 @@
+MEASURED HARMFUL -- DO NOT LAND.
+
+Candidate for dar-jj6s: re-open the retained shellspawn socket directory when the retained descriptor cannot
+see the socket but the path exists. Applied to the launcher and installed into prefix-ring-a4dc.
+
+RESULT: 75 boots run, 75 of them ended with "Rootless shellspawn did not become ready", 0 workloads
+passed. The same prefix and runtime with the original launcher measured 200 boots with 1 readiness
+failure (the pre-existing ~0.5% boot flap). So the change does not heal that flap and breaks the boot
+outright; the tree was restored and the original launcher reinstalled (sha256 93898fa7b67e0323...).
+
+WHY IT LIKELY FAILS: the loop's connect uses "/proc/self/fd/<dirfd>/shellspawn.sock"; re-opening the
+directory mid-loop and rewriting that path is not equivalent to the startup open (the runtime-mode
+directory helper and the rootless path mapping are not obviously interchangeable here), and the
+error path in the patch closes the descriptor before it has been proven replaceable. A future attempt
+must reproduce the flap deterministically first and must not be landed on a rate argument.
