@@ -1,0 +1,17 @@
+  peak darling                      13
+  peak mldr                         28
+  peak darlingserver                52
+N=1 rc=0 verdict=VERDICT: PASS
+  peak darling                      13
+  peak mldr                         28
+  peak darlingserver                57
+N=8 rc=0 verdict=VERDICT: PASS
+  peak darling                      13
+  peak mldr                         28
+  peak darlingserver                45
+N=16 rc=0 verdict=VERDICT: PASS
+  peak darling                      10
+  peak mldr                         29
+  peak darlingserver                57
+N=32 rc=1 verdict=VERDICT: FAIL
+total threads/mode: sem_block 20 <N> on /home/ilyagulya/work/wr-fresh/prefix-ring-a4dc
