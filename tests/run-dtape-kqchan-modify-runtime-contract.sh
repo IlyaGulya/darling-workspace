@@ -122,13 +122,20 @@ if [ "$fail" -ne 0 ]; then
 	exit 1
 fi
 
-# Leave the prefix as we found it: the gate's own run booted it.
+# Leave the prefix as we found it: the gate's own run booted it. `darling
+# shutdown` alone can race with a server that is still reaping a guest shell,
+# so a prefix-scoped pkill (the same remedy `west test` uses for a leftover
+# darlingserver) is the last resort after a bounded wait.
 env DPREFIX="$prefix" DARLING_PREFIX="$prefix" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
 	timeout 120 "$prefix/bin/darling" --rootless shutdown >/dev/null 2>&1 || true
-for _ in $(seq 1 30); do
+for _ in $(seq 1 20); do
 	pgrep -f "darlingserver.*$prefix" >/dev/null 2>&1 || break
 	sleep 1
 done
+if pgrep -f "darlingserver.*$prefix" >/dev/null 2>&1; then
+	pkill -f "darlingserver.*$prefix" >/dev/null 2>&1 || true
+	sleep 2
+fi
 pgrep -f "darlingserver.*$prefix" >/dev/null 2>&1 && \
 	echo "dtape-kqchan-modify-runtime: warning: darlingserver for $prefix did not exit after shutdown" >&2
 
