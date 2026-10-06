@@ -16,7 +16,12 @@ manifest:
     repo-path: darling
     path: darling
     remote: darling-next
-    revision: 060fc61c5366be246580e41f3d6a6043bcdd13d8
+    # 7fc37b693 adds the dar-dles regression oracle: ring_mach_msg_test mode pthread_live
+    # <threads> [stack_kib], N simultaneously-live pthreads created sequentially and parked on one
+    # release barrier, which reproduces the >~50-live-thread create/start stall and prints the exact
+    # attempt that stopped. Test-only; no product source changed. Published on the canonical
+    # fix/truthful-nofile line (parent 060fc61c5).
+    revision: 7fc37b6936a8f26a6e218412c8ba9b720e587981
     userdata:
       kind: darling-source
       upstream-repository: darling
