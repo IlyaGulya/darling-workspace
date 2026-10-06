@@ -17,7 +17,10 @@
  * The first case carries a plain message (no MACH_MSGH_BITS_COMPLEX), so it never reaches
  * ipc_kmsg_copyout_body()/ipc_kmsg_copyout_port_descriptor() -- the helpers .4b had to thread the
  * requester through. The second case covers that gap: one MACH_MSG_PORT_DESCRIPTOR is sent to the
- * EVFILT_MACHPORT receive port and received through the same kqchan read/fill path.
+ * EVFILT_MACHPORT receive port and received through the same kqchan read/fill path. The third case
+ * carries a MACH_MSG_TYPE_MOVE_RECEIVE descriptor, which reaches ipc_object_copyout/ipc_right_copyout
+ * -- the receive branch .6 threaded the requester through -- and must land a live receive right in
+ * the guest's namespace.
  *
  * Host-built as a guest Mach-O and executed by the prefix; nothing is compiled in the guest.
  */
@@ -33,6 +36,7 @@
 
 #define FILL_MSG_ID 0x4b46494c /* 'KFL' */
 #define DESC_MSG_ID 0x4b464944 /* 'KFD' */
+#define RCV_MSG_ID 0x4b464952 /* 'KFR' */
 
 struct fill_message {
 	mach_msg_header_t header;
@@ -45,6 +49,143 @@ struct desc_message {
 	mach_msg_body_t body;
 	mach_msg_port_descriptor_t desc;
 };
+
+/*
+ * Receive-right case (.6): a port descriptor carrying a MOVE_RECEIVE right, received through the
+ * kqchan read/fill path. .4b threaded the requester into the copyout body; .6 threads it into
+ * ipc_object_copyout/ipc_right_copyout, whose receive branch selects the turnstile knote and the
+ * immovable-receive guard message address from the receiving thread. Receiving a receive right must
+ * still succeed and land a live receive right in the requester's own namespace.
+ */
+static int receive_right_case(void) {
+	int kq = kqueue();
+	if (kq < 0) {
+		perror("kqueue(rcv)");
+		return 1;
+	}
+
+	mach_port_t rport = MACH_PORT_NULL;
+	kern_return_t kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &rport);
+	if (kr != KERN_SUCCESS) {
+		fprintf(stderr, "rcv: allocate rport: %d\n", (int)kr);
+		return 1;
+	}
+	kr = mach_port_insert_right(mach_task_self(), rport, rport, MACH_MSG_TYPE_MAKE_SEND);
+	if (kr != KERN_SUCCESS) {
+		fprintf(stderr, "rcv: insert_right(rport): %d\n", (int)kr);
+		return 1;
+	}
+
+	/* The receive-only port whose RECEIVE right the descriptor moves. */
+	mach_port_t moved = MACH_PORT_NULL;
+	kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &moved);
+	if (kr != KERN_SUCCESS) {
+		fprintf(stderr, "rcv: allocate moved: %d\n", (int)kr);
+		return 1;
+	}
+
+	struct kevent ev;
+	EV_SET(&ev, rport, EVFILT_MACHPORT, EV_ADD, MACH_RCV_MSG, 0, NULL);
+	if (kevent(kq, &ev, 1, NULL, 0, NULL) < 0) {
+		perror("rcv: kevent add");
+		return 1;
+	}
+
+	struct desc_message msg;
+	memset(&msg, 0, sizeof(msg));
+	msg.header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0) | MACH_MSGH_BITS_COMPLEX;
+	msg.header.msgh_size = sizeof(msg);
+	msg.header.msgh_remote_port = rport;
+	msg.header.msgh_local_port = MACH_PORT_NULL;
+	msg.header.msgh_id = RCV_MSG_ID;
+	msg.body.msgh_descriptor_count = 1;
+	msg.desc.name = moved;
+	msg.desc.disposition = MACH_MSG_TYPE_MOVE_RECEIVE;
+	msg.desc.type = MACH_MSG_PORT_DESCRIPTOR;
+	kr = mach_msg(&msg.header, MACH_SEND_MSG, sizeof(msg), 0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+	if (kr != KERN_SUCCESS) {
+		fprintf(stderr, "rcv: mach_msg send: %d\n", (int)kr);
+		return 1;
+	}
+
+	struct kevent64_s out;
+	memset(&out, 0, sizeof(out));
+	struct timespec timeout = { .tv_sec = 10, .tv_nsec = 0 };
+	int n = kevent64(kq, NULL, 0, &out, 1, 0, &timeout);
+	if (n < 0) {
+		perror("rcv: kevent64 wait");
+		return 1;
+	}
+	if (n == 0) {
+		fprintf(stderr, "rcv: no event for the posted receive-right message\n");
+		return 1;
+	}
+	if (out.filter != EVFILT_MACHPORT) {
+		fprintf(stderr, "rcv: unexpected filter: %d\n", out.filter);
+		return 1;
+	}
+	if (out.fflags != 0) {
+		fprintf(stderr, "rcv: read/fill did not receive the receive-right message: fflags=0x%x\n", out.fflags);
+		return 1;
+	}
+
+	mach_msg_header_t *rcv = (mach_msg_header_t *)(uintptr_t)out.ext[0];
+	if (rcv == NULL) {
+		fprintf(stderr, "rcv: server did not report a receive buffer\n");
+		return 1;
+	}
+	if ((rcv->msgh_bits & MACH_MSGH_BITS_COMPLEX) == 0) {
+		fprintf(stderr, "rcv: received message lost MACH_MSGH_BITS_COMPLEX: bits=0x%x\n", rcv->msgh_bits);
+		return 1;
+	}
+	if (rcv->msgh_id != RCV_MSG_ID) {
+		fprintf(stderr, "rcv: wrong message id: 0x%x\n", rcv->msgh_id);
+		return 1;
+	}
+
+	mach_msg_body_t *dbody = (mach_msg_body_t *)(rcv + 1);
+	if (dbody->msgh_descriptor_count != 1) {
+		fprintf(stderr, "rcv: descriptor count: %u\n", dbody->msgh_descriptor_count);
+		return 1;
+	}
+	mach_msg_descriptor_t *dsc = (mach_msg_descriptor_t *)(dbody + 1);
+	if (dsc->type.type != MACH_MSG_PORT_DESCRIPTOR) {
+		fprintf(stderr, "rcv: descriptor type not port: %u\n", dsc->type.type);
+		return 1;
+	}
+
+	mach_port_name_t dname = dsc->port.name;
+	if (dname == MACH_PORT_NULL || dname == MACH_PORT_DEAD) {
+		fprintf(stderr, "rcv: descriptor carries no valid port name: %u\n", dname);
+		return 1;
+	}
+
+	/* The moved right must have landed as a live RECEIVE right in this task. */
+	mach_port_type_t dtype = 0;
+	kr = mach_port_type(mach_task_self(), dname, &dtype);
+	if (kr != KERN_SUCCESS || (dtype & MACH_PORT_TYPE_RECEIVE) == 0) {
+		fprintf(stderr, "rcv: received right is not a receive right in this task: kr=%d type=0x%x\n",
+			(int)kr, dtype);
+		return 1;
+	}
+
+	/* The read path consumed the message. */
+	struct desc_message drained;
+	kr = mach_msg(&drained.header, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof(drained), rport, 100, MACH_PORT_NULL);
+	if (kr != MACH_RCV_TIMED_OUT) {
+		fprintf(stderr, "rcv: read/fill did not consume the message: mach_msg rc=%d\n", (int)kr);
+		return 1;
+	}
+
+	/* Deterministic teardown of the rights this case created. */
+	mach_port_mod_refs(mach_task_self(), dname, MACH_PORT_RIGHT_RECEIVE, -1);
+	mach_port_deallocate(mach_task_self(), rport);
+	close(kq);
+
+	printf("KQCHAN_FILL_RCV_OK=1 fflags=0 complex=1 dsc_type=port move_receive=1\n");
+	fflush(stdout);
+	return 0;
+}
 
 /*
  * Descriptor-bearing case (.4b regression seam for the descriptor copyout helpers).
@@ -306,5 +447,9 @@ int main(void) {
 	printf("KQCHAN_FILL_OK=1 fflags=0 consumed=1\n");
 	fflush(stdout);
 
-	return descriptor_case();
+	int desc_rc = descriptor_case();
+	if (desc_rc != 0) {
+		return desc_rc;
+	}
+	return receive_right_case();
 }
