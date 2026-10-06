@@ -171,10 +171,12 @@ def check_d_the_configure_gate_is_real() -> None:
         handle.close()
         return Path(handle.name)
 
-    matching = "".join(
-        f"{name}:BOOL={'ON' if value is True else 'OFF'}\n"
-        for name, value in plan.cmake_defines.items()
-    )
+    def cache_line(name, value):
+        if isinstance(value, bool):
+            return f"{name}:BOOL={'ON' if value else 'OFF'}\n"
+        return f"{name}:STRING={value}\n"
+
+    matching = "".join(cache_line(name, value) for name, value in plan.cmake_defines.items())
     assert darling_bootstrap.compare_cmake_defines(cache(matching), plan.cmake_defines) == []
     other = matching.replace("DARLING_RING_TRANSPORT:BOOL=ON", "DARLING_RING_TRANSPORT:BOOL=OFF")
     other = other.replace("DARLING_SKIP_DRIFT_GATE:BOOL=ON\n", "")
@@ -194,9 +196,13 @@ def check_e_ring_defines_match_the_manifest_provider() -> None:
     plan = darling_bootstrap.load_bootstrap_plan(PLAN)
     definitions = test_runtime.load_ctest_runtime_profiles(PROFILES)
     reference = definitions["manifest-ring-on"]["cmake-defines"]
-    assert plan.cmake_defines == reference, (plan.cmake_defines, reference)
+    # The accepted path sets the build type outside the profile: test_runtime_build.configure_args starts
+    # from {"CMAKE_BUILD_TYPE": "Debug"} and lets the profile's defines override it. A plan that mirrors the
+    # provider therefore has to carry Debug itself.
+    expected = {"CMAKE_BUILD_TYPE": "Debug", **reference}
+    assert plan.cmake_defines == expected, (plan.cmake_defines, expected)
     print(
-        "E ok: the plan's Ring defines are the values the manifest-native Ring provider declares"
+        "E ok: the plan's Ring defines and build type are the values the accepted path configures"
     )
 
 
