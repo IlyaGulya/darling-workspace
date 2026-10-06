@@ -447,10 +447,11 @@ manifest:
   - name: darling-src-external-darlingserver
     repo-path: darlingserver
     path: darling/src/external/darlingserver
-    # The reviewed WR pin for this component lives on the project FORK
-    # (recovery/ring-wr); the upstream repository stays recorded in userdata.
+    # dar-dtape-explicit-context-6to3.3: the reviewed DTAPE slice pin lives on the project FORK
+    # branch fix/dtape-explicit-context-thread-state; the upstream repository stays recorded in
+    # userdata. (Previous accepted pin c338f90a6499 was the parent of this commit.)
     remote: darling-next
-    revision: c338f90a6499
+    revision: e9aebedee3b578a50350dd45837f07e904c3284d
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
