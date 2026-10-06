@@ -254,6 +254,13 @@ EXCLUDED_CONTRACTS = {
         "commands. It is a deterministic host contract (two contexts K != R) but build-dir backed: "
         "run it with DARLING_BUILD_DIR=<configured build> from the prefix-backed lane. The barer "
         "host tier has no product build",
+    "tests/run-dar-dles-plane-fairness-contract.sh":
+        "guest-runtime gate: it executes the prebuilt guest Mach-O ring_mach_msg_test fixture "
+        "(pthread_live mode) in a booted Darling prefix whose darlingserver is under test and "
+        "requires bounded management-plane progress under continuous ring load - every "
+        "pthread_create returns and every worker starts and joins at the requested simultaneous "
+        "live-thread counts. The host tier has no prefix lifecycle and no guest runtime; run it "
+        "with DPREFIX from the prefix-backed lane",
     "tests/run-dtape-kqchan-fill-runtime-contract.sh":
         "guest-runtime gate: it host-builds a prebuilt guest Mach-O fixture that registers "
         "EVFILT_MACHPORT and receives a message through the kqchan read path, executes it in a "
