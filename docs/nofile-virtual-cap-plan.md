@@ -178,15 +178,15 @@ failure, not a union over a run. Recorded here because a measurement that report
 ## Round seven: canonical repetition, and the caveat every earlier number carried (measured 2026-10-06)
 
 Every number in rounds one through six was taken on the frozen scratch tree. The repetition the caveat demanded
-has now been made on two homogeneous canonical candidates that differ in EXACTLY ONE FILE: candidate A is the
-product pin `be0d647` (the server raises its own soft limit to `nr_open` at startup), candidate B is the named
+has now been made on two homogeneous canonical candidates that differ in EXACTLY ONE FILE: candidate `server-raised` is the
+product pin `be0d647` (the server raises its own soft limit to `nr_open` at startup), candidate `truthful-no-raise` is the named
 branch `diag/no-raise-nofile` at `2e54f3b`, whose binary contains no `nr_open` reference at all. Same configure,
 same Debug build type, separate build dirs and prefixes, canonical invocation (env only, no `--rootless` flag,
 `shell /bin/bash --login -c`), fresh cold incarnation per point with zero live prefix processes verified first.
 
-FLOOR. Candidate B, fresh cold boot per point, verdict from the workload's own line:
+FLOOR. Candidate `truthful-no-raise`, fresh cold boot per point, verdict from the workload's own line:
 trivial smoke PASS at 1048576/4096/256/64, FAIL at 48/32/24/16; workload `r2 8` PASS at 128/64, FAIL at 48/32;
-bisection PASS 60, PASS 59, FAIL 58, FAIL 57/56/52/50/49. Candidate A PASSes every point down to 32 for both
+bisection PASS 60, PASS 59, FAIL 58, FAIL 57/56/52/50/49. Candidate `server-raised` PASSes every point down to 32 for both
 workloads. So the CANONICAL floor of the no-raise server is 59 descriptors, not the 48 round four found on the
 scratch tree -- the caveat was worth carrying, and the number moved by eleven. The failure shape agrees with
 round five: the guest dies through `rpc-socket-DENIED` on the plane path (`call=task_self_trap`, and `call=checkin`
@@ -199,17 +199,17 @@ parks on a hard-coded 3000 ms sender (measured: `iters=1` and `iters=32` both re
 slope taken with it is a slope against TRAFFIC and can only return 0. `scripts/darling-fd-slope.sh` now defaults
 to the true holder `stress_pool <live pairs> <iters>` (S1 persistent receiver/sender pairs, fixed thread count)
 and exposes `--holder`/`--holder-iters`; the r2 matrix is withdrawn. With the true holder, ~6 s window and
-84-334 `/proc` samples per clean incarnation: candidate B PASSes N=1/8/16/32 with `server_peak=65 guest_peak=10`
-at EVERY size; candidate A matches at N=1/8/16. The target -- zero descriptors per live thread -- therefore still
+84-334 `/proc` samples per clean incarnation: candidate `truthful-no-raise` PASSes N=1/8/16/32 with `server_peak=65 guest_peak=10`
+at EVERY size; candidate `server-raised` matches at N=1/8/16. The target -- zero descriptors per live thread -- therefore still
 holds, but it is now measured against live thread count rather than against traffic.
 
 RAISE VISIBILITY, RE-ESTABLISHED WITH A WITNESS THAT CAN DISTINGUISH. The 2026-10-05 comment reported the guest
 seeing 1048575 and concluded the raise "is visible to the guest as its own". That reading is VACUOUS on this host:
 the default soft limit already equals `nr_open`, so a raised server and a truthful one are indistinguishable. With
-the run's inherited soft limit lowered to 64 (above candidate B's measured floor of 59), host-side sampling of
+the run's inherited soft limit lowered to 64 (above candidate `truthful-no-raise`'s measured floor of 59), host-side sampling of
 every prefix-owned process' `/proc/<pid>/limits` throughout a thread-parking run gives:
 
-| process | candidate A (raise) | candidate B (no raise) |
+| process | candidate `server-raised` | candidate `truthful-no-raise` |
 |---|---|---|
 | `darlingserver` | 1048576 | 64 |
 | launcher `darling` | 64 | 64 |
@@ -231,6 +231,11 @@ that round three closed structurally). The falsified window design is NOT in the
 one-shot and permanent for the server, so there is no transient state to race -- which is exactly why the
 ## Round eight: the epoch-0 design, stated against the measured numbers
 
+DECISION (architecture, 2026-10-06): truthful-no-raise. DarlingServer must not raise RLIMIT_NOFILE at runtime;
+the inherited Linux limit remains authoritative for the server and all descendants. No hidden server-only
+raise, and no conditional raises (not below 59, not below 64, not during bootstrap). Names below replace the
+earlier A/B labels, which this session used in opposite meanings in two places.
+
 The Bead's line is "all internal process anchors established during controlled bootstrap -> truthful Linux
 RLIMIT_NOFILE installed before ordinary guest activity -> no temporary runtime raise visible to a multithreaded
 guest". Round seven measured what of that is already true and what it costs to finish.
@@ -248,30 +253,36 @@ at all.
 
 THE TWO BRANCHES, WITH THEIR MEASURED PRICE.
 
-* Branch A -- keep the server's limit truthful (drop the raise). Price: measured, 59 descriptors is the floor at
-  which the no-raise server still boots (PASS 59, FAIL 58); it boots and holds the workload at 64 and above
+* `truthful-no-raise` -- keep the server's limit truthful (drop the raise). Price: measured, 59 descriptors is
+  the floor at which the no-raise server still boots (PASS 59, FAIL 58); it boots and holds the workload at 64
+  and above
   (PASS at 256/128/64 with the Bead workload). This branch needs no new limit mechanism at all, only the check
   below, and it is the branch that satisfies the Bead's line literally.
-* Branch B -- keep the one-shot raise, and prove the restore covers every creation path. Price: a proof
+* `server-raised` -- keep the one-shot raise, and prove the restore covers every creation path. Price: a proof
   obligation, not a measurement. Today exactly one `fork()` exists in `darlingserver.cpp` (the launchd child) and
   the restore runs inside that child, which is why no guest ever observes the raised value; a second creation
   path added later would silently reopen the window that round three closed structurally, so this branch needs
   the restore to be enforced per child rather than argued from the current call graph.
 
-BEHAVIOR BELOW THE FLOOR, WHICH IS THE PART THAT IS MISSING TODAY. Under branch A a strict host (inherited soft
-below 59) currently gets a guest that dies through a signal -- rc 132/139 -- with the launcher reporting only that
-shellspawn never became ready, and the plane denial (`rpc-socket-DENIED`, `call=task_self_trap` or `checkin`) is
-not surfaced as a refusal. The designed behavior is: the server reads its inherited soft limit at startup, and if
-it is below the required minimum it emits ONE diagnostic naming the inherited value, the required value and the
-fact that the guest's descriptor budget cannot be satisfied, then exits non-zero before any guest exists. No
-abort, no signal, no 30-second shellspawn timeout. The required minimum must be a stated constant justified by the
-measurement above (59 with margin), not the measured value pasted in, and the check must run before the anchors,
-so the refusal is the only thing a strict host ever sees.
+CHOSEN: `truthful-no-raise`. IMPLEMENTED: the raise and its compensating child restore are gone from
+`darlingserver.cpp`, and the requirement is derived there from measured per-role descriptor peaks (largest role
+50 plus a quarter for bootstrap churn, aligned to 16 => 64) rather than from the observed wall.
 
-VERIFICATION OBLIGATIONS FOR WHICHEVER BRANCH IS CHOSEN. (1) The 1/8/16/32 slope matrix with the true holder,
-which is already the regression gate for the transport claim. (2) A strict-limit boot at the floor and one below
-it, asserting the diagnostic text and the non-zero exit rather than a signal. (3) The window-race harness, which
-becomes MANDATORY only under a design that mutates the limit transiently; under branch A there is no transient
-state to race, and under branch B the restore proof above is the substitute. (4) A repeat of the visibility
-witness with the inherited limit lowered, because that is the only configuration that can distinguish a raised
-server from a truthful one.
+BEHAVIOR BELOW THE FLOOR, WHICH WAS THE PART MISSING. Under the old shape a strict host (inherited soft below the
+requirement) got a guest that died through a signal -- rc 132/139 -- with the launcher reporting only that
+shellspawn never became ready, and the plane denial (`rpc-socket-DENIED`, `call=task_self_trap` or `checkin`) was
+not surfaced as a refusal; the launcher then also spun its full 30-second readiness timeout, because it judged
+the server alive with `kill(pid, 0)` and a dead-but-unreaped server is a zombie. Now: the server reads its
+inherited soft limit at startup and, if it is below the requirement, emits ONE diagnostic naming the inherited
+value, the required value and the reason, then exits non-zero before any guest exists; the launcher reaps the
+child, so the refusal surfaces immediately instead of after 31 seconds. No abort, no signal, no shellspawn
+timeout, no hidden limit mutation. Measured: rc 1, diagnostic present, no guest, ~2 s.
+
+VERIFICATION OBLIGATIONS. (1) The 1/8/16/32 slope matrix with the true holder, which is already the regression
+gate for the transport claim. (2) A strict-limit boot below the requirement, asserting the diagnostic text and
+the non-zero exit rather than a signal; both are in `tests/run-truthful-nofile-contract.sh`. (3) The window-race
+harness is N/A for `truthful-no-raise`: there is no transient limit mutation in this architecture, so nothing to
+race. It stays in the tree as a regression gate for a future design that introduces one, and that design owes the
+restore proof sketched under `server-raised`. (4) A repeat of the visibility witness with the inherited limit
+lowered, because that is the only configuration that can distinguish a raised server from a truthful one; the
+contract carries it as its supported-limit case.
