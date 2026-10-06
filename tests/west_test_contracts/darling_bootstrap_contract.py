@@ -277,6 +277,37 @@ def check_h_the_inherited_nofile_is_recorded() -> None:
     print("H ok: the inherited NOFILE soft/hard is recorded, and an unreadable one is not fatal")
 
 
+def check_i_the_install_prefix_is_part_of_the_configuration() -> None:
+    """The launcher bakes INSTALL_PREFIX, so a build dir for another install root cannot boot this prefix.
+
+    Measured: a build dir left at the default /usr/local produced a launcher that exec'd
+    /usr/local/bin/darlingserver, got ENOENT and printed "Failed to start darlingserver", after which the
+    launcher polled shellspawn.sock for its whole timeout with no server, no launchd and no shellspawn
+    running. The reader and the documented configure line are pinned here; the gate itself runs before any
+    deploy.
+    """
+
+    handle = tempfile.NamedTemporaryFile("w", suffix="CMakeCache.txt", prefix="install-", delete=False)
+    handle.write(
+        "# For build in /scratch/build\n"
+        "CMAKE_INSTALL_PREFIX:PATH=/usr/local\n"
+        "DARLING_EUNION:BOOL=ON\n"
+    )
+    handle.close()
+    cache = Path(handle.name)
+    assert darling_bootstrap.build_install_prefix(cache) == "/usr/local"
+
+    missing = tempfile.NamedTemporaryFile("w", suffix="CMakeCache.txt", prefix="install-", delete=False)
+    missing.write("DARLING_EUNION:BOOL=ON\n")
+    missing.close()
+    assert darling_bootstrap.build_install_prefix(Path(missing.name)) is None
+
+    plan = darling_bootstrap.load_bootstrap_plan(PLAN)
+    line = plan.cmake_configure_line(Path("/topdir"), Path("/prefix/here"))
+    assert "-DCMAKE_INSTALL_PREFIX=/prefix/here" in line, line
+    print("I ok: the install prefix is read, and the documented configure line names it")
+
+
 def main() -> int:
     check_a_plan_declares_the_accepted_variant()
     check_b_a_source_selection_is_refused()
@@ -286,6 +317,7 @@ def main() -> int:
     check_f_deploy_set_and_environment_match_the_manifest_provider()
     check_g_the_user_namespace_precondition_is_named()
     check_h_the_inherited_nofile_is_recorded()
+    check_i_the_install_prefix_is_part_of_the_configuration()
     print("PASS darling-bootstrap-contract")
     return 0
 
