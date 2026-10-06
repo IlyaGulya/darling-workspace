@@ -7,6 +7,12 @@ source authority is the component Git commits plus the `darling-workspace`
 manifest commit whose `west.yml` pins their exact SHAs
 (`docs/adr/0001-workspace-manifest-is-the-product.md`).
 
+> RECONCILED STATUS (later than this map): the product/runtime Ring transition
+> is COMPLETE and the current product descends from the Ring acceptance
+> checkpoint `a4dc166c`. This document's W0..W5 plan is historical; the
+> remaining work is legacy cleanup and performance, not the transition. See
+> `docs/ring-transition-status.md`.
+
 The previous patch/profile/lock layer is `FROZEN_LEGACY`
 (`docs/2026-10-03-ring-source-and-workflow-cutover.md`). Old metadata under
 `patches/` and `locks/patch-stack/` is provenance evidence only. It is
