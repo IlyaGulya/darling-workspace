@@ -125,5 +125,11 @@ fi
 # Leave the prefix as we found it: the gate's own run booted it.
 env DPREFIX="$prefix" DARLING_PREFIX="$prefix" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
 	timeout 120 "$prefix/bin/darling" --rootless shutdown >/dev/null 2>&1 || true
+for _ in $(seq 1 30); do
+	pgrep -f "darlingserver.*$prefix" >/dev/null 2>&1 || break
+	sleep 1
+done
+pgrep -f "darlingserver.*$prefix" >/dev/null 2>&1 && \
+	echo "dtape-kqchan-modify-runtime: warning: darlingserver for $prefix did not exit after shutdown" >&2
 
 echo "DTAPE-KQCHAN-MODIFY-RUNTIME PASS: prebuilt guest Mach-O completed the kqchan modify path"
