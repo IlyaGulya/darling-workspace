@@ -447,12 +447,13 @@ manifest:
   - name: darling-src-external-darlingserver
     repo-path: darlingserver
     path: darling/src/external/darlingserver
-    # dar-dtape-explicit-context-6to3.4a: the reviewed DTAPE slice pin moves to
-    # fix/dtape-kqchan-modify-impersonation (removes the fake impersonate() pair around the kqchan
-    # Mach-port modify path). The .3.3 slice fix/dtape-explicit-context-thread-state (e9aebed) is
-    # its parent and remains published. The upstream repository stays recorded in userdata.
+    # dar-dtape-explicit-context-6to3.5: the reviewed DTAPE slice pin moves to
+    # fix/dtape-explicit-context-fill-read (the kqchan Mach-port read/fill path carries the
+    # requester explicitly; the impersonate() hidden transport is gone). The .4a slice
+    # fix/dtape-kqchan-modify-impersonation (e46d5c3) is its parent and remains published.
+    # The upstream repository stays recorded in userdata.
     remote: darling-next
-    revision: e46d5c3c32dc28c53dc7fa2479c53ea139aad85d
+    revision: cd897ebdcf8b8b5bd2bf48c796b9a6b0e1659032
     userdata:
       kind: darling-source
       upstream-repository: darlingserver

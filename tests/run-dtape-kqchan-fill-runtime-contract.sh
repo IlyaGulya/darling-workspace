@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# dar-dtape-explicit-context-6to3.5 focused guest runtime gate.
+#
+# Proves that the kqchan Mach-port READ/FILL path completes with the
+# impersonate()/impersonate(nullptr) pair removed and the requester carried
+# explicitly. It does NOT compile in the guest: the fixture is a prebuilt guest
+# Mach-O built on the host with the Darling product's own cross toolchain, and
+# the prefix only executes it.
+#
+# Mechanism reused (no new framework): the Darling build's host cross-toolchain.
+# `add_darling_executable` builds guest Mach-O with host clang -target
+# x86_64-apple-darwin20 linked by the in-tree cctools-port ld64. Rather than
+# create a CMake target, this replays the recorded compile/link commands of an
+# existing guest Mach-O test target of the SAME build, substituting the fixture
+# source. That keeps the flags identical to the product's own guest builds.
+#
+# Path coverage, not a generic kqueue smoke: the fixture registers EVFILT_MACHPORT
+# with MACH_RCV_MSG, posts one known message, and retrieves the event.
+# libkqueue's evfilt_machport_copyout (src/external/libkqueue/src/linux/machport.c)
+# answers a ready machport event by sending dserver_kqchan_msgnum_mach_port_read,
+# so the retrieval reaches Kqchan::MachPort::_read -> dtape_kqchan_mach_port_fill ->
+# filt_machportprocess -> ipc_mqueue_receive_on_thread -> mach_msg_receive_results.
+# The gate requires the guest to observe MACH_MSG_SUCCESS with the message size, and
+# the server's own read-path debug line.
+#
+# Inputs (required):
+#   DARLING_BUILD_DIR  a configured Darling product build (has build.ninja)
+#   DPREFIX/DARLING_PREFIX  a booted prefix whose darlingserver is under test
+set -euo pipefail
+
+workspace_root="$(cd "$(dirname "$0")/.." && pwd)"
+fixture_src="$workspace_root/tests/kqchan_fill_guest.c"
+build_dir="${DARLING_BUILD_DIR:-}"
+prefix="${DPREFIX:-${DARLING_PREFIX:-}}"
+reference_target="${DARLING_GUEST_MACHO_REFERENCE_TARGET:-darling_bzero_return_regress}"
+
+if [ -z "$build_dir" ] || [ ! -f "$build_dir/build.ninja" ]; then
+	echo "dtape-kqchan-fill-runtime: DARLING_BUILD_DIR must name a configured Darling build" >&2
+	exit 2
+fi
+if [ -z "$prefix" ] || [ ! -x "$prefix/bin/darling" ]; then
+	echo "dtape-kqchan-fill-runtime: DPREFIX must name a booted Darling prefix" >&2
+	exit 2
+fi
+if [ ! -f "$fixture_src" ]; then
+	echo "dtape-kqchan-fill-runtime: fixture source not found: $fixture_src" >&2
+	exit 2
+fi
+
+# The server argv carries only the prefix BASENAME (e.g. "darlingserver 4 3 prefix-x ..."),
+# never the absolute path, so the process pattern must use the basename.
+prefix_name="$(basename "$prefix")"
+
+workdir="$(mktemp -d)"
+trap '[ -n "${DARLING_KEEP_WORKDIR:-}" ] || rm -rf "$workdir"' EXIT
+[ -n "${DARLING_KEEP_WORKDIR:-}" ] && echo "dtape-kqchan-fill-runtime: workdir retained: $workdir" >&2 || true
+
+ninja -C "$build_dir" -t commands "$reference_target" > "$workdir/cmds" 2>/dev/null || {
+	echo "dtape-kqchan-fill-runtime: cannot read $reference_target commands from $build_dir" >&2
+	exit 2
+}
+
+python3 -B - "$workdir/cmds" "$fixture_src" "$workdir" "$build_dir" <<'PY'
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+cmds_path, fixture_src, workdir, build_dir = sys.argv[1], sys.argv[2], Path(sys.argv[3]), sys.argv[4]
+lines = Path(cmds_path).read_text().splitlines()
+obj = str(workdir / "fixture.o")
+binary = str(workdir / "fixture")
+
+compile_line = next((line for line in lines
+                     if re.search(r"-c\s+\S*darling_bzero_return_regress\.c\b", line)), None)
+link_line = next((line for line in lines
+                  if "-fuse-ld=" in line and re.search(r"darling_bzero_return_regress", line)), None)
+if compile_line is None or link_line is None:
+    raise SystemExit("dtape-kqchan-fill-runtime: reference target has no recorded guest Mach-O build")
+
+compile_cmd = re.sub(r"-o\s+\S*darling_bzero_return_regress\.c\.o", "-o " + obj, compile_line)
+compile_cmd = re.sub(r"-c\s+\S*darling_bzero_return_regress\.c\b", "-c " + fixture_src, compile_cmd)
+subprocess.run(compile_cmd, shell=True, check=True, cwd=build_dir)
+
+segment = [part.strip() for part in link_line.split("&&") if "-fuse-ld=" in part][0]
+segment = re.sub(r"\S*darling_bzero_return_regress\.c\.o", obj, segment)
+segment = re.sub(r"-o\s+\S*darling_bzero_return_regress(\s|$)", "-o " + binary + " ", segment)
+subprocess.run(segment, shell=True, check=True, cwd=build_dir)
+print(binary)
+PY
+
+binary="$workdir/fixture"
+[ -x "$binary" ] || { echo "dtape-kqchan-fill-runtime: fixture was not built" >&2; exit 1; }
+
+# Fresh server so the debug level applies, then execute the prebuilt Mach-O in
+# the guest. The prefix only runs it; nothing is compiled there.
+env DPREFIX="$prefix" DARLING_PREFIX="$prefix" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
+	timeout 120 "$prefix/bin/darling" --rootless shutdown >/dev/null 2>&1 || true
+for _ in $(seq 1 60); do
+	pgrep -f "darlingserver.*$prefix_name" >/dev/null 2>&1 || break
+	sleep 1
+done
+pkill -f "$prefix/bin/darling" >/dev/null 2>&1 || true
+pgrep -f "darlingserver.*$prefix_name" >/dev/null 2>&1 && {
+	echo "dtape-kqchan-fill-runtime: prefix darlingserver still running; cannot guarantee a fresh server" >&2
+	exit 1
+}
+install -m755 "$binary" "$prefix/private/var/tmp/kqchan_fill_guest"
+
+log="$workdir/run.log"
+env DPREFIX="$prefix" DARLING_PREFIX="$prefix" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
+	DSERVER_LOG_LEVEL=debug DSERVER_LOG_STDERR=1 \
+	timeout --kill-after=5 120 "$prefix/bin/darling" shell /bin/bash --login -c 'exec /private/var/tmp/kqchan_fill_guest' \
+	> "$log" 2>&1 || true
+
+fail=0
+for marker in \
+	'KQCHAN_FILL_OK=1' \
+	'handling read request in microthread'; do
+	if grep -q "$marker" "$log"; then
+		echo "dtape-kqchan-fill-runtime: saw $marker"
+	else
+		echo "dtape-kqchan-fill-runtime: MISSING $marker" >&2
+		fail=1
+	fi
+done
+
+if [ "$fail" -ne 0 ]; then
+	echo "DTAPE-KQCHAN-FILL-RUNTIME FAIL (log: $log)" >&2
+	exit 1
+fi
+
+# Leave the prefix as we found it: the gate's own run booted it. `darling
+# shutdown` alone can race with a server that is still reaping a guest shell,
+# so a prefix-scoped pkill (the same remedy `west test` uses for a leftover
+# darlingserver) is the last resort after a bounded wait.
+env DPREFIX="$prefix" DARLING_PREFIX="$prefix" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
+	timeout 120 "$prefix/bin/darling" --rootless shutdown >/dev/null 2>&1 || true
+for _ in $(seq 1 20); do
+	pgrep -f "darlingserver.*$prefix_name" >/dev/null 2>&1 || break
+	sleep 1
+done
+if pgrep -f "darlingserver.*$prefix_name" >/dev/null 2>&1; then
+	pkill -f "darlingserver.*$prefix_name" >/dev/null 2>&1 || true
+	sleep 2
+fi
+pgrep -f "darlingserver.*$prefix_name" >/dev/null 2>&1 && \
+	echo "dtape-kqchan-fill-runtime: warning: darlingserver for $prefix did not exit after shutdown" >&2
+
+echo "DTAPE-KQCHAN-FILL-RUNTIME PASS: prebuilt guest Mach-O completed the kqchan read/fill path"
