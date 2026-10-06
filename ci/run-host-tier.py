@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACTS = (
     "tests/run-process-control-slot-ownership-contract.sh",
     "tests/run-truthful-nofile-contract.sh",
+    "tests/run-dtape-kqchan-modify-context-contract.sh",
     "tests/run-west-patch-stack-materialize-contract.sh",
     "tests/run-west-patch-stack-lock-first-contract.sh",
     "tests/run-profile-composition-dependency-contract.sh",
@@ -241,6 +242,11 @@ EXPLICIT_CONTRACTS = (
 # and the census below fails the tier if a contract is in neither this mapping
 # nor CONTRACTS: an unaccounted contract silently proves nothing.
 EXCLUDED_CONTRACTS = {
+    "tests/run-dtape-kqchan-modify-runtime-contract.sh":
+        "guest-runtime gate: it host-builds a prebuilt guest Mach-O fixture and executes it in a "
+        "booted Darling prefix (DPREFIX) whose darlingserver is under test, then asserts the "
+        "server's own kqchan modify debug lines. The host tier has no prefix lifecycle and no guest "
+        "runtime; run it with DARLING_BUILD_DIR and DPREFIX from the prefix-backed lane",
     "tests/run-west-test-metadata-contract.sh":
         "cannot complete without the immutable mirror: its west steps materialize profiles whose "
         "lock-first batches fetch refs/tags/patch-stack/* from the mirror. That fetch is bounded "
