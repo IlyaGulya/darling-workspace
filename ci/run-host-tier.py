@@ -254,6 +254,12 @@ EXCLUDED_CONTRACTS = {
         "commands. It is a deterministic host contract (two contexts K != R) but build-dir backed: "
         "run it with DARLING_BUILD_DIR=<configured build> from the prefix-backed lane. The barer "
         "host tier has no product build",
+    "tests/run-dtape-receive-copyout-context-contract.sh":
+        "compiles the real XNU-flavoured receive-copyout objects (duct-tape/xnu ipc_object.c and "
+        "ipc_right.c), which needs a configured product build dir for its generated headers and "
+        "its recorded compile commands. It is a deterministic host contract (two contexts K != R) "
+        "but build-dir backed: run it with DARLING_BUILD_DIR=<configured build> from the "
+        "prefix-backed lane. The barer host tier has no product build",
     "tests/run-dtape-kqchan-fill-runtime-contract.sh":
         "guest-runtime gate: it host-builds a prebuilt guest Mach-O fixture that registers "
         "EVFILT_MACHPORT and receives a message through the kqchan read path, executes it in a "

@@ -119,6 +119,7 @@ fail=0
 for marker in \
 	'KQCHAN_FILL_OK=1' \
 	'KQCHAN_FILL_DESC_OK=1' \
+	'KQCHAN_FILL_RCV_OK=1' \
 	'handling read request in microthread'; do
 	if grep -q "$marker" "$log"; then
 		echo "dtape-kqchan-fill-runtime: saw $marker"
