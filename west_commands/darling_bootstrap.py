@@ -399,14 +399,14 @@ class DarlingBootstrap(PrefixLifecycleMixin, RuntimePlanMixin, WestCommand):
             help="deploy a build dir whose cmake defines differ from the plan (recorded loudly)",
         )
         p.add_argument(
-            "--drift-exempt",
+            "--allow-drift",
             action="append",
             default=[],
             metavar="PROJECT",
             help=(
-                "with the doctors, treat this project's manifest<->worktree drift as intentional "
-                "(repeatable); candidate experiments need it because the deliberate source change IS the "
-                "experiment"
+                "forwarded to the doctors as --allow-drift: treat this project's manifest<->worktree drift "
+                "as intentional (repeatable). A candidate experiment needs it, because the deliberate source "
+                "change IS the experiment"
             ),
         )
         p.add_argument(
@@ -459,7 +459,7 @@ class DarlingBootstrap(PrefixLifecycleMixin, RuntimePlanMixin, WestCommand):
         if not prefix.parent.is_dir():
             self.die(f"--prefix parent is not a directory: {prefix.parent}")
         self._prefix_env = dict(plan.launcher_env)
-        self._drift_exempt = list(getattr(args, "drift_exempt", []))
+        self._allow_drift = list(getattr(args, "allow_drift", []))
 
         # The limit the runtime will inherit, named before anything runs: every boot-based NOFILE
         # measurement is relative to it, and a run that fails must still say what it passed on.
@@ -647,7 +647,7 @@ class DarlingBootstrap(PrefixLifecycleMixin, RuntimePlanMixin, WestCommand):
             cmd.extend(["--build-dir", str(build_dir)])
         if prefix is not None:
             cmd.extend(["--prefix", str(prefix)])
-        for project in getattr(self, "_drift_exempt", []):
-            cmd.extend(["--drift-exempt", project])
+        for project in getattr(self, "_allow_drift", []):
+            cmd.extend(["--allow-drift", project])
         self.inf(f"== doctor ({scope}) ==")
         return subprocess.run(cmd, cwd=Path(self.topdir)).returncode == 0
