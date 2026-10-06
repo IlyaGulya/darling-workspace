@@ -2,7 +2,7 @@
 <manifest>
   <remote name="darling" fetch="https://github.com/darlinghq/" />
   <default remote="darling" sync-j="16" sync-tags="false" />
-  <project name="darling" path="darling" revision="9f6fd3373b3309bcdfb7e316ff478021f531d28f" />
+  <project name="darling" path="darling" revision="060fc61c5366be246580e41f3d6a6043bcdd13d8" />
   <project name="darling-docs" path="darling/docs/darling-docs" revision="14c841ef3df319254ef5ac291f828f27048a6579" />
   <project name="darling-AvailabilityVersions" path="darling/src/external/AvailabilityVersions" revision="e28c029a8fa46fa933cbf6d6d9a1c00978c5fad1" />
   <project name="darling-BerkeleyDB" path="darling/src/external/BerkeleyDB" revision="1411173f0eb71f96ab6134de4e052d16acb8c673" />
@@ -56,7 +56,7 @@
   <project name="darling-cups" path="darling/src/external/cups" revision="51b7c251ef5ff81adc20284544394de8cc2e1315" />
   <project name="darling-curl" path="darling/src/external/curl" revision="92f54fd7eceabed2c2382a4acc0f7293dedd92ff" />
   <project name="darling-dmg" path="darling/src/external/darling-dmg" revision="1a6de10c5886c40a414090701b2520bd0417ce29" />
-  <project name="darlingserver" path="darling/src/external/darlingserver" revision="2e54f3bf802675c8e0c0d2bdcf032793290e7b5f" />
+  <project name="darlingserver" path="darling/src/external/darlingserver" revision="c338f90a6499c6cdfbb745a12541486037068134" />
   <project name="darling-dbuskit" path="darling/src/external/dbuskit" revision="890e51fda949e4dd2c46765e39074f790c10ca18" />
   <project name="darling-doc_cmds" path="darling/src/external/doc_cmds" revision="60c6a2b858abe1f27b441f479aad2b0a9d0f9ba2" />
   <project name="darling-dtrace" path="darling/src/external/dtrace" revision="4f52343b36756e32a81eb302242ac6472e9075fa" />
