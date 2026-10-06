@@ -447,14 +447,16 @@ manifest:
   - name: darling-src-external-darlingserver
     repo-path: darlingserver
     path: darling/src/external/darlingserver
-    # dar-dtape-explicit-context-6to3.6: the reviewed DTAPE slice pin moves to
-    # fix/dtape-explicit-context-receive-copyout (the receive copyout names its requester thread
-    # for the turnstile knote, the special-reply/receive knote and the immovable-receive guard
-    # message address). Its parent .4b (cd897eb) on fix/dtape-explicit-context-fill-read and .4a
-    # (e46d5c3) on fix/dtape-kqchan-modify-impersonation remain published.
+    # dar-dtape-explicit-context-6to3.5: the reviewed DTAPE slice pin is
+    # fix/dtape-explicit-context-fill-read (the kqchan Mach-port read/fill path carries the
+    # requester explicitly; the impersonate() hidden transport is gone). The .4a slice
+    # fix/dtape-kqchan-modify-impersonation (e46d5c3) is its parent and remains published.
+    # The 6to3.6 candidate (receive-copyout knote/message address) was investigated and NOT
+    # taken: its turnstile prepare requires the kevent-processing knote state, so the ambient
+    # skip is correct on the kqchan path; see bead dar-dtape-explicit-context-6to3.6.
     # The upstream repository stays recorded in userdata.
     remote: darling-next
-    revision: 98ea6a4a4b92d8e7ab606a8515c7a7d7cf6bd570
+    revision: cd897ebdcf8b8b5bd2bf48c796b9a6b0e1659032
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
