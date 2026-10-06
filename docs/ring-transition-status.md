@@ -88,9 +88,11 @@ A process SCM_RIGHTS courier socket is not evidence that ordinary UDS RPC remain
 3. Matched Ring OFF/ON acceptance for the legacy comparison line (gwn.7.7*).
 4. Boot-time profile (~11-16 s/run; per-process loader/dyld/libSystem startup, not the Ring
    transport) -- dar-dar6x4-perf-5dq.35.
-5. NOFILE truthfulness -- dar-dar6x4-perf-5dq.34.
-6. Shared-memory SPSC ring transport for the hot-path RPC -- dar-dar6x4-perf-5dq.30.
-7. Optional further duplex coverage / stress backlog -- dar-1il*, dar-4cp9.
+5. Shared-memory SPSC ring transport for the hot-path RPC -- dar-dar6x4-perf-5dq.30.
+6. Optional further duplex coverage / stress backlog -- dar-1il.3.2 (standalone optional
+   perf/coverage; the mechanism it prototypes is already in the product), dar-4cp9.
+
+Not in this backlog: `dar-dar6x4-perf-5dq.34` (NOFILE) is CLOSED and is not a remaining item.
 ```
 
 ## Do not re-open
