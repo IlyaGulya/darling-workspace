@@ -447,11 +447,12 @@ manifest:
   - name: darling-src-external-darlingserver
     repo-path: darlingserver
     path: darling/src/external/darlingserver
-    # dar-dtape-explicit-context-6to3.3: the reviewed DTAPE slice pin lives on the project FORK
-    # branch fix/dtape-explicit-context-thread-state; the upstream repository stays recorded in
-    # userdata. (Previous accepted pin c338f90a6499 was the parent of this commit.)
+    # dar-dtape-explicit-context-6to3.4a: the reviewed DTAPE slice pin moves to
+    # fix/dtape-kqchan-modify-impersonation (removes the fake impersonate() pair around the kqchan
+    # Mach-port modify path). The .3.3 slice fix/dtape-explicit-context-thread-state (e9aebed) is
+    # its parent and remains published. The upstream repository stays recorded in userdata.
     remote: darling-next
-    revision: e9aebedee3b578a50350dd45837f07e904c3284d
+    revision: e46d5c3c32dc28c53dc7fa2479c53ea139aad85d
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
