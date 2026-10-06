@@ -16,7 +16,7 @@ manifest:
     repo-path: darling
     path: darling
     remote: darling-next
-    revision: 9f6fd3373b3309bcdfb7e316ff478021f531d28f
+    revision: 060fc61c5366be246580e41f3d6a6043bcdd13d8
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -450,7 +450,7 @@ manifest:
     # The reviewed WR pin for this component lives on the project FORK
     # (recovery/ring-wr); the upstream repository stays recorded in userdata.
     remote: darling-next
-    revision: be0d64766957
+    revision: c338f90a6499
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
