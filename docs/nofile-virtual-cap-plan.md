@@ -229,4 +229,49 @@ keep the raise confined to the server's thread group and prove the child restore
 proven path today is the single `fork()` that becomes launchd; a second creation path would reopen the window
 that round three closed structurally). The falsified window design is NOT in the product: the product's raise is
 one-shot and permanent for the server, so there is no transient state to race -- which is exactly why the
-window-race harness is a gate for a FUTURE transient design rather than a test of today's shape.
+## Round eight: the epoch-0 design, stated against the measured numbers
+
+The Bead's line is "all internal process anchors established during controlled bootstrap -> truthful Linux
+RLIMIT_NOFILE installed before ordinary guest activity -> no temporary runtime raise visible to a multithreaded
+guest". Round seven measured what of that is already true and what it costs to finish.
+
+WHAT IS ALREADY TRUE, MEASURED. With the inherited soft limit lowered to 64, every anchor the Bead names --
+`launchd`, `launchctl bootstrap`, `shellspawn` -- and the guest workload itself held 64 for their whole lifetime,
+on both candidates, with no intermediate value sampled. The anchors ARE established under the truthful limit
+today. The only process that holds a raised value is the server itself.
+
+THE SINGLE DEVIATION. `darlingserver` raises its own soft limit to `nr_open` once, at startup, and keeps it: it is
+permanent for the server and invisible to every guest-visible process, because the child that becomes launchd is
+restored before it can be observed. It is therefore NOT the falsified design (that one raised and lowered around
+each private allocation, i.e. it had a window). What the Bead forbids by its stronger line is the raise existing
+at all.
+
+THE TWO BRANCHES, WITH THEIR MEASURED PRICE.
+
+* Branch A -- keep the server's limit truthful (drop the raise). Price: measured, 59 descriptors is the floor at
+  which the no-raise server still boots (PASS 59, FAIL 58); it boots and holds the workload at 64 and above
+  (PASS at 256/128/64 with the Bead workload). This branch needs no new limit mechanism at all, only the check
+  below, and it is the branch that satisfies the Bead's line literally.
+* Branch B -- keep the one-shot raise, and prove the restore covers every creation path. Price: a proof
+  obligation, not a measurement. Today exactly one `fork()` exists in `darlingserver.cpp` (the launchd child) and
+  the restore runs inside that child, which is why no guest ever observes the raised value; a second creation
+  path added later would silently reopen the window that round three closed structurally, so this branch needs
+  the restore to be enforced per child rather than argued from the current call graph.
+
+BEHAVIOR BELOW THE FLOOR, WHICH IS THE PART THAT IS MISSING TODAY. Under branch A a strict host (inherited soft
+below 59) currently gets a guest that dies through a signal -- rc 132/139 -- with the launcher reporting only that
+shellspawn never became ready, and the plane denial (`rpc-socket-DENIED`, `call=task_self_trap` or `checkin`) is
+not surfaced as a refusal. The designed behavior is: the server reads its inherited soft limit at startup, and if
+it is below the required minimum it emits ONE diagnostic naming the inherited value, the required value and the
+fact that the guest's descriptor budget cannot be satisfied, then exits non-zero before any guest exists. No
+abort, no signal, no 30-second shellspawn timeout. The required minimum must be a stated constant justified by the
+measurement above (59 with margin), not the measured value pasted in, and the check must run before the anchors,
+so the refusal is the only thing a strict host ever sees.
+
+VERIFICATION OBLIGATIONS FOR WHICHEVER BRANCH IS CHOSEN. (1) The 1/8/16/32 slope matrix with the true holder,
+which is already the regression gate for the transport claim. (2) A strict-limit boot at the floor and one below
+it, asserting the diagnostic text and the non-zero exit rather than a signal. (3) The window-race harness, which
+becomes MANDATORY only under a design that mutates the limit transiently; under branch A there is no transient
+state to race, and under branch B the restore proof above is the substitute. (4) A repeat of the visibility
+witness with the inherited limit lowered, because that is the only configuration that can distinguish a raised
+server from a truthful one.
