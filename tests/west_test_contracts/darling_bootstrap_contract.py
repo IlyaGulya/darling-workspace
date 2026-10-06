@@ -70,10 +70,8 @@ def _stub_west_command_base() -> None:
 _stub_west_command_base()
 
 import darling_bootstrap  # noqa: E402
-import test_runtime  # noqa: E402
 
 PLAN = ROOT / "testkit/darling-bootstrap.yml"
-PROFILES = ROOT / "testkit/runtime-profiles.yml"
 SOURCE_SELECTION_KEYS = (
     "source-mode",
     "source-profile",
@@ -192,45 +190,75 @@ def check_d_the_configure_gate_is_real() -> None:
     print("D ok: the define gate accepts the variant and reports every entry a wrong one lacks")
 
 
-def check_e_ring_defines_match_the_manifest_provider() -> None:
+# The migration oracle was the manifest-native manifest-ring-on provider's declaration in
+# testkit/runtime-profiles.yml: while the direct path was unproven, comparing against the accepted provider was
+# the only honest authority. Parity is now measured (the direct path boots the accepted Ring product from the
+# West manifest pins: full closure deployed, runtime doctor healthy, and the guest smoke prints
+# WEST_PREFIX_BOOTSTRAP_OK), so the plan is its own authority and these are the checked-in invariants it must
+# keep. They are deliberately inlined rather than read from the profile file: the West-native path must not
+# depend on the transitional runtime-profile mechanism as its product authority.
+ACCEPTED_INSTALL_VARIANT = {
+    "CMAKE_BUILD_TYPE": "Debug",
+    "DARLING_EUNION": True,
+    "DARLING_ROOTLESS_TOOLCHAIN": True,
+    "DARLING_ROOTLESS_HOMEBREW": True,
+    "DARLING_MALLOC_REGION_TEST": True,
+    "DARLING_SKIP_DRIFT_GATE": True,
+    "DARLING_RING_TRANSPORT": True,
+    "DSERVER_RING_TRANSPORT": True,
+}
+ACCEPTED_RUNTIME_ARTIFACTS = [
+    {"module": "darling", "build-targets": ["rootless_bootstrap"], "resource": "rootless-bootstrap"},
+    {"module": "darling", "build-targets": ["rootless_toolchain"], "resource": "rootless-toolchain"},
+    {
+        "module": "darling/src/external/libmalloc",
+        "build-targets": ["rack_region_generation"],
+        "deploy": ["usr/libexec/rack_region_generation"],
+    },
+]
+ACCEPTED_LAUNCHER_ENV = {
+    "DARLING_ROOTLESS": "1",
+    "DARLING_NOOVERLAYFS": "1",
+    "DARLING_EUNION": "1",
+    "DARLING_ROOTLESS_SHELLSPAWN_READY_TIMEOUT_MS": "60000",
+    "DARLING_SERVER_ATTACH_CENSUS": "1",
+    "DARLING_SERVER_RPC_HEATMAP": "1",
+    "DARLING_SERVER_MODE": "balanced",
+}
+ACCEPTED_RUNTIME_MODE = "rootless-eunion"
+
+
+def check_e_the_plan_carries_the_accepted_build_configuration() -> None:
     plan = darling_bootstrap.load_bootstrap_plan(PLAN)
-    definitions = test_runtime.load_ctest_runtime_profiles(PROFILES)
-    reference = definitions["manifest-ring-on"]["cmake-defines"]
-    # The accepted path sets the build type outside the profile: test_runtime_build.configure_args starts
-    # from {"CMAKE_BUILD_TYPE": "Debug"} and lets the profile's defines override it. A plan that mirrors the
-    # provider therefore has to carry Debug itself.
-    expected = {"CMAKE_BUILD_TYPE": "Debug", **reference}
-    assert plan.cmake_defines == expected, (plan.cmake_defines, expected)
-    print(
-        "E ok: the plan's Ring defines and build type are the values the accepted path configures"
+    assert plan.cmake_defines == ACCEPTED_INSTALL_VARIANT, (
+        plan.cmake_defines,
+        ACCEPTED_INSTALL_VARIANT,
     )
+    print("E ok: the plan's defines and build type are the accepted configuration")
 
 
-def check_f_deploy_set_and_environment_match_the_manifest_provider() -> None:
+def check_f_deploy_set_and_environment_are_the_accepted_ones() -> None:
     """The direct path replaces the profile LOOKUP, not the accepted runtime.
 
-    If the plan's closure or environment drifts from the accepted Ring provider, this entrypoint would
-    bootstrap something other than the runtime that was accepted, and no receipt would notice -- the receipt
-    records what was deployed, not what was intended.
+    If the plan's closure or environment drifts from what was accepted, this entrypoint would bootstrap
+    something other than the runtime that was accepted, and no receipt would notice -- the receipt records what
+    was deployed, not what was intended.
     """
 
     plan = darling_bootstrap.load_bootstrap_plan(PLAN)
-    definitions = test_runtime.load_ctest_runtime_profiles(PROFILES)
-    reference = definitions["manifest-ring-on"]
-    assert plan.runtime_artifacts == reference["runtime-artifacts"], (
+    assert plan.runtime_artifacts == ACCEPTED_RUNTIME_ARTIFACTS, (
         plan.runtime_artifacts,
-        reference["runtime-artifacts"],
+        ACCEPTED_RUNTIME_ARTIFACTS,
     )
-    assert plan.launcher_env == {
-        key: str(value) for key, value in reference["launcher-env"].items()
-    }, (plan.launcher_env, reference["launcher-env"])
-    assert plan.runtime_mode == reference["runtime-mode"], (
+    assert plan.launcher_env == ACCEPTED_LAUNCHER_ENV, (
+        plan.launcher_env,
+        ACCEPTED_LAUNCHER_ENV,
+    )
+    assert plan.runtime_mode == ACCEPTED_RUNTIME_MODE, (
         plan.runtime_mode,
-        reference["runtime-mode"],
+        ACCEPTED_RUNTIME_MODE,
     )
-    print(
-        "F ok: the plan's deploy set, launcher environment and runtime mode are the accepted provider's"
-    )
+    print("F ok: the plan's deploy set, launcher environment and runtime mode are the accepted ones")
 
 
 def check_g_the_user_namespace_precondition_is_named() -> None:
@@ -319,8 +347,8 @@ def main() -> int:
     check_b_a_source_selection_is_refused()
     check_c_a_malformed_plan_is_refused()
     check_d_the_configure_gate_is_real()
-    check_e_ring_defines_match_the_manifest_provider()
-    check_f_deploy_set_and_environment_match_the_manifest_provider()
+    check_e_the_plan_carries_the_accepted_build_configuration()
+    check_f_deploy_set_and_environment_are_the_accepted_ones()
     check_g_the_user_namespace_precondition_is_named()
     check_h_the_inherited_nofile_is_recorded()
     check_i_the_install_prefix_is_part_of_the_configuration()

@@ -126,10 +126,14 @@ name, and `tests/run-darling-bootstrap-contract.sh` pins that refusal, the
 malformed-plan refusals, the define gate and the fact that the plan's Ring
 defines are exactly the values the manifest-native Ring provider declares.
 
-`--bootstrap-runtime-profile` remains the profile-coupled path and the way the
-`guest-toolchain-provisioning` profile installs the reviewed guest
-CommandLineTools; the direct entrypoint covers the runtime closure, which is
-what a prefix needs in order to boot.
+`west darling-bootstrap` supersedes `manifest-ring-*` for prefix bootstrap: those profiles are now the
+transitional path and are no longer the product authority for a West-native run. Parity is measured, not
+assumed: built from the West manifest pins (`darling` `9f6fd337…`, `darlingserver` `be0d647…`, whose tree is
+identical to the revision the accepted prefix recorded), the command deploys the full rootless closure, the
+runtime doctor passes with 7941 deployed files, the deployment receipt verifies with 0 problems, and the guest
+smoke prints `WEST_PREFIX_BOOTSTRAP_OK`. `--bootstrap-runtime-profile` remains for the flows that still need a
+runtime provider -- notably the reviewed guest CommandLineTools provisioning, which is an environment
+dependency the Ring runtime itself does not need -- until those are cut over too.
 
 The host must be able to create unprivileged user namespaces: Darling's rootless
 runtime creates mount and PID namespaces, and on a host that refuses them no
