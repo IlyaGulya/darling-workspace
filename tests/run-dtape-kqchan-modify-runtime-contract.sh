@@ -121,4 +121,9 @@ if [ "$fail" -ne 0 ]; then
 	echo "DTAPE-KQCHAN-MODIFY-RUNTIME FAIL (log: $log)" >&2
 	exit 1
 fi
+
+# Leave the prefix as we found it: the gate's own run booted it.
+env DPREFIX="$prefix" DARLING_PREFIX="$prefix" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
+	timeout 120 "$prefix/bin/darling" --rootless shutdown >/dev/null 2>&1 || true
+
 echo "DTAPE-KQCHAN-MODIFY-RUNTIME PASS: prebuilt guest Mach-O completed the kqchan modify path"
