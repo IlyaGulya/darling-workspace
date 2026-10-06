@@ -20,8 +20,10 @@
 # answers a ready machport event by sending dserver_kqchan_msgnum_mach_port_read,
 # so the retrieval reaches Kqchan::MachPort::_read -> dtape_kqchan_mach_port_fill ->
 # filt_machportprocess -> ipc_mqueue_receive_on_thread -> mach_msg_receive_results.
-# The gate requires the guest to observe MACH_MSG_SUCCESS with the message size, and
-# the server's own read-path debug line.
+# The gate requires the guest to observe MACH_MSG_SUCCESS for that message (KQCHAN_FILL_OK)
+# and for a second, descriptor-bearing message (KQCHAN_FILL_DESC_OK: one
+# MACH_MSG_PORT_DESCRIPTOR, laid out by ipc_kmsg_copyout_body and materialized in the
+# requester's space), plus the server's own read-path debug line.
 #
 # Inputs (required):
 #   DARLING_BUILD_DIR  a configured Darling product build (has build.ninja)
@@ -116,6 +118,7 @@ env DPREFIX="$prefix" DARLING_PREFIX="$prefix" DARLING_ROOTLESS=1 DARLING_NOOVER
 fail=0
 for marker in \
 	'KQCHAN_FILL_OK=1' \
+	'KQCHAN_FILL_DESC_OK=1' \
 	'handling read request in microthread'; do
 	if grep -q "$marker" "$log"; then
 		echo "dtape-kqchan-fill-runtime: saw $marker"
