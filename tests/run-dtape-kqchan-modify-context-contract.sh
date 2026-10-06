@@ -124,8 +124,13 @@ modify_raw, modify = bodies("src/kqchan.cpp", "DarlingServer::Kqchan::MachPort::
 touch_raw, touch = bodies("duct-tape/src/kqchan.c", "void dtape_kqchan_mach_port_modify(")
 _, touch_filter = bodies("duct-tape/xnu/osfmk/ipc/ipc_pset.c", "filt_machporttouch(")
 
-# Boundary owners (.4b): these MUST still consume the requester thread.
+# Boundary with .4b (dar-dtape-explicit-context-6to3.5): the read/fill path now carries
+# the requester EXPLICITLY (tests/run-dtape-kqchan-fill-context-contract.sh owns that
+# behavioral proof). The old hidden transport -- impersonate() around the read -- must be
+# gone, or this .4a contract would be satisfied by a partial revert that re-hides it.
 read_raw, read_path = bodies("src/kqchan.cpp", "DarlingServer::Kqchan::MachPort::_read(")
+# The ordinary entrypoint keeps its ambient signature and forwards current_thread(); the
+# explicit helper must exist for the kqchan path to call.
 _, fill_filter = bodies("duct-tape/xnu/osfmk/ipc/ipc_pset.c", "filt_machportprocess(")
 
 failures = []
@@ -141,16 +146,22 @@ for label, text in (("Kqchan::MachPort::_modify", modify),
 if "impersonate" in modify:
     failures.append("Kqchan::MachPort::_modify still calls impersonate()")
 
-# Boundary: the read/fill side must still carry the requester.
+# Boundary: the ambient entrypoint still forwards current_thread(); the .4b path must not
+# impersonate, and the explicit helper must be present (the fill must call it).
 if not CONTEXT.search(fill_filter):
-    failures.append("boundary lost: filt_machportprocess no longer reads current_thread()")
-if "impersonate" not in read_path:
-    failures.append("boundary lost: Kqchan::MachPort::_read no longer impersonates the requester")
+    failures.append("boundary lost: the ambient filt_machportprocess entrypoint no longer forwards current_thread()")
+if "filt_machportprocess_on_thread" not in (dserver / "duct-tape/xnu/osfmk/ipc/ipc_pset.c").read_text():
+    failures.append("boundary lost: filt_machportprocess_on_thread is absent")
+with (dserver / "duct-tape/src/kqchan.c").open() as handle:
+    if "filt_machportprocess_on_thread(" not in handle.read():
+        failures.append("boundary lost: dtape_kqchan_mach_port_fill does not call the explicit filter")
+if "impersonate" in read_path:
+    failures.append("Kqchan::MachPort::_read still carries the hidden impersonate() transport (owned by .4b)")
 
 if failures:
     for failure in failures:
         print(f"DTAPE-KQCHAN-MODIFY-CONTEXT FAIL: {failure}", file=sys.stderr)
     raise SystemExit(1)
 
-print("DTAPE-KQCHAN-MODIFY-CONTEXT PASS: touch path is context-free; read path still carries the requester")
+print("DTAPE-KQCHAN-MODIFY-CONTEXT PASS: touch path is context-free; read path carries an explicit requester")
 PY

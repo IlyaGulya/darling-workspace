@@ -247,6 +247,19 @@ EXCLUDED_CONTRACTS = {
         "booted Darling prefix (DPREFIX) whose darlingserver is under test, then asserts the "
         "server's own kqchan modify debug lines. The host tier has no prefix lifecycle and no guest "
         "runtime; run it with DARLING_BUILD_DIR and DPREFIX from the prefix-backed lane",
+    "tests/run-dtape-kqchan-fill-context-contract.sh":
+        "compiles the real XNU-flavoured duct-tape objects the kqchan read/fill path runs on "
+        "(duct-tape/src/kqchan.c, duct-tape/xnu ipc_pset.c, ipc_mqueue.c, mach_msg.c), which needs "
+        "a configured product build dir for its generated headers and its recorded compile "
+        "commands. It is a deterministic host contract (two contexts K != R) but build-dir backed: "
+        "run it with DARLING_BUILD_DIR=<configured build> from the prefix-backed lane. The barer "
+        "host tier has no product build",
+    "tests/run-dtape-kqchan-fill-runtime-contract.sh":
+        "guest-runtime gate: it host-builds a prebuilt guest Mach-O fixture that registers "
+        "EVFILT_MACHPORT and receives a message through the kqchan read path, executes it in a "
+        "booted Darling prefix (DPREFIX), and asserts the server's own read-path evidence. The host "
+        "tier has no prefix lifecycle and no guest runtime; run it with DARLING_BUILD_DIR and "
+        "DPREFIX from the prefix-backed lane",
     "tests/run-west-test-metadata-contract.sh":
         "cannot complete without the immutable mirror: its west steps materialize profiles whose "
         "lock-first batches fetch refs/tags/patch-stack/* from the mirror. That fetch is bounded "
