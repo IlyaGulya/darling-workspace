@@ -1,0 +1,9 @@
+===== matrix (true holder, N=1/8/16/32)
+FD-SLOPE threads=1 server_peak=65 guest_peak=10 samples=84
+VERDICT mode=stress_pool verdict=PASS denied=0 created=0 rc=0 :: RING_MACH_TEST mode=stress_pool receivers=1 iters=60 pass=1 failures=0 total_s=6.138
+FD-SLOPE threads=8 server_peak=65 guest_peak=10 samples=84
+VERDICT mode=stress_pool verdict=PASS denied=0 created=0 rc=0 :: RING_MACH_TEST mode=stress_pool receivers=8 iters=60 pass=1 failures=0 total_s=6.545
+FD-SLOPE threads=16 server_peak=65 guest_peak=10 samples=93
+VERDICT mode=stress_pool verdict=PASS denied=0 created=0 rc=0 :: RING_MACH_TEST mode=stress_pool receivers=16 iters=60 pass=1 failures=0 total_s=8.321
+FD-SLOPE threads=32 server_peak=67 guest_peak=10 samples=98
+VERDICT mode=stress_pool verdict=PASS denied=0 created=0 rc=0 :: RING_MACH_TEST mode=stress_pool receivers=32 iters=60 pass=1 failures=0 total_s=9.222

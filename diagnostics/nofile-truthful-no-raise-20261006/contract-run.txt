@@ -1,0 +1,17 @@
+===== contract (audit + runtime)
+ok   audit: darlingserver never calls setrlimit(RLIMIT_NOFILE)
+ok   audit: darlingserver does not read /proc/sys/fs/nr_open
+ok   audit: the requirement is derived from a role-peak constant
+ok   audit: the requirement is not a pasted literal
+ok   audit: the launcher reaps the server child before judging liveness
+ok   audit: the launcher still reports a shellspawn readiness timeout (unchanged path)
+ok   runtime: supported-limit boot runs the guest (rc=0, 2.4s)
+ok   runtime: every observed process held the inherited limit (darling=256, darlingserver=256, guest=256, mldr=256)
+ok   runtime: insufficient limit exits normally with rc=1
+ok   runtime: the diagnostic prints the refusal
+ok   runtime: the diagnostic names the inherited soft limit
+ok   runtime: the diagnostic names the required value
+ok   runtime: the diagnostic names the reason
+ok   runtime: no guest process ran
+ok   runtime: the refusal surfaces promptly (0.0s)
+TRUTHFUL-NOFILE-CONTRACT layers=audit,runtime failures=0
