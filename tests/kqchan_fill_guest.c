@@ -18,9 +18,8 @@
  * ipc_kmsg_copyout_body()/ipc_kmsg_copyout_port_descriptor() -- the helpers .4b had to thread the
  * requester through. The second case covers that gap: one MACH_MSG_PORT_DESCRIPTOR is sent to the
  * EVFILT_MACHPORT receive port and received through the same kqchan read/fill path. The third case
- * carries a MACH_MSG_TYPE_MOVE_RECEIVE descriptor, which reaches ipc_object_copyout/ipc_right_copyout
- * -- the receive branch .6 threaded the requester through -- and must land a live receive right in
- * the guest's namespace.
+ * carries a MACH_MSG_TYPE_MOVE_RECEIVE descriptor, which additionally reaches ipc_object_copyout/
+ * ipc_right_copyout, and must land a live receive right in the guest's namespace.
  *
  * Host-built as a guest Mach-O and executed by the prefix; nothing is compiled in the guest.
  */
@@ -51,11 +50,12 @@ struct desc_message {
 };
 
 /*
- * Receive-right case (.6): a port descriptor carrying a MOVE_RECEIVE right, received through the
- * kqchan read/fill path. .4b threaded the requester into the copyout body; .6 threads it into
- * ipc_object_copyout/ipc_right_copyout, whose receive branch selects the turnstile knote and the
- * immovable-receive guard message address from the receiving thread. Receiving a receive right must
- * still succeed and land a live receive right in the requester's own namespace.
+ * Receive-right case: a port descriptor carrying a MOVE_RECEIVE right, received through the kqchan
+ * read/fill path. This is a distinct copyout branch from the COPY_SEND case above: it reaches
+ * ipc_object_copyout -> ipc_right_copyout MACH_MSG_TYPE_PORT_RECEIVE, which selects the turnstile
+ * knote, stashes the port in the requester's knote and sets the receive right in the receiving
+ * space. Receiving a receive right must still succeed and land a live receive right in the guest's
+ * own namespace.
  */
 static int receive_right_case(void) {
 	int kq = kqueue();
