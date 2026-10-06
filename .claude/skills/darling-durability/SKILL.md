@@ -133,11 +133,23 @@ do not invent unsupported managed verbs.
   mappings such as `[vsyscall]` can leave `exact_complete=false` even when that
   diagnostic passes; retain the omission details rather than upgrading the claim.
 
+## Session durability authority
+
+Durability is: accepted component commits reachable from declared remotes, the
+accepted workspace manifest commit reachable from its remote, committed Beads
+state, and working trees that are clean or explicitly documented. Do NOT run
+`mise run west dw handoff` merely because a session changed Beads or created a
+local branch, and do not initialize hundreds of unrelated recursive submodules
+just so handoff can run. A rejected or experimental local branch needs no keeper
+bundle once its reason, commit SHA and evidence are recorded durably in Beads or
+the diagnostic archive; never publish a rejected implementation as product work.
+
 ## Refresh handoff without swallowing other work
 
-After changing private branches or Beads, run `mise run west dw handoff`.
-Before doing so, inspect the current handoff implementation and record the
-pre-existing dirty/staged paths; handoff behavior and generated paths can change.
+Run `mise run west dw handoff` only when an explicit local-only state genuinely
+needs portable archival and cannot or should not be published normally. Before
+doing so, inspect the current handoff implementation and record the pre-existing
+dirty/staged paths; handoff behavior and generated paths can change.
 
 Afterward:
 

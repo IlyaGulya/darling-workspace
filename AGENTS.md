@@ -191,11 +191,22 @@ refs, PR drafts, and agent handoff.
   but not published upstream, and only `ready` may be published upstream.
 - Do not remove or weaken a publication blocker without resolving its owning
   Bead and updating the foundational review evidence.
-- Run `west dw handoff` before ending a session that changed Beads or private
-  branches.
-- After `west dw handoff`, stage only the handoff files it actually changed;
-  never use `git add -A` as a shortcut, because unrelated in-progress fixes
-  would be misfiled in a handoff commit.
+- Session durability is: accepted component commits reachable from declared
+  remotes, the accepted workspace manifest commit reachable from its remote,
+  committed Beads state, and working trees that are clean or explicitly
+  documented. `west dw handoff` is NOT mandatory merely because a session
+  changed Beads or created a local branch.
+- Use `west dw handoff` only when an explicit local-only state genuinely needs
+  portable archival and cannot or should not be published normally. Do not
+  initialize hundreds of unrelated recursive submodules merely so handoff can
+  run, and do not make handoff success a product milestone gate.
+- A rejected or experimental local branch needs no keeper bundle when its
+  reason, commit SHA and relevant evidence are recorded durably in Beads or the
+  diagnostic archive; retain or delete it per normal Git hygiene. Never publish
+  a rejected implementation as product work.
+- When `west dw handoff` is run, stage only the handoff files it actually
+  changed; never use `git add -A` as a shortcut, because unrelated in-progress
+  fixes would be misfiled in a handoff commit.
 - Forest handoff does not automatically cover sibling tooling repositories.
   Preserve every changed canonical runner/tool branch in its actual keeper
   bundle and verify the tip with `git bundle list-heads`; do not assume that
