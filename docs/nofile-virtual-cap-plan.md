@@ -175,4 +175,58 @@ samples of a run, so it merged different processes and different moments, and at
 shapes as at 48 -- which contradicts the three earlier failures at 32 and therefore says the sampler is wrong,
 not that the failures are. A future attempt should read one process's descriptor list at the frozen moment of
 failure, not a union over a run. Recorded here because a measurement that reports the opposite of the truth is
-worth less than no measurement, and the next reader must not build on it.
+## Round seven: canonical repetition, and the caveat every earlier number carried (measured 2026-10-06)
+
+Every number in rounds one through six was taken on the frozen scratch tree. The repetition the caveat demanded
+has now been made on two homogeneous canonical candidates that differ in EXACTLY ONE FILE: candidate A is the
+product pin `be0d647` (the server raises its own soft limit to `nr_open` at startup), candidate B is the named
+branch `diag/no-raise-nofile` at `2e54f3b`, whose binary contains no `nr_open` reference at all. Same configure,
+same Debug build type, separate build dirs and prefixes, canonical invocation (env only, no `--rootless` flag,
+`shell /bin/bash --login -c`), fresh cold incarnation per point with zero live prefix processes verified first.
+
+FLOOR. Candidate B, fresh cold boot per point, verdict from the workload's own line:
+trivial smoke PASS at 1048576/4096/256/64, FAIL at 48/32/24/16; workload `r2 8` PASS at 128/64, FAIL at 48/32;
+bisection PASS 60, PASS 59, FAIL 58, FAIL 57/56/52/50/49. Candidate A PASSes every point down to 32 for both
+workloads. So the CANONICAL floor of the no-raise server is 59 descriptors, not the 48 round four found on the
+scratch tree -- the caveat was worth carrying, and the number moved by eleven. The failure shape agrees with
+round five: the guest dies through `rpc-socket-DENIED` on the plane path (`call=task_self_trap`, and `call=checkin`
+at 52) with the launcher reporting shellspawn never ready, and it leaves through a signal (rc 132/139) rather
+than a legible refusal.
+
+SLOPE, AND ONE METHOD CORRECTED. The r2 holder used in round six does NOT vary the number of live guest threads:
+its single argument is the number of out-of-line round trips the MAIN thread performs while exactly one worker
+parks on a hard-coded 3000 ms sender (measured: `iters=1` and `iters=32` both report `parked_elapsed` ~3.0). A
+slope taken with it is a slope against TRAFFIC and can only return 0. `scripts/darling-fd-slope.sh` now defaults
+to the true holder `stress_pool <live pairs> <iters>` (S1 persistent receiver/sender pairs, fixed thread count)
+and exposes `--holder`/`--holder-iters`; the r2 matrix is withdrawn. With the true holder, ~6 s window and
+84-334 `/proc` samples per clean incarnation: candidate B PASSes N=1/8/16/32 with `server_peak=65 guest_peak=10`
+at EVERY size; candidate A matches at N=1/8/16. The target -- zero descriptors per live thread -- therefore still
+holds, but it is now measured against live thread count rather than against traffic.
+
+RAISE VISIBILITY, RE-ESTABLISHED WITH A WITNESS THAT CAN DISTINGUISH. The 2026-10-05 comment reported the guest
+seeing 1048575 and concluded the raise "is visible to the guest as its own". That reading is VACUOUS on this host:
+the default soft limit already equals `nr_open`, so a raised server and a truthful one are indistinguishable. With
+the run's inherited soft limit lowered to 64 (above candidate B's measured floor of 59), host-side sampling of
+every prefix-owned process' `/proc/<pid>/limits` throughout a thread-parking run gives:
+
+| process | candidate A (raise) | candidate B (no raise) |
+|---|---|---|
+| `darlingserver` | 1048576 | 64 |
+| launcher `darling` | 64 | 64 |
+| `launchd`, `launchctl`, `shellspawn`, the guest workload | 64 | 64 |
+
+Every guest-visible process holds the truthful inherited value on BOTH candidates, and no intermediate value was
+ever sampled for any of them across the whole run. Rounds two and three are therefore CONFIRMED on the canonical
+build: the raise is confined to the server's own thread group, and the child that becomes launchd is restored
+before it can be observed. What the guest sees is the inherited limit, on the product today.
+
+CONSEQUENCE FOR THE EPOCH-0 DESIGN, which is the remaining gap in the Bead's criteria. The guest-facing half of
+"no temporary runtime raise visible to a multithreaded guest" is met today, by measurement, not by reading. What
+is NOT met is the stronger Bead line: that no runtime raise exists at all and the truthful limit is installed
+during controlled bootstrap. The measured price of removing the server-side raise outright is the 59-descriptor
+floor above, so the design has two honest branches: fit the server's own baseline inside the inherited limit, or
+keep the raise confined to the server's thread group and prove the child restore covers EVERY creation path (the
+proven path today is the single `fork()` that becomes launchd; a second creation path would reopen the window
+that round three closed structurally). The falsified window design is NOT in the product: the product's raise is
+one-shot and permanent for the server, so there is no transient state to race -- which is exactly why the
+window-race harness is a gate for a FUTURE transient design rather than a test of today's shape.
