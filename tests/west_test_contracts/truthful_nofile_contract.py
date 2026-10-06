@@ -34,6 +34,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -182,27 +183,35 @@ def run_guest(prefix: Path, limit: int, timeout: float) -> tuple[int, str, float
     watcher = threading.Thread(target=_watch_limits, args=(prefix, stop, seen), daemon=True)
     watcher.start()
 
+    # Capture to a FILE, not a pipe. The rootless server outlives the guest command and inherits stderr, so
+    # a pipe is never closed by it: a pipe-based communicate() was measured to hang past its own timeout and
+    # then hang again in the un-timed communicate() after kill(). The launcher itself does exit, so poll it.
+    out_path = Path(tempfile.mkstemp(prefix="nofile-contract-", suffix=".out")[1])
     started = time.monotonic()
-    proc = subprocess.Popen(
-        [
-            "/bin/sh", "-c",
-            f'ulimit -S -n {limit} 2>/dev/null || exit 99\nexec "$0" shell /bin/bash --login -c "$1"',
-            str(prefix / "bin/darling"),
-            f"echo {GUEST_MARKER}",
-        ],
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-    )
-    try:
-        out, _ = proc.communicate(timeout=timeout)
-        rc = proc.returncode
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        out, _ = proc.communicate()
-        rc = 124
+    with out_path.open("wb") as sink:
+        proc = subprocess.Popen(
+            [
+                "/bin/sh", "-c",
+                f'ulimit -S -n {limit} 2>/dev/null || exit 99\nexec "$0" shell /bin/bash --login -c "$1"',
+                str(prefix / "bin/darling"),
+                f"sleep 2; echo {GUEST_MARKER}",
+            ],
+            env=env, stdout=sink, stderr=subprocess.STDOUT,
+        )
+        try:
+            rc = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                rc = proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                rc = 124
     elapsed = time.monotonic() - started
     stop.set()
     watcher.join(timeout=5)
-    return rc, (out or b"").decode("utf-8", "replace"), elapsed, seen
+    output = out_path.read_text(errors="replace")
+    out_path.unlink(missing_ok=True)
+    return rc, output, elapsed, seen
 
 
 def runtime_layer() -> None:
@@ -217,7 +226,7 @@ def runtime_layer() -> None:
     RAN.append("runtime")
 
     # Supported limit: the guest must run, and every process must hold EXACTLY the inherited value.
-    rc, out, elapsed, seen = run_guest(prefix, SUPPORTED_LIMIT, 300.0)
+    rc, out, elapsed, seen = run_guest(prefix, SUPPORTED_LIMIT, 180.0)
     if rc != 0 or GUEST_MARKER not in out:
         fail(f"runtime: supported-limit boot failed (rc={rc}, {elapsed:.1f}s)")
     else:
@@ -233,7 +242,7 @@ def runtime_layer() -> None:
             ok(f"runtime: every observed process held the inherited limit ({roles})")
 
     # Insufficient limit: one diagnostic, non-zero exit, no signal, no guest, and fast.
-    rc, out, elapsed, _ = run_guest(prefix, INSUFFICIENT_LIMIT, 300.0)
+    rc, out, elapsed, _ = run_guest(prefix, INSUFFICIENT_LIMIT, 180.0)
     if rc == 0:
         fail("runtime: insufficient limit still booted")
     elif rc in (-signal.SIGILL, -signal.SIGSEGV, 132, 139):
