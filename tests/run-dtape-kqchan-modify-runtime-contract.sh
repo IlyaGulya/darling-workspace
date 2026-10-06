@@ -43,6 +43,10 @@ if [ ! -f "$fixture_src" ]; then
 	exit 2
 fi
 
+# The server argv carries only the prefix BASENAME (e.g. "darlingserver 4 3 prefix-x ..."),
+# never the absolute path, so the process pattern must use the basename.
+prefix_name="$(basename "$prefix")"
+
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 
@@ -88,11 +92,11 @@ binary="$workdir/fixture"
 env DPREFIX="$prefix" DARLING_PREFIX="$prefix" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
 	timeout 120 "$prefix/bin/darling" --rootless shutdown >/dev/null 2>&1 || true
 for _ in $(seq 1 60); do
-	pgrep -f "darlingserver.*$prefix" >/dev/null 2>&1 || break
+	pgrep -f "darlingserver.*$prefix_name" >/dev/null 2>&1 || break
 	sleep 1
 done
 pkill -f "$prefix/bin/darling" >/dev/null 2>&1 || true
-pgrep -f "darlingserver.*$prefix" >/dev/null 2>&1 && {
+pgrep -f "darlingserver.*$prefix_name" >/dev/null 2>&1 && {
 	echo "dtape-kqchan-modify-runtime: prefix darlingserver still running; cannot guarantee a fresh server" >&2
 	exit 1
 }
@@ -129,14 +133,14 @@ fi
 env DPREFIX="$prefix" DARLING_PREFIX="$prefix" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
 	timeout 120 "$prefix/bin/darling" --rootless shutdown >/dev/null 2>&1 || true
 for _ in $(seq 1 20); do
-	pgrep -f "darlingserver.*$prefix" >/dev/null 2>&1 || break
+	pgrep -f "darlingserver.*$prefix_name" >/dev/null 2>&1 || break
 	sleep 1
 done
-if pgrep -f "darlingserver.*$prefix" >/dev/null 2>&1; then
-	pkill -f "darlingserver.*$prefix" >/dev/null 2>&1 || true
+if pgrep -f "darlingserver.*$prefix_name" >/dev/null 2>&1; then
+	pkill -f "darlingserver.*$prefix_name" >/dev/null 2>&1 || true
 	sleep 2
 fi
-pgrep -f "darlingserver.*$prefix" >/dev/null 2>&1 && \
+pgrep -f "darlingserver.*$prefix_name" >/dev/null 2>&1 && \
 	echo "dtape-kqchan-modify-runtime: warning: darlingserver for $prefix did not exit after shutdown" >&2
 
 echo "DTAPE-KQCHAN-MODIFY-RUNTIME PASS: prebuilt guest Mach-O completed the kqchan modify path"
