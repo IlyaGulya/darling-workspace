@@ -201,12 +201,15 @@ class BootstrapPlan:
             proof["launcher-env"] = dict(self.launcher_env)
         return proof
 
-    def cmake_configure_line(self, topdir: Path) -> str:
+    def cmake_configure_line(self, topdir: Path, prefix: Path) -> str:
         defines = " ".join(
             f"-D{name}={'ON' if value is True else 'OFF' if value is False else value}"
             for name, value in self.cmake_defines.items()
         )
-        return f"cmake -S {topdir / 'darling'} -B <build-dir> -G Ninja {defines}".strip()
+        return (
+            f"cmake -S {topdir / 'darling'} -B <build-dir> -G Ninja "
+            f"-DCMAKE_INSTALL_PREFIX={prefix} {defines}"
+        ).strip()
 
 
 def load_bootstrap_plan(path: Path) -> BootstrapPlan:
@@ -302,6 +305,26 @@ def load_bootstrap_plan(path: Path) -> BootstrapPlan:
             "artifact's build-targets are empty"
         )
     return plan
+
+
+def build_install_prefix(cache: Path) -> str | None:
+    """The CMAKE_INSTALL_PREFIX the build dir was configured with.
+
+    It is not a variant knob: the launcher bakes it as INSTALL_PREFIX and finds the server at
+    ``<it>/bin/darlingserver``, so a build dir configured for another install root cannot boot the prefix it
+    is deployed into. Measured: a build dir left at the default /usr/local produced a launcher that exec'd
+    /usr/local/bin/darlingserver, got ENOENT, printed "Failed to start darlingserver" and left the launcher
+    polling shellspawn.sock for its whole timeout -- with no server, no launchd and no shellspawn ever started.
+    """
+
+    try:
+        text = cache.read_text(errors="replace")
+    except OSError as error:
+        raise ValueError(f"cannot read {cache}: {error}") from error
+    for line in text.splitlines():
+        if line.startswith("CMAKE_INSTALL_PREFIX:"):
+            return line.split("=", 1)[1].strip() if "=" in line else None
+    return None
 
 
 def compare_cmake_defines(cache: Path, expected: dict[str, Any]) -> list[str]:
@@ -456,8 +479,28 @@ class DarlingBootstrap(PrefixLifecycleMixin, RuntimePlanMixin, WestCommand):
                     f"build dir {build_dir} does not carry the plan's configuration "
                     f"({plan_path.name}): {detail}\n"
                     f"  configure it explicitly, for example:\n    "
-                    f"{plan.cmake_configure_line(topdir)}"
+                    f"{plan.cmake_configure_line(topdir, prefix)}"
                 )
+
+        # The launcher bakes CMAKE_INSTALL_PREFIX as INSTALL_PREFIX and execs <it>/bin/darlingserver, so a
+        # build dir configured for another install root cannot boot the prefix it is deployed into. This is a
+        # hard gate, not a warning: the failure it prevents is an ENOENT exec with no server, no launchd and no
+        # shellspawn, which looks like a runtime defect from every log the run keeps.
+        baked_install_prefix = build_install_prefix(cache)
+        if baked_install_prefix is None:
+            self.wrn(
+                f"{cache.name} names no CMAKE_INSTALL_PREFIX; the launcher's baked install root "
+                "cannot be checked before it is deployed"
+            )
+        elif Path(baked_install_prefix).expanduser().resolve() != prefix:
+            self.die(
+                f"build dir {build_dir} was configured to install into {baked_install_prefix}, but this "
+                f"bootstrap deploys into {prefix}.\n"
+                f"  The launcher would exec "
+                f"{Path(baked_install_prefix) / 'bin' / 'darlingserver'} and fail with ENOENT.\n"
+                f"  Configure a build dir for this prefix, for example:\n    "
+                f"{plan.cmake_configure_line(topdir, prefix)}"
+            )
 
         # 2. prefix directory (contents, if any, are the deploy's business, not this command's).
         prefix.mkdir(parents=True, exist_ok=True)

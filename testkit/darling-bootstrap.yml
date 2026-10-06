@@ -19,6 +19,9 @@ build-targets:
   - rack_region_generation
 
 cmake-defines:
+  # The accepted runtime build's own build type (test_runtime_build.configure_args sets Debug and the
+  # profiles do not override it), asserted like the rest so the variant cannot drift.
+  CMAKE_BUILD_TYPE: Debug
   DARLING_EUNION: true
   DARLING_ROOTLESS_TOOLCHAIN: true
   DARLING_ROOTLESS_HOMEBREW: true
