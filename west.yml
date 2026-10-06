@@ -21,7 +21,12 @@ manifest:
     # release barrier, which reproduces the >~50-live-thread create/start stall and prints the exact
     # attempt that stopped. Test-only; no product source changed. Published on the canonical
     # fix/truthful-nofile line (parent 060fc61c5).
-    revision: 7fc37b6936a8f26a6e218412c8ba9b720e587981
+    # dar-dles fairness slice (partial, darlingserver a384108): the ring spin is bounded by the work
+    # quantum so the management plane is serviced even while ring work is continuous. Measured:
+    # pthread_live 32 PASS, 64 5/6 PASS; the remaining failure and the 128 failure are a server abort
+    # (dserver-TERMINATE after rpc-socket-DENIED), a separate open defect. Diagnostic-only commits are
+    # NOT part of this pin.
+    revision: 0dbb351821b7bcb7d858a4acb87ab06b8c014547
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -461,7 +466,8 @@ manifest:
     # skip is correct on the kqchan path; see bead dar-dtape-explicit-context-6to3.6.
     # The upstream repository stays recorded in userdata.
     remote: darling-next
-    revision: cd897ebdcf8b8b5bd2bf48c796b9a6b0e1659032
+    # dar-dles fairness slice: bound the ring spin by the work quantum (see the darling pin above).
+    revision: a38410872f5c8c2bfcdd1bf9fc15d11be9ad81f2
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
