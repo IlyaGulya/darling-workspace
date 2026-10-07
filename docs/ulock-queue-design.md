@@ -129,9 +129,8 @@ The foundation for the real thing is already ported:
 * `darlingserver/src/server.cpp:210 dtape_hook_thread_terminate`, registered as
   `.thread_terminate` (line 478), is exactly the thread-death point at which a waiter must be dequeued.
 * `darlingserver/include/darlingserver/rpc-supplement.h` already routes a guest trap that needs the server
-  (`thread_self_trap`, the `DSERVER_RING_CLASS_SIMPLE_C2S` entry at line 864) and documents why the ring
-  route replaced the datagram, so the transport for a queue-backed ulock call exists and is the preferred
-  one.
+  (`thread_self_trap`, the `DSERVER_RING_CLASS_SIMPLE_C2S` entry at line 864), so the transport a
+  queue-backed ulock call needs already exists.
 
 So the slice is not "invent a queue in the right place"; it is "implement the three declared-but-missing
 syscalls over the turnstile machinery that is already in the tree, and let the guest stub return the

@@ -4,6 +4,12 @@ Status: investigation complete for the source-audit half; standalone proofs and 
 census are recorded in section 8 with their exact commands. No production source was
 changed and no production patch was applied.
 
+**Superseded in part.** The datagram/socket transport described here has since been
+retired from the runtime: `mach_driver_get_fd` declines unconditionally, so the ring lane is
+the only transport and there is no datagram fallback to fall back to. Read the socket and
+datagram sections as the pre-retirement architecture and as the measurement record of that
+period, not as a description of the current runtime.
+
 Audience: whoever picks up the descriptor/transport work (bead `dar-gwn.7.7.5`).
 
 Source of truth for the audited code:
