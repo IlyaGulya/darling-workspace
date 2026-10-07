@@ -4,6 +4,18 @@ This repository contains private coordination state, not Darling source code.
 It is the source of truth for workspace manifests, tasks, unpublished branch
 refs, PR drafts, and agent handoff.
 
+## Canonical environment
+
+- This checkout is the ONE canonical product workspace:
+  `/home/ilyagulya/work/wr-fresh` (manifest `darling-workspace`, verified
+  2026-10-07 with a clean `west status` and every managed project at its
+  manifest revision). Do not create a second source authority.
+- Paths, prefixes, the Xcode input and the rules that keep them usable are in
+  `docs/environment.md`; read it before choosing a prefix or a build directory.
+- `/home/ilyagulya/work/darling-dev` and
+  `/home/ilyagulya/work/darling-gwn-resume` are LEGACY, read-only; their unique
+  unpublished state is preserved outside any GC-managed root (see the note).
+
 ## Project tool environment
 
 - `mise.toml` is the canonical host-side CLI environment for this workspace.
