@@ -43,6 +43,12 @@ Rules that keep the area usable:
   copy of the Swift toolchain lives in the overlay above with its provenance; it is diagnostic
   evidence, never a product runtime, and it is never copied into `prefix-ios`.
 * A diagnostic prefix may be thrown away. The canonical one may not.
+* The prefix must carry the T3 libc++: Apple's `ld` references `std::__fs::filesystem::path::__filename()`,
+  and a prefix whose `usr/lib/libc++.1.dylib` predates the filesystem build fails the link in dyld
+  ("Symbol not found: __ZNKSt3__14__fs10filesystem4path10__filenameEv") rather than hanging. Deploy it
+  with `scripts/ios-toolchain-runtime-additions.sh --build-dir <build/toolchain> --prefix prefix-ios
+  --receipt <file>`, which refreshes the guest-visible shadow copy too; never by copying the dylib by
+  hand, because a hand copy is exactly how a stale libc++ came back and cost a bisect.
 
 ## Xcode input (read-only)
 
@@ -83,11 +89,18 @@ prefix directory capability and `.init.pid` and clears stale runtime files befor
     /home/ilyagulya/work/darling-dev          legacy; its root AGENTS.md points at the canonical workspace
     /home/ilyagulya/work/darling-gwn-resume   legacy (Ring line); retained for its beads delta
 
-Their unique state is preserved outside any GC-managed root:
+Their unique state is preserved outside any GC-managed root. `darling-dev`'s working tree also held
+~2.6k uncommitted lines that existed as no reachable commit anywhere (rootless_shutdown_lifecycle.py
+174 -> 1364 lines, test_prefix.py +839, and the lifecycle module/contracts): they are now a keeper
+branch of that workspace, `legacy/in-progress-rootless-lifecycle-20261007` = 350d6b58.
 
     /home/ilyagulya/work/wr-fresh/hunt/ws-retire-2026-10-07/
-        unpublished-branches.bundle   sha256 90a4ad697edce326e3672a8941426e63b1926490f527239900110f3f3f4456d2
+        unpublished-branches.bundle   sha256 15963b43aeb21f693d7e3157a480b8a3e2279bf2754b90114d473ec6668ce99e
+                                      (62 refs; regenerate with `git bundle create <file>
+                                      $(git for-each-ref --format='%(refname)' refs/heads | tr '\n' ' ')`
+                                      and verify with `git bundle list-heads <file>`)
         darling-dev-uncommitted.patch sha256 bac3ccde0a61607547b076359ad895e607233cafb5571449629a9c2b105bdfb1
+        ios-runtime-additions-receipt.json  the declared additions deployed into prefix-ios
 
 ## Cleaned on 2026-10-07
 
