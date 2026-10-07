@@ -254,6 +254,12 @@ EXCLUDED_CONTRACTS = {
         "commands. It is a deterministic host contract (two contexts K != R) but build-dir backed: "
         "run it with DARLING_BUILD_DIR=<configured build> from the prefix-backed lane. The barer "
         "host tier has no product build",
+    "tests/run-ios-toolchain-contract.sh":
+        "guest-runtime gate: it executes the REAL Apple clang from an Xcode tree inside a booted "
+        "Darling prefix (DPREFIX) and compiles arm64 iPhoneOS objects against that Xcode's "
+        "iPhoneOS SDK, then asserts the Mach-O architecture, platform and SDK metadata. It needs "
+        "XCODE_APP, a prefix lifecycle and guest runtime that the host tier does not have; run it "
+        "from the prefix-backed lane with DPREFIX and XCODE_APP set",
     "tests/run-dar-dles-plane-fairness-contract.sh":
         "guest-runtime gate: it executes the prebuilt guest Mach-O ring_mach_msg_test fixture "
         "(pthread_live mode) in a booted Darling prefix whose darlingserver is under test and "
