@@ -108,3 +108,18 @@ branch of that workspace, `legacy/in-progress-rootless-lifecycle-20261007` = 350
 directories were removed after verifying no live process or mount owned them. Their deploy receipts
 are kept in `hunt/env-hygiene-2026-10-07/prefix-receipts/`. Left in place deliberately: the two
 prefixes above, `hunt/` evidence, the runtime build cache, and both legacy workspaces.
+
+## Recreating a prefix loses the iOS runtime additions
+
+`prefix-ios` was recreated with the declared bootstrap profile because its runtime state had become broken
+(every artifact generation died with SIGSEGV at 0xFFFFFFFFFFFFFFFF after the plane steps). Recreation
+restores a clean runtime but drops what had been deployed into the old prefix by hand-declared tooling: the
+iOS toolchain runtime additions that `scripts/ios-toolchain-runtime-additions.sh` installs (48 guest-visible
+files, zlib among them) and the reviewed guest CommandLineTools.
+
+Symptom to recognise: the toolchain gate's T1/T2/T4 fail with `dyld: Library not loaded: /usr/lib/libz.1.dylib`
+followed by `abort_with_payload: reason: dyld: No shared cache present` -- the library is absent from the
+filesystem and there is no shared cache to supply it, so the real Xcode clang cannot start in the guest at
+all (rc=139). Re-run `scripts/ios-toolchain-runtime-additions.sh --build-dir <build> --prefix <prefix>
+--receipt <path>` before blaming the toolchain, and re-provision the CommandLineTools through the declared
+profile before a guest CTest that needs them.
