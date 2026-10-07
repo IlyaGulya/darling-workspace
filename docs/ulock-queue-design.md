@@ -183,3 +183,12 @@ depth is the one the server owns.
 This is the leading hypothesis for the linker wedge and for the "server is gone" symptoms that appeared
 around it: both are the same lost-wakeup/panic pair, reached by an ordinary process that holds an unfair
 lock while another thread is blocked in the primitive.
+
+## New work, not a regression
+
+`git log --all -- '*ulock*'` in `darlingserver` returns only the initial imports, and there has never been a
+`bsd/kern/sys_ulock.c` in duct-tape, so Darling never implemented the kernel side of this primitive. The
+guest emulation has no server-call path for it either (`grep` over the psynch emulation finds no
+dserver/rpc/duct reference): it resolves the call locally to a host futex. So this slice is new
+implementation on both sides, not the restoration of something removed -- which is also why no amount of
+consumer-side adjustment on the lock could fix it.
