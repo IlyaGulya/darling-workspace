@@ -81,9 +81,16 @@ binary="$workdir/fixture"
 install -m755 "$binary" "$prefix/private/var/tmp/ios_unfair_lock_guest"
 
 log="$workdir/run.log"
+# Server debug logging floods the log (measured: ~150 MB and a 10-50x slowdown) and buries the
+# fixture's own output, so it is opt-in: the gate needs the fixture's line, the flood is for a
+# separate investigation.
+server_debug_env=()
+if [ "${IOS_UNFAIR_LOCK_SERVER_DEBUG:-0}" = 1 ]; then
+	server_debug_env=(--env DSERVER_LOG_LEVEL=debug --env DSERVER_LOG_STDERR=1)
+fi
 harness="$(bash "$boot_run" --prefix "$prefix" --wait "${IOS_UNFAIR_LOCK_WAIT:-60}" \
 	--marker 'IOS-UNFAIR-LOCK pass=1' \
-	--env DSERVER_LOG_LEVEL=debug --env DSERVER_LOG_STDERR=1 \
+	"${server_debug_env[@]}" \
 	--log "$log" \
 	--cmd 'exec /private/var/tmp/ios_unfair_lock_guest' 2>&1)" || true
 printf '%s\n' "$harness" | tail -12
@@ -93,8 +100,14 @@ printf '%s\n' "$harness" | grep -q 'VERDICT: PASS' || fail=1
 if ! grep -q 'IOS-UNFAIR-LOCK pass=1' "$log"; then
 	fail=1
 	echo "ios-unfair-lock: the fixture did not report pass=1"
-	echo "ios-unfair-lock: trap evidence from the run log:"
-	grep -aE 'SIGILL|Illegal instruction|os_unfair_lock|recursive|abort' "$log" | tail -6 || true
+	if grep -q 'IOS-UNFAIR-LOCK pass=0' "$log"; then
+		echo "ios-unfair-lock: the fixture reported its own failure:"
+		grep -a 'IOS-UNFAIR-LOCK pass=0' "$log" | tail -2
+	else
+		echo "ios-unfair-lock: the fixture produced no verdict at all (hang, trap or death before it printed):"
+		grep -aE 'Illegal instruction|SIGILL|Segmentation|Killed|Abort|abort' "$log" | tail -4 || true
+		tail -3 "$log" | cut -c1-160
+	fi
 fi
 
 if [ "$fail" -eq 0 ]; then

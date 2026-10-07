@@ -255,6 +255,13 @@ EXCLUDED_CONTRACTS = {
         "commands. It is a deterministic host contract (two contexts K != R) but build-dir backed: "
         "run it with DARLING_BUILD_DIR=<configured build> from the prefix-backed lane. The barer "
         "host tier has no product build",
+    "tests/run-ios-unfair-lock-contract.sh":
+        "guest-runtime gate: it host-builds a guest Mach-O fixture (the same recorded-command replay "
+        "the DTAPE runtime contracts use) and executes it in a booted Darling prefix whose "
+        "libsystem_platform is under test, then requires the fixture's own pass marker. It reproduces "
+        "the unfair-lock trap seen in Apple's ld during T4 without the Apple toolchain. The host tier "
+        "has no product build, no prefix lifecycle and no guest runtime; run it with "
+        "DARLING_BUILD_DIR=<configured build> and DPREFIX from the prefix-backed lane",
     "tests/run-ios-toolchain-contract.sh":
         "guest-runtime gate: it executes the REAL Apple clang from an Xcode tree inside a booted "
         "Darling prefix (DPREFIX) and compiles arm64 iPhoneOS objects against that Xcode's "
