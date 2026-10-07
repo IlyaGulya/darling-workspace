@@ -228,3 +228,18 @@ already dispatch here, and the guest-thread death path is `dtape_thread_dying` (
    path, so the pair must be deployed together) plus `darlingserver`, into both prefix closure copies.
 9. Gate: `tests/ios_ulock_contract_guest.c` -- `variant=spin` must move from `{1,1,1,1}` to `{0,1,2,3}` and the
    `usleep` variant must stop hanging or panicking -- then the full fixture, then T1-T4.
+
+## Verified: the ring tables are the only transport, and there is a measured precedent
+
+`dserver_rpc_hooks_get_socket` is `mach_driver_get_fd`, and the tree's own record at
+`darlingserver/include/darlingserver/rpc-supplement.h:903` says it "declines unconditionally now". The same
+comment records what happens to a call that reaches it: `dserver_ring_op_class()` returned 0 for
+`psynch_mutexwait` and `psynch_mutexdrop` -- unclassified, treated as UdsOnly -- so the ring refused them
+as well, `dserver_rpc_*` returned negative, and the guest answered with `__simple_abort()`:
+`[rpc-socket-DENIED call=psynch_mutexwait]` then `RING_MACH_TEST_CRASH sig=6`.
+
+So the failure mode is measured, not theoretical: an ulock op that is not in
+`DSERVER_RING_C2S_OPCODES` and not classified in `DSERVER_RING_OP_CLASS` kills the guest process instead of
+returning an error. That is why step 5 of the implementation map is mandatory, and it is also why the
+classification must be `SIMPLE_C2S|BLOCKING` for the waits: an unclassified op defaults to UdsOnly, which no
+longer exists.
