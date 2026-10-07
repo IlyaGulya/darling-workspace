@@ -274,3 +274,20 @@ configure a build dir for it (or let its own bootstrap deploy its artifacts).
 
 Kept as evidence: /home/ilyagulya/work/wr-fresh/hunt/ulock-impl-deploy/{bootstrap-clean-prefix.log,
 clean-prefix-baseline-gate.log}.
+
+## Validated
+
+The queue works. On a recreated, freshly bootstrapped prefix (the previous one's runtime state was broken
+independently: every generation, fix or not, died with SIGSEGV at 0xFFFFFFFFFFFFFFFF right after the plane
+steps), with the whole chain deployed and hashes verified, the primitive gate passes:
+
+    VERDICT: PASS
+    IOS-UNFAIR-LOCK PASS: single-thread lock/unlock/lock, contention and 1000 repetitions all survive
+
+`tests/ios_ulock_contract_guest.c` reports `pass=1`, which it can only do when every waiter returns, the
+multiset of `__ulock_wait` returns is exactly {0..K-1}, no waiter is stranded, and the usleep variant -- the
+one that used to hang or panic the server -- completes.
+
+Committed on canonical fix branches: darlingserver `fix/ulock-turnstile-queue` (b78fce3), the xnu/darling
+overlay `fix/ulock-turnstile-queue` (493989c), and darling `fix/mldr32-arch-register-index` (dbe768a01, the
+loader build fix this slice needed to redeploy the chain at all).
