@@ -157,3 +157,29 @@ The reproducer is now cheap: `tests/ios_ulock_contract_guest.c` runs the primiti
 next starts, so one short run attributes the panic to the primitive or to the semaphore path beside it.
 Run it through the same mechanism: `IOS_UNFAIR_LOCK_FIXTURE=tests/ios_ulock_contract_guest.c DPREFIX=...
 DARLING_BUILD_DIR=... bash tests/run-ios-unfair-lock-contract.sh`.
+
+## Measured root cause: the wait blocks where the server cannot see it
+
+The primitive-only reproducer separates the two halves in one run (tests/ios_ulock_contract_guest.c):
+
+| variant | what it does | result |
+| --- | --- | --- |
+| `spin` | the ulock/futex path alone, no usleep anywhere | completes: `ret=1` for all four waiters, `depth_contract=violated`, `stranded=0` |
+| `usleep-idle` | usleep with no waiter parked | completes (`start` then `done`) |
+| `usleep` | usleep while the waiters are parked in `__ulock_wait` | hangs for the full timeout; in the full fixture the same arm panics at `sync_sema.c:635` |
+
+So usleep is not the defect, and neither is the useless depth by itself: the depth hack is conservative, and
+`stranded=0` shows it. The defect is that `__ulock_wait` parks the thread in a host futex, inside the guest
+process, where the server cannot see it. A guest thread blocked that way is incoherent with the server's own
+view of the task's blocked threads, and the next operation that goes through that bookkeeping either loses
+its wakeup (hang) or hands `semaphore_block` a `wait_result_t` it cannot interpret (panic).
+
+That promotes the fix's first requirement from fidelity to coherence: a guest thread blocked in ulock must
+be a first-class server-side block -- a turnstile wait the server owns, as the kernel implementation in
+`sys_ulock.c` has -- so that thread death, semaphore operations and wakeups all agree about it. Restoring
+`__ulock_wait`'s remaining-depth return follows from the same structure, because the queue that knows the
+depth is the one the server owns.
+
+This is the leading hypothesis for the linker wedge and for the "server is gone" symptoms that appeared
+around it: both are the same lost-wakeup/panic pair, reached by an ordinary process that holds an unfair
+lock while another thread is blocked in the primitive.
