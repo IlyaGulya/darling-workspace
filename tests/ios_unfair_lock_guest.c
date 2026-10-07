@@ -363,6 +363,39 @@ many_worker(void *arg)
 	return NULL;
 }
 
+/*
+ * The ulock primitive's own contract, below the lock that depends on it.
+ *
+ * Darwin's kernel ulock returns the REMAINING queue depth from __ulock_wait: the waiter joins with
+ * ull_nwaiters++ and leaves with `*retval = --ull->ull_nwaiters` (xnu/bsd/kern/sys_ulock.c:599,780), so
+ * waking K waiters one at a time must produce the multiset {0..K-1}. Darling's __ulock_wait is a host
+ * futex, which cannot report that, and its source hacks the return to a constant 1 -- which is why the
+ * lock above it has to treat the depth as unknowable. This arm asserts the contract directly, at the
+ * boundary, so a deviation shows up as a primitive failure instead of only as a wedged linker.
+ */
+#define IOS_UNFAIR_ULOCK_K 4
+#define IOS_UNFAIR_UL_COMPARE_AND_WAIT 1u
+#define IOS_UNFAIR_ULF_NO_ERRNO 0x01000000u
+
+extern int __ulock_wait(uint32_t operation, void *addr, uint64_t value, uint32_t timeout);
+extern int __ulock_wake(uint32_t operation, void *addr, uint64_t wake_value);
+
+static uint32_t ulock_word;
+static volatile int ulock_go[IOS_UNFAIR_ULOCK_K];
+static int ulock_ret[IOS_UNFAIR_ULOCK_K];
+
+static void *
+ulock_waiter(void *arg)
+{
+	int me = (int)(intptr_t)arg;
+	while (!__atomic_load_n(&ulock_go[me], __ATOMIC_ACQUIRE))
+		usleep(100);
+	/* Bounded on purpose: a stranded waiter must report itself, not hang the whole fixture. */
+	ulock_ret[me] = __ulock_wait(IOS_UNFAIR_UL_COMPARE_AND_WAIT | IOS_UNFAIR_ULF_NO_ERRNO,
+			(void *)&ulock_word, (uint64_t)ulock_word, 2000000);
+	return NULL;
+}
+
 static void *
 contend(void *unused)
 {
@@ -670,6 +703,61 @@ main(void)
 		printf("IOS-UNFAIR-LOCK condvar lost-wakeup=%d (rounds=%d)\n", lost, IOS_UNFAIR_COND_ROUNDS);
 		if (lost) {
 			printf("IOS-UNFAIR-LOCK pass=0 reason=condvar_lost_wakeup\n");
+			return 1;
+		}
+	}
+
+	/*
+	 * arm 12b: the primitive contract itself (see the helper above). It runs BEFORE the deep-queue arm so
+	 * that a wedge in that one cannot hide the primitive's own result.
+	 */
+	stage("ulock-contract");
+	{
+		pthread_t waiters[IOS_UNFAIR_ULOCK_K];
+		int seen[IOS_UNFAIR_ULOCK_K] = {0}, ok = 1;
+		ulock_word = 0xdeadbeefu;
+		for (int i = 0; i < IOS_UNFAIR_ULOCK_K; i++) {
+			ulock_go[i] = 0;
+			ulock_ret[i] = 0x7fffffff;
+			pthread_create(&waiters[i], NULL, ulock_waiter, (void *)(intptr_t)i);
+		}
+		usleep(50 * 1000);
+		for (int i = 0; i < IOS_UNFAIR_ULOCK_K; i++)
+			__atomic_store_n(&ulock_go[i], 1, __ATOMIC_RELEASE);
+		usleep(50 * 1000);                       /* let them reach the wait */
+		for (int i = 0; i < IOS_UNFAIR_ULOCK_K; i++) {
+			(void)__ulock_wake(IOS_UNFAIR_UL_COMPARE_AND_WAIT, (void *)&ulock_word, 1);
+			usleep(20 * 1000);
+		}
+		for (int spin = 0; spin < 400; spin++) {  /* bounded: do not hang on a stranded waiter */
+			int done = 1;
+			for (int i = 0; i < IOS_UNFAIR_ULOCK_K; i++)
+				if (ulock_ret[i] == 0x7fffffff)
+					done = 0;
+			if (done)
+				break;
+			usleep(10 * 1000);
+		}
+		for (int i = 0; i < IOS_UNFAIR_ULOCK_K; i++) {
+			int r = ulock_ret[i];
+			if (r == 0x7fffffff) {
+				printf("IOS-UNFAIR-LOCK ulock waiter=%d STRANDED\n", i);
+				ok = 0;
+				continue;
+			}
+			printf("IOS-UNFAIR-LOCK ulock waiter=%d ret=%d\n", i, r);
+			if (r < 0 || r >= IOS_UNFAIR_ULOCK_K)
+				ok = 0;
+			else
+				seen[r] = 1;
+		}
+		for (int i = 0; i < IOS_UNFAIR_ULOCK_K; i++)
+			if (!seen[i])
+				ok = 0;                            /* the multiset must be exactly {0..K-1} */
+		for (int i = 0; i < IOS_UNFAIR_ULOCK_K; i++)
+			pthread_join(waiters[i], NULL);
+		if (!ok) {
+			printf("IOS-UNFAIR-LOCK pass=0 reason=ulock_wait_depth_contract\n");
 			return 1;
 		}
 	}

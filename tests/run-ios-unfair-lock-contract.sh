@@ -21,7 +21,9 @@
 set -euo pipefail
 
 workspace_root="$(cd "$(dirname "$0")/.." && pwd)"
-fixture_src="$workspace_root/tests/ios_unfair_lock_guest.c"
+# Default is the full fixture; IOS_UNFAIR_LOCK_FIXTURE runs a narrower one (e.g. the primitive-only
+# reproducer tests/ios_ulock_contract_guest.c) through the same build/install/boot mechanism.
+fixture_src="${IOS_UNFAIR_LOCK_FIXTURE:-$workspace_root/tests/ios_unfair_lock_guest.c}"
 build_dir="${DARLING_BUILD_DIR:-}"
 prefix="${DPREFIX:-${DARLING_PREFIX:-}}"
 reference_target="${DARLING_GUEST_MACHO_REFERENCE_TARGET:-darling_bzero_return_regress}"

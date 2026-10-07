@@ -136,3 +136,24 @@ The foundation for the real thing is already ported:
 So the slice is not "invent a queue in the right place"; it is "implement the three declared-but-missing
 syscalls over the turnstile machinery that is already in the tree, and let the guest stub return the
 kernel's answer."
+
+## Measured: the primitive's absent implementation can panic the server
+
+Running the primitive's contract arm in the full fixture (12 arms passed: fork-held, token-identity,
+1.6M-iteration pthread mutex exclusion, allocator exclusion, trylock, condvar) reaches
+`stage=ulock-contract` and then kills darlingserver:
+
+    darlingserver duct-tape panic: "semaphore_block"@.../duct-tape/xnu/osfmk/kern/sync_sema.c:635
+    semaphore_signal failed (internally): -111
+
+Line 635 is the `default:` arm of `semaphore_convert_wait_result`, which panics on a `wait_result_t` that
+is none of `THREAD_AWAKENED`, `THREAD_TIMED_OUT`, `THREAD_INTERRUPTED` or `THREAD_RESTART`: the server's own
+wait machinery handed its semaphore block an impossible result. This is worse than the lost depth the
+contract arm was written to show, and it is the same class of failure as the "server is gone" symptoms seen
+around the linker: a product path that exercises this area can take the prefix down rather than block.
+
+The reproducer is now cheap: `tests/ios_ulock_contract_guest.c` runs the primitive alone, in a spin variant
+(no usleep anywhere, the ulock/futex path by itself) and a usleep variant, printing each result before the
+next starts, so one short run attributes the panic to the primitive or to the semaphore path beside it.
+Run it through the same mechanism: `IOS_UNFAIR_LOCK_FIXTURE=tests/ios_ulock_contract_guest.c DPREFIX=...
+DARLING_BUILD_DIR=... bash tests/run-ios-unfair-lock-contract.sh`.
