@@ -95,3 +95,20 @@ address, with thread-death dequeue -- is the shape Darwin itself uses.
 Practical consequence for the slice: do not invent the primitive contract test; adapt Darwin's
 `xnu/tests/ulock.c`, and reuse the algorithm in `sys_ulock.c` over a duct-tape-backed queue where the
 kernel structures are not available.
+
+## Why the queue is not guest-side
+
+A guest-side queue is tempting: per-address records in the guest process could count depth exactly, sleep
+waiters on a per-record futex with a generation counter, and Wwrite the hint bits from a layer that knows
+the depth. That alone would cure the measured wedge, because the stranding comes from a *live* waiter
+whose hint is wrong, not from a dead one.
+
+It loses on the death case. A guest-side queue can only dequeue through the paths the guest controls
+(cancellation points and pthread cleanup), while Darwin's kernel dequeues on *any* thread death, including
+asynchronous `thread_terminate` of a thread parked in `__ulock_wait`. Under Darling only the server knows
+that a thread died, and the stranding that follows is the same class of bug this slice exists to remove. A
+stale entry would also make `ULF_WAKE_THREAD` wake a dead thread and report a bogus depth.
+
+So the queue stays in the kernel-side emulation keyed by (task, address), matching `sys_ulock.c`, and the
+guest-side stub keeps doing what Apple's stub does: pass the operation through and return the kernel's
+answer.
