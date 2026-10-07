@@ -9,6 +9,13 @@
 # T2: that same compiler produces real arm64 iPhoneOS Mach-O objects from the real iPhoneOS
 #     SDK -- a C translation unit and an Objective-C one that imports UIKit.
 #
+# T4: the same toolchain LINKS those objects against the real SDK, i.e. the Apple driver invokes the
+#     real arm64 Apple ld, which resolves libSystem from the SDK's .tbd stubs and writes a minimal
+#     platform-ios arm64 Mach-O. This is the rung that previously hung, and it is also the rung that
+#     needs the runtime's libc++ (T3): Apple's ld references std::__fs::filesystem. The gate requires
+#     the link to RETURN -- a hang is a failure, not a slow pass -- and the linked product to be an
+#     arm64 iOS Mach-O that defines _main.
+#
 # Nothing here is compiled by the Linux host compiler: the prefix only executes the Apple
 # toolchain. The fixture sources live in this repository and the objects are written back into
 # it, which is what lets the architecture/platform assertions below run on the host.
@@ -60,7 +67,7 @@ guest_xcode="$(to_guest "$xcode_app")"
 guest_fixture="$(to_guest "$fixture")"
 
 mkdir -p "$fixture/out"
-rm -f "$fixture/out/hello_c.o" "$fixture/out/hello_m.o"
+rm -f "$fixture/out/hello_c.o" "$fixture/out/hello_m.o" "$fixture/out/hello_main.o" "$fixture/out/hello_ios"
 
 probe_host="$prefix/private/var/tmp/ios-toolchain-probe.sh"
 out_guest="/private/var/tmp/ios-toolchain-contract.out"
@@ -76,7 +83,11 @@ run() { printf '\\n== %s\\n' "\$*" >>"\$OUT"; "\$@" >>"\$OUT" 2>>"\$OUT"; printf
 run "$guest_xcode/$clang_rel" --version
 run "$guest_xcode/$clang_rel" -target $target -isysroot "$guest_xcode/$sdk_rel" -c "$guest_fixture/hello.c" -o "$guest_fixture/out/hello_c.o"
 run "$guest_xcode/$clang_rel" -target $target -isysroot "$guest_xcode/$sdk_rel" -fobjc-arc -c "$guest_fixture/hello.m" -o "$guest_fixture/out/hello_m.o"
-printf 'IOS-TOOLCHAIN-PROBE-DONE\\n' >>"\$OUT"
+run "$guest_xcode/$clang_rel" -target $target -isysroot "$guest_xcode/$sdk_rel" -c "$guest_fixture/hello_main.c" -o "$guest_fixture/out/hello_main.o"
+run "$guest_xcode/$clang_rel" -target $target -isysroot "$guest_xcode/$sdk_rel" "$guest_fixture/out/hello_c.o" "$guest_fixture/out/hello_main.o" -o "$guest_fixture/out/hello_ios"
+printf 'IOS-TOOLCHAIN-LINK-DONE\n' >>"\$OUT"
+echo IOS-TOOLCHAIN-LINK-DONE
+printf 'IOS-TOOLCHAIN-PROBE-DONE\n' >>"\$OUT"
 echo IOS-TOOLCHAIN-PROBE-DONE
 PROBE
 chmod +x "$probe_host"
@@ -84,8 +95,9 @@ chmod +x "$probe_host"
 fail=0
 say() { printf '%s\n' "$*"; }
 
-harness="$(bash "$boot_run" --prefix "$prefix" --wait "${IOS_TOOLCHAIN_WAIT:-60}" \
+harness="$(bash "$boot_run" --prefix "$prefix" --wait "${IOS_TOOLCHAIN_WAIT:-120}" \
 	--marker 'IOS-TOOLCHAIN-PROBE-DONE' \
+	--marker 'IOS-TOOLCHAIN-LINK-DONE' \
 	--cmd "/bin/bash /private/var/tmp/$(basename "$probe_host")" 2>&1)"
 printf '%s\n' "$harness" | grep -q 'VERDICT: PASS' || {
 	say "ios-toolchain: harness verdict was not PASS"
@@ -128,5 +140,27 @@ for pair in "hello_c.o:hello.c" "hello_m.o:hello.m"; do
 		{ say "ios-toolchain: T2 FAIL -- $src minos is not the requested $target"; fail=1; }
 done
 
+# T4: the link returned, and the product is a platform-ios arm64 Mach-O that defines _main.
+link_rc="$(printf '%s\n' "$real_out" | awk 'index($0,"hello_ios"){seen=1; next} seen && /^rc=/{sub(/^rc=/,""); print; exit}')"
+if [ "${link_rc:-1}" != "0" ]; then
+	say "ios-toolchain: T4 FAIL -- the link did not return 0 (rc=${link_rc:-?}; no rc at all means it never returned)"
+	fail=1
+fi
+linked="$fixture/out/hello_ios"
+if [ ! -s "$linked" ]; then
+	say "ios-toolchain: T4 FAIL -- the link produced no product"
+	fail=1
+else
+	link_info="$(llvm-readobj --macho-version-min "$linked" 2>&1)"
+	printf '%s\n' "$link_info" | grep -q 'Format: Mach-O arm64' ||
+		{ say "ios-toolchain: T4 FAIL -- the linked product is not arm64 Mach-O"; fail=1; }
+	printf '%s\n' "$link_info" | grep -q 'Platform: ios' ||
+		{ say "ios-toolchain: T4 FAIL -- the linked product is not an iOS image"; fail=1; }
+	printf '%s\n' "$link_info" | grep -q 'SDK: 26\.' ||
+		{ say "ios-toolchain: T4 FAIL -- the linked product does not record the iPhoneOS 26.x SDK"; fail=1; }
+	llvm-nm "$linked" 2>/dev/null | grep -qE ' T _main$' ||
+		{ say "ios-toolchain: T4 FAIL -- the linked product does not define _main"; fail=1; }
+fi
+
 [ "$fail" -eq 0 ] || exit 1
-say "ios-toolchain: PASS (T1 real clang runs; T2 real arm64 iPhoneOS objects compiled from the real SDK)"
+say "ios-toolchain: PASS (T1 real clang runs; T2 real arm64 iPhoneOS objects compiled from the real SDK; T4 linked by the real Apple ld)"
