@@ -192,3 +192,40 @@ guest emulation has no server-call path for it either (`grep` over the psynch em
 dserver/rpc/duct reference): it resolves the call locally to a host futex. So this slice is new
 implementation on both sides, not the restoration of something removed -- which is also why no amount of
 consumer-side adjustment on the lock could fix it.
+
+## Implementation map (file level, verified by reconnaissance)
+
+Ordered change list for the slice. Two assumptions corrected by the survey: the guest stubs already exist and
+already dispatch here, and the guest-thread death path is `dtape_thread_dying` (reached from
+`Thread::notifyDead`), not the kernel-only `dtape_hook_thread_terminate`.
+
+1. `duct-tape/xnu/bsd/kern/sys_ulock.c` (NEW) -- port `xnu/bsd/kern/sys_ulock.c`: the `ull_t`/`ulk_t` hash
+   keyed by `(pid, addr)`, `ull_get`/`ull_put`, wait via `turnstile_prepare` / `waitq_assert_wait64` /
+   `thread_block_parameter`, wake via `waitq_wakeup64_*`. Duct-tape has no `sysproto.h`, so take explicit
+   parameters (psynch style) rather than `struct ulock_wait_args`.
+2. `duct-tape/CMakeLists.txt` -- add the new kernel file beside `xnu/osfmk/kern/turnstile.c` (:287) in the
+   `darlingserver_duct_tape` static library (:256).
+3. `duct-tape/src/ulock.c` (NEW, or `src/psynch.c`) -- hand-written `dtape_ulock_wait` / `dtape_ulock_wait2` /
+   `dtape_ulock_wake` wrappers (`NO_DTAPE_DEF`), modelled on `dtape_psynch_mutexwait` (`src/psynch.c:92`);
+   declared through the generated `DSERVER_DTAPE_DECLS`.
+4. `scripts/generate-rpc-wrappers.py` -- append the three calls to the `calls[]` table (:22) with
+   `XNU_BSD_TRAP_CALL|XNU_TRAP_NO_DTAPE_DEF|ALLOW_INTERRUPTIONS`, and add them to `RING_GENERATED_SIMPLE`
+   (:790-858) so the generated client wrapper tries the ring lane.
+5. `include/darlingserver/rpc-supplement.h` -- add the three ops to `DSERVER_RING_C2S_OPCODES` (:474-535) and
+   classify them in `DSERVER_RING_OP_CLASS` (:861-907): `ulock_wait`/`ulock_wait2` as
+   `SIMPLE_C2S|BLOCKING`, `ulock_wake` as `SIMPLE_C2S`. This step is not optional: the datagram transport is
+   gone (`mach_driver_get_fd` declines unconditionally), so an op missing from the ring tables aborts the
+   guest instead of failing gracefully.
+6. Guest side: replace the futex bodies in `.../psynch/ulock_wait.c` (:58-76) and `ulock_wake.c` (:25-38) with
+   `dserver_rpc_ulock_wait(...)` / `dserver_rpc_ulock_wake(...)`, preserving the raw-negated-errno semantics
+   for `ULF_NO_ERRNO` documented at :40-57. `bsd_syscall_table.c` already maps 515/516 (:484-485); 544 is
+   unmapped today even though `___ulock_wait2.S` exists.
+7. Thread death: `duct-tape/src/thread.c` `dtape_thread_dying` (:610) -- call `dtape_ulock_thread_dying(thread)`
+   before `clear_wait_internal` (:615). The reachable caller is `DarlingServer::Thread::notifyDead`
+   (`src/thread.cpp:2554`, calling `dtape_thread_dying` at :2593); `Thread::terminate` (:832) and
+   `dtape_hook_thread_terminate` (`src/server.cpp:210`, registered :478) are kernel-thread-only and are not the
+   guest waiter path.
+8. Build/deploy: the changed closure is `libsystem_kernel.dylib` + `dylib` (dyld carries a static emulation
+   path, so the pair must be deployed together) plus `darlingserver`, into both prefix closure copies.
+9. Gate: `tests/ios_ulock_contract_guest.c` -- `variant=spin` must move from `{1,1,1,1}` to `{0,1,2,3}` and the
+   `usleep` variant must stop hanging or panicking -- then the full fixture, then T1-T4.
