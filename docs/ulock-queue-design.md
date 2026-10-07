@@ -257,3 +257,20 @@ So the consistent set for this slice is: `libsystem_kernel.dylib` + `dyld` + `da
 `mldr32` (`--deploy-closure-names libsystem_kernel.dylib --deploy-darlingserver --deploy-mldr`, with
 `mldr mldr32` in `--targets`). Note also that `darling-build ... | tail` hides a failed build: the pipeline
 returns the tail's status, so the deploy looks successful after a failed compile.
+
+## A build dir is baked to one prefix (do not deploy across prefixes)
+
+`darling-build` refuses to hide this, and `--force` must not be used to walk past it: the build dir carries
+the install prefix it was configured for, so a dyld/mldr built in it cannot boot a different prefix. The
+doctor states it exactly: "build-dir install-prefix (P1) != launcher baked prefix (P2); a dyld/mldr built here
+will NOT boot P2".
+
+Measured consequence while validating: a freshly bootstrapped clean prefix (`--bootstrap-runtime-profile
+homebrew-rootless-bootstrap-minimal`) boots and runs the fixture correctly, but deploying this build dir's
+artifacts into it cannot work -- the run fails with `sigprocess failed internally while processing Linux
+signal 4: -3` and shellspawn never becomes ready -- and that failure says nothing about the change under
+test. A run that deploys artifacts must target the prefix the build dir is baked for; to test another prefix,
+configure a build dir for it (or let its own bootstrap deploy its artifacts).
+
+Kept as evidence: /home/ilyagulya/work/wr-fresh/hunt/ulock-impl-deploy/{bootstrap-clean-prefix.log,
+clean-prefix-baseline-gate.log}.
