@@ -77,3 +77,21 @@ waits, `os_once`, and the pthread paths.
 statement that the word cannot prove its queue empty while sixteen threads wait on it, and the source of
 the deviation in `ulock_wait.c`. Beads: `dar-lf4b` (this fix), `dar-otzk` (the instruments that would have
 shown the server's view during a contract run and do not today).
+
+## The design is not an interpretation: Darwin's own implementation is in the tree
+
+`darling/src/external/xnu/bsd/kern/sys_ulock.c` is Darwin's ulock kernel implementation, with its
+interface in `bsd/sys/ulock.h` and its own test in `xnu/tests/ulock.c`. Two facts read straight off it:
+
+* The queue object is keyed by `(ulk_pid, ulk_object)` -- the task and the user address (comparison at
+  sys_ulock.c:137-142) -- which is exactly the keying this note prescribes.
+* `__ulock_wait` returns the remaining queue depth: the waiter joins with `ull->ull_nwaiters++` (line 599)
+  and leaves with `*retval = --ull->ull_nwaiters;` (line 780), followed by the queue-empty action at 781.
+
+So Darling's `ret = 1` hack in `ulock_wait.c` is a deviation from Darwin's own code, not from an
+interpretation of it, and the shape to restore -- Darwin's algorithm over a queue keyed by task and
+address, with thread-death dequeue -- is the shape Darwin itself uses.
+
+Practical consequence for the slice: do not invent the primitive contract test; adapt Darwin's
+`xnu/tests/ulock.c`, and reuse the algorithm in `sys_ulock.c` over a duct-tape-backed queue where the
+kernel structures are not available.
