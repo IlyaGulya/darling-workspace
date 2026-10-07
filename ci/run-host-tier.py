@@ -43,6 +43,7 @@ CONTRACTS = (
     "tests/run-west-test-metadata-run-report-contract.sh",
     "tests/run-west-test-dry-run-contract.sh",
     "tests/run-rootless-debug-cleanup-contract.sh",
+    "tests/run-darling-boot-harness-ownership-contract.sh",
     "tests/run-west-test-runtime-source-reuse-contract.sh",
     "tests/run-west-test-metadata-invocation-identity-contract.sh",
     # Recovered: these contracts existed and passed but were listed by no tier,
