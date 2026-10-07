@@ -199,7 +199,7 @@ count_owned() { owned_pids | wc -l; }
 # The prefix's own runtime files. A killed run leaves them naming a server that is gone, and they are never removed
 # while an owner is alive: both callers below only act with zero owners, which is the framework's own precondition
 # (west_commands/test_prefix.py::remove_stale_init_pid / remove_stale_server_socket).
-stale_init_pid() { tr -dc '0-9' < "$PREFIX/.init.pid" 2>/dev/null; }
+stale_init_pid() { [ -r "$PREFIX/.init.pid" ] || return 0; tr -dc '0-9' < "$PREFIX/.init.pid" 2>/dev/null; }
 report_stale_runtime_files() {
 	ip=$(stale_init_pid)
 	if [ -n "$ip" ] && [ ! -d "/proc/$ip" ]; then
