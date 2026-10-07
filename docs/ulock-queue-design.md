@@ -112,3 +112,27 @@ stale entry would also make `ULF_WAKE_THREAD` wake a dead thread and report a bo
 So the queue stays in the kernel-side emulation keyed by (task, address), matching `sys_ulock.c`, and the
 guest-side stub keeps doing what Apple's stub does: pass the operation through and return the kernel's
 answer.
+
+## Where the gap actually is, and what foundation already exists
+
+The gap is structural and easy to state: `darlingserver/duct-tape/xnu/bsd/kern/syscalls.master` declares the
+kernel side of the primitive -- 515 `ulock_wait`, 516 `ulock_wake`, 544 `ulock_wait2` -- with
+`NO_SYSCALL_STUB`, and there is no `bsd/kern/sys_ulock.c` in duct-tape. The server never implemented
+Darwin's queue; the guest's `libsystem_kernel` emulation resolves these calls to a host futex instead,
+which is where the unknowable depth and the `ret = 1` hack come from.
+
+The foundation for the real thing is already ported:
+
+* `duct-tape/xnu/osfmk/kern/turnstile.c` carries the turnstile machinery ulock is built on, including the
+  per-thread waiting-turnstile link (`thread_update_waiting_turnstile_priority_chain`) and inheritor
+  promotion chains.
+* `darlingserver/src/server.cpp:210 dtape_hook_thread_terminate`, registered as
+  `.thread_terminate` (line 478), is exactly the thread-death point at which a waiter must be dequeued.
+* `darlingserver/include/darlingserver/rpc-supplement.h` already routes a guest trap that needs the server
+  (`thread_self_trap`, the `DSERVER_RING_CLASS_SIMPLE_C2S` entry at line 864) and documents why the ring
+  route replaced the datagram, so the transport for a queue-backed ulock call exists and is the preferred
+  one.
+
+So the slice is not "invent a queue in the right place"; it is "implement the three declared-but-missing
+syscalls over the turnstile machinery that is already in the tree, and let the guest stub return the
+kernel's answer."
