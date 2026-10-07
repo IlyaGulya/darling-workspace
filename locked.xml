@@ -2,7 +2,7 @@
 <manifest>
   <remote name="darling" fetch="https://github.com/darlinghq/" />
   <default remote="darling" sync-j="16" sync-tags="false" />
-  <project name="darling" path="darling" revision="060fc61c5366be246580e41f3d6a6043bcdd13d8" />
+  <project name="darling" path="darling" revision="9c290057ff52d7b659324d891095e76804e1e91a" />
   <project name="darling-docs" path="darling/docs/darling-docs" revision="14c841ef3df319254ef5ac291f828f27048a6579" />
   <project name="darling-AvailabilityVersions" path="darling/src/external/AvailabilityVersions" revision="e28c029a8fa46fa933cbf6d6d9a1c00978c5fad1" />
   <project name="darling-BerkeleyDB" path="darling/src/external/BerkeleyDB" revision="1411173f0eb71f96ab6134de4e052d16acb8c673" />
@@ -56,7 +56,7 @@
   <project name="darling-cups" path="darling/src/external/cups" revision="51b7c251ef5ff81adc20284544394de8cc2e1315" />
   <project name="darling-curl" path="darling/src/external/curl" revision="92f54fd7eceabed2c2382a4acc0f7293dedd92ff" />
   <project name="darling-dmg" path="darling/src/external/darling-dmg" revision="1a6de10c5886c40a414090701b2520bd0417ce29" />
-  <project name="darlingserver" path="darling/src/external/darlingserver" revision="cd897ebdcf8b8b5bd2bf48c796b9a6b0e1659032" />
+  <project name="darlingserver" path="darling/src/external/darlingserver" revision="a38410872f5c8c2bfcdd1bf9fc15d11be9ad81f2" />
   <project name="darling-dbuskit" path="darling/src/external/dbuskit" revision="890e51fda949e4dd2c46765e39074f790c10ca18" />
   <project name="darling-doc_cmds" path="darling/src/external/doc_cmds" revision="60c6a2b858abe1f27b441f479aad2b0a9d0f9ba2" />
   <project name="darling-dtrace" path="darling/src/external/dtrace" revision="4f52343b36756e32a81eb302242ac6472e9075fa" />
@@ -83,7 +83,7 @@
   <project name="darling-libauto" path="darling/src/external/libauto" revision="2be7312b25736a8e9fc12058d63cbb79eb5f4e25" />
   <project name="darling-Libc" path="darling/src/external/libc" revision="5a38c8dabf9e76b39407c24bc13134e33e5594e6" />
   <project name="darling-libclosure" path="darling/src/external/libclosure" revision="b4122f19c89512d9e930259a85c5f2674eff2b2b" />
-  <project name="darling-libcxx" path="darling/src/external/libcxx" revision="c47677d3ba33bdabbfb07e75f531831579355a2d" />
+  <project name="darling-libcxx" path="darling/src/external/libcxx" revision="b09e14bd34dbf6c34421c0f85d15feeec8a11080" />
   <project name="darling-libcxxabi" path="darling/src/external/libcxxabi" revision="c9c851718eb304a9aefa097aeaaf8c3bd1dff1bc" />
   <project name="darling-libdispatch" path="darling/src/external/libdispatch" revision="380f03c180b80d940134fb35783ddc714784a53a" />
   <project name="darling-libedit" path="darling/src/external/libedit" revision="f9b44b8541614e33b09451fc2847f7e30bfb9b70" />
