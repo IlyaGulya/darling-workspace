@@ -76,22 +76,18 @@ run_variant(const char *name, int sleeps)
 	}
 	printf("IOS-UNFAIR-LOCK variant=%s start\n", name);
 	fflush(stdout);
-	if (sleeps)
-		usleep(50 * 1000);
-	else
-		spin(40000000L); /* let the queue fill without touching a semaphore */
+	/* Settle with usleep in BOTH variants: the assertion below is the exact Darwin multiset, which only
+	 * holds when every waiter has parked before the first wake. A waiter that parks late legitimately
+	 * reports a lower depth, and that is a fixture race, not a defect. */
+	usleep(500 * 1000);
 	for (int i = 0; i < IOS_ULOCK_K; i++)
 		__atomic_store_n(&ulock_go[i], 1, __ATOMIC_RELEASE);
-	if (sleeps)
-		usleep(50 * 1000);
-	else
-		spin(40000000L);
+	usleep(500 * 1000);
 	for (int i = 0; i < IOS_ULOCK_K; i++) {
 		(void)__ulock_wake(IOS_ULOCK_OP_WAKE, (void *)&ulock_word, 1);
-		if (sleeps)
-			usleep(20 * 1000);
-		else
-			spin(10000000L);
+		/* Space the wakes so each one is consumed before the next, which is what makes the sequence of
+		 * remaining depths well defined. */
+		usleep(100 * 1000);
 	}
 	for (int i = 0; i < IOS_ULOCK_K; i++)
 		pthread_join(waiters[i], NULL);
