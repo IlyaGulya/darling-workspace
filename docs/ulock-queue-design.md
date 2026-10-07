@@ -309,3 +309,26 @@ invisible: `[ulock-forkchild] pid=… tid=…: fork child takes the host futex f
 Measured, on the deployed build: the child logs `forkchild=1`, takes the futex, and the parent's 3 s timeout
 finds it still blocked -- `IOS-UNFAIR-LOCK fork-child blocked=1 waited_ms=3000 (Darwin-like)` -- in the
 standalone fixture and in the full 12-arm fixture.
+
+## Cost: only contention pays, and two silent wake-drops had to go
+
+Two facts worth keeping next to the design. First, the uncontended path never reaches the primitive at all:
+libplatform's fast paths are pure atomics (`os_unfair_lock_lock_with_options` is an
+`os_atomic_cmpxchg(&l->oul_value, OS_LOCK_NO_OWNER, self)` at src/external/libplatform/src/os/lock.c:607 and
+unlock is the matching `os_atomic_xchg` with an early owner check at :627-628), so a churn loop spends its
+time in user space and only a contended acquire becomes an RPC. No queue-side change can remove that cost,
+and there is nothing to optimise on the uncontended side.
+
+Second, two paths dropped a wake in silence, which is what turned a slow arm into a stuck one:
+
+* `ulock_wake` dropped the wake when the caller was not the known owner. Darwin's late-to-the-party drop is
+  only sound when `ull_owner` is a known, different thread; with a NULL owner the wake was discarded and its
+  parked waiter stranded. It now drops only when `ull_owner != THREAD_NULL`
+  (`duct-tape/xnu/bsd/kern/sys_ulock.c:703-721`).
+* `ulock_wake` was classified `SIMPLE_C2S`, so a waker with no lane fell to the retired datagram (or the
+  futex fallback), neither of which can release a waiter parked in the server queue. It is
+  `SIMPLE_C2S|BLOCKING` now, and listed in `gr_callnum_is_blocking_family`, so the generated wrapper runs the
+  same bounded lane-acquisition loop the semaphore signal half has.
+
+Three bounded instruments make those paths visible next time: `[ulock-wake-late]` (server),
+`[ulock-wake-enoent]` (server) and `[ulock-wake-fallback]` (guest).
