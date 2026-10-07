@@ -74,8 +74,9 @@ Do not run raw `br`/`bd` from source or create a second issue database. Optional
    Preserve full bootstrap failure evidence before interpreting a restored prefix.
 2. Commit owned source changes and refresh their portable patch metadata; commit
    owned manifest changes separately. No blanket staging or automatic push.
-3. Run `mise -C ../darling-workspace run west dw handoff` after Bead/private-ref
-   changes, then commit only the files that handoff actually changed.
+3. An ephemeral handoff is optional. Run `mise -C ../darling-workspace run west
+   dw handoff` only when an explicit local-only state genuinely needs portable
+   archival; if it is run, commit only the files it actually changed.
 4. Verify every changed canonical tip in its keeper bundle. A forest handoff may
    omit sibling tooling repositories; preserve those explicitly. Local contexts
    and diagnostic archives are not product patches.
