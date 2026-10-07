@@ -307,5 +307,5 @@ Every other RPC still uses the child's own lane. One instrument records the deci
 invisible: `[ulock-forkchild] pid=… tid=…: fork child takes the host futex for ulock`.
 
 Measured, on the deployed build: the child logs `forkchild=1`, takes the futex, and the parent's 3 s timeout
-finds it still blocked -- `IOs-UNFAIR-LOCK fork-child blocked=1 waited_ms=3000 (Darwin-like)` -- in the
+finds it still blocked -- `IOS-UNFAIR-LOCK fork-child blocked=1 waited_ms=3000 (Darwin-like)` -- in the
 standalone fixture and in the full 12-arm fixture.
