@@ -33,6 +33,7 @@ LOG=""
 VERIFY_PROBES=""
 EXTRA_ENV=""
 ASSERT_MAPS=0
+LIST_OWNED=0
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -47,6 +48,7 @@ while [ $# -gt 0 ]; do
 		# failing incarnation. Acceptance never sets this; it exists because a watchdog stop followed
 		# immediately by a shutdown destroys exactly the state the investigation needs.
 		--freeze-on-fail) FREEZE_ON_FAIL=1; shift ;;
+		--list-owned) LIST_OWNED=1; shift ;;
 		--assert-prefix-maps) ASSERT_MAPS=1; shift ;;
 		--verify-probe) VERIFY_PROBES="$VERIFY_PROBES
 $2"; shift 2 ;;
@@ -56,7 +58,8 @@ $2"; shift 2 ;;
 	esac
 done
 
-[ -n "$PREFIX" ] && [ -n "$WAIT" ] || { echo "usage: $0 --prefix PATH --wait SECONDS [--marker NAME]..." >&2; exit 2; }
+[ -n "$PREFIX" ] || { echo "usage: $0 --prefix PATH --wait SECONDS [--marker NAME]..." >&2; exit 2; }
+[ -n "$WAIT" ] || [ "$LIST_OWNED" = 1 ] || { echo "usage: $0 --prefix PATH --wait SECONDS [--marker NAME]..." >&2; exit 2; }
 
 # A run can be served by another prefix's runtime, and then every conclusion drawn from it is about the wrong
 # artifacts -- silently, because the log looks normal. MEASURED: a stale shellspawn from a second prefix was
@@ -129,11 +132,56 @@ owned_pids() {
 	# anyway (rc=137) three seconds in, which is exactly the kind of "instrument that cannot answer" this file keeps
 	# recording. The separator is part of the test, not a cosmetic detail.
 	ancestors=$(own_ancestors | tr '\n' ' ')
+	# The prefix's OWN record of its current init/server. Two measured traps make this a required arm:
+	# a killed run leaves the file behind, and the daemonized server it names re-parents to init with an argv of
+	# bare numbers ("darlingserver 4 3 <prefix-basename> 6 1000 1000 8 0"), so neither the ancestor arm, nor the
+	# exe arm (the loader's exe is under the prefix only for guest processes), nor the cmdline arm (which needs the
+	# PREFIX PATH) can see it. MEASURED: exactly that left a prefix wedged and this check still printed
+	# "clean: 0 prefix-owned processes", after which the next boot talked into the stale server's socket and never
+	# reached shellspawn readiness.
+	init_pid_value=""
+	[ -r "$PREFIX/.init.pid" ] && init_pid_value=$(tr -dc '0-9' < "$PREFIX/.init.pid" 2>/dev/null)
+	# A directory capability is identity, not a pathname: compare the open descriptor's device:inode with the
+	# prefix's. This is the framework's own ownership rule
+	# (west_commands/test_prefix.py::_runtime_retains_prefix), and the reason it exists is that a rootless guest or
+	# server may scrub every DARLING_* variable and carry no prefix path anywhere.
+	prefix_id=$(stat -Lc '%d:%i' "$PREFIX" 2>/dev/null)
 	for d in /proc/[0-9]*; do
 		pid=${d#/proc/}
 		[ "$pid" = "$self" ] && continue
 		case " $ancestors " in *" $pid "*) witness "OWNED pid=$pid arm=none ancestor=yes ppid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $2}') pgid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $3}') sid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $4}') cmd=$(tr "\0" " " < "$d/cmdline" 2>/dev/null | cut -c1-120)"; continue ;; esac
+		if [ -n "$init_pid_value" ] && [ "$pid" = "$init_pid_value" ]; then
+			witness "OWNED pid=$pid arm=initpid ancestor=no ppid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $2}') cmd=$(tr "\0" " " < "$d/cmdline" 2>/dev/null | cut -c1-120)"
+			echo "$pid"
+			continue
+		fi
+		# arm=capability. The gate is a PREREQUISITE, never ownership, and it must not be the truncated comm: a
+		# /proc/<pid>/comm longer than 15 characters is cut ("darlingserver-stub-long" reads "darlingserver-st"),
+		# so an exact comm match silently skips the very processes this arm exists for. The gate is therefore a
+		# PREFIX of the truncation-free exe basename, with comm only as the fallback for an unreadable exe link.
 		exe=$(readlink "$d/exe" 2>/dev/null)
+		exe_base=${exe##*/}
+		comm=$(cat "$d/comm" 2>/dev/null)
+		cap=0
+		case "$exe_base" in
+		mldr*|launchd*|vchroot*|shellspawn*|darlingserver*) cap=1 ;;
+		*) case "$comm" in mldr*|launchd*|vchroot*|shellspawn*|darlingserver*) cap=1 ;; esac ;;
+		esac
+		cap_hit=0
+		if [ "$cap" = 1 ] && [ -n "$prefix_id" ]; then
+			for fd in "$d"/fd/*; do
+				[ -e "$fd" ] || continue
+				if [ "$(stat -Lc '%d:%i' "$fd" 2>/dev/null)" = "$prefix_id" ]; then
+					witness "OWNED pid=$pid arm=capability ancestor=no exe_base=$exe_base cmd=$(tr "\0" " " < "$d/cmdline" 2>/dev/null | cut -c1-120)"
+					echo "$pid"
+					cap_hit=1
+					break
+				fi
+			done
+		fi
+		# A capability match already reported this pid; falling through would report it twice and inflate every
+		# process count the verdict is drawn from.
+		[ "$cap_hit" = 1 ] && continue
 		case "$exe" in "$PREFIX"|"$PREFIX"/*) witness "OWNED pid=$pid arm=exe ancestor=no ppid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $2}') pgid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $3}') sid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $4}') exe=$exe"; echo "$pid"; continue ;; esac
 		cmd=$(tr "\0" " " < "$d/cmdline" 2>/dev/null)
 		# The cmdline arm must NOT match this script or its pipeline subshells: they are invoked WITH --prefix,
@@ -147,6 +195,45 @@ owned_pids() {
 	done
 }
 count_owned() { owned_pids | wc -l; }
+
+# The prefix's own runtime files. A killed run leaves them naming a server that is gone, and they are never removed
+# while an owner is alive: both callers below only act with zero owners, which is the framework's own precondition
+# (west_commands/test_prefix.py::remove_stale_init_pid / remove_stale_server_socket).
+stale_init_pid() { tr -dc '0-9' < "$PREFIX/.init.pid" 2>/dev/null; }
+report_stale_runtime_files() {
+	ip=$(stale_init_pid)
+	if [ -n "$ip" ] && [ ! -d "/proc/$ip" ]; then
+		echo "STALE-RUNTIME-FILE $PREFIX/.init.pid pid=$ip dead"
+	fi
+	for f in .darlingserver.sock .darlingserver.stat.sock; do
+		[ -e "$PREFIX/$f" ] && echo "STALE-RUNTIME-FILE $PREFIX/$f"
+	done
+	return 0
+}
+clear_stale_runtime_files() {
+	ip=$(stale_init_pid)
+	if [ -n "$ip" ] && [ ! -d "/proc/$ip" ]; then
+		witness "CLEAR stale $PREFIX/.init.pid pid=$ip reason=not-alive"
+		rm -f "$PREFIX/.init.pid"
+	fi
+	for f in .darlingserver.sock .darlingserver.stat.sock; do
+		[ -e "$PREFIX/$f" ] || continue
+		witness "CLEAR stale $PREFIX/$f reason=no-owner"
+		rm -f "$PREFIX/$f"
+	done
+	unset ip
+	return 0
+}
+
+# A mode that must NOT boot anything: report what this harness would treat as prefix-owned, then exit. The ownership
+# rule is what decides whether the next boot starts clean, and a rule that can only be exercised by booting cannot be
+# tested; tests/run-darling-boot-harness-ownership-contract.sh drives this mode with synthetic processes.
+if [ "$LIST_OWNED" = 1 ]; then
+	[ -x "$PREFIX/bin/darling" ] || { echo "no launcher at $PREFIX/bin/darling (still listed below)" >&2; }
+	owned_pids | sort -n | uniq
+	report_stale_runtime_files
+	exit 0
+fi
 
 STAGE=clean-start; echo "== clean start =="
 witness "TEARDOWN stage=shutdown-enter self=$$ parent=$PPID harness=$(caller_id $$)"
@@ -181,6 +268,10 @@ if [ "$left" -gt 0 ]; then
 	exit 1
 fi
 echo "clean: 0 prefix-owned processes, starting"
+# No process owns the prefix, so the runtime files a killed run left cannot be in use: clear them BEFORE the boot,
+# otherwise the new launcher meets a socket/init-pid from a server that no longer exists and never reaches
+# shellspawn readiness. The witness names each removal, because a silent delete is indistinguishable from a hang.
+clear_stale_runtime_files
 
 # A probe that is not in the artifact cannot fire, and a probe that is in the artifact but not in the log cannot
 # be concluded from either. Verify presence in the DEPLOYED copies first, so a silent run is never read as "the code
@@ -306,6 +397,8 @@ done
 	i=$((i + 1))
 done
 mounts=$(mount 2>/dev/null | grep -c "$PREFIX")
+# Same rule after the run: leave the prefix as a *bootable* clean state, not merely a process-free one.
+clear_stale_runtime_files
 echo "prefix processes after: $final, mounts: $mounts"
 if [ "$final" -gt 0 ] || [ "$mounts" -gt 0 ]; then
 	echo "cleanup FAILED" >&2
