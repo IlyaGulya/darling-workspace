@@ -122,6 +122,17 @@ main(void)
 	setvbuf(stdout, NULL, _IONBF, 0);
 	printf("IOS-UNFAIR-LOCK stage=ulock-only K=%d\n", IOS_ULOCK_K);
 	run_variant("spin", 0);   /* the ulock/futex path alone */
+	/*
+	 * Attribution for the second variant: usleep AFTER every waiter has returned, with no guest thread
+	 * parked in __ulock_wait while it runs. If this completes but the next one does not, the hazard needs a
+	 * thread blocked in the futex, not merely the semaphore path.
+	 */
+	printf("IOS-UNFAIR-LOCK variant=usleep-idle start\n");
+	fflush(stdout);
+	for (int i = 0; i < 5; i++)
+		usleep(20 * 1000);
+	printf("IOS-UNFAIR-LOCK variant=usleep-idle done\n");
+	fflush(stdout);
 	run_variant("usleep", 1); /* the same waits, paced with usleep */
 	printf("IOS-UNFAIR-LOCK pass=0 reason=primitive_depth_contract_under_test\n");
 	return 0;
