@@ -11,8 +11,11 @@
  * If the server dies during the second variant, the first variant's line is already in the log and says
  * whether the primitive alone is enough to provoke it. The contract it asserts is Darwin's: __ulock_wait
  * returns the remaining queue depth (xnu/bsd/kern/sys_ulock.c:780, `*retval = --ull->ull_nwaiters`), so
- * waking K waiters one at a time yields the multiset {0..K-1}. Darling's futex-backed wait cannot report
- * that and returns a constant 1, so this fixture is expected to report a violation while that holds.
+ * waking K waiters one at a time yields the multiset {0..K-1}.
+ *
+ * Verdict: `pass=1` only when every waiter returned a real value, the multiset is exactly {0..K-1}, no
+ * waiter was stranded, and the usleep variant completed. With the futex emulation (which returns a constant
+ * 1) the spin variant reports a violation, so this is the RED for bead dar-lf4b and its GREEN gate.
  *
  * Run it with: IOS_UNFAIR_LOCK_FIXTURE=tests/ios_ulock_contract_guest.c DPREFIX=... DARLING_BUILD_DIR=...
  *              bash tests/run-ios-unfair-lock-contract.sh
@@ -56,7 +59,9 @@ spin(long rounds)
 		;
 }
 
-static void
+/* Returns 1 when this variant satisfied the contract: every waiter returned, and the multiset of returns is
+ * exactly {0..K-1}. */
+static int
 run_variant(const char *name, int sleeps)
 {
 	pthread_t waiters[IOS_ULOCK_K];
@@ -114,18 +119,20 @@ run_variant(const char *name, int sleeps)
 	printf("IOS-UNFAIR-LOCK variant=%s depth_contract=%s stranded=%d\n", name,
 			ok ? "ok" : "violated", stranded);
 	fflush(stdout);
+	return ok;
 }
 
 int
 main(void)
 {
+	int ok;
+
 	setvbuf(stdout, NULL, _IONBF, 0);
 	printf("IOS-UNFAIR-LOCK stage=ulock-only K=%d\n", IOS_ULOCK_K);
-	run_variant("spin", 0);   /* the ulock/futex path alone */
+	ok = run_variant("spin", 0);   /* the ulock/futex path alone */
 	/*
-	 * Attribution for the second variant: usleep AFTER every waiter has returned, with no guest thread
-	 * parked in __ulock_wait while it runs. If this completes but the next one does not, the hazard needs a
-	 * thread blocked in the futex, not merely the semaphore path.
+	 * Attribution control: usleep with no waiter parked. If the next variant fails while this one completes,
+	 * the hazard needs a thread blocked in the futex, not merely the semaphore path.
 	 */
 	printf("IOS-UNFAIR-LOCK variant=usleep-idle start\n");
 	fflush(stdout);
@@ -133,7 +140,8 @@ main(void)
 		usleep(20 * 1000);
 	printf("IOS-UNFAIR-LOCK variant=usleep-idle done\n");
 	fflush(stdout);
-	run_variant("usleep", 1); /* the same waits, paced with usleep */
-	printf("IOS-UNFAIR-LOCK pass=0 reason=primitive_depth_contract_under_test\n");
-	return 0;
+	/* Reaching this line at all is the second variant's first result: it must not hang or panic. */
+	ok = run_variant("usleep", 1) && ok;
+	printf("IOS-UNFAIR-LOCK pass=%d reason=primitive_depth_contract\n", ok ? 1 : 0);
+	return ok ? 0 : 1;
 }
