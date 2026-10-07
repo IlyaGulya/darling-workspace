@@ -291,3 +291,21 @@ one that used to hang or panic the server -- completes.
 Committed on canonical fix branches: darlingserver `fix/ulock-turnstile-queue` (b78fce3), the xnu/darling
 overlay `fix/ulock-turnstile-queue` (493989c), and darling `fix/mldr32-arch-register-index` (dbe768a01, the
 loader build fix this slice needed to redeploy the chain at all).
+
+## Fork children take the futex, deliberately
+
+A child forked from a process holding an unfair lock must BLOCK when it takes that lock (its inherited holder
+thread does not exist in the child), and it must not trap. With the queue it trapped: the child attaches its
+own lane during the fork handshake, and the first postfork predicate cleared as soon as that lane existed, so
+the child went down the RPC path and died in the plane.
+
+The fix makes the fork-child decision sticky for the process: it holds while the child has no catalog of its
+own AND keeps holding for the child's whole life (`getpid() != g_ring_owner_pid`). A fork child's lock words
+are COW-private, so no transport -- not the parent's unlock, not the server's queue -- can ever release it
+through the shared word; blocking is the entire requirement, and the host futex gives that with no transport.
+Every other RPC still uses the child's own lane. One instrument records the decision, because it is otherwise
+invisible: `[ulock-forkchild] pid=… tid=…: fork child takes the host futex for ulock`.
+
+Measured, on the deployed build: the child logs `forkchild=1`, takes the futex, and the parent's 3 s timeout
+finds it still blocked -- `IOs-UNFAIR-LOCK fork-child blocked=1 waited_ms=3000 (Darwin-like)` -- in the
+standalone fixture and in the full 12-arm fixture.
