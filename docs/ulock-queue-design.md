@@ -243,3 +243,17 @@ So the failure mode is measured, not theoretical: an ulock op that is not in
 returning an error. That is why step 5 of the implementation map is mandatory, and it is also why the
 classification must be `SIMPLE_C2S|BLOCKING` for the waits: an unclassified op defaults to UdsOnly, which no
 longer exists.
+
+## Deploying this slice: the whole chain, or nothing
+
+Changing the RPC tables changes what the loader and the server agree on, so a partial deploy fails in a way
+that looks like a bug in the change itself. Measured while validating: deploying only
+`libsystem_kernel.dylib` + dyld + darlingserver leaves the loader stale and the server drops its checkin
+(`Message buffer was too small for dserver_call_checkin_t`); later, restoring dyld and libsystem_kernel.dylib
+from the deploy tool's own backup while leaving a loader built from the changed tree fails the same way,
+because the pair is still mixed.
+
+So the consistent set for this slice is: `libsystem_kernel.dylib` + `dyld` + `darlingserver` + `mldr` +
+`mldr32` (`--deploy-closure-names libsystem_kernel.dylib --deploy-darlingserver --deploy-mldr`, with
+`mldr mldr32` in `--targets`). Note also that `darling-build ... | tail` hides a failed build: the pipeline
+returns the tail's status, so the deploy looks successful after a failed compile.
