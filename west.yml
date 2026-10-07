@@ -28,10 +28,11 @@ manifest:
     # NOT part of this pin.
     # iOS toolchain ABI slice (2026-10-07): libc++ gains the libc++ >= 16 verbose-termination
     # entry point that Apple's Xcode 26.3 clang references from /usr/lib/libc++.1.dylib
-    # (current version 2000.66.0). Measured: with it the real Xcode clang runs under Darling
-    # (clang --version rc=0) and compiles a real arm64 iPhoneOS object against the real
+    # (current version 2000.66.0) and now builds its filesystem sources so std::__fs::filesystem
+    # is exported, which the same toolchain's ld references. Measured: clang --version rc=0 and
+    # ld -v rc=0 under Darling, and a real arm64 iPhoneOS object compiled against the real
     # iPhoneOS 26.2 SDK. Parent is the dar-dles pin 0dbb35182.
-    revision: 70c78dcbb6129a29e58caf520af42aeb2f45d97a
+    revision: 9c290057ff52d7b659324d891095e76804e1e91a
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -693,13 +694,15 @@ manifest:
     repo-path: darling-libcxx
     path: darling/src/external/libcxx
     # Published on darling-next because the iOS toolchain ABI slice lives there; master (the
-    # previous pin, c47677d3) is the same object on both remotes, so only the added commit differs.
+    # previous pin, c47677d3) is the same object on both remotes, so only the added commits differ.
+    # b09e14bd builds src/filesystem/*.cpp (as C++17) so the dylib exports std::__fs::filesystem,
+    # which Xcode 26.3's ld references; with it, ld -v runs under Darling (rc=0).
     remote: darling-next
     # 513bfd483 adds the libc++ >= 16 __libcpp_verbose_abort entry point that Apple's Xcode 26.3
     # clang references. Measured: clang's 479 undefined symbols leave exactly this one libc++ gap
     # against the deployed guest runtime (220 dylibs, 88 260 exports), and with it the real clang
     # runs (clang --version rc=0) and compiles arm64 iPhoneOS objects against the iPhoneOS 26.2 SDK.
-    revision: 513bfd483311713d5a5059a6591907c590409961
+    revision: b09e14bd34dbf6c34421c0f85d15feeec8a11080
     userdata:
       kind: darling-source
       upstream-repository: darling-libcxx
