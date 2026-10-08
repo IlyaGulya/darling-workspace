@@ -3654,6 +3654,24 @@ fn op_name(op: u64) -> &'static str {
 // stall turns on: for each object, was a wake ever issued for it at all, and if it was, did the
 // server have anybody to wake? A "waiters exist and no wake was ever issued" object is a
 // different defect from "wake issued and nobody found", and only this join tells them apart.
+/// Whether the process a park line describes is still there, matched by the THREAD IDS the record
+/// carries rather than by the pid alone.
+///
+/// A pid can be reused, and the contract fixture proved the bare pid is not enough: its pid 100 IS a
+/// live process on this host, so `/proc/100` existed and a park logged by something else was
+/// reported as present. The ids in these records are host ids, so requiring one of them to still be
+/// a thread of that pid is the check that means "this is the same process".
+fn proc_matches(pid: u64, tids: &[u64]) -> bool {
+    if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+        return false;
+    }
+    if tids.is_empty() {
+        return true;
+    }
+    tids.iter()
+        .any(|t| std::path::Path::new(&format!("/proc/{pid}/task/{t}")).exists())
+}
+
 fn run_waits(args: WaitsArgs) -> Result<ExitCode> {
     let log = match args.log {
         Some(p) => p,
@@ -3771,12 +3789,29 @@ fn run_waits(args: WaitsArgs) -> Result<ExitCode> {
                 && e.wake_late == 0
         })
         .collect();
+    let still_there = |e: &WaitObject, pid: u64| -> bool {
+        let mut tids: Vec<u64> = e.waiters.clone();
+        if e.owner != 0 { tids.push(e.owner); }
+        proc_matches(pid, &tids)
+    };
     for (k, e) in &stalling {
         let (pid, addr) = **k;
         crate::say(&format!(
-            "WAITS-STALL pid={} addr={:#x} op={} owner_tid={} waiters=[{}] reason=no-wake-was-ever-issued-for-this-object",
+            "WAITS-STALL pid={} addr={:#x} op={} owner_tid={} waiters=[{}] reason=no-wake-was-ever-issued-for-this-object proc={}",
             pid, addr, op_name(e.op), e.owner,
-            e.waiters.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(",")
+            e.waiters.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(","),
+            if still_there(e, pid) { "present" } else { "absent" }
+        ));
+    }
+    // A stall line reads the LOG, so it describes a park that HAPPENED. Measured: a run where the
+    // linker died instead of stalling still printed WAITS-STALL, because the park was logged before
+    // it died. Saying whether that process is still there is the difference between a lock problem
+    // to fix and history, and getting it wrong sends the next investigation at a dead process.
+    let absent = stalling.iter().filter(|(k, e)| !still_there(e, k.0)).count();
+    if !stalling.is_empty() && absent == stalling.len() {
+        crate::say(&format!(
+            "WAITS-NOTE all {} stalling object(s) belong to processes that are gone from /proc; those parks were logged when they happened -- history, not a current stall",
+            stalling.len()
         ));
     }
 
