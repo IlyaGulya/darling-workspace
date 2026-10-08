@@ -490,7 +490,20 @@ manifest:
     # RING_GENERATED_SIMPLE, so sys_psynch_mutexwait/mutexdrop reached the retired socket, were
     # denied, and called __simple_abort() -- measured on the real ld as 'psynch_mutexdrop failed
     # internally: -32' then rc=139. Parent is the ulock/plane pin 955e5d4.
-    revision: bce5bf9f12078d6c9c25cd9688c7f75f2bba7a0c
+    # iOS T4 slice (2026-10-08): give every dispatched call a fresh BSD return value.
+    # _bsdReturnValue is Darwin's per-syscall `int32_t retval` (fresh 0 for each call,
+    # syscalls.master); it was a persistent per-thread field with no per-call reset, so
+    # duct-tape's ulock_wake -- which by Darwin's ULF_NO_ERRNO convention writes the
+    # out-param ONLY on an error -- handed the guest the previous call's value on success.
+    # Measured on the real Xcode 26.3 ld: libplatform's _os_unfair_lock_unlock_slow got a
+    # stale -1 outside {0, -ENOENT, -EINTR} and executed its ud2 ("ulock_wake failure"),
+    # so the linker died of SIGILL and clang reported "linker command failed due to
+    # signal". Fix: reset the field when a call becomes active. RED/GREEN: with the
+    # pre-fix server tests/ios_call_retval_guest.c produces no verdict; with this revision
+    # it reports pass=1 reason=call_retval_freshness (VERDICT PASS). T4 then advances to a
+    # SIGSEGV with two threads queued in ulock_wait -- a separate, still-open defect.
+    # Parent is the psynch ring-classification pin bce5bf9.
+    revision: 26c07780af01027785777ffedf005531b98a7b28
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
