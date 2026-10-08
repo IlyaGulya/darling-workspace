@@ -49,8 +49,12 @@ Canonical sources live in the selected manifest repository:
   and the runtime's own install alternate, and at delivery time the runtime handler
   owns the signal and swallows it. Measured: SIGABRT, SIGSYS and SIGILL sent to a
   guest process produced no witness line. The working path is the stop-at-start
-  window plus `dwdiag unwind --catch`. In catch mode gdb must also be told to pass
-  `SIGSTOP` through, because the target is already stopped by that signal.
+  window plus `dwdiag unwind --catch SIGNAL`. In catch mode gdb must also be told to
+  pass `SIGSTOP` through, because the target is already stopped by that signal.
+* **A new instrument or command carries a contract.** `tests/waits-contract.sh` is
+  the model: one fixture case per verdict class, so the command cannot silently
+  collapse two different defects into one. It caught a real defect before its own
+  first commit.
 
 * **A probe must be a single string literal**, written in one syscall, with every
   ABI register saved and restored besides the `%rcx`/`%r11` that `syscall`
