@@ -4000,6 +4000,9 @@ fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
                "-ex", "signal SIGCONT",
                "-ex", "continue",
                "-ex", "info registers rip rsp",
+               // The instruction itself, at the faulting pc. It needs no ASLR reasoning: gdb
+               // already knows where $pc is, and for a SIGILL the opcode IS the finding.
+               "-ex", "x/4i $pc",
                "-ex", "thread apply all bt"])
         .output()
         .context("running gdb in catch mode")?;
@@ -4013,6 +4016,7 @@ fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
             || t.contains("si_addr")
             || t.starts_with("Thread ")
             || t.starts_with('#')
+            || t.contains(":\t")          // the x/4i disassembly lines
             || t.trim_start().starts_with("rip")
             || t.trim_start().starts_with("rsp")
         {
