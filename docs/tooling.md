@@ -235,6 +235,38 @@ A loaded image is mapped at a random address, so an absolute stack word is not a
 the image: the scan rebases it by `mapping_start - file_offset` before symbolizing. Skipping that
 step made every shared-library frame resolve to a bogus symbol while still looking plausible.
 
+### Catching a guest that dies in milliseconds -- the stop window plus `--catch`
+
+A failure whose victim lives a few hundred milliseconds cannot be caught by watching: by the time a
+poll sees the process it is gone (measured: `no ld appeared`, and a stall-triggered capture reported
+`RESULT=exited`). The supported sequence is two pieces:
+
+```
+# 1. the guest command exports a SELECTIVE window: only this image stops before running
+export MLDR_STOP_AT_START=XcodeDefault.xctoolchain/usr/bin/ld
+# 2. attach to the stopped target and catch the signal it dies of
+scripts/dwdiag unwind --pid PID --catch SEGV --catch-timeout 150
+```
+
+`MLDR_STOP_AT_START` is a substring of the target's argv (`"*"` keeps a global stop, which is
+useless in practice: it halts the shell that would launch the target). `MLDR_HOLD_ON_SIGNAL` also
+exists -- the loader fault witness pauses instead of restoring `SIG_DFL` -- but it does NOT work as
+a capture, and that is measured: the re-arm loop and the runtime's own install alternate every
+20 ms, so at delivery time the runtime handler swallows the signal and no witness line appears. The
+window plus `--catch` is the mechanism that works; gdb must be told to pass `SIGSTOP` through
+because the target is already stopped by it.
+
+Measured result of one such catch on the iOS linker: `Thread 5 "mldr" received signal SIGILL,
+Illegal instruction.` followed by `SIGSEGV, Segmentation fault`, with `rip`, `rsp` and the host LWP
+-- i.e. the trap arm is not silent, it dies after an illegal instruction.
+
+### `dwdiag waits` / `dwdiag unwind` contracts
+
+`tests/waits-contract.sh` carries one object of each verdict class (never-woken, wake-found-nobody,
+woken) and checks that only the first is reported as stalling. It caught a real defect before its
+commit: an object whose wake found nobody was reported as never-woken, which contradicts the
+distinction the command exists to make.
+
 ### `dwdiag progress` -- where a run stopped
 
 `darling-workspace/scripts/dwdiag progress --log RUN_LOG [--guest-log MLDR_DIAG_LOG] [--mode M]` answers the question a

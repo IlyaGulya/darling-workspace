@@ -34,8 +34,23 @@ Canonical sources live in the selected manifest repository:
 | `scripts/darling-prefix-map.sh` | which prefix a process is rooted in, when it has no readable path |
 | `scripts/prefix-cleanup.sh` | prefix-scoped process/mount cleanup, including guest processes that path matching cannot see |
 | `scripts/guest-probe.h` | the probe contract, so a probe cannot silently measure nothing |
+| `scripts/dwdiag` | one entry point for the run/judge/symbolize/crash family: `build`, `cycle`, `symbolize`, `crash`, `verdict`, `suite`, `witness`, `progress`, `courier`, `trace`, `denials`, `waits`, `unwind` |
+| `scripts/dwdiag waits` | per ulock object: who waits, who owns, and whether a wake was EVER issued for it -- separating "nobody asked to wake it" from "a wake was issued and the server found nobody" |
+| `scripts/dwdiag unwind` | guest frames, which host gdb cannot walk: per-thread `rsp` from the debugger, the words above it, filtered to guest images and symbolized. With `--catch SIGNAL` it instead attaches to a stopped target, arms a stop on that signal, resumes it and reports the signal, the registers and the instruction at `$pc` |
 
 ## Rules the tools enforce, each from a measured failure
+
+* **A stop-at-start window must be SELECTIVE.** `MLDR_STOP_AT_START` takes a
+  substring of the target's argv; an unconditional stop halts the shell that would
+  launch the interesting process, so the window never opens on the target at all.
+  Measured: the guest command's own bash stopped before clang ran and the linker
+  never appeared.
+* **A competing `sigaction` cannot catch a fatal signal.** The loader's re-arm loop
+  and the runtime's own install alternate, and at delivery time the runtime handler
+  owns the signal and swallows it. Measured: SIGABRT, SIGSYS and SIGILL sent to a
+  guest process produced no witness line. The working path is the stop-at-start
+  window plus `dwdiag unwind --catch`. In catch mode gdb must also be told to pass
+  `SIGSTOP` through, because the target is already stopped by that signal.
 
 * **A probe must be a single string literal**, written in one syscall, with every
   ABI register saved and restored besides the `%rcx`/`%r11` that `syscall`
