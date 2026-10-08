@@ -28,7 +28,11 @@ configuration, and do not search conversation archives for installation copies.
 - Resolve the West workspace, manifest repository, install prefix, guest prefix,
   launcher, build directory, and runtime profile from current configuration.
   The install prefix and guest prefix may differ. Do not substitute a remembered
-  home directory, default prefix, setuid launcher, or runtime mode.
+  home directory, default prefix, or runtime mode. Rootless is the launcher's
+  DEFAULT and needs no setuid root; the privileged/rootfull launcher is RETIRED and
+  is refused unless `DARLING_FORCE_ROOTFULL_MODE=1` asks for it, so a "not setuid
+  root" message means a privileged mode was requested explicitly, never that a
+  normal run is misconfigured.
 - From the manifest repository, use `mise run dw ...` for the managed interface
   and `mise run west ...` for advanced West commands. Both tasks select the pinned
   mise environment for every command and forward arguments without an extra

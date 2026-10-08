@@ -5,7 +5,8 @@ pure environment drift, not code bugs:
 
   #89  Built dyld in the WRONG build directory. There are two build dirs for the same source; the
        deployed, bootable closure comes from the one whose CMAKE_INSTALL_PREFIX equals the prefix
-       baked into the setuid launcher at compile time. A dyld built with the wrong prefix can never
+       baked into the launcher at compile time (the launcher is rootless by default and needs no setuid;
+       the privileged mode is retired). A dyld built with the wrong prefix can never
        boot that prefix, and the failure looks like a mysterious silent hang.
 
   #90  A project's working tree was checked out to a different commit than the West manifest pins
@@ -92,7 +93,7 @@ class DarlingDoctor(WestCommand):
             default=os.environ.get(
                 "DARLING_PREFIX", str(Path.home() / "work/darling-prefix")
             ),
-            help="install prefix baked into the setuid launcher (default: ~/work/darling-prefix)",
+            help="install prefix baked into the launcher at compile time (default: ~/work/darling-prefix)",
         )
         p.add_argument(
             "--build-dir",
