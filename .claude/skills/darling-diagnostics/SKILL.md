@@ -41,6 +41,16 @@ Canonical sources live in the selected manifest repository:
 
 ## Rules the tools enforce, each from a measured failure
 
+* **A log that stopped growing is not a stalled process.** MEASURED three times in one session, twice
+  leading me to a wrong diagnosis: `size` and line counts are identical whether the process is stuck or
+  already EXITED, and the T4 linker was doing the second while I read it as the first. Ask the process
+  (`/proc/<pid>`, `dwdiag waits`' `proc=` field, the run's own exit line), and read
+  `dwdiag trap` for the kernel's account of how it died, before saying "stalled".
+* **A masked signal cannot be caught by a debugger.** When a faulting guest masks the signal
+  (`sigsegv-mask how=1` in the guest's own trace), gdb's `continue` never returns on it, so a catch
+  session prints nothing and looks like a silent hang. The kernel's trap line is the route that works
+  (`dwdiag trap`), and it exists whether or not a core is written.
+
 * **A stop-at-start window must be SELECTIVE.** `MLDR_STOP_AT_START` takes a
   substring of the target's argv; an unconditional stop halts the shell that would
   launch the interesting process, so the window never opens on the target at all.

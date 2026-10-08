@@ -244,6 +244,14 @@ host has `/proc/100`, a kernel thread whose tid is also 100, so a fixture park l
 out `proc=present`. A bare pid is not evidence that the process a record describes is still there.
 The contract builds both cases from the running shell's own pid, so it cannot drift with the host.
 
+### When NOT to reach for `--catch`: a masked signal is not catchable
+
+MEASURED, twice, at the cost of two full runs: a catch session on a guest from this environment printed the
+stop and then nothing -- no registers, no frames -- and ended on its own timeout. The guest trace explains it:
+the faulting path masks the signal (`[sigsegv-mask how=1 ...]`), so gdb's `continue` never returns on it and a
+session that waits for a stop waits forever. The kernel still records the fault, so `dwdiag trap` is the route
+for "how did this guest die", and `--catch` is for a signal that is actually deliverable.
+
 ### `dwdiag unwind` -- guest frames, which host gdb cannot walk
 
 `scripts/dwdiag unwind --pid PID [--image SUBSTR] [--window BYTES] [--max N] [--json]` reads a
