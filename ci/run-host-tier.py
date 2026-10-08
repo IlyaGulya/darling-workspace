@@ -248,6 +248,15 @@ EXCLUDED_CONTRACTS = {
         "booted Darling prefix (DPREFIX) whose darlingserver is under test, then asserts the "
         "server's own kqchan modify debug lines. The host tier has no prefix lifecycle and no guest "
         "runtime; run it with DARLING_BUILD_DIR and DPREFIX from the prefix-backed lane",
+    "tests/run-dtape-mutex-ownership-contract.sh":
+        "host contract over the REAL duct-tape mutex implementation (duct-tape/src/locks.c plus the "
+        "libsimple archive are compiled and executed, not modelled): it pins the ownership contract "
+        "(active-thread pair, no-active-thread fallback pair, contention with suspension) and shows "
+        "that the two ILLEGAL transitions -- fallback acquire then active release, and acquire as "
+        "guest thread A then release as B -- produce exactly the panic a T4 run aborted with. It "
+        "needs a configured product build dir for the generated headers and the recorded compile "
+        "commands, so it runs from the build-backed lane with DARLING_BUILD_DIR; the host tier has no "
+        "product build",
     "tests/run-dtape-kqchan-fill-context-contract.sh":
         "compiles the real XNU-flavoured duct-tape objects the kqchan read/fill path runs on "
         "(duct-tape/src/kqchan.c, duct-tape/xnu ipc_pset.c, ipc_mqueue.c, mach_msg.c), which needs "
