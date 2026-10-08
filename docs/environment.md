@@ -123,3 +123,22 @@ filesystem and there is no shared cache to supply it, so the real Xcode clang ca
 all (rc=139). Re-run `scripts/ios-toolchain-runtime-additions.sh --build-dir <build> --prefix <prefix>
 --receipt <path>` before blaming the toolchain, and re-provision the CommandLineTools through the declared
 profile before a guest CTest that needs them.
+
+## The swift submodule's LFS objects, when the LFS host is unreachable
+
+The reviewed guest CommandLineTools profile materializes the `swift` submodule
+(`darling/src/external/swift`), whose 44 files are git-lfs pointers addressed by SHA-256 and served from
+`https://git-lfs.darlinghq.org/lubos/darling-swift` -- a project service that needs its own credential and
+that this host has none for (the only helpers present are for `github.com`). When that fetch fails the
+bootstrap dies with `smudge filter lfs failed`.
+
+Recovery without any credential: the legacy workspace `/home/ilyagulya/work/darling-gwn-resume` already has
+those objects in its own content-addressed store, so copy them into this checkout's store and let git-lfs
+verify:
+
+    src=<legacy>/darling/src/external/swift/$(git -C <legacy>/.../swift rev-parse --git-dir)/lfs/objects
+    dst=$(git -C darling/src/external/swift rev-parse --git-dir)/lfs/objects
+    cp -an "$src/." "$dst/" && git -C darling/src/external/swift lfs fsck
+
+`fsck OK` means the objects are correctly addressed (the filename is the SHA-256), so this is placement, not
+bypass. A more durable fix is to point the submodule at a reachable mirror: `git config lfs.url <mirror>`.
