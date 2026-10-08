@@ -42,6 +42,11 @@ Canonical sources live in the selected manifest repository:
 
 ## Rules the tools enforce, each from a measured failure
 
+* **Neither growth NOR flatness of a log tells you about YOUR process.** Growth is not evidence it is alive:
+  MEASURED in the same run where `ld` had already died of SIGILL, the harness log kept growing because OTHER guest
+  processes were printing, and the shell was found parked in `do_wait` -- the child it waited for was gone. The
+  log belongs to the prefix, not to the process; ask the process itself (`/proc/<pid>`, `dwdiag waits`' `proc=`
+  field, the run's own exit line), and use `dwdiag loops` only to rule a spin in or out.
 * **A log that stopped growing is not a stalled process.** MEASURED three times in one session, twice
   leading me to a wrong diagnosis: `size` and line counts are identical whether the process is stuck or
   already EXITED, and the T4 linker was doing the second while I read it as the first. Ask the process

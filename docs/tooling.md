@@ -198,6 +198,12 @@ and discarded first: repeats-versus-span-in-lines (always in the thousands, so i
 variety over 200 lines (too wide to see the spin). The last 30 lines separate the two available runs: 5-6
 distinct for the spin, 14 for the run whose process exited. Those are the defaults, and both are flags.
 
+**Growth is not evidence about YOUR process.** MEASURED, in the same run where the linker had already died of
+SIGILL: the harness log kept GROWING, because other guest processes in the prefix were printing, and the shell was
+found parked in `do_wait` -- the child it was waiting for was gone. A run log belongs to the PREFIX, not to one
+process, so neither its growth nor its flatness is a statement about the process you are investigating. This is the
+mirror image of the earlier rule, and both point the same way: ask the process.
+
 **A varied tail RULES OUT a spin and says nothing else**, so the verdict says `varied` and never `progressing`:
 the run where the linker exited has a varied tail too. Whether a process is still working is a question for the
 process (`proc=` from `dwdiag waits`, the run's own exit line), not for its log.
