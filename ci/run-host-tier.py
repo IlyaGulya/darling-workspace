@@ -262,6 +262,14 @@ EXCLUDED_CONTRACTS = {
         "the unfair-lock trap seen in Apple's ld during T4 without the Apple toolchain. The host tier "
         "has no product build, no prefix lifecycle and no guest runtime; run it with "
         "DARLING_BUILD_DIR=<configured build> and DPREFIX from the prefix-backed lane",
+    "tests/run-ios-call-retval-contract.sh":
+        "guest-runtime gate: the same host-build/boot/verdict mechanism as "
+        "tests/run-ios-unfair-lock-contract.sh, narrowed by IOS_UNFAIR_LOCK_FIXTURE to "
+        "tests/ios_call_retval_guest.c, which isolates one invariant: a dispatched call reports its "
+        "own return value, so a successful ULF_NO_ERRNO ulock_wake cannot hand the guest the previous "
+        "call's value (the SIGILL the real ld died of during T4). The host tier has no product build, "
+        "no prefix lifecycle and no guest runtime; run it with DARLING_BUILD_DIR=<configured build> "
+        "and DPREFIX from the prefix-backed lane",
     "tests/run-ios-toolchain-contract.sh":
         "guest-runtime gate: it executes the REAL Apple clang from an Xcode tree inside a booted "
         "Darling prefix (DPREFIX) and compiles arm64 iPhoneOS objects against that Xcode's "
