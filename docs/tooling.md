@@ -203,6 +203,16 @@ Because it consumes instruments that already existed, the same question is answe
 `witness`: a log where `ulock-wait-park` fired and every `ulock-wake*` stayed silent says the same
 thing in one line, and that is the case the T4 stall is in.
 
+**A stall line describes a park that HAPPENED, so every one carries `proc=present|absent`.** A run
+where the T4 linker died instead of stalling still printed `WAITS-STALL`, because these lines read
+the log -- and taking that for a current stall sends the next investigation at a dead process. When
+every stalling object belongs to a process that is gone, a `WAITS-NOTE` says so in one line.
+
+Presence is matched by the THREAD IDS the record carries, not by the pid, and that is measured: this
+host has `/proc/100`, a kernel thread whose tid is also 100, so a fixture park logged by pid 100 came
+out `proc=present`. A bare pid is not evidence that the process a record describes is still there.
+The contract builds both cases from the running shell's own pid, so it cannot drift with the host.
+
 ### `dwdiag unwind` -- guest frames, which host gdb cannot walk
 
 `scripts/dwdiag unwind --pid PID [--image SUBSTR] [--window BYTES] [--max N] [--json]` reads a
