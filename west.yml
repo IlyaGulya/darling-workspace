@@ -32,7 +32,12 @@ manifest:
     # is exported, which the same toolchain's ld references. Measured: clang --version rc=0 and
     # ld -v rc=0 under Darling, and a real arm64 iPhoneOS object compiled against the real
     # iPhoneOS 26.2 SDK. Parent is the dar-dles pin 0dbb35182.
-    revision: 9c290057ff52d7b659324d891095e76804e1e91a
+    # iOS T4 slice (2026-10-08): mldr uses arch-appropriate ucontext register indices
+    # (FW_UCTX_REG_IP/FW_UCTX_REG_SP), without which the 32-bit mldr32 target does not compile
+    # and a consistent bootchain (mldr carries its own copy of the RPC structs) cannot be
+    # rebuilt and redeployed next to a changed darlingserver. This revision also vendors the
+    # component gitlinks for the iOS T4 slice (see the darlingserver and xnu entries).
+    revision: 3c2f16ca89298cde0e50c0d981c3b6beb1ae986d
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -473,7 +478,14 @@ manifest:
     # The upstream repository stays recorded in userdata.
     remote: darling-next
     # dar-dles fairness slice: bound the ring spin by the work quantum (see the darling pin above).
-    revision: a38410872f5c8c2bfcdd1bf9fc15d11be9ad81f2
+    # iOS T4 slice (2026-10-08): fix/ulock-turnstile-queue -- the kernel side of the ulock
+    # primitive in duct-tape (queue keyed by task+address, thread-death dequeue, exact
+    # Darwin depth accounting) over the turnstile machinery, its lock-order/double-decrement
+    # fixes, and mach_port_get_attributes plus the mk_timer family on the process management
+    # plane. Measured: tests/ios_ulock_contract_guest.c VERDICT PASS with exact {0..K-1}
+    # depth, the fork fixture PASS, and the real Xcode 26.3 clang --version and arm64 iPhoneOS
+    # compiles run in the guest (T1/T2). Parent is the dar-dles pin a384108.
+    revision: 955e5d4037e6ef0126e6ea7200494a4200174de4
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
@@ -1328,7 +1340,14 @@ manifest:
     repo-path: darling-xnu
     path: darling/src/external/xnu
     remote: darling-next
-    revision: f3e71f3997a898ea7962e43dfad32c500efae97e
+    # iOS T4 slice (2026-10-08): fix/ulock-turnstile-queue -- libsystem_kernel routes the
+    # ulock primitive to the server-side queue (lane-less wake reaches it, a fork child stays
+    # on the host futex), and mach_port_get_attributes/mach_port_destroy/mk_timer_* publish on
+    # the process management plane reading planeStatus rather than reply_payload[0]. That last
+    # part is the first event `clang --version` needed: without it the trap hit the retired
+    # per-thread socket, was denied and aborted the guest. Parent is the pin f3e71f3; bcc5595
+    # is the same guest-side change on that parent, replayed here on top of the ulock commits.
+    revision: 215e302843f8c28492025038d74325c2cbbffbc0
     userdata:
       kind: darling-source
       upstream-repository: darling-xnu
