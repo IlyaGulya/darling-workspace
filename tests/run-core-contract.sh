@@ -37,7 +37,8 @@ check "core_pattern=" "and the reason is named, not left to the reader" "$none_o
 rmdir "$empty" 2>/dev/null
 
 # --- a real core
-sudo -n sh -c "echo '$DIR/core.%p' > /proc/sys/kernel/core_pattern" || { note "SKIP: cannot set core_pattern (no passwordless sudo)"; exit 0; }
+"$DWDIAG" cores on --dir "$DIR" >/dev/null 2>&1 || { note "SKIP: cannot set core_pattern (no passwordless sudo)"; exit 0; }
+check "CORES-PATTERN $DIR/core" "the tool's own cores on sets the pattern" "$("$DWDIAG" cores on --dir "$DIR" 2>&1)"
 ( ulimit -c unlimited; sh -c 'kill -ILL $$' 2>/dev/null )
 sleep 1
 core=$(ls -t "$DIR"/core.* 2>/dev/null | head -1)
@@ -53,8 +54,14 @@ check "CORE-SIGNAL .*SIGILL" "the signal is read out of NT_SIGINFO" "$out"
 check "CORE-REGISTERS rip=0x[0-9a-f]+ rsp=0x[0-9a-f]+" "the registers are read out of NT_PRSTATUS" "$out"
 check "CORE-GENERATED-BY" "the generating command is reported" "$out"
 
-# Without --prefix the faulting image cannot be opened, and that must be SAID rather than answered with silence.
-check "CORE-FAULT unresolved" "an unresolvable image says so" "$out"
+# Mappings come from NT_FILE, and the image is named WITHOUT --prefix: the paths a guest reports are de-virtualized
+# (`/Volumes/SystemRoot/...` -> prefix), and a host core's paths are already real. This replaced an expectation that
+# resolution needed --prefix, which was true only while mappings were read from gdb -- and gdb lists NO mappings for
+# a core whose image paths do not exist, which is exactly the guest case.
+check "CORE-MAPPINGS source=NT_FILE count=[0-9]+" "mappings are read from NT_FILE, not gdb" "$out"
+check "CORE-FAULT image=/.*off=0x[0-9a-f]+" "the faulting image is opened and the offset named" "$out"
+check "CORE-STACK frames=[0-9]+" "the whole stack is symbolized, not just the top frame" "$out"
+check "^  #0 0x[0-9a-f]+ .* \+ 0x" "frames carry image, offset and symbol" "$out"
 
 xml=$("$DWDIAG" core --core "$core" --json 2>&1)
 check '"rip":"0x' 'the machine-readable form carries the registers' "$xml"

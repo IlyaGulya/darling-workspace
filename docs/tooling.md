@@ -185,7 +185,11 @@ reported next to **fired**, because a probe that cannot speak is indistinguishab
 CORE file=/tmp/t4cores/core.1221723 size=...
 CORE-SIGNAL Program terminated with signal SIGILL, Illegal instruction.
 CORE-REGISTERS rip=0x... rsp=0x...
-CORE-FAULT image=/usr/lib/system/libsystem_kernel.dylib -> __simple_abort + 0x...
+CORE-MAPPINGS source=NT_FILE count=236 range-scale=bytes (frames resolving under it: bytes=5 pages=0)
+CORE-FAULT image=/…/libdispatch.dylib off=0x6d396 -> _dispatch_source_set_handler + 0x46
+CORE-STACK frames=15 (symbolized)
+  #0 0x7dc012b93396 libdispatch.dylib + 0x6d396 _dispatch_source_set_handler + 0x46
+  …
 ```
 
 **Why a core, when there is already `trap`.** A guest's `ud2` is a **native** instruction: the guest's code runs on
@@ -196,17 +200,36 @@ swallows. The core needs none of that: the kernel writes it, `gdb` reads it with
 NT_PRSTATUS (registers), NT_SIGINFO (signal) and NT_FILE (mappings) -- which is enough to name the image and the
 function.
 
-**It is OFF by default here, and the command says so instead of returning nothing.** `ulimit -c` is 0 and
-`core_pattern` pipes to apport, so a crash writes nothing. Both are one setting away:
+**Mappings are read from NT_FILE, never from gdb.** gdb lists NO mappings for a core whose image paths do not
+exist on the host, and a guest's `/Volumes/SystemRoot/...` never does -- so `info proc mappings` came back empty
+and the faulting address matched no image, while the note had all 236 of them. NT_FILE also has a scale quirk that
+decides a right name from a wrong one: in the core measured here, `start`/`end` are already BYTE addresses but
+`file_offset` is a PAGE number, so a raw offset of 1 cannot mean one byte. The command does not guess: it scores
+both scales by how many backtrace frames land in files that EXIST, and reports the winner
+(`range-scale=bytes (frames resolving under it: bytes=5 pages=0)`). A single address fell under both scales, which
+is exactly how the one-address test picked wrong.
+
+**De-virtualization and symbolization are the command's job, not the reader's.** Guest paths are mapped back to
+the prefix, and EVERY backtrace frame is symbolized with its image, offset and symbol -- doing that by hand took a
+python script over NT_FILE and a gdb disassembly round in a real session, and getting the path or the scale wrong
+resolves nothing while looking like an answer.
+
+**It is OFF by default here, and `dwdiag cores` is what turns it on.** `ulimit -c` was 0 and `core_pattern` piped
+to apport, so a crash wrote nothing and looked identical to a crash with no information:
 
 ```
-echo '<dir>/core.%p' > /proc/sys/kernel/core_pattern   # file, not a pipe to a handler
-ulimit -c unlimited                                     # inherited by the launcher and the guest
+dwdiag cores status    # the pattern, the limit, and a VERDICT: piped (nothing kept) or written to a file
+dwdiag cores on        # file pattern under --dir, remembering the previous value
+dwdiag cores off       # restore what was there
 ```
 
-Measured: with both set, a guest crash produces an `ELF 64-bit LSB core file, x86-64` for the host process that
-carries the guest thread. Guest paths inside the core look like `/Volumes/SystemRoot/...`, which contains the
-prefix, so the mapping resolves to a host file with no search.
+`on` reports the pattern, the limit and the remaining obligation -- `ulimit -c unlimited` must ALSO be set in the
+process that crashes, because a file pattern alone still writes nothing. A leading `|` in the pattern is the only
+thing that decides piped-vs-file; testing for `%` said "a file" about apport's own `-p%p` pattern.
+
+Measured: with both set, a crash produces an `ELF 64-bit LSB core file, x86-64` and `dwdiag core` names the
+faulting function; `tests/run-core-contract.sh` generates its own core this way (no guest, no prefix) and asserts
+the NT_FILE mappings, the opened image and a symbolized stack.
 
 ### `dwdiag loops` -- is the process working, or going round in circles?
 

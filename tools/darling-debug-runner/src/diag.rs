@@ -3327,6 +3327,26 @@ pub struct WitnessArgs {
     json: bool,
 }
 
+#[derive(clap::Subcommand, Debug)]
+pub enum CoresAction {
+    /// Report whether a crash would leave anything readable: the size limit, the pattern, and the directory.
+    Status,
+    /// Point core_pattern at a FILE under --dir, remembering the previous value so `off` can restore it.
+    On,
+    /// Restore the previous core_pattern.
+    Off,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct CoresArgs {
+    #[command(subcommand)]
+    action: CoresAction,
+    /// Directory cores are written into (created if missing). Global so it is accepted after the action, which is
+    /// where a user types it.
+    #[arg(long, global = true, default_value = "/tmp/t4cores")]
+    dir: PathBuf,
+}
+
 #[derive(clap::Args, Debug)]
 pub struct CoreArgs {
     /// The core file to read. Without it, the newest `core.*` under --dir is used.
@@ -4176,6 +4196,166 @@ fn unwind_symbolize(addr: u64, binary: &str) -> Option<String> {
     None
 }
 
+/// Turn crash dumps on or off, and SAY what the state is, because a crash with cores off leaves nothing to read
+/// and that state is invisible otherwise: `ulimit -c` was 0 here and `core_pattern` piped to apport, so every
+/// fatal fault was unreadable while looking exactly like a fault with no information available.
+///
+/// MEASURED: both settings were reachable (the kernel accepted a file pattern, and a throwaway host process then
+/// produced a real `ELF 64-bit LSB core file, x86-64`). This command exists so turning them on is a step with a
+/// name instead of a paragraph of shell in a document.
+fn run_cores(args: CoresArgs) -> Result<ExitCode> {
+    const PATTERN: &str = "/proc/sys/kernel/core_pattern";
+    let saved = args.dir.join("previous-core-pattern");
+    let ulimit_line = std::fs::read_to_string("/proc/self/limits").unwrap_or_default()
+        .lines().find(|l| l.starts_with("Max core file size")).unwrap_or("").trim().to_string();
+    let show = |note: &str| {
+        let pattern = std::fs::read_to_string(PATTERN).unwrap_or_else(|_| "<unreadable>".into());
+        crate::say(&format!("CORES {note} dir={}", args.dir.display()));
+        crate::say(&format!("CORES-PATTERN {}", pattern.trim()));
+        crate::say(&format!("CORES-LIMIT {ulimit_line}"));
+    };
+    match args.action {
+        CoresAction::Status => {
+            show("status");
+            let pattern = std::fs::read_to_string(PATTERN).unwrap_or_default();
+            // A leading '|' means the kernel PIPES the core to a program instead of writing a file, and that is the
+            // only thing that decides it. Testing for '%' was wrong and said "a file" about apport's own pattern,
+            // which contains %p -- so the one state this command exists to detect was the one it mis-reported.
+            crate::say(if pattern.trim_start().starts_with('|') {
+                "CORES-VERDICT dumps are PIPED to a handler (pattern starts with '|'), so no file is kept; run `dwdiag cores on`"
+            } else {
+                "CORES-VERDICT dumps are written to a file; a crash will leave a core to read"
+            });
+        }
+        CoresAction::On => {
+            std::fs::create_dir_all(&args.dir).with_context(|| format!("creating {}", args.dir.display()))?;
+            let prev = std::fs::read_to_string(PATTERN).unwrap_or_default();
+            let _ = std::fs::write(&saved, prev.trim());
+            let want = format!("{}/core.%p", args.dir.display());
+            let sudo = sudo_prefix();
+            let mut cmd = Command::new(sudo.first().copied().unwrap_or("sh"));
+            if !sudo.is_empty() { cmd.arg(sudo[1]); }
+            let status = cmd.arg("sh").arg("-c")
+                .arg(format!("echo {want} > {PATTERN}"))
+                .status().context("writing core_pattern")?;
+            if !status.success() {
+                bail!("could not write {PATTERN} (passwordless sudo unavailable?)");
+            }
+            show("on");
+            crate::say("CORES-NOTE `ulimit -c unlimited` must ALSO be set in the process that will crash (it is inherited by the launcher and the guest); a file pattern alone still writes nothing");
+        }
+        CoresAction::Off => {
+            let prev = std::fs::read_to_string(&saved).unwrap_or_default();
+            if prev.trim().is_empty() { bail!("no saved pattern at {}", saved.display()); }
+            let sudo = sudo_prefix();
+            let mut cmd = Command::new(sudo.first().copied().unwrap_or("sh"));
+            if !sudo.is_empty() { cmd.arg(sudo[1]); }
+            let status = cmd.arg("sh").arg("-c").arg(format!("echo '{}' > {PATTERN}", prev.trim()))
+                .status().context("restoring core_pattern")?;
+            if !status.success() { bail!("could not restore {PATTERN}"); }
+            show("off");
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Turn a path a GUEST saw into the path the host can open.
+///
+/// MEASURED need, twice: a guest reports its own view (`/Volumes/SystemRoot/home/...`), and those paths CONTAIN the
+/// prefix, so they map to a real file with no search. Doing this by hand in two separate places is how the same
+/// mistake gets made twice -- a guest path handed straight to a symbolizer resolves nothing.
+fn guest_path_to_host(p: &str, _prefix: Option<&std::path::Path>) -> Option<PathBuf> {
+    const GUEST_ROOT: &str = "/Volumes/SystemRoot";
+    if let Some(rest) = p.strip_prefix(GUEST_ROOT) {
+        let cand = PathBuf::from(rest);
+        if cand.exists() { return Some(cand); }
+    }
+    if p.starts_with('/') {
+        let cand = PathBuf::from(p);
+        if cand.exists() { return Some(cand); }
+    }
+    None
+}
+
+/// Every file-backed mapping in a core, read straight out of its NT_FILE note.
+///
+/// MEASURED need: gdb does NOT list mappings for a core whose image paths do not exist on the host (the guest's
+/// `/Volumes/SystemRoot/...` never does), so `info proc mappings` came back empty and the faulting address matched
+/// no image. NT_FILE has them all regardless, and it is a few lines of ELF note parsing -- the difference between
+/// "unresolved: pass --prefix" and naming the function.
+fn parse_nt_file(core: &std::path::Path) -> Option<Vec<(u64, u64, u64, String)>> {
+    let data = std::fs::read(core).ok()?;
+    if data.len() < 64 || &data[..4] != b"\x7fELF" { return None; }
+    let rd64 = |off: usize| -> Option<u64> {
+        Some(u64::from_le_bytes(data.get(off..off + 8)?.try_into().ok()?))
+    };
+    let e_phoff = rd64(0x20)?;
+    let e_phentsize = u16::from_le_bytes(data.get(0x36..0x38)?.try_into().ok()?) as u64;
+    let e_phnum = u16::from_le_bytes(data.get(0x38..0x3a)?.try_into().ok()?) as u64;
+    for i in 0..e_phnum {
+        let ph = (e_phoff + i * e_phentsize) as usize;
+        if u32::from_le_bytes(data.get(ph..ph + 4)?.try_into().ok()?) != 4 { continue; } // PT_NOTE
+        let p_offset = rd64(ph + 0x08)? as usize;
+        let p_filesz = rd64(ph + 0x20)? as usize;
+        let mut off = p_offset;
+        let end = p_offset + p_filesz;
+        while off + 12 <= end {
+            let nsz = u32::from_le_bytes(data.get(off..off + 4)?.try_into().ok()?) as usize;
+            let dsz = u32::from_le_bytes(data.get(off + 4..off + 8)?.try_into().ok()?) as usize;
+            let ntype = u32::from_le_bytes(data.get(off + 8..off + 12)?.try_into().ok()?);
+            let doff = off + 12 + ((nsz + 3) / 4) * 4;
+            if ntype == 0x46494c45 { // NT_FILE
+                let count = rd64(doff)? as usize;
+                let page = rd64(doff + 8)?;
+                let mut ents = Vec::with_capacity(count);
+                let mut e = doff + 16;
+                for _ in 0..count {
+                    let (a, b, c) = (rd64(e)?, rd64(e + 8)?, rd64(e + 16)?);
+                    ents.push((a, b, c));
+                    e += 24;
+                }
+                let mut names = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let nul = data[e..].iter().position(|c| *c == 0)? + e;
+                    names.push(String::from_utf8_lossy(&data[e..nul]).into_owned());
+                    e = nul + 1;
+                }
+                // MEASURED ambiguity: some kernels write these in PAGES, and this core was in BYTES (raw start
+                // values already looked like addresses). Accept whichever scale puts a consistent image under the
+                // mappings, instead of guessing a constant.
+                let _ = page;
+                return Some(ents.into_iter().zip(names)
+                    .map(|((a, b, c), n)| (a, b, c, n)).collect());
+            }
+            off = doff + dsz;
+            off = (off + 3) / 4 * 4;
+        }
+    }
+    None
+}
+
+/// Resolve an address against core mappings: which image, and the offset inside that file.
+///
+/// MEASURED scale quirk, and it is the difference between a right and a wrong function name: in the core examined
+/// here, NT_FILE's start/end are already BYTE addresses (0x7dc012b27000, not a page number) while file_offset is a
+/// PAGE number (1 for the first mapped page). Linux's own format is pages throughout, so this is not something to
+/// hard-code either way -- the segment start is taken as given, and the FILE OFFSET is scaled, because a raw
+/// offset of 1 next to byte-range addresses cannot mean one byte.
+fn resolve_in_core(maps: &[(u64, u64, u64, String)], addr: u64, pages_for_ranges: bool)
+        -> Option<(String, u64)> {
+    for (s, e, fo, name) in maps {
+        let (start, enda) = if pages_for_ranges { (s * 0x1000, e * 0x1000) } else { (*s, *e) };
+        if start <= addr && addr < enda {
+            let off = fo * 0x1000 + (addr - start);
+            if let Some(host) = guest_path_to_host(name, None) {
+                return Some((host.display().to_string(), off));
+            }
+            return Some((name.clone(), off));
+        }
+    }
+    None
+}
+
 /// Read a CORE, because it is the one artifact that still has the faulting thread in it.
 ///
 /// MEASURED why this exists next to `trap`. A guest's `ud2` is a NATIVE instruction: the code runs on the host CPU,
@@ -4235,8 +4415,8 @@ fn run_core(args: CoreArgs) -> Result<ExitCode> {
     let mut rsp = None;
     let mut sig = String::new();
     let mut generated_by = String::new();
-    let mut in_maps = false;
-    let mut maps: Vec<(u64, u64, String)> = Vec::new();
+    let mut frames: Vec<u64> = Vec::new();
+    let mut in_bt = false;
     for line in text.lines().chain(err.lines()) {
         let t = line.trim();
         if let Some(v) = t.strip_prefix("rip") {
@@ -4251,43 +4431,52 @@ fn run_core(args: CoreArgs) -> Result<ExitCode> {
             sig = t.to_string();
         } else if let Some(v) = t.strip_prefix("Core was generated by ") {
             generated_by = v.trim().to_string();
-        } else if t.starts_with("Mapped address spaces") {
-            in_maps = true;
-        } else if in_maps && t.starts_with("0x") {
-            let mut it = t.split_whitespace();
-            let (Some(range), Some(obj)) = (it.next(), it.last()) else { continue };
-            if let Some((a, b)) = range.split_once('-') {
-                if let (Ok(lo), Ok(hi)) = (u64::from_str_radix(a.trim_start_matches("0x"), 16),
-                                          u64::from_str_radix(b.trim_start_matches("0x"), 16)) {
-                    maps.push((lo, hi, obj.to_string()));
-                }
+        } else if t.starts_with("#0 ") || t.starts_with("#1 ") {
+            in_bt = true;
+            if let Some(a) = t.split_whitespace().nth(1).and_then(|x| x.strip_prefix("0x")) {
+                if let Ok(v) = u64::from_str_radix(a, 16) { frames.push(v); }
+            }
+        } else if in_bt && t.starts_with('#') {
+            if let Some(a) = t.split_whitespace().nth(1).and_then(|x| x.strip_prefix("0x")) {
+                if let Ok(v) = u64::from_str_radix(a, 16) { frames.push(v); }
             }
         }
     }
 
+    // Mappings come from NT_FILE, never from gdb: gdb SKIPS images whose paths do not exist on the host, and a
+    // guest's /Volumes/SystemRoot/... never does -- which is why an earlier version resolved nothing.
+    let maps = parse_nt_file(&core).unwrap_or_default();
+    // Byte-addressed or page-addressed: measured to differ between kernels, so accept whichever scale actually
+    // covers the faulting address rather than pinning a constant.
+    // Choose the range scale by MEASURING it: the right one is the one under which several backtrace frames land
+    // in files that actually exist on this host. A single address can fall in both scales (it did), which is why
+    // the earlier one-address test picked wrong and named the wrong function.
+    let score = |pages: bool| -> usize {
+        frames.iter().filter(|a| resolve_in_core(&maps, **a, pages)
+            .map(|(f, _)| std::path::Path::new(&f).exists()).unwrap_or(false)).count()
+    };
+    let (bytes_score, pages_score) = (score(false), score(true));
+    let use_pages = pages_score > bytes_score;
     let prefix = args.prefix.clone().or_else(|| {
         std::env::var("DWDIAG_PREFIX").ok().filter(|s| !s.is_empty()).map(PathBuf::from)
     });
-    let resolved = rip.and_then(|ip| {
-        let pfx = prefix.as_ref()?;
-        // Guests report their own paths (/Volumes/SystemRoot/...) and those paths CONTAIN the prefix, so the
-        // mapping inside the core can be turned into a host path directly -- no search needed.
-        let (_, _, obj) = maps.iter().find(|(lo, hi, _)| *lo <= ip && ip < *hi)?;
-        let host = if let Some(rest) = obj.strip_prefix("/Volumes/SystemRoot") {
-            PathBuf::from(rest)
-        } else {
-            let cand = pfx.join(obj.trim_start_matches('/'));
-            if cand.exists() { cand } else { PathBuf::from(obj) }
-        };
-        let (lo, _, _) = maps.iter().find(|(lo, hi, _)| *lo <= ip && ip < *hi)?;
-        unwind_symbolize(ip - lo, host.to_str()?).map(|sym| (obj.clone(), sym))
-    });
+    let _ = &prefix;
+    let resolve = |addr: u64| -> Option<(String, u64)> { resolve_in_core(&maps, addr, use_pages) };
+    let symbolize_frame = |addr: u64| -> Option<String> {
+        let (file, off) = resolve(addr)?;
+        unwind_symbolize(off, &file)
+    };
+    let resolved = rip.and_then(|ip| resolve(ip));
 
     if args.json {
-        println!("{{\"core\":{},\"rip\":\"{:#x}\",\"rsp\":\"{:#x}\",\"signal\":{},\"symbol\":{}}}",
+        let sym = resolved.as_ref().and_then(|(f, o)| unwind_symbolize(*o, f));
+        println!("{{\"core\":{},\"rip\":\"{:#x}\",\"rsp\":\"{:#x}\",\"signal\":{},\"image\":{},\"offset\":\"{:#x}\",\"symbol\":{},\"frames\":[{}]}}",
             jesc(&core.display().to_string()),
             rip.unwrap_or(0), rsp.unwrap_or(0), jesc(&sig),
-            resolved.as_ref().map(|(_, s)| jesc(s)).unwrap_or_else(|| "null".into()));
+            resolved.as_ref().map(|(f, _)| jesc(f)).unwrap_or_else(|| "null".into()),
+            resolved.as_ref().map(|(_, o)| *o).unwrap_or(0),
+            sym.map(|x| jesc(&x)).unwrap_or_else(|| "null".into()),
+            frames.iter().map(|a| format!("\"{a:#x}\"")).collect::<Vec<_>>().join(","));
         return Ok(ExitCode::SUCCESS);
     }
     crate::say(&format!("CORE file={} size={}", core.display(),
@@ -4295,13 +4484,26 @@ fn run_core(args: CoreArgs) -> Result<ExitCode> {
     if !sig.is_empty() { crate::say(&format!("CORE-SIGNAL {sig}")); }
     if !generated_by.is_empty() { crate::say(&format!("CORE-GENERATED-BY {generated_by}")); }
     crate::say(&format!("CORE-REGISTERS rip={:#x} rsp={:#x}", rip.unwrap_or(0), rsp.unwrap_or(0)));
-    match resolved {
-        Some((img, sym)) => crate::say(&format!("CORE-FAULT image={img} -> {sym}")),
-        None => crate::say("CORE-FAULT unresolved: pass --prefix (or set DWDIAG_PREFIX) so the faulting image can be opened"),
+    crate::say(&format!("CORE-MAPPINGS source=NT_FILE count={} range-scale={} (frames resolving under it: bytes={} pages={})",
+        maps.len(), if use_pages { "pages" } else { "bytes" }, bytes_score, pages_score));
+    match &resolved {
+        Some((img, off)) => {
+            let sym = unwind_symbolize(*off, img);
+            crate::say(&format!("CORE-FAULT image={} off={:#x} -> {}", img,
+                off, sym.unwrap_or_else(|| "<no symbol>".into())));
+        }
+        None => crate::say("CORE-FAULT unresolved: the faulting address is in no mapped image"),
     }
-    if args.traces {
-        for line in text.lines().filter(|l| l.starts_with('#') || l.trim_start().starts_with("Thread")) {
-            crate::say(&format!("  {line}"));
+    // EVERY frame symbolized, because that is the work this command exists to remove: doing it by hand took a
+    // python script over NT_FILE, and getting the path de-virtualization wrong quietly resolves nothing.
+    if !frames.is_empty() {
+        crate::say(&format!("CORE-STACK frames={} (symbolized)", frames.len()));
+        for (i, a) in frames.iter().enumerate() {
+            match (&resolve(*a), symbolize_frame(*a)) {
+                (Some((file, off)), sym) => crate::say(&format!("  #{i} {a:#x} {} + {:#x} {}", 
+                    file.rsplit('/').next().unwrap_or(file), off, sym.unwrap_or_else(|| "?".into()))),
+                _ => crate::say(&format!("  #{i} {a:#x} <no image>")),
+            }
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -5548,6 +5750,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Trap(a) => run_trap(a),
         DiagCommand::Loops(a) => run_loops(a),
         DiagCommand::Core(a) => run_core(a),
+        DiagCommand::Cores(a) => run_cores(a),
         DiagCommand::Crash(a) => run_crash(a),
         DiagCommand::Verdict(a) => run_verdict(a),
         DiagCommand::Suite(a) => run_suite(a),
@@ -5922,6 +6125,12 @@ pub enum DiagCommand {
     /// when no core is written (`ulimit -c 0`). Three custom probes, a gdb catch and a stack scanner produced a
     /// wrong story twice in the same session while that line sat in `dmesg` unread.
     Trap(TrapArgs),
+    /// Turn crash dumps on, off or report them -- and say why an unreadable crash is unreadable.
+    ///
+    /// MEASURED: `ulimit -c` was 0 and core_pattern piped to apport, so every fatal fault in this environment left
+    /// NOTHING to read while looking identical to a fault with no information. Both settings are one step away and
+    /// a throwaway process proved a real core is produced once they are set.
+    Cores(CoresArgs),
     /// Read a CORE and name the faulting function. A guest's ud2 runs NATIVELY, so Darling cannot report it as a
     /// syscall and four other routes measured blind on the same crash (silent dmesg, an armed-but-silent witness, a
     /// guest that masks SIGSEGV, and a catch waiting for a swallowed signal). The core is written by the kernel and
@@ -6485,5 +6694,35 @@ mod stack_words_tests {
         let maps = one_exec_map(0x1000, 0x10_0000);
         let words = [0x9_0000, 0xdead_beef, 0x9_0000, 0x2_0000, 0x0];
         assert_eq!(stack_words(&mem_of(&words), &maps), vec![0x9_0000, 0x2_0000]);
+    }
+}
+
+#[cfg(test)]
+mod core_map_tests {
+    use super::*;
+
+    // The scale quirk, which decided a RIGHT function name from a wrong one on a real core: ranges are byte
+    // addresses while file_offset is a page number, so a raw offset of 1 cannot mean one byte.
+    #[test]
+    fn file_offset_is_page_scaled_against_byte_ranges() {
+        let maps = vec![(0x7dc012b27000u64, 0x7dc012b30000u64, 1u64, "/tmp/nope".to_string())];
+        let (_, off) = resolve_in_core(&maps, 0x7dc012b27396, false).unwrap();
+        assert_eq!(off, 0x1000 + 0x396);
+    }
+
+    #[test]
+    fn an_address_outside_every_mapping_resolves_to_nothing() {
+        let maps = vec![(0x1000u64, 0x2000u64, 0u64, "/tmp/nope".to_string())];
+        assert!(resolve_in_core(&maps, 0x2000, false).is_none());
+        assert!(resolve_in_core(&maps, 0xfff, false).is_none());
+    }
+
+    // De-virtualization is what makes a guest path openable, and a path that names neither a guest view nor a real
+    // file must resolve to NOTHING so the caller can say "unresolved" instead of symbolizing the wrong file.
+    #[test]
+    fn guest_paths_are_de_virtualized_and_missing_paths_are_not() {
+        assert_eq!(guest_path_to_host("/Volumes/SystemRoot/tmp", None),
+            Some(PathBuf::from("/tmp")));
+        assert!(guest_path_to_host("/nonexistent/darling/path/xyz", None).is_none());
     }
 }
