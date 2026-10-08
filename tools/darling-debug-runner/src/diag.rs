@@ -3328,6 +3328,25 @@ pub struct WitnessArgs {
 }
 
 #[derive(clap::Args, Debug)]
+pub struct TrapArgs {
+    /// Kernel log to read. Defaults to `dmesg` (through `sudo -n` when passwordless), falling back to
+    /// `journalctl -k`, because that is where a guest that dies of a host-delivered signal is reported.
+    #[arg(long)]
+    kernel_log: Option<PathBuf>,
+    /// Prefix whose images resolve the reported address. Defaults to DWDIAG_PREFIX.
+    #[arg(long)]
+    prefix: Option<PathBuf>,
+    /// Only report traps whose process name contains this.
+    #[arg(long)]
+    process: Option<String>,
+    /// How many of the newest traps to report.
+    #[arg(long, default_value_t = 10)]
+    limit: usize,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args, Debug)]
 pub struct WaitsArgs {
     /// The run log to read. Defaults to the newest `dwdiag` verdict log in the temp directory.
     #[arg(long)]
@@ -4108,6 +4127,156 @@ fn unwind_symbolize(addr: u64, binary: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// The kernel already answered "which instruction died", and this reads its answer instead of re-deriving
+/// it. A guest fault is delivered by the host, so the host logs it:
+///
+///   traps: mldr[1747380] trap invalid opcode ip:778c2145e5fa sp:... error:0 in libsystem_kernel.dylib[778c21416000+9d000]
+///
+/// MEASURED, and it is why this command exists: in one session that single line named the faulting image,
+/// its load base, the offset and -- after one symbolize -- the function, while three custom probes, a gdb
+/// catch and a stack scanner had produced a story that was wrong twice. The line is written whether or not
+/// a core is kept (`ulimit -c 0` here), which is exactly the case where the usual routes fail.
+fn run_trap(args: TrapArgs) -> Result<ExitCode> {
+    let text = match &args.kernel_log {
+        Some(p) => std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?,
+        None => {
+            let sudo = sudo_prefix();
+            let mut cmd = Command::new(sudo.first().copied().unwrap_or("dmesg"));
+            if !sudo.is_empty() { cmd.arg(sudo[1]); }
+            let mut out = cmd.arg("dmesg").output();
+            if out.as_ref().map(|o| !o.status.success()).unwrap_or(true) {
+                out = Command::new("journalctl").args(["-k", "--no-pager", "-n", "20000"]).output();
+            }
+            String::from_utf8_lossy(&out.context("running dmesg/journalctl")?.stdout).into_owned()
+        }
+    };
+
+    let prefix = args.prefix.clone().or_else(|| {
+        std::env::var("DWDIAG_PREFIX").ok().filter(|s| !s.is_empty()).map(PathBuf::from)
+    });
+
+    let mut rows: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if !line.contains("trap ") && !line.contains("segfault at ") && !line.contains("general protection") {
+            continue;
+        }
+        let Some((name, pid, reason, ip, image, base, size)) = parse_trap_line(line) else { continue };
+        if let Some(want) = &args.process {
+            if !name.contains(want.as_str()) { continue; }
+        }
+        let sym = match &prefix {
+            Some(p) => resolve_in_prefix(p, &image)
+                .and_then(|path| unwind_symbolize(ip.wrapping_sub(base), path.to_str().unwrap_or("")))
+                .unwrap_or_else(|| "<image not found under the prefix>".to_string()),
+            None => "<no prefix: pass --prefix or DWDIAG_PREFIX>".to_string(),
+        };
+        rows.push(format!(
+            "TRAP pid={} name={} reason={} image={} base={:#x} size={:#x} off={:#x} -> {}",
+            pid, name, reason, image, base, size, ip.wrapping_sub(base), sym
+        ));
+    }
+    // Newest last, then cut to the requested number: the interesting one is the most recent.
+    if rows.len() > args.limit { rows.drain(0..rows.len() - args.limit); }
+    if args.json {
+        println!("{{\"traps\":[{}]}}", rows.iter()
+            .map(|r| format!("{{\"line\":{}}}", jesc(r)))
+            .collect::<Vec<_>>().join(","));
+        return Ok(ExitCode::SUCCESS);
+    }
+    crate::say(&format!("TRAP-CENSUS source={} reported={}",
+        args.kernel_log.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "dmesg".into()),
+        rows.len()));
+    if !rows.is_empty() {
+        // Stated because it bit this command on its first run: `symbolize` answers with the nearest symbol AT OR
+        // BELOW the address, so when the containing function is absent from the table the answer is the PREVIOUS
+        // function plus an offset larger than that function's own size (`__simple_atoi16 + 0xea`, whose function
+        // is about 0x9a long). That offset is the tell, and the reader must not have to know the table to spot it.
+        crate::say("TRAP-NOTE symbols come from `symbolize`, which reports the nearest symbol AT OR BELOW the address; an offset larger than that function's size means the containing function is missing from the table, so read `off` as the fact and the symbol as a hint");
+    }
+    for r in &rows { crate::say(r); }
+    if rows.is_empty() {
+        crate::say("TRAP-NOTE no trap line matched; the kernel reports a guest fault only when the signal is \
+                    delivered by the host, and a masked signal may be logged as nothing at all");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `... traps: NAME[PID] trap REASON ip:IP sp:SP error:E in IMAGE[BASE+SIZE]`
+/// `... NAME[PID]: segfault at IP ip SP sp error E in IMAGE[BASE+SIZE] ...`
+fn parse_trap_line(line: &str) -> Option<(String, u64, String, u64, String, u64, u64)> {
+    // Two shapes, and both matter:
+    //   traps: NAME[PID] trap invalid opcode ip:HEX sp:... error:0 in IMG[BASE+SIZE]
+    //   NAME[PID]: segfault at HEX ip HEX sp HEX error E in IMG[BASE+SIZE]
+    // The second has no "traps: " prefix, its pid is followed by a colon, and its ip carries no '='.
+    // A parser written for the first shape silently reports NOTHING for the second, which is worse than
+    // reporting an error, so both are handled here and the contract carries one line of each shape.
+    // Drop the kernel's timestamp first. MEASURED: the segfault shape starts "[  125.000000] NAME[PID]:", and
+    // with the spaces inside those brackets intact the first whitespace token is "[" -- so the pid parse got an
+    // empty string and the whole line was dropped. The contract carries that exact line.
+    let stripped = line.split_once("] ").map(|(_, rest)| rest).unwrap_or(line);
+    let after = line.split("traps: ").nth(1).unwrap_or(stripped);
+    let mut it = after.split_whitespace();
+    let head = it.next()?;
+    let (name, pid_s) = head.split_once('[')?;
+    // digits only: the pid is followed by ']' in one shape and by ']:' in the other
+    let pid: u64 = pid_s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().ok()?;
+    let reason = it.next()?.trim_end_matches(':').to_string();
+    let mut ip = None;
+    let mut image = None;
+    let mut base = None;
+    let mut size = None;
+    let mut prev_was_ip = false;
+    for tok in it {
+        if prev_was_ip {
+            ip = u64::from_str_radix(tok, 16).ok();
+            prev_was_ip = false;
+            continue;
+        }
+        if tok == "ip" {
+            prev_was_ip = true;
+        } else if let Some(v) = tok.strip_prefix("ip:") {
+            ip = u64::from_str_radix(v, 16).ok();
+        } else if let Some(v) = tok.strip_prefix("ip=") {
+            ip = u64::from_str_radix(v, 16).ok();
+        } else if let Some(open) = tok.find('[') {
+            let img = tok[..open].to_string();
+            let rest = &tok[open + 1..];
+            if let Some((b, sz)) = rest.trim_end_matches(']').split_once('+') {
+                base = u64::from_str_radix(b, 16).ok();
+                size = u64::from_str_radix(sz, 16).ok();
+                image = Some(img);
+            }
+        }
+    }
+    Some((name.to_string(), pid, reason, ip?, image?, base?, size?))
+}
+
+/// Find a deployed image by basename, preferring the loader-visible copies before walking the tree.
+fn resolve_in_prefix(prefix: &std::path::Path, image: &str) -> Option<PathBuf> {
+    const DIRS: [&str; 6] = [
+        "usr/lib/system", "usr/lib", "usr/libexec/darling",
+        "libexec/darling/usr/lib/system", "libexec/darling/usr/lib",
+        "libexec/darling/usr/libexec/darling",
+    ];
+    for d in DIRS {
+        let p = prefix.join(d).join(image);
+        if p.is_file() { return Some(p); }
+    }
+    // Anything else: bounded walk, only for the file we were told to find.
+    fn walk(dir: &std::path::Path, want: &str, depth: usize) -> Option<PathBuf> {
+        if depth == 0 { return None; }
+        for e in std::fs::read_dir(dir).ok()?.flatten() {
+            let p = e.path();
+            if p.is_file() && p.file_name().map(|n| n == want).unwrap_or(false) { return Some(p); }
+            if p.is_dir() {
+                if let Some(f) = walk(&p, want, depth - 1) { return Some(f); }
+            }
+        }
+        None
+    }
+    walk(prefix, image, 8)
 }
 
 fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
@@ -5081,6 +5250,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Symbolize(a) => run_symbolize(a),
         DiagCommand::Waits(a) => run_waits(a),
         DiagCommand::Unwind(a) => run_unwind(a),
+        DiagCommand::Trap(a) => run_trap(a),
         DiagCommand::Crash(a) => run_crash(a),
         DiagCommand::Verdict(a) => run_verdict(a),
         DiagCommand::Suite(a) => run_suite(a),
@@ -5448,6 +5618,13 @@ pub enum DiagCommand {
     /// Report the processes a PREFIX owns, matched by executable path AND command line: a name match that finds
     /// nothing is not a clean prefix, and the count this prints is the one a stale-process claim may rest on.
     Processes(ProcessesArgs),
+    /// Read the KERNEL's own report of where a guest died and symbolize the address inside a prefix.
+    ///
+    /// MEASURED need: a guest fault is delivered by the host, so the host log carries process, reason, image,
+    /// load base and instruction pointer -- one line that names the faulting function once symbolized, kept even
+    /// when no core is written (`ulimit -c 0`). Three custom probes, a gdb catch and a stack scanner produced a
+    /// wrong story twice in the same session while that line sat in `dmesg` unread.
+    Trap(TrapArgs),
 }
 
 // A tiny helper used by the table so a caller can see the set in a stable order under --json too.

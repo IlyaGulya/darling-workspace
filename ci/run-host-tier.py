@@ -20,6 +20,8 @@ from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACTS = (
+    "tests/run-waits-contract.sh",
+    "tests/run-trap-contract.sh",
     "tests/run-process-control-slot-ownership-contract.sh",
     "tests/run-truthful-nofile-contract.sh",
     "tests/run-dtape-kqchan-modify-context-contract.sh",

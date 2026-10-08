@@ -177,6 +177,37 @@ artifact pair is the default, the build tree and the prefix come from `DWDIAG_BU
 the workload's own line, and the instrument census comes from `witness` rather than from a grep: **silent** is
 reported next to **fired**, because a probe that cannot speak is indistinguishable from a guard that does nothing.
 
+### `dwdiag trap` -- the kernel already said where the guest died
+
+`scripts/dwdiag trap [--kernel-log FILE] [--prefix PREFIX] [--process SUBSTR] [--limit N] [--json]` reads the
+host kernel's report of a guest fault and symbolizes the address inside a prefix:
+
+```
+TRAP pid=1747380 name=mldr reason=trap image=libsystem_kernel.dylib base=0x778c21416000 size=0x9d000 off=0x485fa -> __simple_atoi16 + 0xea
+```
+
+**Why this command exists, MEASURED.** A guest fault is delivered by the host, so `dmesg` carries the process,
+the reason, the image, its load base and the instruction pointer -- one line that names the faulting function
+after one symbolize. In the session that added this command, that line sat unread while three custom probes, a
+gdb catch and a stack scanner each produced a story, and two of those stories were wrong; the line is also
+written when no core is kept (`ulimit -c 0` in this environment), which is exactly when the usual routes fail.
+
+Two shapes are parsed, and both must be, because a kernel that writes one and a parser that reads only the
+other reports NOTHING rather than an error:
+
+```
+traps: NAME[PID] trap invalid opcode ip:HEX sp:... error:0 in IMG[BASE+SIZE]
+NAME[PID]: segfault at HEX ip HEX sp HEX error E in IMG[BASE+SIZE]
+```
+
+The second has no `traps: ` prefix, its pid is followed by a colon and its `ip` has no `=`; and both start
+with a timestamp like `[  125.000000]` whose internal spaces broke the pid parse until they were stripped.
+
+**Read `off` as the fact and the symbol as a hint.** `symbolize` answers with the nearest symbol AT OR BELOW
+the address, so when the containing function is missing from the table the answer is the previous function
+plus an offset larger than that function's own size (`__simple_atoi16 + 0xea`, for a function about 0x9a long).
+The command says this in its own output instead of leaving it to the reader.
+
 ### `dwdiag waits` -- who waits, who owns, and whether anyone was ever woken
 
 `scripts/dwdiag waits --log RUN_LOG [--json]` joins the server's whole ulock wait/wake vocabulary
