@@ -3907,28 +3907,28 @@ fn sudo_prefix() -> Vec<&'static str> {
     if ok { vec!["sudo", "-n"] } else { vec![] }
 }
 
-fn unwind_registers(pid: u32, sudo: &[&str]) -> Result<Vec<(u64, u64, u64)>> {
+fn unwind_registers(pid: u32, sudo: &[&str]) -> Result<Vec<(u64, u64, u64, u64)>> {
     let mut cmd = Command::new(sudo.first().copied().unwrap_or("gdb"));
     if !sudo.is_empty() {
         cmd.arg(sudo[1]).arg("timeout").arg("90").arg("gdb");
     }
     let out = cmd
         .arg("-p").arg(pid.to_string())
-        .args(["-batch", "-ex", "set pagination off", "-ex", "thread apply all info registers rsp rip"])
+        .args(["-batch", "-ex", "set pagination off", "-ex", "thread apply all info registers rsp rip rbp"])
         .output()
         .context("running gdb")?;
     let text = String::from_utf8_lossy(&out.stdout);
     let mut rows = Vec::new();
     let mut cur: Option<u64> = None;
-    let (mut rsp, mut rip) = (0u64, 0u64);
+    let (mut rsp, mut rip, mut rbp) = (0u64, 0u64, 0u64);
     let mut have_rsp = false;
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("Thread ") {
             if let (Some(t), true) = (cur, have_rsp) {
-                rows.push((t, rsp, rip));
+                rows.push((t, rsp, rip, rbp));
             }
             have_rsp = false;
-            rsp = 0; rip = 0;
+            rsp = 0; rip = 0; rbp = 0;
             // "Thread 3 (Thread 0x.. (LWP 1234) ..."
             cur = rest
                 .split("LWP ")
@@ -3946,9 +3946,13 @@ fn unwind_registers(pid: u32, sudo: &[&str]) -> Result<Vec<(u64, u64, u64)>> {
             if let Some(hex) = v.split_whitespace().next().and_then(|h| h.strip_prefix("0x")) {
                 if let Ok(x) = u64::from_str_radix(hex, 16) { rip = x; }
             }
+        } else if let Some(v) = t.strip_prefix("rbp") {
+            if let Some(hex) = v.split_whitespace().next().and_then(|h| h.strip_prefix("0x")) {
+                if let Ok(x) = u64::from_str_radix(hex, 16) { rbp = x; }
+            }
         }
     }
-    if let (Some(t), true) = (cur, have_rsp) { rows.push((t, rsp, rip)); }
+    if let (Some(t), true) = (cur, have_rsp) { rows.push((t, rsp, rip, rbp)); }
     if rows.is_empty() {
         // Say WHAT gdb said. A bare "no registers" cannot distinguish a dead process, a refused
         // attach and a gdb command that asked a question in batch mode, and those need different
@@ -4013,6 +4017,42 @@ fn stack_words(mem: &[u8], maps: &[(u64, u64, bool, u64, String)]) -> Vec<u64> {
         off += 8;
     }
     seen
+}
+
+/// The real call chain, walked through the frame-pointer chain.
+///
+/// MEASURED need: scanning for words that land in an executable mapping does NOT produce a chain --
+/// an unwind of the T4 linker printed gr_attach_lane -> __dserver_plane_request_once ->
+/// dserver_rpc_explicit_ulock_wake -> dserver_rpc_explicit_debug_list_processes ->
+/// _dispatch_source_xref_dispose, which mixes SERVER-side function names into a guest stack and is
+/// not a call sequence any thread could run. Those words are pointers and data that merely look like
+/// code. The guest closure is built -O0, so rbp is a real frame pointer and [rbp] / [rbp+8] walk the
+/// chain the way a debugger would.
+///
+/// Validation is the point, not the walk: the chain only grows upward from rsp, every word must be
+/// 8-aligned and above rsp, and the walk stops at the first word that is not an address inside an
+/// executable guest image -- so a garbage word cannot invent a caller.
+fn fp_chain(mem: &[u8], base: u64, rbp: u64, rsp: u64, maps: &[(u64, u64, bool, u64, String)],
+            image_ok: &dyn Fn(&str) -> bool, max: usize) -> Vec<u64> {
+    let read = |addr: u64| -> Option<u64> {
+        if addr < base { return None; }
+        let off = (addr - base) as usize;
+        if off + 8 > mem.len() { return None; }
+        Some(u64::from_le_bytes(mem[off..off + 8].try_into().unwrap()))
+    };
+    let in_image = |addr: u64| {
+        maps.iter().any(|(lo, hi, x, _, p)| *x && *lo <= addr && addr < *hi && image_ok(p))
+    };
+    let mut out = Vec::new();
+    let mut fp = rbp;
+    while fp > rsp && fp % 8 == 0 && out.len() < max {
+        let (Some(next), Some(ret)) = (read(fp), read(fp + 8)) else { break };
+        if !in_image(ret) { break; }
+        out.push(ret);
+        if next <= fp { break; }
+        fp = next;
+    }
+    out
 }
 
 /// Frames from a raw stack image. Shared by the live unwinder and by catch mode, which has the
@@ -4083,26 +4123,36 @@ fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
     let script_text = format!(
         "set pagination off\n\
          set confirm off\n\
-         handle SIG{signal} stop print nopass\n\
+         {handles}\n\
          handle SIGCONT nostop noprint pass\n\
          handle SIGSTOP nostop noprint pass\n\
          handle SIGCHLD nostop noprint pass\n\
          signal SIGCONT\n\
          continue\n\
-         printf \"CATCH-STOPPED signal=SIG{signal}\\n\"\n\
+         python\n\
+         import gdb, os, traceback\n\
+         try:\n\
+         \x20   d = '{dir}'\n\
+         \x20   inf = gdb.selected_inferior()\n\
+         \x20   open(os.path.join(d, 'maps'), 'w').write(open('/proc/{pid}/maps').read())\n\
+         \x20   for t in inf.threads():\n\
+         \x20       t.switch()\n\
+         \x20       rsp = int(gdb.parse_and_eval('$rsp'))\n\
+         \x20       open(os.path.join(d, 'stack-0x%x.bin' % rsp), 'wb').write(bytes(inf.read_memory(rsp, 4096)))\n\
+         except Exception:\n\
+         \x20   open(os.path.join(d, 'python-error.txt'), 'w').write(traceback.format_exc())\n\
+         end\n\
          info registers rip rsp\n\
          x/4i $pc\n\
-         python\n\
-         import gdb, os\n\
-         d = '{dir}'\n\
-         inf = gdb.selected_inferior()\n\
-         open(os.path.join(d, 'maps'), 'w').write(open('/proc/{pid}/maps').read())\n\
-         for t in inf.threads():\n\
-         \x20   t.switch()\n\
-         \x20   rsp = int(gdb.parse_and_eval('$rsp'))\n\
-         \x20   open(os.path.join(d, 'stack-0x%x.bin' % rsp), 'wb').write(bytes(inf.read_memory(rsp, 4096)))\n\
-         end\n\
          thread apply all bt\n",
+        // A comma-separated list, because the measured failure delivers two signals: the guest
+        // takes SIGILL and then dies of SIGSEGV, and arming only the second one leaves the first to
+        // gdb's default behaviour rather than to a decision we stated.
+        handles = signal
+            .split(',')
+            .map(|s| format!("handle SIG{} stop print nopass", s.trim()))
+            .collect::<Vec<_>>()
+            .join("\n         "),
         dir = dir.display(),
     );
     std::fs::write(&script, script_text)
@@ -4118,6 +4168,10 @@ fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
         .context("running gdb in catch mode")?;
     let text = String::from_utf8_lossy(&out.stdout);
     let err = String::from_utf8_lossy(&out.stderr);
+    // A failed session used to be silent: no frames, no reason. The transcript is kept beside the
+    // stack images and its tail is printed, because "gdb_exit=Some(1)" and nothing else is exactly
+    // the kind of silence that costs another full run to explain.
+    let _ = std::fs::write(dir.join("gdb.out"), format!("{text}\n=== stderr ===\n{err}"));
     crate::say(&format!("CATCH pid={pid} signal=SIG{signal} gdb_exit={:?}", out.status.code()));
     for line in text.lines().chain(err.lines()) {
         let t = line.trim_end();
@@ -4133,6 +4187,17 @@ fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
         {
             crate::say(&format!("  {t}"));
         }
+    }
+
+    if out.status.code() != Some(0) {
+        crate::say("CATCH-NOTE gdb did not exit 0; tail of its transcript:");
+        let all: Vec<&str> = text.lines().chain(err.lines()).collect();
+        for line in all.iter().rev().take(12).collect::<Vec<_>>().into_iter().rev() {
+            crate::say(&format!("  {line}"));
+        }
+    }
+    if let Ok(e) = std::fs::read_to_string(dir.join("python-error.txt")) {
+        crate::say(&format!("CATCH-PYTHON-ERROR {}", e.trim()));
     }
 
     // The stack images gdb left behind, resolved now. This is the part gdb cannot do itself.
@@ -4190,9 +4255,9 @@ fn run_unwind(args: UnwindArgs) -> Result<ExitCode> {
     };
 
     let mut total_frames = 0usize;
-    let mut rows: Vec<(u64, u64, u64, Option<(String, u64)>, Vec<(u64, String, String)>)> = Vec::new();
+    let mut rows: Vec<(u64, u64, u64, Option<(String, u64)>, Vec<(u64, String, String)>, &'static str)> = Vec::new();
 
-    for (tid_ref, rsp_ref, rip_ref) in &regs {
+    for (tid_ref, rsp_ref, rip_ref, rbp_ref) in &regs {
         let tid = *tid_ref;
         let rsp = *rsp_ref;
         let rip = *rip_ref;
@@ -4207,20 +4272,35 @@ fn run_unwind(args: UnwindArgs) -> Result<ExitCode> {
                 .map(|o| o.stdout)
                 .unwrap_or_default()
         };
-        let frames = scan_stack(&mem, &maps, &image_ok, args.max);
+        // The frame-pointer chain when it validates, and the word scan only when it does not --
+        // and the output says which, because those are different kinds of evidence.
+        let fp_rets = fp_chain(&mem, rsp, *rbp_ref, rsp, &maps, &image_ok, args.max);
+        let (frames, via) = if fp_rets.is_empty() {
+            (scan_stack(&mem, &maps, &image_ok, args.max), "scan")
+        } else {
+            let decoded = fp_rets
+                .into_iter()
+                .filter_map(|v| {
+                    let (lo, _, foff, path) = image_of(v)?;
+                    let sym = unwind_symbolize(v - lo + foff, &path)?;
+                    Some((v, path, sym))
+                })
+                .collect::<Vec<_>>();
+            (decoded, "fp")
+        };
         total_frames += frames.len();
         let rip_img = image_of(rip).map(|(lo, _, _, p)| (p, lo));
-        rows.push((tid, rsp, rip, rip_img, frames));
+        rows.push((tid, rsp, rip, rip_img, frames, via));
     }
 
     if args.json {
         let mut out = String::from("{\"pid\":");
         out.push_str(&args.pid.to_string());
         out.push_str(",\"threads\":[");
-        for (i, (tid, rsp, _rip_abs, rip_img, frames)) in rows.iter().enumerate() {
+        for (i, (tid, rsp, _rip_abs, rip_img, frames, via)) in rows.iter().enumerate() {
             if i > 0 { out.push(','); }
-            out.push_str(&format!("{{\"tid\":{},\"rsp\":\"{:#x}\",\"rip_image\":\"{}\",\"frames\":[",
-                tid, rsp, rip_img.as_ref().map(|(p, _lo)| p.clone()).unwrap_or_default()));
+            out.push_str(&format!("{{\"tid\":{},\"rsp\":\"{:#x}\",\"frames_via\":\"{}\",\"rip_image\":\"{}\",\"frames\":[",
+                tid, rsp, via, rip_img.as_ref().map(|(p, _lo)| p.clone()).unwrap_or_default()));
             for (j, (addr, path, sym)) in frames.iter().enumerate() {
                 if j > 0 { out.push(','); }
                 out.push_str(&format!("{{\"addr\":\"{:#x}\",\"image\":\"{}\",\"symbol\":\"{}\"}}",
@@ -4234,7 +4314,7 @@ fn run_unwind(args: UnwindArgs) -> Result<ExitCode> {
     }
 
     crate::say(&format!("UNWIND pid={} window={} threads={}", args.pid, args.window, rows.len()));
-    for (tid, rsp, rip_abs, rip_img, frames) in &rows {
+    for (tid, rsp, rip_abs, rip_img, frames, via) in &rows {
         // Where the thread is RIGHT NOW, resolved. Printing only the image name left the single
         // most useful register unread: a stalled thread sits in a syscall wrapper most of the time,
         // and knowing which wrapper is the difference between "it is in a wait" and "it is in the
@@ -4250,7 +4330,7 @@ fn run_unwind(args: UnwindArgs) -> Result<ExitCode> {
             }
             None => "image=<host or unmapped>".to_string(),
         };
-        crate::say(&format!("THREAD tid={} rsp={:#x} rip_{} symbolized_frames={}", tid, rsp, rip_s, frames.len()));
+        crate::say(&format!("THREAD tid={} rsp={:#x} rip_{} frames_via={} symbolized_frames={}", tid, rsp, rip_s, via, frames.len()));
         if frames.is_empty() {
             crate::say("  NOTE no frame on this thread resolved to a symbol: either nothing above rsp points into a guest image, or the image has no symbol table (stripped images are reported as such by `dwdiag symbolize`)");
         }
