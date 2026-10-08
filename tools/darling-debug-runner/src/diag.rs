@@ -3328,6 +3328,24 @@ pub struct WitnessArgs {
 }
 
 #[derive(clap::Args, Debug)]
+pub struct CoreArgs {
+    /// The core file to read. Without it, the newest `core.*` under --dir is used.
+    #[arg(long)]
+    core: Option<PathBuf>,
+    /// Directory holding cores when --core is not given.
+    #[arg(long, default_value = "/tmp/t4cores")]
+    dir: PathBuf,
+    /// Prefix whose images resolve the faulting address. Defaults to DWDIAG_PREFIX.
+    #[arg(long)]
+    prefix: Option<PathBuf>,
+    /// Also print the signal and backtrace gdb derives from the core.
+    #[arg(long)]
+    traces: bool,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args, Debug)]
 pub struct LoopsArgs {
     /// The run log to read. Defaults to the newest `dwdiag` verdict log in the temp directory.
     #[arg(long)]
@@ -4156,6 +4174,137 @@ fn unwind_symbolize(addr: u64, binary: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Read a CORE, because it is the one artifact that still has the faulting thread in it.
+///
+/// MEASURED why this exists next to `trap`. A guest's `ud2` is a NATIVE instruction: the code runs on the host CPU,
+/// so Darling never sees it as a syscall and cannot report it. Four other routes were measured blind on the same
+/// crash: `dmesg` is silent because the guest installs its own handler, the loader's fault witness armed 8 times
+/// and never fired, the guest masks SIGSEGV on that path, and a gdb catch waits for a signal the guest swallows.
+/// A core needs none of that machinery: it is written by the kernel, `gdb` reads it with no ptrace, and it carries
+/// NT_PRSTATUS (registers), NT_SIGINFO (the signal) and NT_FILE (the mappings). It is also normally OFF here
+/// (`ulimit -c 0`, `core_pattern` -> apport), which is why crashes have been unreadable; this command says so
+/// instead of returning nothing.
+fn run_core(args: CoreArgs) -> Result<ExitCode> {
+    let core = match &args.core {
+        Some(p) => p.clone(),
+        None => {
+            let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+            if let Ok(rd) = std::fs::read_dir(&args.dir) {
+                for e in rd.flatten() {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if name.starts_with("core") {
+                        if let Ok(md) = e.metadata() {
+                            if let Ok(t) = md.modified() {
+                                if best.as_ref().map(|(bt, _)| t > *bt).unwrap_or(true) { best = Some((t, e.path())); }
+                            }
+                        }
+                    }
+                }
+            }
+            match best {
+                Some((_, p)) => p,
+                None => {
+                    // Name WHY there is nothing to read. A silent empty result is what made this class of crash
+                    // look like a missing feature rather than a disabled one.
+                    let ulimit = std::fs::read_to_string("/proc/self/limits").unwrap_or_default()
+                        .lines().find(|l| l.starts_with("Max core file size")).unwrap_or("Max core file size: <unknown>").to_string();
+                    let pattern = std::fs::read_to_string("/proc/sys/kernel/core_pattern")
+                        .unwrap_or_else(|_| "<unreadable>".into());
+                    crate::say(&format!("CORE-NONE dir={} ({})", args.dir.display(), ulimit.trim()));
+                    crate::say(&format!("CORE-NOTE core_pattern={} -- a crash writes nothing unless it names a file (the kernel pipes it to a handler here), and the size limit above must be non-zero", pattern.trim()));
+                    return Ok(ExitCode::SUCCESS);
+                }
+            }
+        }
+    };
+    if !core.exists() { bail!("no such core: {}", core.display()); }
+
+    let mut cmd = Command::new("gdb");
+    let out = cmd
+        .args(["-batch", "-nx", "-iex", "set debuginfod enabled off"])
+        .arg("-c").arg(&core)
+        .args(["-ex", "info registers rip rsp", "-ex", "info proc mappings", "-ex", "bt", "-ex", "info threads"])
+        .output()
+        .context("running gdb on the core")?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let err = String::from_utf8_lossy(&out.stderr);
+
+    let mut rip = None;
+    let mut rsp = None;
+    let mut sig = String::new();
+    let mut generated_by = String::new();
+    let mut in_maps = false;
+    let mut maps: Vec<(u64, u64, String)> = Vec::new();
+    for line in text.lines().chain(err.lines()) {
+        let t = line.trim();
+        if let Some(v) = t.strip_prefix("rip") {
+            if let Some(h) = v.split_whitespace().next().and_then(|x| x.strip_prefix("0x")) {
+                rip = u64::from_str_radix(h, 16).ok();
+            }
+        } else if let Some(v) = t.strip_prefix("rsp") {
+            if let Some(h) = v.split_whitespace().next().and_then(|x| x.strip_prefix("0x")) {
+                rsp = u64::from_str_radix(h, 16).ok();
+            }
+        } else if t.starts_with("Program terminated with signal") {
+            sig = t.to_string();
+        } else if let Some(v) = t.strip_prefix("Core was generated by ") {
+            generated_by = v.trim().to_string();
+        } else if t.starts_with("Mapped address spaces") {
+            in_maps = true;
+        } else if in_maps && t.starts_with("0x") {
+            let mut it = t.split_whitespace();
+            let (Some(range), Some(obj)) = (it.next(), it.last()) else { continue };
+            if let Some((a, b)) = range.split_once('-') {
+                if let (Ok(lo), Ok(hi)) = (u64::from_str_radix(a.trim_start_matches("0x"), 16),
+                                          u64::from_str_radix(b.trim_start_matches("0x"), 16)) {
+                    maps.push((lo, hi, obj.to_string()));
+                }
+            }
+        }
+    }
+
+    let prefix = args.prefix.clone().or_else(|| {
+        std::env::var("DWDIAG_PREFIX").ok().filter(|s| !s.is_empty()).map(PathBuf::from)
+    });
+    let resolved = rip.and_then(|ip| {
+        let pfx = prefix.as_ref()?;
+        // Guests report their own paths (/Volumes/SystemRoot/...) and those paths CONTAIN the prefix, so the
+        // mapping inside the core can be turned into a host path directly -- no search needed.
+        let (_, _, obj) = maps.iter().find(|(lo, hi, _)| *lo <= ip && ip < *hi)?;
+        let host = if let Some(rest) = obj.strip_prefix("/Volumes/SystemRoot") {
+            PathBuf::from(rest)
+        } else {
+            let cand = pfx.join(obj.trim_start_matches('/'));
+            if cand.exists() { cand } else { PathBuf::from(obj) }
+        };
+        let (lo, _, _) = maps.iter().find(|(lo, hi, _)| *lo <= ip && ip < *hi)?;
+        unwind_symbolize(ip - lo, host.to_str()?).map(|sym| (obj.clone(), sym))
+    });
+
+    if args.json {
+        println!("{{\"core\":{},\"rip\":\"{:#x}\",\"rsp\":\"{:#x}\",\"signal\":{},\"symbol\":{}}}",
+            jesc(&core.display().to_string()),
+            rip.unwrap_or(0), rsp.unwrap_or(0), jesc(&sig),
+            resolved.as_ref().map(|(_, s)| jesc(s)).unwrap_or_else(|| "null".into()));
+        return Ok(ExitCode::SUCCESS);
+    }
+    crate::say(&format!("CORE file={} size={}", core.display(),
+        std::fs::metadata(&core).map(|m| m.len()).unwrap_or(0)));
+    if !sig.is_empty() { crate::say(&format!("CORE-SIGNAL {sig}")); }
+    if !generated_by.is_empty() { crate::say(&format!("CORE-GENERATED-BY {generated_by}")); }
+    crate::say(&format!("CORE-REGISTERS rip={:#x} rsp={:#x}", rip.unwrap_or(0), rsp.unwrap_or(0)));
+    match resolved {
+        Some((img, sym)) => crate::say(&format!("CORE-FAULT image={img} -> {sym}")),
+        None => crate::say("CORE-FAULT unresolved: pass --prefix (or set DWDIAG_PREFIX) so the faulting image can be opened"),
+    }
+    if args.traces {
+        for line in text.lines().filter(|l| l.starts_with('#') || l.trim_start().starts_with("Thread")) {
+            crate::say(&format!("  {line}"));
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// The signature of a process that is not working any more: one pattern repeating near the END of the log with
@@ -5398,6 +5547,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Unwind(a) => run_unwind(a),
         DiagCommand::Trap(a) => run_trap(a),
         DiagCommand::Loops(a) => run_loops(a),
+        DiagCommand::Core(a) => run_core(a),
         DiagCommand::Crash(a) => run_crash(a),
         DiagCommand::Verdict(a) => run_verdict(a),
         DiagCommand::Suite(a) => run_suite(a),
@@ -5772,6 +5922,11 @@ pub enum DiagCommand {
     /// when no core is written (`ulimit -c 0`). Three custom probes, a gdb catch and a stack scanner produced a
     /// wrong story twice in the same session while that line sat in `dmesg` unread.
     Trap(TrapArgs),
+    /// Read a CORE and name the faulting function. A guest's ud2 runs NATIVELY, so Darling cannot report it as a
+    /// syscall and four other routes measured blind on the same crash (silent dmesg, an armed-but-silent witness, a
+    /// guest that masks SIGSEGV, and a catch waiting for a swallowed signal). The core is written by the kernel and
+    /// read by gdb with no ptrace; it is also OFF by default here, which this command states rather than hides.
+    Core(CoreArgs),
     /// Report the pattern of a process that is NOT working any more: one line repeating near the end of the log
     /// with almost nothing new between its repetitions.
     ///

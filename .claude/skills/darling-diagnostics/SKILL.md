@@ -35,12 +35,19 @@ Canonical sources live in the selected manifest repository:
 | `scripts/prefix-cleanup.sh` | prefix-scoped process/mount cleanup, including guest processes that path matching cannot see |
 | `scripts/guest-probe.h` | the probe contract, so a probe cannot silently measure nothing |
 | `scripts/dwdiag` | one entry point for the run/judge/symbolize/crash family: `build`, `cycle`, `symbolize`, `crash`, `verdict`, `suite`, `witness`, `progress`, `courier`, `trace`, `denials`, `waits`, `unwind` |
+| `scripts/dwdiag core` | read a core and name the faulting function (signal, registers and mappings come from it). Use it when dmesg is silent, the fault witness stayed armed, the guest masks the signal and a catch waits forever -- a guest's `ud2` runs NATIVELY, so none of the syscall-level machinery can see it. Cores are OFF here by default (ulimit -c 0, core_pattern pipes to apport) and the command says so; turning them on is one core_pattern plus one ulimit |
 | `scripts/dwdiag loops` | decide whether a log's END is a process going round in circles: patterns repeating at the tail, plus how many DISTINCT lines the last 30 hold. The tail's variety is the measurement -- a spin ends in the same handful of lines (5-6), a run that exited keeps producing new ones (14). A varied tail RULES OUT a spin and nothing more; ask the PROCESS, not the log, whether it is still working |
 | `scripts/dwdiag trap` | read the HOST kernel's report of where a guest died (`dmesg`: process, reason, image, load base, instruction pointer) and symbolize the address inside a prefix. It parses BOTH shapes the kernel writes -- `traps: ... ip:HEX` and `NAME[PID]: segfault at HEX ip HEX` -- because a parser for one silently drops the other. Read `off` as the fact and the symbol as a hint: `symbolize` returns the nearest symbol at or below the address. A guest fault is delivered by the host, so this works when no core is kept |
 | `scripts/dwdiag waits` | per ulock object: who waits, who owns, and whether a wake was EVER issued for it -- separating "nobody asked to wake it" from "a wake was issued and the server found nobody". It reads the LOG, so each stall line carries `proc=present|absent`, matched by the record's thread ids (a bare pid is not evidence: this host HAS /proc/100), and an all-absent set is reported as history rather than a current stall |
 | `scripts/dwdiag unwind` | guest frames, which host gdb cannot walk: per-thread `rsp` from the debugger, the words above it, filtered to guest images and symbolized, ORDERED BY DEPTH. Sorting those words orders them by code address and turns a call chain into a set -- that was a real bug, and a unit test now pins the order. Frames come from the FRAME-POINTER chain when it validates (`frames_via=fp`) and from the word scan only otherwise (`frames_via=scan`), which is a set of plausible frames rather than a chain. With `--catch SIGNAL` it attaches to a stopped target, arms a stop on that signal, resumes it, and reports the signal, the registers, the instruction at `$pc`, and the frames resolved from the stack images gdb dumps while the target is stopped |
 
 ## Rules the tools enforce, each from a measured failure
+
+* **A guest's illegal instruction is NATIVE, so no syscall-level tool can see it.** Darling does not interpret the
+  guest's instructions: they run on the host CPU, and only the BOUNDARIES (syscall entry/exit, mappings, thread
+  creation, signals) pass through our code. That is why `ud2` produced a silent `dmesg`, a silent fault witness and
+  an empty catch, and why a core -- or the kernel's own trap line -- is the route that works. Before concluding
+  "the platform is broken", check which of the two is available and read it.
 
 * **Neither growth NOR flatness of a log tells you about YOUR process.** Growth is not evidence it is alive:
   MEASURED in the same run where `ld` had already died of SIGILL, the harness log kept growing because OTHER guest

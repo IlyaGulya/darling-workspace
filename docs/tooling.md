@@ -177,6 +177,37 @@ artifact pair is the default, the build tree and the prefix come from `DWDIAG_BU
 the workload's own line, and the instrument census comes from `witness` rather than from a grep: **silent** is
 reported next to **fired**, because a probe that cannot speak is indistinguishable from a guard that does nothing.
 
+### `dwdiag core` -- the one artifact that still has the thread in it
+
+`scripts/dwdiag core [--core FILE] [--dir DIR] [--prefix P] [--traces] [--json]` reads a core and names the fault:
+
+```
+CORE file=/tmp/t4cores/core.1221723 size=...
+CORE-SIGNAL Program terminated with signal SIGILL, Illegal instruction.
+CORE-REGISTERS rip=0x... rsp=0x...
+CORE-FAULT image=/usr/lib/system/libsystem_kernel.dylib -> __simple_abort + 0x...
+```
+
+**Why a core, when there is already `trap`.** A guest's `ud2` is a **native** instruction: the guest's code runs on
+the host CPU, so Darling never sees it as a syscall and cannot report it. Four other routes were measured blind on
+one crash: `dmesg` is silent because the guest installs its own handler; the loader's fault witness armed eight
+times and never fired; the guest masks SIGSEGV on that path; and a gdb catch waits for a signal the guest
+swallows. The core needs none of that: the kernel writes it, `gdb` reads it with no ptrace, and it carries
+NT_PRSTATUS (registers), NT_SIGINFO (signal) and NT_FILE (mappings) -- which is enough to name the image and the
+function.
+
+**It is OFF by default here, and the command says so instead of returning nothing.** `ulimit -c` is 0 and
+`core_pattern` pipes to apport, so a crash writes nothing. Both are one setting away:
+
+```
+echo '<dir>/core.%p' > /proc/sys/kernel/core_pattern   # file, not a pipe to a handler
+ulimit -c unlimited                                     # inherited by the launcher and the guest
+```
+
+Measured: with both set, a guest crash produces an `ELF 64-bit LSB core file, x86-64` for the host process that
+carries the guest thread. Guest paths inside the core look like `/Volumes/SystemRoot/...`, which contains the
+prefix, so the mapping resolves to a host file with no search.
+
 ### `dwdiag loops` -- is the process working, or going round in circles?
 
 `scripts/dwdiag loops [--log FILE] [--guest-log FILE] [--min N] [--tail-len N] [--spin-max-distinct N] [--json]`
