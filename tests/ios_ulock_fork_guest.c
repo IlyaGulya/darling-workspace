@@ -13,6 +13,7 @@
  * under the queue: the child enters the inherited process-control lane instead
  * ([plane-retry] first -1 op=7), then faults with SIGSEGV, which is the defect this fixture pins.
  */
+#include <mach-o/dyld.h>
 #include <os/lock.h>
 #include <signal.h>
 #include <stdio.h>
@@ -28,6 +29,10 @@ main(void)
 {
 	setvbuf(stdout, NULL, _IONBF, 0);
 	printf("IOS-UNFAIR-LOCK stage=fork-only\n");
+	/* Reported so a fault address in the run log can be turned into an image offset: the child inherits
+	 * this slide across fork, so one line covers both processes. */
+	printf("IOS-UNFAIR-LOCK slide=0x%lx lock_addr=%p\n",
+			(unsigned long)_dyld_get_image_vmaddr_slide(0), (void *)&lock);
 
 	os_unfair_lock_lock(&lock);
 	pid_t child = fork();
