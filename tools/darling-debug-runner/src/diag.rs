@@ -3846,6 +3846,15 @@ pub struct UnwindArgs {
     /// Stop after this many distinct addresses per thread.
     #[arg(long, default_value_t = 12)]
     max: usize,
+    /// Catch a fatal signal instead of unwinding a stopped process: attach, arm `handle SIGx stop
+    /// print nopass`, resume the target (SIGCONT, for a target held by MLDR_STOP_AT_START) and
+    /// report the signal, the registers and the stacks when it arrives. This is the only way to see
+    /// the trap half of a failure whose victim lives a few hundred milliseconds.
+    #[arg(long, value_name = "SIGNAL")]
+    catch: Option<String>,
+    /// Seconds to wait for the caught signal before giving up.
+    #[arg(long, default_value_t = 180)]
+    catch_timeout: u64,
     #[arg(long)]
     json: bool,
 }
@@ -3906,7 +3915,23 @@ fn unwind_registers(pid: u32, sudo: &[&str]) -> Result<Vec<(u64, u64, u64)>> {
     }
     if let (Some(t), true) = (cur, have_rsp) { rows.push((t, rsp, rip)); }
     if rows.is_empty() {
-        bail!("gdb reported no per-thread registers for pid {pid}; is it alive and ptraceable?");
+        // Say WHAT gdb said. A bare "no registers" cannot distinguish a dead process, a refused
+        // attach and a gdb command that asked a question in batch mode, and those need different
+        // actions.
+        let err = String::from_utf8_lossy(&out.stderr);
+        let so = String::from_utf8_lossy(&out.stdout);
+        let show = |t: &str| -> String {
+            let t = t.trim();
+            let mut s = t.chars().take(600).collect::<String>();
+            if t.len() > 600 { s.push_str(" ...[truncated]"); }
+            s
+        };
+        bail!(
+            "gdb reported no per-thread registers for pid {pid} (exit={:?})\n--- gdb stderr ---\n{}\n--- gdb stdout ---\n{}",
+            out.status.code(),
+            show(&err),
+            show(&so)
+        );
     }
     Ok(rows)
 }
@@ -3956,7 +3981,51 @@ fn unwind_symbolize(addr: u64, binary: &str) -> Option<String> {
     None
 }
 
+fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
+    let sudo = sudo_prefix();
+    let mut cmd = Command::new(sudo.first().copied().unwrap_or("gdb"));
+    if !sudo.is_empty() { cmd.arg(sudo[1]).arg("timeout").arg(timeout_s.to_string()).arg("gdb"); }
+    let out = cmd
+        .arg("-p").arg(pid.to_string())
+        .args(["-batch",
+               "-ex", "set pagination off",
+               "-ex", "set confirm off",
+               "-ex", &format!("handle SIG{signal} stop print nopass"),
+               "-ex", "handle SIGCONT nostop noprint pass",
+               // The target is held by MLDR_STOP_AT_START, i.e. it is ALREADY stopped by SIGSTOP
+               // when we attach. Without this gdb reports that SIGSTOP, stops, and the armed
+               // SIGSEGV handle is never reached -- measured.
+               "-ex", "handle SIGSTOP nostop noprint pass",
+               "-ex", "handle SIGCHLD nostop noprint pass",
+               "-ex", "signal SIGCONT",
+               "-ex", "continue",
+               "-ex", "info registers rip rsp",
+               "-ex", "thread apply all bt"])
+        .output()
+        .context("running gdb in catch mode")?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let err = String::from_utf8_lossy(&out.stderr);
+    crate::say(&format!("CATCH pid={pid} signal=SIG{signal} gdb_exit={:?}", out.status.code()));
+    for line in text.lines().chain(err.lines()) {
+        let t = line.trim_end();
+        if t.contains("Program received signal")
+            || t.contains("si_code")
+            || t.contains("si_addr")
+            || t.starts_with("Thread ")
+            || t.starts_with('#')
+            || t.trim_start().starts_with("rip")
+            || t.trim_start().starts_with("rsp")
+        {
+            crate::say(&format!("  {t}"));
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn run_unwind(args: UnwindArgs) -> Result<ExitCode> {
+    if let Some(sig) = args.catch.clone() {
+        return run_catch(args.pid, &sig, args.catch_timeout);
+    }
     if !std::path::Path::new(&format!("/proc/{}", args.pid)).exists() {
         bail!("no such pid {}", args.pid);
     }
@@ -3981,7 +4050,7 @@ fn run_unwind(args: UnwindArgs) -> Result<ExitCode> {
     };
 
     let mut total_frames = 0usize;
-    let mut rows: Vec<(u64, u64, Option<(String, u64)>, Vec<(u64, String, String)>)> = Vec::new();
+    let mut rows: Vec<(u64, u64, u64, Option<(String, u64)>, Vec<(u64, String, String)>)> = Vec::new();
 
     for (tid_ref, rsp_ref, rip_ref) in &regs {
         let tid = *tid_ref;
@@ -4029,14 +4098,14 @@ fn run_unwind(args: UnwindArgs) -> Result<ExitCode> {
         }
         total_frames += frames.len();
         let rip_img = image_of(rip).map(|(lo, _, _, p)| (p, lo));
-        rows.push((tid, rsp, rip_img, frames));
+        rows.push((tid, rsp, rip, rip_img, frames));
     }
 
     if args.json {
         let mut out = String::from("{\"pid\":");
         out.push_str(&args.pid.to_string());
         out.push_str(",\"threads\":[");
-        for (i, (tid, rsp, rip_img, frames)) in rows.iter().enumerate() {
+        for (i, (tid, rsp, _rip_abs, rip_img, frames)) in rows.iter().enumerate() {
             if i > 0 { out.push(','); }
             out.push_str(&format!("{{\"tid\":{},\"rsp\":\"{:#x}\",\"rip_image\":\"{}\",\"frames\":[",
                 tid, rsp, rip_img.as_ref().map(|(p, _lo)| p.clone()).unwrap_or_default()));
@@ -4053,9 +4122,20 @@ fn run_unwind(args: UnwindArgs) -> Result<ExitCode> {
     }
 
     crate::say(&format!("UNWIND pid={} window={} threads={}", args.pid, args.window, rows.len()));
-    for (tid, rsp, rip_img, frames) in &rows {
+    for (tid, rsp, rip_abs, rip_img, frames) in &rows {
+        // Where the thread is RIGHT NOW, resolved. Printing only the image name left the single
+        // most useful register unread: a stalled thread sits in a syscall wrapper most of the time,
+        // and knowing which wrapper is the difference between "it is in a wait" and "it is in the
+        // wrong wait".
         let rip_s = match rip_img {
-            Some((p, _lo)) => format!("image={}", p.rsplit('/').next().unwrap_or(p)),
+            Some((p, _lo)) => {
+                let sym = image_of(*rip_abs)
+                    .and_then(|(lo, _, foff, path)| unwind_symbolize(rip_abs - lo + foff, &path));
+                match sym {
+                    Some(sym) => format!("image={} rip={sym}", p.rsplit('/').next().unwrap_or(p)),
+                    None => format!("image={}", p.rsplit('/').next().unwrap_or(p)),
+                }
+            }
             None => "image=<host or unmapped>".to_string(),
         };
         crate::say(&format!("THREAD tid={} rsp={:#x} rip_{} symbolized_frames={}", tid, rsp, rip_s, frames.len()));
@@ -5150,7 +5230,8 @@ pub enum DiagCommand {
     Witness(WitnessArgs),
     /// Read a stopped guest's stacks: per-thread rsp from the debugger, then the words above it,
     /// filtered to guest images and symbolized. Host gdb cannot walk a Darwin-ABI frame, so this
-    /// is how a stuck guest gets function names instead of a plausible story.
+    /// is how a stuck guest gets function names instead of a plausible story. With --catch SIGNAL
+    /// it instead attaches, arms a stop on that signal, resumes the target and reports the trap.
     Unwind(UnwindArgs),
     /// Join the server's whole wait/wake vocabulary per ulock object: who waits, who owns, and
     /// whether a wake was ever issued for it. A stall is not diagnosed by the last log line, and
