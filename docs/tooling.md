@@ -102,7 +102,7 @@ Everything that used to be a separate shell script for this work -- judging a gu
 symbolizing an offset, resolving a crash -- is now a subcommand of the Rust tool in the sibling tooling repository:
 
 ```
-scripts/dwdiag <build|cycle|symbolize|crash|verdict|suite|witness|waits> [OPTIONS]   # build-and-exec shim, stable path
+scripts/dwdiag <build|cycle|symbolize|crash|verdict|suite|witness|waits|unwind> [OPTIONS]   # build-and-exec shim, stable path
   = tools/darling-debug-runner/target/release/darling-debug-runner diag ...
 ```
 
@@ -202,6 +202,32 @@ when both directions are present in the same object set, so a one-sided wait is 
 Because it consumes instruments that already existed, the same question is answered by
 `witness`: a log where `ulock-wait-park` fired and every `ulock-wake*` stayed silent says the same
 thing in one line, and that is the case the T4 stall is in.
+
+### `dwdiag unwind` -- guest frames, which host gdb cannot walk
+
+`scripts/dwdiag unwind --pid PID [--image SUBSTR] [--window BYTES] [--max N] [--json]` reads a
+stopped guest's stacks: per-thread `rsp`/`rip` come from the debugger, the words above each `rsp`
+are scanned, and any word that falls inside a guest image past that image's first 16 KiB **and
+resolves to a symbol** is reported as a frame.
+
+It exists because the three obvious routes do not work, each measured: host gdb attached to a
+stopped guest resolves only the loader's syscall trampoline; `/proc/<tid>/maps` `[stack]` is
+present only for the main thread; and `startstack` in `/proc/<tid>/stat` is zero for non-leaders.
+Two of those mistakes produced "frames" that were image data (`image_base+2`), which is why both
+filters are stated in the output rather than left implicit.
+
+```
+scripts/dwdiag unwind --pid 890075 --image prefix-ios --max 6
+UNWIND pid=890075 window=524288 threads=3
+THREAD tid=890075 rsp=0x7fffffdff808 rip_image=libsystem_kernel.dylib symbolized_frames=6
+  FRAME 0x741d7a2babd9 image=libobjc.A.dylib _ZN8method_taSERKS_ + 0x99
+  FRAME 0x741d7a3f6959 image=libxpc.dylib xpc_pipe_get_log + 0x1209
+UNWIND-VERDICT threads=3 symbolized_frames=18 note=frames are words above each thread rsp that fall in a guest image, sit past that image's first 16 KiB, and resolve to a symbol; a thread with none resolved either has nothing there or points at a stripped image
+```
+
+A loaded image is mapped at a random address, so an absolute stack word is not an address inside
+the image: the scan rebases it by `mapping_start - file_offset` before symbolizing. Skipping that
+step made every shared-library frame resolve to a bogus symbol while still looking plausible.
 
 ### `dwdiag progress` -- where a run stopped
 

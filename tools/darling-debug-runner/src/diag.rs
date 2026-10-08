@@ -3822,6 +3822,255 @@ impl WaitObject {
     }
 }
 
+
+// WHY THIS EXISTS. Host gdb cannot walk a Darwin-ABI guest frame: attached to a stopped guest
+// it resolves only the loader's syscall trampoline, and a hand recovery from `/proc/<tid>/maps`
+// reads the wrong region twice over ([stack] names only the main thread; startstack is zero for
+// non-leaders). MEASURED, three times, before this was written. What does work is starting from
+// the debugger's own per-thread rsp and reading the words above it: the return addresses live
+// there, and the ones that fall inside the guest's own images can be symbolized directly. This
+// turns "the ld is stuck" into "the ld is stuck in <function>", which is the fact the T4 stall
+// has been missing.
+#[derive(clap::Args, Debug)]
+pub struct UnwindArgs {
+    /// Host pid of the stopped guest process to unwind.
+    #[arg(long)]
+    pid: u32,
+    /// Only keep addresses inside images whose path contains this substring. Default: every
+    /// image that is not a host library (libc/ld.so/libpthread/...).
+    #[arg(long)]
+    image: Option<String>,
+    /// How many bytes above each thread's rsp to scan.
+    #[arg(long, default_value_t = 524288)]
+    window: usize,
+    /// Stop after this many distinct addresses per thread.
+    #[arg(long, default_value_t = 12)]
+    max: usize,
+    #[arg(long)]
+    json: bool,
+}
+
+fn sudo_prefix() -> Vec<&'static str> {
+    // `sudo -n` where it is available and passwordless, otherwise nothing: the caller may already
+    // be root, and a read that fails must say why rather than silently return no frames.
+    let ok = Command::new("sudo")
+        .args(["-n", "true"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if ok { vec!["sudo", "-n"] } else { vec![] }
+}
+
+fn unwind_registers(pid: u32, sudo: &[&str]) -> Result<Vec<(u64, u64, u64)>> {
+    let mut cmd = Command::new(sudo.first().copied().unwrap_or("gdb"));
+    if !sudo.is_empty() {
+        cmd.arg(sudo[1]).arg("timeout").arg("90").arg("gdb");
+    }
+    let out = cmd
+        .arg("-p").arg(pid.to_string())
+        .args(["-batch", "-ex", "set pagination off", "-ex", "thread apply all info registers rsp rip"])
+        .output()
+        .context("running gdb")?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut rows = Vec::new();
+    let mut cur: Option<u64> = None;
+    let (mut rsp, mut rip) = (0u64, 0u64);
+    let mut have_rsp = false;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("Thread ") {
+            if let (Some(t), true) = (cur, have_rsp) {
+                rows.push((t, rsp, rip));
+            }
+            have_rsp = false;
+            rsp = 0; rip = 0;
+            // "Thread 3 (Thread 0x.. (LWP 1234) ..."
+            cur = rest
+                .split("LWP ")
+                .nth(1)
+                .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
+                .and_then(|s| s.parse::<u64>().ok());
+            continue;
+        }
+        let t = line.trim();
+        if let Some(v) = t.strip_prefix("rsp") {
+            if let Some(hex) = v.split_whitespace().next().and_then(|h| h.strip_prefix("0x")) {
+                if let Ok(x) = u64::from_str_radix(hex, 16) { rsp = x; have_rsp = true; }
+            }
+        } else if let Some(v) = t.strip_prefix("rip") {
+            if let Some(hex) = v.split_whitespace().next().and_then(|h| h.strip_prefix("0x")) {
+                if let Ok(x) = u64::from_str_radix(hex, 16) { rip = x; }
+            }
+        }
+    }
+    if let (Some(t), true) = (cur, have_rsp) { rows.push((t, rsp, rip)); }
+    if rows.is_empty() {
+        bail!("gdb reported no per-thread registers for pid {pid}; is it alive and ptraceable?");
+    }
+    Ok(rows)
+}
+
+fn unwind_maps(pid: u32) -> Result<Vec<(u64, u64, bool, u64, String)>> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/maps"))
+        .with_context(|| format!("reading /proc/{pid}/maps"))?;
+    let mut v = Vec::new();
+    for line in text.lines() {
+        let mut it = line.split_whitespace();
+        let (Some(range), Some(perm), Some(off)) = (it.next(), it.next(), it.next()) else { continue };
+        let (Some(a), Some(b)) = (range.split('-').next(), range.split('-').nth(1)) else { continue };
+        let (Ok(lo), Ok(hi), Ok(foff)) = (u64::from_str_radix(a, 16), u64::from_str_radix(b, 16),
+                                          u64::from_str_radix(off, 16)) else { continue };
+        let path = line.splitn(6, ' ').nth(5).unwrap_or("").trim().to_string();
+        v.push((lo, hi, perm.contains('x'), foff, path));
+    }
+    Ok(v)
+}
+
+fn unwind_is_hostish(path: &str) -> bool {
+    const HOST: [&str; 8] = ["libc.so", "ld-linux", "libpthread.so", "libm.so", "libdl.so",
+                             "linux-vdso", "libgcc_s", "libstdc++"];
+    let base = path.rsplit('/').next().unwrap_or(path);
+    HOST.iter().any(|h| base.contains(h))
+}
+
+fn unwind_symbolize(addr: u64, binary: &str) -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let out = Command::new(exe)
+        .args(["diag", "symbolize", "--binary", binary, "--addr", &format!("{addr:#x}")])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    // `symbolize` prints a header (`binary=`, `target=`) and then the answer as
+    // `LOCATION: <symbol> + <offset>`. Taking the FIRST non-empty line -- which is the header --
+    // was the bug: every frame came out as `binary=/path`, and stripped images looked identical
+    // to resolved ones. Only a `LOCATION:` line is an answer.
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("LOCATION: ") {
+            return Some(rest.trim().to_string());
+        }
+        if line.trim().starts_with("ERROR") {
+            return None;
+        }
+    }
+    None
+}
+
+fn run_unwind(args: UnwindArgs) -> Result<ExitCode> {
+    if !std::path::Path::new(&format!("/proc/{}", args.pid)).exists() {
+        bail!("no such pid {}", args.pid);
+    }
+    let sudo = sudo_prefix();
+    let regs = unwind_registers(args.pid, &sudo)?;
+    let maps = unwind_maps(args.pid)?;
+
+    let image_ok = |path: &str| -> bool {
+        if path.is_empty() || path.starts_with('[') { return false; }
+        match &args.image {
+            Some(pat) => path.contains(pat.as_str()),
+            None => !unwind_is_hostish(path),
+        }
+    };
+    // A dylib is mapped at a random address, so an absolute stack word is NOT an address inside
+    // the image: it has to be rebased by (mapping_start - file_offset). Passing the absolute
+    // address was the bug that made every shared-library frame resolve to a bogus symbol.
+    let image_of = |addr: u64| -> Option<(u64, u64, u64, String)> {
+        maps.iter()
+            .find(|(lo, hi, x, _, _)| *x && *lo <= addr && addr < *hi)
+            .map(|(lo, hi, _, foff, p)| (*lo, *hi, *foff, p.clone()))
+    };
+
+    let mut total_frames = 0usize;
+    let mut rows: Vec<(u64, u64, Option<(String, u64)>, Vec<(u64, String, String)>)> = Vec::new();
+
+    for (tid_ref, rsp_ref, rip_ref) in &regs {
+        let tid = *tid_ref;
+        let rsp = *rsp_ref;
+        let rip = *rip_ref;
+        let mem = {
+            let mut cmd = Command::new(sudo.first().copied().unwrap_or("dd"));
+            if !sudo.is_empty() { cmd.arg(sudo[1]); }
+            cmd.args(["dd", &format!("if=/proc/{}/task/{}/mem", args.pid, tid),
+                      "bs=4096", "iflag=skip_bytes,count_bytes",
+                      &format!("skip={rsp}"), &format!("count={}", args.window), "status=none"])
+                .output()
+                .ok()
+                .map(|o| o.stdout)
+                .unwrap_or_default()
+        };
+        let mut seen: Vec<u64> = Vec::new();
+        let mut off = 0usize;
+        while off + 8 <= mem.len() {
+            let v = u64::from_le_bytes(mem[off..off + 8].try_into().unwrap());
+            if !seen.contains(&v) {
+                if let Some((_, _, _, path)) = image_of(v) {
+                    if image_ok(&path) { seen.push(v); }
+                }
+            }
+            off += 8;
+        }
+        seen.sort_unstable();
+        let mut frames = Vec::new();
+        for v in &seen {
+            let (lo, _, foff, path) = image_of(*v).unwrap();
+            // Two filters, both stated because a filter that is not stated is a guess: the word must
+            // resolve to a symbol at all, and it must not sit in the image's first 16 KiB, which is
+            // the Mach-O header and load commands -- bytes that live in an executable mapping and
+            // otherwise arrive as "frames" like image_base+2.
+            if *v < lo + 0x4000 {
+                continue;
+            }
+            if let Some(sym) = unwind_symbolize(*v - lo + foff, &path) {
+                frames.push((*v, path.clone(), sym));
+            }
+            if frames.len() >= args.max {
+                break;
+            }
+        }
+        total_frames += frames.len();
+        let rip_img = image_of(rip).map(|(lo, _, _, p)| (p, lo));
+        rows.push((tid, rsp, rip_img, frames));
+    }
+
+    if args.json {
+        let mut out = String::from("{\"pid\":");
+        out.push_str(&args.pid.to_string());
+        out.push_str(",\"threads\":[");
+        for (i, (tid, rsp, rip_img, frames)) in rows.iter().enumerate() {
+            if i > 0 { out.push(','); }
+            out.push_str(&format!("{{\"tid\":{},\"rsp\":\"{:#x}\",\"rip_image\":\"{}\",\"frames\":[",
+                tid, rsp, rip_img.as_ref().map(|(p, _lo)| p.clone()).unwrap_or_default()));
+            for (j, (addr, path, sym)) in frames.iter().enumerate() {
+                if j > 0 { out.push(','); }
+                out.push_str(&format!("{{\"addr\":\"{:#x}\",\"image\":\"{}\",\"symbol\":\"{}\"}}",
+                    addr, jesc(path), jesc(sym)));
+            }
+            out.push_str("]}");
+        }
+        out.push_str("]}");
+        println!("{out}");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    crate::say(&format!("UNWIND pid={} window={} threads={}", args.pid, args.window, rows.len()));
+    for (tid, rsp, rip_img, frames) in &rows {
+        let rip_s = match rip_img {
+            Some((p, _lo)) => format!("image={}", p.rsplit('/').next().unwrap_or(p)),
+            None => "image=<host or unmapped>".to_string(),
+        };
+        crate::say(&format!("THREAD tid={} rsp={:#x} rip_{} symbolized_frames={}", tid, rsp, rip_s, frames.len()));
+        if frames.is_empty() {
+            crate::say("  NOTE no frame on this thread resolved to a symbol: either nothing above rsp points into a guest image, or the image has no symbol table (stripped images are reported as such by `dwdiag symbolize`)");
+        }
+        for (addr, path, sym) in frames {
+            crate::say(&format!("  FRAME {:#x} image={} {}", addr, path.rsplit('/').next().unwrap_or(path), sym));
+        }
+    }
+    crate::say(&format!("UNWIND-VERDICT threads={} symbolized_frames={} note=frames are words above each thread rsp that fall in a guest image, sit past that image's first 16 KiB, and resolve to a symbol; a thread with none resolved either has nothing there or points at a stripped image", rows.len(), total_frames));
+    Ok(ExitCode::SUCCESS)
+}
+
+
 fn run_witness(args: WitnessArgs) -> Result<ExitCode> {
     let log = match args.log {
         Some(p) => p,
@@ -4559,6 +4808,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Cycle(a) => run_cycle(a),
         DiagCommand::Symbolize(a) => run_symbolize(a),
         DiagCommand::Waits(a) => run_waits(a),
+        DiagCommand::Unwind(a) => run_unwind(a),
         DiagCommand::Crash(a) => run_crash(a),
         DiagCommand::Verdict(a) => run_verdict(a),
         DiagCommand::Suite(a) => run_suite(a),
@@ -4898,6 +5148,10 @@ pub enum DiagCommand {
     /// the failure this exists to catch: a guard that silently does nothing cannot be told from no guard at all, and a
     /// hand-written grep over one log finds a line but cannot tell you which of the other instruments never spoke.
     Witness(WitnessArgs),
+    /// Read a stopped guest's stacks: per-thread rsp from the debugger, then the words above it,
+    /// filtered to guest images and symbolized. Host gdb cannot walk a Darwin-ABI frame, so this
+    /// is how a stuck guest gets function names instead of a plausible story.
+    Unwind(UnwindArgs),
     /// Join the server's whole wait/wake vocabulary per ulock object: who waits, who owns, and
     /// whether a wake was ever issued for it. A stall is not diagnosed by the last log line, and
     /// this table was re-derived by hand in every investigation until it became a command.
