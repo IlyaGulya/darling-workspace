@@ -225,6 +225,12 @@ THREAD tid=890075 rsp=0x7fffffdff808 rip_image=libsystem_kernel.dylib symbolized
 UNWIND-VERDICT threads=3 symbolized_frames=18 note=frames are words above each thread rsp that fall in a guest image, sit past that image's first 16 KiB, and resolve to a symbol; a thread with none resolved either has nothing there or points at a stripped image
 ```
 
+**A table on the stack looks like a stack.** MEASURED against the stalled ld: one thread's "frames"
+came out as a run of consecutive addresses ten bytes apart inside `libkxld.dylib`, each resolving to
+the same symbol -- that is a vtable the thread is reading, not a call chain. So read the offsets, not
+just the symbol names: a real frame offset advances by bytes of code, a table advances by a constant
+small stride and repeats one symbol. The tool prints the offsets for exactly this reason.
+
 A loaded image is mapped at a random address, so an absolute stack word is not an address inside
 the image: the scan rebases it by `mapping_start - file_offset` before symbolizing. Skipping that
 step made every shared-library frame resolve to a bogus symbol while still looking plausible.
