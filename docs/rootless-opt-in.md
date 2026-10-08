@@ -81,7 +81,9 @@ must leave the lower template unchanged and must remove its init PID, Unix
 sockets, child processes, and other runtime state after `darling --rootless
 shutdown`.
 
-The installed launcher remains setuid for the existing privileged modes. On a
+The launcher is ROOTLESS BY DEFAULT and needs no setuid bit; the privileged launcher is retired and is
+refused unless `DARLING_FORCE_ROOTFULL_MODE=1` asks for it, so a setuid message can only mean a privileged
+mode was requested explicitly. On a
 rootless invocation it permanently changes its real, effective, and saved user
 and group IDs to the non-root invoking identity before inspecting or writing
 the prefix. Darlingserver independently verifies that credential boundary

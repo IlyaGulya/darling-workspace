@@ -20,8 +20,17 @@ All findings below were verified on this host: Ubuntu kernel **6.8.0-124**,
 
 ## What actually requires privilege
 
-The "mandatory setuid" gate is a single check in
-`darling/src/startup/darling.c:64`:
+> CURRENT STATE (supersedes the check quoted below): rootless is the launcher
+> DEFAULT and the privileged launcher is RETIRED. The gate is now
+> `if (!rootless && geteuid() != 0)` in `darling/src/startup/darling.c`, so it is
+> reachable ONLY when a privileged mode was requested explicitly
+> (`DARLING_FORCE_ROOTFULL_MODE=1` plus a privileged mode); `darling_runtime_mode_resolve()`
+> refuses a privileged mode before this point otherwise. The message now also says the
+> mode is retired and that rootless needs no setuid root. A plain `darling shell`
+> never reaches it. See [rootless-opt-in.md](rootless-opt-in.md).
+
+When this was investigated the gate was a single check that a plain run could
+reach, in `darling/src/startup/darling.c`:
 
 ```c
 if (geteuid() != 0) { missingSetuidRoot(); return 1; }
