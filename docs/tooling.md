@@ -216,6 +216,17 @@ present only for the main thread; and `startstack` in `/proc/<tid>/stat` is zero
 Two of those mistakes produced "frames" that were image data (`image_base+2`), which is why both
 filters are stated in the output rather than left implicit.
 
+**The order of the frames is depth, and that had to be fixed.** The words are scanned upward from
+`rsp`, so the deepest (innermost) frame comes first. The command used to sort those words, which
+orders them by code ADDRESS instead and turns a call chain into a set -- two runs reported "chains"
+in which an unrelated function read as the caller of any other. The scan order is the answer now,
+and a unit test pins it (`stack_words` in `tools/darling-debug-runner`): the innermost word in the
+test is the smallest, so a sort would reorder all three and fail.
+
+`--catch SEGV` resolves frames too, from a stack image gdb dumps while the target is stopped on the
+signal -- the part gdb cannot do itself, since it cannot walk a guest frame. Each stopped thread is
+reported as `CATCH-STACK rsp=... frames=N` followed by its `FRAME` lines, in the same depth order.
+
 ```
 scripts/dwdiag unwind --pid 890075 --image prefix-ios --max 6
 UNWIND pid=890075 window=524288 threads=3

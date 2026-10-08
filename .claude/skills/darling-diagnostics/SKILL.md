@@ -36,7 +36,7 @@ Canonical sources live in the selected manifest repository:
 | `scripts/guest-probe.h` | the probe contract, so a probe cannot silently measure nothing |
 | `scripts/dwdiag` | one entry point for the run/judge/symbolize/crash family: `build`, `cycle`, `symbolize`, `crash`, `verdict`, `suite`, `witness`, `progress`, `courier`, `trace`, `denials`, `waits`, `unwind` |
 | `scripts/dwdiag waits` | per ulock object: who waits, who owns, and whether a wake was EVER issued for it -- separating "nobody asked to wake it" from "a wake was issued and the server found nobody" |
-| `scripts/dwdiag unwind` | guest frames, which host gdb cannot walk: per-thread `rsp` from the debugger, the words above it, filtered to guest images and symbolized. With `--catch SIGNAL` it instead attaches to a stopped target, arms a stop on that signal, resumes it and reports the signal, the registers and the instruction at `$pc` |
+| `scripts/dwdiag unwind` | guest frames, which host gdb cannot walk: per-thread `rsp` from the debugger, the words above it, filtered to guest images and symbolized, ORDERED BY DEPTH. Sorting those words orders them by code address and turns a call chain into a set -- that was a real bug, and a unit test now pins the order. With `--catch SIGNAL` it attaches to a stopped target, arms a stop on that signal, resumes it, and reports the signal, the registers, the instruction at `$pc`, and the frames resolved from the stack images gdb dumps while the target is stopped |
 
 ## Rules the tools enforce, each from a measured failure
 

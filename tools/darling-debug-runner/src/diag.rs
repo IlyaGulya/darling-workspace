@@ -3939,6 +3939,10 @@ fn unwind_registers(pid: u32, sudo: &[&str]) -> Result<Vec<(u64, u64, u64)>> {
 fn unwind_maps(pid: u32) -> Result<Vec<(u64, u64, bool, u64, String)>> {
     let text = std::fs::read_to_string(format!("/proc/{pid}/maps"))
         .with_context(|| format!("reading /proc/{pid}/maps"))?;
+    Ok(parse_maps_text(&text))
+}
+
+fn parse_maps_text(text: &str) -> Vec<(u64, u64, bool, u64, String)> {
     let mut v = Vec::new();
     for line in text.lines() {
         let mut it = line.split_whitespace();
@@ -3949,7 +3953,57 @@ fn unwind_maps(pid: u32) -> Result<Vec<(u64, u64, bool, u64, String)>> {
         let path = line.splitn(6, ' ').nth(5).unwrap_or("").trim().to_string();
         v.push((lo, hi, perm.contains('x'), foff, path));
     }
-    Ok(v)
+    v
+}
+
+/// The candidate return addresses on a stack image, in DEPTH order.
+///
+/// The scan walks upward from `rsp`, so the result is ordered by depth -- the deepest (innermost)
+/// frame first. Sorting these values would order them by code address instead and turn a call chain
+/// into a set, which is the bug this function exists to keep out of the callers; it is separate from
+/// symbolization so that ordering is testable without a symbolizer or a live process.
+fn stack_words(mem: &[u8], maps: &[(u64, u64, bool, u64, String)]) -> Vec<u64> {
+    let image_of = |addr: u64| -> Option<&(u64, u64, bool, u64, String)> {
+        maps.iter().find(|(lo, hi, x, _, _)| *x && *lo <= addr && addr < *hi)
+    };
+    let mut seen: Vec<u64> = Vec::new();
+    let mut off = 0usize;
+    while off + 8 <= mem.len() {
+        let v = u64::from_le_bytes(mem[off..off + 8].try_into().unwrap());
+        // De-duplication keeps the FIRST occurrence, which is the innermost one, so a repeated
+        // return address stays where its deepest frame is.
+        if !seen.contains(&v) && image_of(v).is_some() {
+            seen.push(v);
+        }
+        off += 8;
+    }
+    seen
+}
+
+/// Frames from a raw stack image. Shared by the live unwinder and by catch mode, which has the
+/// stack as a file rather than as memory, so both paths answer the same question the same way.
+fn scan_stack(mem: &[u8], maps: &[(u64, u64, bool, u64, String)],
+              image_ok: &dyn Fn(&str) -> bool, max: usize) -> Vec<(u64, String, String)> {
+    let image_of = |addr: u64| -> Option<(u64, u64, u64, String)> {
+        maps.iter()
+            .find(|(lo, hi, x, _, _)| *x && *lo <= addr && addr < *hi)
+            .map(|(lo, hi, _, foff, p)| (*lo, *hi, *foff, p.clone()))
+    };
+    let mut frames = Vec::new();
+    for v in stack_words(mem, maps) {
+        let (lo, _, foff, path) = image_of(v).unwrap();
+        if !image_ok(&path) { continue; }
+        // Two filters, both stated because a filter that is not stated is a guess: the word must
+        // resolve to a symbol at all, and it must not sit in the image's first 16 KiB, which is
+        // the Mach-O header and load commands -- bytes that live in an executable mapping and
+        // otherwise arrive as "frames" like image_base+2.
+        if v < lo + 0x4000 { continue; }
+        if let Some(sym) = unwind_symbolize(v - lo + foff, &path) {
+            frames.push((v, path.clone(), sym));
+        }
+        if frames.len() >= max { break; }
+    }
+    frames
 }
 
 fn unwind_is_hostish(path: &str) -> bool {
@@ -3983,27 +4037,48 @@ fn unwind_symbolize(addr: u64, binary: &str) -> Option<String> {
 
 fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
     let sudo = sudo_prefix();
+    // The catch has to answer a guest question, and gdb cannot walk a guest frame. What gdb CAN do
+    // is stop the target on the signal, and while it is stopped the stack is readable. So the gdb
+    // session copies the maps and each thread's stack out, and the frames above are then resolved by
+    // the same scanner the live unwinder uses -- no second attach, no second symbolizer.
+    let dir = std::env::temp_dir().join(format!("dwdiag-catch-{pid}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let script = dir.join("catch.gdb");
+    let script_text = format!(
+        "set pagination off\n\
+         set confirm off\n\
+         handle SIG{signal} stop print nopass\n\
+         handle SIGCONT nostop noprint pass\n\
+         handle SIGSTOP nostop noprint pass\n\
+         handle SIGCHLD nostop noprint pass\n\
+         signal SIGCONT\n\
+         continue\n\
+         printf \"CATCH-STOPPED signal=SIG{signal}\\n\"\n\
+         info registers rip rsp\n\
+         x/4i $pc\n\
+         python\n\
+         import gdb, os\n\
+         d = '{dir}'\n\
+         inf = gdb.selected_inferior()\n\
+         open(os.path.join(d, 'maps'), 'w').write(open('/proc/{pid}/maps').read())\n\
+         for t in inf.threads():\n\
+         \x20   t.switch()\n\
+         \x20   rsp = int(gdb.parse_and_eval('$rsp'))\n\
+         \x20   open(os.path.join(d, 'stack-0x%x.bin' % rsp), 'wb').write(bytes(inf.read_memory(rsp, 4096)))\n\
+         end\n\
+         thread apply all bt\n",
+        dir = dir.display(),
+    );
+    std::fs::write(&script, script_text)
+        .with_context(|| format!("writing {}", script.display()))?;
+
     let mut cmd = Command::new(sudo.first().copied().unwrap_or("gdb"));
     if !sudo.is_empty() { cmd.arg(sudo[1]).arg("timeout").arg(timeout_s.to_string()).arg("gdb"); }
     let out = cmd
         .arg("-p").arg(pid.to_string())
-        .args(["-batch",
-               "-ex", "set pagination off",
-               "-ex", "set confirm off",
-               "-ex", &format!("handle SIG{signal} stop print nopass"),
-               "-ex", "handle SIGCONT nostop noprint pass",
-               // The target is held by MLDR_STOP_AT_START, i.e. it is ALREADY stopped by SIGSTOP
-               // when we attach. Without this gdb reports that SIGSTOP, stops, and the armed
-               // SIGSEGV handle is never reached -- measured.
-               "-ex", "handle SIGSTOP nostop noprint pass",
-               "-ex", "handle SIGCHLD nostop noprint pass",
-               "-ex", "signal SIGCONT",
-               "-ex", "continue",
-               "-ex", "info registers rip rsp",
-               // The instruction itself, at the faulting pc. It needs no ASLR reasoning: gdb
-               // already knows where $pc is, and for a SIGILL the opcode IS the finding.
-               "-ex", "x/4i $pc",
-               "-ex", "thread apply all bt"])
+        .args(["-batch", "-x"])
+        .arg(&script)
         .output()
         .context("running gdb in catch mode")?;
     let text = String::from_utf8_lossy(&out.stdout);
@@ -4014,6 +4089,7 @@ fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
         if t.contains("Program received signal")
             || t.contains("si_code")
             || t.contains("si_addr")
+            || t.contains("CATCH-STOPPED")
             || t.starts_with("Thread ")
             || t.starts_with('#')
             || t.contains(":\t")          // the x/4i disassembly lines
@@ -4021,6 +4097,31 @@ fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
             || t.trim_start().starts_with("rsp")
         {
             crate::say(&format!("  {t}"));
+        }
+    }
+
+    // The stack images gdb left behind, resolved now. This is the part gdb cannot do itself.
+    if let Ok(maps_text) = std::fs::read_to_string(dir.join("maps")) {
+        let maps = parse_maps_text(&maps_text);
+        let image_ok = |p: &str| !p.is_empty() && !p.starts_with('[') && !unwind_is_hostish(p);
+        let mut dumps: Vec<(u64, std::path::PathBuf)> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if let Some(h) = name.strip_prefix("stack-0x").and_then(|s| s.strip_suffix(".bin")) {
+                    if let Ok(rsp) = u64::from_str_radix(h, 16) { dumps.push((rsp, e.path())); }
+                }
+            }
+        }
+        dumps.sort();
+        for (rsp, path) in dumps {
+            let mem = std::fs::read(&path).unwrap_or_default();
+            let frames = scan_stack(&mem, &maps, &image_ok, 12);
+            crate::say(&format!("CATCH-STACK rsp={rsp:#x} frames={}", frames.len()));
+            for (addr, img, sym) in &frames {
+                crate::say(&format!("  FRAME {addr:#x} image={} {sym}",
+                    img.rsplit('/').next().unwrap_or(img)));
+            }
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -4071,35 +4172,7 @@ fn run_unwind(args: UnwindArgs) -> Result<ExitCode> {
                 .map(|o| o.stdout)
                 .unwrap_or_default()
         };
-        let mut seen: Vec<u64> = Vec::new();
-        let mut off = 0usize;
-        while off + 8 <= mem.len() {
-            let v = u64::from_le_bytes(mem[off..off + 8].try_into().unwrap());
-            if !seen.contains(&v) {
-                if let Some((_, _, _, path)) = image_of(v) {
-                    if image_ok(&path) { seen.push(v); }
-                }
-            }
-            off += 8;
-        }
-        seen.sort_unstable();
-        let mut frames = Vec::new();
-        for v in &seen {
-            let (lo, _, foff, path) = image_of(*v).unwrap();
-            // Two filters, both stated because a filter that is not stated is a guess: the word must
-            // resolve to a symbol at all, and it must not sit in the image's first 16 KiB, which is
-            // the Mach-O header and load commands -- bytes that live in an executable mapping and
-            // otherwise arrive as "frames" like image_base+2.
-            if *v < lo + 0x4000 {
-                continue;
-            }
-            if let Some(sym) = unwind_symbolize(*v - lo + foff, &path) {
-                frames.push((*v, path.clone(), sym));
-            }
-            if frames.len() >= args.max {
-                break;
-            }
-        }
+        let frames = scan_stack(&mem, &maps, &image_ok, args.max);
         total_frames += frames.len();
         let rip_img = image_of(rip).map(|(lo, _, _, p)| (p, lo));
         rows.push((tid, rsp, rip, rip_img, frames));
@@ -5696,6 +5769,34 @@ mod witness_tests {
             "release-drops-pending",
             "[release-drops-pending] site=dserver-ring.c:2752",
         ),
+        (
+            "ulock-wait-park",
+            "[ulock-wait-park] pid=1064369 op=0x1050002 addr=0x71f0683a3e00 word=0x102 owner_tid=1064369 owner_ptr=0x61a7a4f02b20 waiter_tid=1064413 nwaiters=1",
+        ),
+        (
+            "ulock-wait-cleanup",
+            "[ulock-wait-cleanup] pid=1064369 addr=0x71f0683a3e00 waiter_tid=1064413 depth=3 nwaiters=1",
+        ),
+        (
+            "ulock-wake-entry",
+            "[ulock-wake-entry] pid=1064369 addr=0x71f0683a3e00 owner_ptr=0x61a7a4f02b20 self=0x61a7a4f02b20 nwaiters=1 op=0x1050002",
+        ),
+        (
+            "ulock-wake",
+            "[ulock-wake] pid=1064369 addr=0x71f0683a3e00 op=0x1050002 nwaiters=1 woke=1 set_owner=0",
+        ),
+        (
+            "ulock-wake-nobody",
+            "[ulock-wake-nobody] pid=1064369 addr=0x71f0683a3e00 nwaiters=0 set_owner=0",
+        ),
+        (
+            "ulock-wake-enoent",
+            "[ulock-wake-enoent] pid=1064369 addr=0x71f0683a3e00 op=0x1050002",
+        ),
+        (
+            "ulock-wake-late",
+            "[ulock-wake-late] pid=1064369 addr=0x71f0683a3e00 owner=0x61a7a4f02b20 self=0x61a7a4f02b20",
+        ),
     ];
 
     #[test]
@@ -5749,5 +5850,38 @@ mod workload_tests {
         assert!(line.contains("pass=1"), "{line}");
         assert_eq!(verdict, "PASS");
         assert_eq!(rc, Some(0));
+    }
+}
+
+#[cfg(test)]
+mod stack_words_tests {
+    use super::*;
+
+    fn mem_of(words: &[u64]) -> Vec<u8> {
+        words.iter().flat_map(|w| w.to_le_bytes()).collect()
+    }
+
+    fn one_exec_map(lo: u64, hi: u64) -> Vec<(u64, u64, bool, u64, String)> {
+        vec![(lo, hi, true, 0, "/fake/img".to_string())]
+    }
+
+    /// The order of `stack_words` is DEPTH, not address. This is the regression the callers depend
+    /// on: the words it returns were sorted by address before, which turns a call chain into a set,
+    /// so an unrelated function could read as the caller of any other. The innermost word is the
+    /// SMALLEST here, so a sort would reorder all three and this test would fail.
+    #[test]
+    fn stack_words_keep_depth_order_not_address_order() {
+        let maps = one_exec_map(0x1000, 0x10_0000);
+        let words = [0x9_0000, 0x5_0000, 0x2_0000];
+        assert_eq!(stack_words(&mem_of(&words), &maps), vec![0x9_0000, 0x5_0000, 0x2_0000]);
+    }
+
+    /// A repeated return address stays where its deepest frame is, and a word that is in no
+    /// executable mapping is not a frame at all.
+    #[test]
+    fn stack_words_dedup_keeps_the_innermost_occurrence_and_drops_non_code() {
+        let maps = one_exec_map(0x1000, 0x10_0000);
+        let words = [0x9_0000, 0xdead_beef, 0x9_0000, 0x2_0000, 0x0];
+        assert_eq!(stack_words(&mem_of(&words), &maps), vec![0x9_0000, 0x2_0000]);
     }
 }
