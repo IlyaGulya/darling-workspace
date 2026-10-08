@@ -142,3 +142,14 @@ verify:
 
 `fsck OK` means the objects are correctly addressed (the filename is the SHA-256), so this is placement, not
 bypass. A more durable fix is to point the submodule at a reachable mirror: `git config lfs.url <mirror>`.
+
+## A bootstrap needs the submodules at their manifest pins
+
+Measured twice in a row: with `src/external/darlingserver` and `src/external/xnu` sitting on local
+`fix/*` branches, a bootstrap built the runtime and then failed its guest smoke -- the guest printed
+`[machport-open] before-rpc` (libkqueue/src/linux/machport.c:126) and never reached `after-rpc`, so it hung
+inside the `kqchan_mach_port_open` RPC and shellspawn never became ready. Detaching both to the pinned
+commits (a384108, f3e71f3) while the branches kept every commit made the same profile succeed unchanged
+(rc=0, launcher present). `west status` showed the drift as "new commits, modified content" on the two
+submodules. Keep the fix work on branches, but return the checkouts to their pins before bootstrapping, and
+re-checkout the branches (or redeploy) when the fixed runtime is wanted again.
