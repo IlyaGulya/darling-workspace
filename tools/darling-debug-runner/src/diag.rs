@@ -3327,10 +3327,54 @@ pub struct WitnessArgs {
     json: bool,
 }
 
+#[derive(clap::Args, Debug)]
+pub struct WaitsArgs {
+    /// The run log to read. Defaults to the newest `dwdiag` verdict log in the temp directory.
+    #[arg(long)]
+    log: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+}
+
 // THE REGISTRY. One entry per instrument this project ships, with the line it writes and why it exists. Adding an
 // instrument without adding it here stops the census from being a census, so the list is the point of the command:
 // `witness` answers "which of these spoke", and names the ones that did not.
 const INSTRUMENTS: &[(&str, &str, &str)] = &[
+    (
+        "ulock-wait-park",
+        r"^\[ulock-wait-park\] ",
+        "server: the moment a thread is QUEUED on a ulock -- object address, operation, owner_tid and waiter_tid, so a stall has a named object instead of a last log line",
+    ),
+    (
+        "ulock-wait-cleanup",
+        r"^\[ulock-wait-cleanup\] ",
+        "server: an ABORTED wait -- the waiter left the queue without being woken; a cleanup with no matching wake is how a requeue shows up",
+    ),
+    (
+        "ulock-wake-entry",
+        r"^\[ulock-wake-entry\] ",
+        "server: a wake REQUEST that reached an object with waiters -- the only point that separates 'nobody asked to wake it' from 'asked and found nobody'",
+    ),
+    (
+        "ulock-wake",
+        r"^\[ulock-wake\] ",
+        "server: a wake that RAN, with how many waiters it moved (woke=0 means it ran and nothing moved)",
+    ),
+    (
+        "ulock-wake-nobody",
+        r"^\[ulock-wake-nobody\] ",
+        "server: a wake that found NO waiters at all",
+    ),
+    (
+        "ulock-wake-enoent",
+        r"^\[ulock-wake-enoent\] ",
+        "server: a wake for an object the server never saw -- the wake and the wait disagree about identity",
+    ),
+    (
+        "ulock-wake-late",
+        r"^\[ulock-wake-late\] ",
+        "server: a wake that arrived after the owner had already changed -- the handoff race, visible as a value instead of inferred",
+    ),
     (
         "dthread-mask",
         r"^\[dthread-mask ",
@@ -3557,6 +3601,225 @@ fn newest_verdict_log() -> Option<PathBuf> {
         }
     }
     best.map(|(_, p)| p)
+}
+
+fn wfield<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let pat = format!("{key}=");
+    let pos = line.find(&pat)? + pat.len();
+    let rest = &line[pos..];
+    let end = rest
+        .find(|c: char| c == ' ' || c == '\n' || c == '\t')
+        .unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+fn wnum(line: &str, key: &str) -> Option<u64> {
+    let v = wfield(line, key)?;
+    if let Some(hex) = v.strip_prefix("0x") {
+        u64::from_str_radix(hex, 16).ok()
+    } else {
+        v.parse::<u64>().ok()
+    }
+}
+
+#[derive(Default, Debug)]
+struct WaitObject {
+    op: u64,
+    owner: u64,
+    parks: usize,
+    cleanups: usize,
+    waiters: Vec<u64>,
+    wake_entry: usize,
+    wake: usize,
+    woke: u64,
+    wake_nobody: usize,
+    wake_enoent: usize,
+    wake_late: usize,
+}
+
+fn op_name(op: u64) -> &'static str {
+    match op & 0xff {
+        1 => "UL_COMPARE_AND_WAIT",
+        2 => "UL_UNFAIR_LOCK",
+        3 => "UL_COMPARE_AND_WAIT_SHARED",
+        5 => "UL_UNFAIR_LOCK64_SHARED",
+        _ => "UL_OTHER",
+    }
+}
+
+// WHY THIS IS A COMMAND AND NOT A GREP. The server already emits the whole wait/wake
+// vocabulary for ulocks -- wait-park (who waits, who owns), wait-cleanup, wake-entry,
+// wake, wake-nobody, wake-enoent, wake-late -- and nothing consumed it as a whole, so every
+// investigation rebuilt this table by hand under time pressure. It answers the one question a
+// stall turns on: for each object, was a wake ever issued for it at all, and if it was, did the
+// server have anybody to wake? A "waiters exist and no wake was ever issued" object is a
+// different defect from "wake issued and nobody found", and only this join tells them apart.
+fn run_waits(args: WaitsArgs) -> Result<ExitCode> {
+    let log = match args.log {
+        Some(p) => p,
+        None => newest_verdict_log()
+            .context("no `dwdiag-verdict-*.log` in the temp directory; pass --log")?,
+    };
+    let text = read_log_lossy(&log).with_context(|| format!("reading {}", log.display()))?;
+
+    let mut objs: BTreeMap<(u64, u64), WaitObject> = BTreeMap::new();
+    let mut lines_seen = 0usize;
+
+    for line in text.lines() {
+        if !line.contains("[ulock-") {
+            continue;
+        }
+        let pid = match wnum(line, "pid") {
+            Some(p) => p,
+            None => continue,
+        };
+        let addr = match wnum(line, "addr") {
+            Some(a) => a,
+            None => continue,
+        };
+        lines_seen += 1;
+        let e = objs.entry((pid, addr)).or_default();
+        if line.contains("[ulock-wait-park]") {
+            e.op = wnum(line, "op").unwrap_or(e.op);
+            e.parks += 1;
+            if let Some(o) = wnum(line, "owner_tid") {
+                if o != 0 {
+                    e.owner = o;
+                }
+            }
+            if let Some(w) = wnum(line, "waiter_tid") {
+                if !e.waiters.contains(&w) {
+                    e.waiters.push(w);
+                }
+            }
+        } else if line.contains("[ulock-wait-cleanup]") {
+            e.cleanups += 1;
+            if let Some(w) = wnum(line, "waiter_tid") {
+                e.waiters.retain(|x| *x != w);
+            }
+        } else if line.contains("[ulock-wake-entry]") {
+            e.wake_entry += 1;
+        } else if line.contains("[ulock-wake]") {
+            e.wake += 1;
+            e.woke += wnum(line, "woke").unwrap_or(0);
+        } else if line.contains("[ulock-wake-nobody]") {
+            e.wake_nobody += 1;
+        } else if line.contains("[ulock-wake-enoent]") {
+            e.wake_enoent += 1;
+        } else if line.contains("[ulock-wake-late]") {
+            e.wake_late += 1;
+        }
+    }
+
+    let verdict_of = |e: &WaitObject| -> &'static str {
+        if e.parks == 0 {
+            return "NO-WAITERS";
+        }
+        if e.waked_any() {
+            return if e.woke > 0 { "WOKEN" } else { "WAKE-NO-EFFECT" };
+        }
+        if e.wake_nobody > 0 || e.wake_enoent > 0 || e.wake_late > 0 {
+            return "WAKE-MISSED-THE-WAITER";
+        }
+        "NEVER-WOKEN"
+    };
+
+    if args.json {
+        let mut out = String::from("{\"log\":\"");
+        out.push_str(&jesc(&log.display().to_string()));
+        out.push_str("\",\"objects\":[");
+        for (i, (k, e)) in objs.iter().enumerate() {
+            let (pid, addr) = *k;
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!(
+                "{{\"pid\":{},\"addr\":\"{:#x}\",\"op\":\"{}\",\"owner_tid\":{},\"waiters\":[{}],\"parks\":{},\"cleanups\":{},\"wake_entry\":{},\"wake\":{},\"woke\":{},\"wake_nobody\":{},\"wake_enoent\":{},\"wake_late\":{},\"verdict\":\"{}\"}}",
+                pid, addr, op_name(e.op), e.owner,
+                e.waiters.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(","),
+                e.parks, e.cleanups, e.wake_entry, e.wake, e.woke, e.wake_nobody, e.wake_enoent,
+                e.wake_late, verdict_of(e)
+            ));
+        }
+        out.push_str("]}");
+        println!("{out}");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    crate::say(&format!("WAITS log={} objects={}", log.display(), objs.len()));
+    for (k, e) in &objs {
+        let (pid, addr) = *k;
+        crate::say(&format!(
+            "OBJECT pid={} addr={:#x} op={} owner_tid={} waiters=[{}] parks={} cleanups={} wake_entry={} wake={} woke={} wake_nobody={} wake_enoent={} wake_late={} verdict={}",
+            pid, addr, op_name(e.op), e.owner,
+            e.waiters.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(","),
+            e.parks, e.cleanups, e.wake_entry, e.wake, e.woke, e.wake_nobody, e.wake_enoent,
+            e.wake_late, verdict_of(e)
+        ));
+    }
+
+    let stalling: Vec<_> = objs
+        .iter()
+        .filter(|(_, e)| {
+            // "nobody asked to wake it" is a DIFFERENT defect from "a wake was issued and the
+            // server found nobody", so an object in the second class is never reported here.
+            e.parks > 0
+                && !e.waiters.is_empty()
+                && !e.waked_any()
+                && e.wake_nobody == 0
+                && e.wake_enoent == 0
+                && e.wake_late == 0
+        })
+        .collect();
+    for (k, e) in &stalling {
+        let (pid, addr) = **k;
+        crate::say(&format!(
+            "WAITS-STALL pid={} addr={:#x} op={} owner_tid={} waiters=[{}] reason=no-wake-was-ever-issued-for-this-object",
+            pid, addr, op_name(e.op), e.owner,
+            e.waiters.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(",")
+        ));
+    }
+
+    // A cycle is a waiter that holds the object another waiter is blocked on. Reported only when
+    // both directions are present in the same object set, so a one-sided wait is never called one.
+    for (k, o) in &objs {
+        let (pid, addr) = *k;
+        if o.owner == 0 || o.waiters.is_empty() {
+            continue;
+        }
+        let owner_waits_on = objs
+            .iter()
+            .find(|(_, v)| v.waiters.contains(&o.owner))
+            .map(|(k, _)| *k);
+        if let Some((pid2, addr2)) = owner_waits_on {
+            if let Some(o2) = objs.get(&(pid2, addr2)) {
+                if o2.owner != 0
+                    && o2.owner != o.owner
+                    && o.waiters.contains(&o2.owner)
+                    && o2.waiters.contains(&o.owner)
+                {
+                    crate::say(&format!(
+                        "WAITS-CYCLE pid={} addr={:#x} owner={} <-> pid={} addr={:#x} owner={} each waits on the object the other holds",
+                        pid, addr, o.owner, pid2, addr2, o2.owner
+                    ));
+                }
+            }
+        }
+    }
+
+    crate::say(&format!(
+        "WAITS-VERDICT objects={} ulock_lines={} stalling={}",
+        objs.len(),
+        lines_seen,
+        stalling.len()
+    ));
+    Ok(ExitCode::SUCCESS)
+}
+
+impl WaitObject {
+    fn waked_any(&self) -> bool {
+        self.wake_entry > 0 || self.wake > 0 || self.woke > 0
+    }
 }
 
 fn run_witness(args: WitnessArgs) -> Result<ExitCode> {
@@ -4295,6 +4558,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Deploy(a) => run_deploy(a),
         DiagCommand::Cycle(a) => run_cycle(a),
         DiagCommand::Symbolize(a) => run_symbolize(a),
+        DiagCommand::Waits(a) => run_waits(a),
         DiagCommand::Crash(a) => run_crash(a),
         DiagCommand::Verdict(a) => run_verdict(a),
         DiagCommand::Suite(a) => run_suite(a),
@@ -4634,6 +4898,10 @@ pub enum DiagCommand {
     /// the failure this exists to catch: a guard that silently does nothing cannot be told from no guard at all, and a
     /// hand-written grep over one log finds a line but cannot tell you which of the other instruments never spoke.
     Witness(WitnessArgs),
+    /// Join the server's whole wait/wake vocabulary per ulock object: who waits, who owns, and
+    /// whether a wake was ever issued for it. A stall is not diagnosed by the last log line, and
+    /// this table was re-derived by hand in every investigation until it became a command.
+    Waits(WaitsArgs),
     /// The chronologically ordered story of ONE process in a run log: every line that names its pid or tid, plus the
     /// plane/urgent refusals around it. This is the question of this whole stage -- "what happened to this child?" --
     /// and it was reconstructed by hand with grep/sed/python six times, each time risking the wrong slice of a

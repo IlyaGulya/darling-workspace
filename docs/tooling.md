@@ -102,7 +102,7 @@ Everything that used to be a separate shell script for this work -- judging a gu
 symbolizing an offset, resolving a crash -- is now a subcommand of the Rust tool in the sibling tooling repository:
 
 ```
-scripts/dwdiag <build|cycle|symbolize|crash|verdict|suite|witness> [OPTIONS]   # build-and-exec shim, stable path
+scripts/dwdiag <build|cycle|symbolize|crash|verdict|suite|witness|waits> [OPTIONS]   # build-and-exec shim, stable path
   = tools/darling-debug-runner/target/release/darling-debug-runner diag ...
 ```
 
@@ -176,6 +176,32 @@ a statement about the artifact.
 artifact pair is the default, the build tree and the prefix come from `DWDIAG_BUILD`/`DWDIAG_PREFIX`, the verdict is
 the workload's own line, and the instrument census comes from `witness` rather than from a grep: **silent** is
 reported next to **fired**, because a probe that cannot speak is indistinguishable from a guard that does nothing.
+
+### `dwdiag waits` -- who waits, who owns, and whether anyone was ever woken
+
+`scripts/dwdiag waits --log RUN_LOG [--json]` joins the server's whole ulock wait/wake vocabulary
+per object: `ulock-wait-park` (who waits and who owns), `ulock-wait-cleanup`, `ulock-wake-entry`,
+`ulock-wake`, `ulock-wake-nobody`, `ulock-wake-enoent`, `ulock-wake-late`. It exists because a
+stall is not diagnosed by the last log line: the question that decides the diagnosis is whether a
+wake was ever issued for the object at all, and whether the server had anybody to wake when it was.
+
+```
+scripts/dwdiag waits --log /tmp/t4.log
+WAITS log=/tmp/t4.log objects=2
+OBJECT pid=333962 addr=0x7c4b803a3e00 op=UL_UNFAIR_LOCK owner_tid=333962 waiters=[333964] parks=1 cleanups=0 wake_entry=0 wake=0 woke=0 wake_nobody=0 wake_enoent=0 wake_late=0 verdict=NEVER-WOKEN
+WAITS-STALL pid=333962 addr=0x7c4b803a3e00 op=UL_UNFAIR_LOCK owner_tid=333962 waiters=[333964] reason=no-wake-was-ever-issued-for-this-object
+WAITS-VERDICT objects=2 ulock_lines=2 stalling=2
+```
+
+The verdicts are deliberately different defects, not degrees of one: `NEVER-WOKEN` means nobody
+asked to wake the object; `WAKE-MISSED-THE-WAITER` means a wake was issued and the server found
+nobody (`wake-enoent`/`wake-late`/`wake-nobody`); `WOKEN` with `woke=0` means it ran and nothing
+moved; `NO-WAITERS` means the object was never contended. A `WAITS-CYCLE` line is printed only
+when both directions are present in the same object set, so a one-sided wait is never called one.
+
+Because it consumes instruments that already existed, the same question is answered by
+`witness`: a log where `ulock-wait-park` fired and every `ulock-wake*` stayed silent says the same
+thing in one line, and that is the case the T4 stall is in.
 
 ### `dwdiag progress` -- where a run stopped
 
