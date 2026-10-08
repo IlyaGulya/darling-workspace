@@ -37,7 +37,7 @@ manifest:
     # and a consistent bootchain (mldr carries its own copy of the RPC structs) cannot be
     # rebuilt and redeployed next to a changed darlingserver. This revision also vendors the
     # component gitlinks for the iOS T4 slice (see the darlingserver and xnu entries).
-    revision: 3c2f16ca89298cde0e50c0d981c3b6beb1ae986d
+    revision: 585ad73700586408f1b4f886febdf9ef0f1ecf62
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -485,7 +485,12 @@ manifest:
     # plane. Measured: tests/ios_ulock_contract_guest.c VERDICT PASS with exact {0..K-1}
     # depth, the fork fixture PASS, and the real Xcode 26.3 clang --version and arm64 iPhoneOS
     # compiles run in the guest (T1/T2). Parent is the dar-dles pin a384108.
-    revision: 955e5d4037e6ef0126e6ea7200494a4200174de4
+    # iOS T4 psynch slice (2026-10-08): route the nine psynch ops on the ring. They were
+    # classified in DSERVER_RING_OP_CLASS but absent from DSERVER_RING_C2S_OPCODES and from
+    # RING_GENERATED_SIMPLE, so sys_psynch_mutexwait/mutexdrop reached the retired socket, were
+    # denied, and called __simple_abort() -- measured on the real ld as 'psynch_mutexdrop failed
+    # internally: -32' then rc=139. Parent is the ulock/plane pin 955e5d4.
+    revision: bce5bf9f12078d6c9c25cd9688c7f75f2bba7a0c
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
