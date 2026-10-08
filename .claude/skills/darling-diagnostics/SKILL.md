@@ -48,7 +48,8 @@ Canonical sources live in the selected manifest repository:
 * **A competing `sigaction` cannot catch a fatal signal.** The loader's re-arm loop
   and the runtime's own install alternate, and at delivery time the runtime handler
   owns the signal and swallows it. Measured: SIGABRT, SIGSYS and SIGILL sent to a
-  guest process produced no witness line. The working path is the stop-at-start
+  guest process produced no witness line (`MLDR_HOLD_ON_SIGNAL` exists for this and is
+  NOT a working capture). The working path is the stop-at-start
   window plus `dwdiag unwind --catch SIGNAL`. In catch mode gdb must also be told to
   pass `SIGSTOP` through, because the target is already stopped by that signal.
 * **A new instrument or command carries a contract.** `tests/waits-contract.sh` is
