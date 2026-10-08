@@ -3328,6 +3328,35 @@ pub struct WitnessArgs {
 }
 
 #[derive(clap::Args, Debug)]
+pub struct LoopsArgs {
+    /// The run log to read. Defaults to the newest `dwdiag` verdict log in the temp directory.
+    #[arg(long)]
+    log: Option<PathBuf>,
+    /// Also read this guest manifest log. Both are censused together, because the spinning markers and the
+    /// run's own progress lines live in different files.
+    #[arg(long)]
+    guest_log: Option<PathBuf>,
+    /// A pattern must repeat at least this many times to be reported.
+    #[arg(long, default_value_t = 8)]
+    min: usize,
+    /// A pattern is "at the tail" when its LAST occurrence is inside the final fraction of the file.
+    #[arg(long, default_value_t = 0.25)]
+    tail_frac: f64,
+    /// How many lines at the end of the log are examined for variety. This is the deciding measurement: a spinning
+    /// process ends in the same handful of lines over and over, a working one keeps producing new lines.
+    #[arg(long, default_value_t = 30)]
+    tail_len: usize,
+    /// The tail is called a SPIN when it holds at most this many DISTINCT lines. The default is measured, not
+    /// chosen: of the two available run logs, the spinning one ended with 6 distinct lines in its last 30 and the
+    /// one where the process exited kept producing NEW lines (14 distinct, including shellspawn-step stages it had
+    /// not printed before). Raise it if a workload legitimately ends in a tight, repetitive finish.
+    #[arg(long, default_value_t = 8)]
+    spin_max_distinct: usize,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args, Debug)]
 pub struct TrapArgs {
     /// Kernel log to read. Defaults to `dmesg` (through `sudo -n` when passwordless), falling back to
     /// `journalctl -k`, because that is where a guest that dies of a host-delivered signal is reported.
@@ -4127,6 +4156,123 @@ fn unwind_symbolize(addr: u64, binary: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// The signature of a process that is not working any more: one pattern repeating near the END of the log with
+/// almost nothing new between its repetitions.
+///
+/// MEASURED need, and it cost this session three wrong answers. "The log stopped growing" cannot tell a stuck
+/// process from an EXITED one (two runs were read as a stall after the linker had already exited), and line
+/// COUNTS only say what a process has done, never whether it is still doing anything. What actually identified
+/// the failure was seeing `pc-entry -> pc-postplane st=#- -> pc-return-9+` repeat for pages with nothing new
+/// between, found by hand. This is that observation as a command.
+///
+/// Both inputs are censused together on purpose: the spinning markers sit in the guest image's own log while the
+/// run's progress lines sit in the harness log, and a report that reads only one of them sees half the story.
+fn run_loops(args: LoopsArgs) -> Result<ExitCode> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    match &args.log {
+        Some(p) => paths.push(p.clone()),
+        None => {
+            if let Some(p) = newest_verdict_log() { paths.push(p); }
+        }
+    }
+    if let Some(p) = &args.guest_log { paths.push(p.clone()); }
+    if paths.is_empty() {
+        bail!("nothing to read: pass --log and/or --guest-log (no `dwdiag-verdict-*.log` in the temp directory)");
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    for p in &paths {
+        let text = read_log_lossy(p).with_context(|| format!("reading {}", p.display()))?;
+        for l in text.lines() {
+            let t = l.trim();
+            if !t.is_empty() { lines.push(normalize_line(t)); }
+        }
+    }
+    if lines.is_empty() { bail!("the logs were empty"); }
+
+    let total = lines.len();
+    let tail_start = ((total as f64) * (1.0 - args.tail_frac.clamp(0.0, 0.99))) as usize;
+    // first, last, count per pattern
+    let mut stat: BTreeMap<&str, (usize, usize, usize)> = BTreeMap::new();
+    for (i, l) in lines.iter().enumerate() {
+        let e = stat.entry(l.as_str()).or_insert((i, i, 0));
+        e.1 = i;
+        e.2 += 1;
+    }
+    let mut rows: Vec<(usize, usize, usize, &str)> = stat
+        .iter()
+        .filter(|(_, (_, last, count))| *count >= args.min && *last >= tail_start)
+        .map(|(l, (first, last, count))| (*count, last - first, *last, *l))
+        .collect();
+    rows.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    rows.truncate(10);
+
+    let mut distinct_cache: Vec<(usize, usize, usize, &str, usize)> = Vec::new();
+    for (count, _, last, line) in &rows {
+        let (first, _, _) = stat.get(*line).copied().unwrap_or((0, 0, 0));
+        let distinct = lines[first..=*last].iter().collect::<std::collections::HashSet<_>>().len();
+        distinct_cache.push((*count, first, *last, line, distinct));
+    }
+    // THE DECIDING MEASUREMENT IS THE TAIL'S OWN VARIETY, not a ratio between repeats and span. MEASURED twice:
+    // a repeat/span ratio flags any busy log (a working run repeats `pc-entry` thousands of times too), and the
+    // first version of this file compared the count against the span in LINES, which is thousands either way.
+    // What actually separated the two runs was this: the spinning log's last lines were the SAME FOUR markers
+    // over and over, while a working log's tail keeps producing lines it has not produced before.
+    let tail_len = args.tail_len.min(total);
+    let tail_distinct = lines[total - tail_len..].iter().collect::<std::collections::HashSet<_>>().len();
+    let spinning = tail_distinct <= args.spin_max_distinct;
+    // "varied", not "progressing": this command reads a log, so it can rule a spin OUT but cannot claim the
+    // process went anywhere -- the run where the linker EXITED also has a varied tail. Saying "progressing" would
+    // be the same mistake this session made three times: inferring a process's state from a log's contents.
+    let kind = if spinning { "spin" } else { "varied" };
+
+    if args.json {
+        println!("{{\"lines\":{total},\"tail_from\":{tail_start},\"tail_len\":{tail_len},\"tail_distinct\":{tail_distinct},\"kind\":\"{kind}\",\"patterns\":[{}]}}",
+            distinct_cache.iter().map(|(c, f, l, t, d)| format!(
+                "{{\"count\":{c},\"first\":{f},\"last\":{l},\"distinct_in_span\":{d},\"pattern\":{}}}", jesc(t))).collect::<Vec<_>>().join(","));
+        return Ok(ExitCode::SUCCESS);
+    }
+    crate::say(&format!("LOOPS log={} lines={} tail_from={} min={} tail_frac={}",
+        paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(","),
+        total, tail_start, args.min, args.tail_frac));
+    for (count, first, last, t, distinct) in &distinct_cache {
+        crate::say(&format!("LOOP count={count} span_lines={} distinct_in_span={distinct} first={first} last={last} line={t}",
+            last - first));
+    }
+    crate::say(&format!("LOOPS-VERDICT patterns={} tail_lines={} tail_distinct={} tail={kind}",
+        rows.len(), tail_len, tail_distinct));
+    if rows.is_empty() {
+        crate::say("LOOPS-NOTE no pattern repeats at the tail: whatever stopped this run did not leave a loop, so read the end of the log for a single event rather than a cycle");
+    }
+    if !spinning {
+        crate::say("LOOPS-NOTE a varied tail RULES OUT a spin and says nothing else: ask the process, not the log, whether it is still working (dwdiag waits' proc= field, the run's own exit line)");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// A line with its variable parts erased, so repetitions become the SAME string. Without this every line differs
+/// by a pid, a tid, a stack word or an address, and a loop of a thousand identical events looks like a thousand
+/// unique ones -- which is exactly how a spin is missed by eye and by grep.
+fn normalize_line(l: &str) -> String {
+    let mut out = String::with_capacity(l.len());
+    let mut in_num = false;
+    for c in l.chars() {
+        // A number STARTS at a digit and CONTINUES through hex digits. Starting at any hex digit was the bug:
+        // `c`, `e`, `a` and `f` are hex, so a marker like "pc-entry" came out as "p#-#ntry" and two different
+        // markers could normalize to the same string. Continuation must still accept letters -- a stack word
+        // like `786c0` is hex -- which the start rule alone would truncate at the `c`.
+        let is_digit = c.is_ascii_digit();
+        let cont = in_num && c.is_ascii_hexdigit();
+        if is_digit || cont {
+            if !in_num { out.push('#'); in_num = true; }
+        } else {
+            in_num = false;
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// The kernel already answered "which instruction died", and this reads its answer instead of re-deriving
@@ -5251,6 +5397,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Waits(a) => run_waits(a),
         DiagCommand::Unwind(a) => run_unwind(a),
         DiagCommand::Trap(a) => run_trap(a),
+        DiagCommand::Loops(a) => run_loops(a),
         DiagCommand::Crash(a) => run_crash(a),
         DiagCommand::Verdict(a) => run_verdict(a),
         DiagCommand::Suite(a) => run_suite(a),
@@ -5625,6 +5772,14 @@ pub enum DiagCommand {
     /// when no core is written (`ulimit -c 0`). Three custom probes, a gdb catch and a stack scanner produced a
     /// wrong story twice in the same session while that line sat in `dmesg` unread.
     Trap(TrapArgs),
+    /// Report the pattern of a process that is NOT working any more: one line repeating near the end of the log
+    /// with almost nothing new between its repetitions.
+    ///
+    /// MEASURED need: "the log stopped growing" cannot tell a stuck process from an EXITED one (two runs here
+    /// were read as a stall after the process had already exited), and line counts say what a process has done,
+    /// never whether it is still doing anything. The real signature -- `pc-entry -> pc-postplane st=#- ->
+    /// pc-return-9+` repeating for pages with nothing new between -- had to be found by eye.
+    Loops(LoopsArgs),
 }
 
 // A tiny helper used by the table so a caller can see the set in a stable order under --json too.

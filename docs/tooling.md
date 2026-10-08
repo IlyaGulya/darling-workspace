@@ -177,6 +177,37 @@ artifact pair is the default, the build tree and the prefix come from `DWDIAG_BU
 the workload's own line, and the instrument census comes from `witness` rather than from a grep: **silent** is
 reported next to **fired**, because a probe that cannot speak is indistinguishable from a guard that does nothing.
 
+### `dwdiag loops` -- is the process working, or going round in circles?
+
+`scripts/dwdiag loops [--log FILE] [--guest-log FILE] [--min N] [--tail-len N] [--spin-max-distinct N] [--json]`
+reports patterns that repeat near the END of a log and how varied that end is:
+
+```
+LOOPS-VERDICT patterns=10 tail_lines=30 tail_distinct=5 tail=spin
+LOOP count=89 span_lines=4533 distinct_in_span=133 first=1312 last=5845 line=[pc-postplane st=#- sp=#]
+```
+
+**Why this exists, MEASURED three times over.** "The log stopped growing" cannot tell a stuck process from an
+EXITED one -- two runs in one session were read as a stall after the process had already exited -- and line
+counts only say what a process has done, never whether it is still doing anything. The signature that actually
+identified the failure was a handful of markers repeating for pages with nothing new between, and it had to be
+found by eye.
+
+**The deciding measurement is the tail's own variety, and it is measured, not chosen.** Two metrics were tried
+and discarded first: repeats-versus-span-in-lines (always in the thousands, so it flags every busy log), then
+variety over 200 lines (too wide to see the spin). The last 30 lines separate the two available runs: 5-6
+distinct for the spin, 14 for the run whose process exited. Those are the defaults, and both are flags.
+
+**A varied tail RULES OUT a spin and says nothing else**, so the verdict says `varied` and never `progressing`:
+the run where the linker exited has a varied tail too. Whether a process is still working is a question for the
+process (`proc=` from `dwdiag waits`, the run's own exit line), not for its log.
+
+**Lines are normalized before counting** (a number starts at a digit and continues through hex digits), because
+otherwise every repetition differs by a pid, a tid or a stack word and a loop of a thousand identical events
+looks like a thousand unique ones. That normalization is contract-tested both ways: numbers must collapse, and
+marker text whose letters happen to be hex digits (`pc-entry`) must survive -- starting a number at any hex
+digit made it `p#-#ntry`.
+
 ### `dwdiag trap` -- the kernel already said where the guest died
 
 `scripts/dwdiag trap [--kernel-log FILE] [--prefix PREFIX] [--process SUBSTR] [--limit N] [--json]` reads the
