@@ -226,6 +226,15 @@ present only for the main thread; and `startstack` in `/proc/<tid>/stat` is zero
 Two of those mistakes produced "frames" that were image data (`image_base+2`), which is why both
 filters are stated in the output rather than left implicit.
 
+**Frames come from the frame pointer, and the scan is a labelled fallback.** The guest closure is built
+`-O0`, so `rbp` is a real frame pointer and `[rbp]`/`[rbp+8]` walk the chain properly; every step is validated
+(above `rsp`, 8-aligned, monotone, landing in an executable guest image), so a garbage word cannot invent a
+caller. Each thread therefore reports `frames_via=fp` or `frames_via=scan`, because those are different kinds
+of evidence: MEASURED, a scan-only unwind of the T4 linker printed `gr_attach_lane ->
+__dserver_plane_request_once -> dserver_rpc_explicit_ulock_wake -> dserver_rpc_explicit_debug_list_processes
+-> _dispatch_source_xref_dispose`, which puts SERVER-side names inside a guest stack in an order no thread
+could run. A `scan` result is a set of plausible frames, not a call chain.
+
 **The order of the frames is depth, and that had to be fixed.** The words are scanned upward from
 `rsp`, so the deepest (innermost) frame comes first. The command used to sort those words, which
 orders them by code ADDRESS instead and turns a call chain into a set -- two runs reported "chains"
