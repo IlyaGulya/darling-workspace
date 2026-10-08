@@ -49,6 +49,7 @@ targets=(
 	src/external/foundation/install                 # Foundation.framework
 	src/external/cfnetwork/src/install              # CFNetwork.framework
 	src/private-frameworks/AppleSauce/install       # AppleSauce.framework
+	src/private-frameworks/CoreAnalytics/install    # /System/Library/PrivateFrameworks/CoreAnalytics.framework/Versions/A/CoreAnalytics missing (T4: Apple ld)
 	src/external/security/OSX/install               # Security.framework
 	src/external/configd/SystemConfiguration.fproj/install
 	src/frameworks/CryptoTokenKit/install
