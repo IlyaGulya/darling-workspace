@@ -59,9 +59,18 @@ check "CORE-GENERATED-BY" "the generating command is reported" "$out"
 # resolution needed --prefix, which was true only while mappings were read from gdb -- and gdb lists NO mappings for
 # a core whose image paths do not exist, which is exactly the guest case.
 check "CORE-MAPPINGS source=NT_FILE count=[0-9]+" "mappings are read from NT_FILE, not gdb" "$out"
-check "CORE-FAULT image=/.*off=0x[0-9a-f]+" "the faulting image is opened and the offset named" "$out"
+check "CORE-FAULT image=/.*file\+0x[0-9a-f]+ vm\+0x[0-9a-f]+" "the faulting image is opened and BOTH the file offset and the VM address are named" "$out"
 check "CORE-STACK frames=[0-9]+" "the whole stack is symbolized, not just the top frame" "$out"
-check "^  #0 0x[0-9a-f]+ .* \+ 0x" "frames carry image, offset and symbol" "$out"
+# A frame that resolves must carry BOTH offsets: a file offset alone is a confidently wrong function name. A host
+# core may resolve no frames at all (the throwaway `sh` here has none), so this asserts the invariant rather than a
+# count -- the number of frames with `file+` must equal the number with `file+` AND `vm+`.
+frames_with_file=$(printf '%s\n' "$out" | grep -cE '^  #[0-9]+ .*file\+0x')
+frames_with_both=$(printf '%s\n' "$out" | grep -cE '^  #[0-9]+ .*file\+0x[0-9a-f]+ vm\+0x')
+check "^$" "every resolved frame carries both the file offset and the VM address (with_file=$frames_with_file with_both=$frames_with_both)" ""
+if [ "$frames_with_file" != "$frames_with_both" ]; then
+	note "FAIL: $frames_with_file frame(s) carry file+ but only $frames_with_both carry vm+"
+	fail=1
+fi
 
 xml=$("$DWDIAG" core --core "$core" --json 2>&1)
 check '"rip":"0x' 'the machine-readable form carries the registers' "$xml"

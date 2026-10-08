@@ -4334,6 +4334,59 @@ fn parse_nt_file(core: &std::path::Path) -> Option<Vec<(u64, u64, u64, String)>>
     None
 }
 
+/// Translate a FILE OFFSET in a Mach-O into the VM ADDRESS the symbol tables use.
+///
+/// MEASURED defect, twice in one session: NT_FILE reports file offsets, and `symbolize`/`llvm-nm` address by VM
+/// address. For `libsystem_platform.dylib` they differ by a constant (file_offset = vmaddr + 0x1000), so a core
+/// fault at file offset 0x3a9e was reported as `__os_once + 0x5e` when the truth was VM 0x2a9e =
+/// `_os_unfair_lock_unlock_slow + 0x10e`. Both names looked plausible, which is why this is computed from the load
+/// commands instead of assumed equal.
+fn macho_vmaddr_for_fileoff(image: &str, file_off: u64) -> Option<u64> {
+    let data = std::fs::read(image).ok()?;
+    let magic = u32::from_be_bytes(data.get(0..4)?.try_into().ok()?);
+    // MEASURED: Darling's dylibs are UNIVERSAL (`cafe babe`, 2 architectures), so a thin-only parser returns None
+    // for exactly the images that matter and the conversion silently does not happen. A fat slice's segment file
+    // offsets are relative to the SLICE, which is also why the shift here is a constant: the x86_64 slice starts
+    // 0x1000 into the file. Try every slice and take the one whose range actually contains the offset, so the
+    // architecture never has to be assumed.
+    if magic == 0xcafe_babe {
+        let n = u32::from_be_bytes(data.get(4..8)?.try_into().ok()?) as usize;
+        for i in 0..n {
+            let a = 8 + i * 20;
+            let off = u32::from_be_bytes(data.get(a + 8..a + 12)?.try_into().ok()?) as u64;
+            if let Some(v) = thin_vmaddr_for_fileoff(&data, off, file_off, true) { return Some(v); }
+        }
+        return None;
+    }
+    thin_vmaddr_for_fileoff(&data, 0, file_off, false)
+}
+
+/// Resolve the VM address inside ONE Mach-O image. `slice_relative` says the segment file offsets are relative to
+/// the slice start (`slice_base`), which is how a universal slice records them.
+fn thin_vmaddr_for_fileoff(data: &[u8], slice_base: u64, file_off: u64, slice_relative: bool) -> Option<u64> {
+    let magic = u32::from_le_bytes(data.get(slice_base as usize..slice_base as usize + 4)?.try_into().ok()?);
+    if magic != 0xfeed_facf { return None; } // 64-bit thin Mach-O only
+    let base = slice_base as usize;
+    let ncmds = u32::from_le_bytes(data.get(base + 16..base + 20)?.try_into().ok()?) as usize;
+    let mut off = base + 32;
+    for _ in 0..ncmds {
+        let cmd = u32::from_le_bytes(data.get(off..off + 4)?.try_into().ok()?);
+        let cmdsize = u32::from_le_bytes(data.get(off + 4..off + 8)?.try_into().ok()?) as usize;
+        if cmdsize == 0 { return None; }
+        if cmd == 0x19 { // LC_SEGMENT_64
+            let vmaddr = u64::from_le_bytes(data.get(off + 24..off + 32)?.try_into().ok()?);
+            let fileoff = u64::from_le_bytes(data.get(off + 40..off + 48)?.try_into().ok()?);
+            let filesize = u64::from_le_bytes(data.get(off + 48..off + 56)?.try_into().ok()?);
+            let seg_start = if slice_relative { slice_base + fileoff } else { fileoff };
+            if seg_start <= file_off && file_off < seg_start.saturating_add(filesize) {
+                return Some(vmaddr + (file_off - seg_start));
+            }
+        }
+        off += cmdsize;
+    }
+    None
+}
+
 /// Resolve an address against core mappings: which image, and the offset inside that file.
 ///
 /// MEASURED scale quirk, and it is the difference between a right and a wrong function name: in the core examined
@@ -4462,14 +4515,19 @@ fn run_core(args: CoreArgs) -> Result<ExitCode> {
     });
     let _ = &prefix;
     let resolve = |addr: u64| -> Option<(String, u64)> { resolve_in_core(&maps, addr, use_pages) };
+    // The core speaks file offsets; the symbolizer speaks VM addresses. Convert, and never fall back silently to the
+    // file offset: an unconverted offset yields a confidently WRONG function name, which is worse than no name.
+    let vmaddr_of = |file: &str, off: u64| -> u64 {
+        macho_vmaddr_for_fileoff(file, off).unwrap_or(off)
+    };
     let symbolize_frame = |addr: u64| -> Option<String> {
         let (file, off) = resolve(addr)?;
-        unwind_symbolize(off, &file)
+        unwind_symbolize(vmaddr_of(&file, off), &file)
     };
     let resolved = rip.and_then(|ip| resolve(ip));
 
     if args.json {
-        let sym = resolved.as_ref().and_then(|(f, o)| unwind_symbolize(*o, f));
+        let sym = resolved.as_ref().and_then(|(f, o)| unwind_symbolize(vmaddr_of(f, *o), f));
         println!("{{\"core\":{},\"rip\":\"{:#x}\",\"rsp\":\"{:#x}\",\"signal\":{},\"image\":{},\"offset\":\"{:#x}\",\"symbol\":{},\"frames\":[{}]}}",
             jesc(&core.display().to_string()),
             rip.unwrap_or(0), rsp.unwrap_or(0), jesc(&sig),
@@ -4488,9 +4546,10 @@ fn run_core(args: CoreArgs) -> Result<ExitCode> {
         maps.len(), if use_pages { "pages" } else { "bytes" }, bytes_score, pages_score));
     match &resolved {
         Some((img, off)) => {
-            let sym = unwind_symbolize(*off, img);
-            crate::say(&format!("CORE-FAULT image={} off={:#x} -> {}", img,
-                off, sym.unwrap_or_else(|| "<no symbol>".into())));
+            let vm = vmaddr_of(img, *off);
+            let sym = unwind_symbolize(vm, img);
+            crate::say(&format!("CORE-FAULT image={} file+{:#x} vm+{:#x} -> {}", img,
+                off, vm, sym.unwrap_or_else(|| "<no symbol>".into())));
         }
         None => crate::say("CORE-FAULT unresolved: the faulting address is in no mapped image"),
     }
@@ -4500,8 +4559,9 @@ fn run_core(args: CoreArgs) -> Result<ExitCode> {
         crate::say(&format!("CORE-STACK frames={} (symbolized)", frames.len()));
         for (i, a) in frames.iter().enumerate() {
             match (&resolve(*a), symbolize_frame(*a)) {
-                (Some((file, off)), sym) => crate::say(&format!("  #{i} {a:#x} {} + {:#x} {}", 
-                    file.rsplit('/').next().unwrap_or(file), off, sym.unwrap_or_else(|| "?".into()))),
+                (Some((file, off)), sym) => crate::say(&format!("  #{i} {a:#x} {} file+{:#x} vm+{:#x} {}",
+                    file.rsplit('/').next().unwrap_or(file), off, vmaddr_of(file, *off),
+                    sym.unwrap_or_else(|| "?".into()))),
                 _ => crate::say(&format!("  #{i} {a:#x} <no image>")),
             }
         }
@@ -6724,5 +6784,28 @@ mod core_map_tests {
         assert_eq!(guest_path_to_host("/Volumes/SystemRoot/tmp", None),
             Some(PathBuf::from("/tmp")));
         assert!(guest_path_to_host("/nonexistent/darling/path/xyz", None).is_none());
+    }
+}
+
+#[cfg(test)]
+mod macho_vmaddr_tests {
+    use super::*;
+
+    // The measured defect, as a regression: a real dylib where file offset and VM address differ. Reading the load
+    // commands is the only way to know, and the wrong answer here is a plausible WRONG function name.
+    #[test]
+    fn the_deployed_libsystem_platform_maps_file_offsets_to_vm_addresses() {
+        let p = "/home/ilyagulya/work/wr-fresh/prefix-ios/usr/lib/system/libsystem_platform.dylib";
+        if !std::path::Path::new(p).exists() {
+            return; // the test is about a deployed artifact; absent means nothing to check
+        }
+        // MEASURED: file offset 0x3a9e is VM 0x2a9e (ud2 sites of the two views differ by exactly 0x1000).
+        assert_eq!(macho_vmaddr_for_fileoff(p, 0x3a9e), Some(0x2a9e));
+        assert_eq!(macho_vmaddr_for_fileoff(p, 0x22e3), Some(0x12e3));
+    }
+
+    #[test]
+    fn a_non_macho_or_missing_image_is_not_converted() {
+        assert_eq!(macho_vmaddr_for_fileoff("/nonexistent/image", 0x10), None);
     }
 }

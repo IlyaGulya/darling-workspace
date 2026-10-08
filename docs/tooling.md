@@ -209,6 +209,13 @@ both scales by how many backtrace frames land in files that EXIST, and reports t
 (`range-scale=bytes (frames resolving under it: bytes=5 pages=0)`). A single address fell under both scales, which
 is exactly how the one-address test picked wrong.
 
+**A file offset is not a VM address, and the tool converts.** NT_FILE reports FILE offsets; `symbolize`/`llvm-nm`
+address by VM address. Measured on the deployed `libsystem_platform.dylib` they differ by a constant, because the
+dylibs are UNIVERSAL (`cafe babe`, x86_64 + i386) and a slice's segment offsets are slice-relative: a core fault at
+file offset `0x3a9e` is VM `0x2a9e`, so an unconverted offset named `__os_once + 0x5e` where the truth was
+`_os_unfair_lock_unlock_slow + 0x10e`. Both names look plausible, which is why the translation is computed from the
+load commands, both offsets are printed (`file+0x… vm+0x…`), and a unit test pins the real mapping.
+
 **De-virtualization and symbolization are the command's job, not the reader's.** Guest paths are mapped back to
 the prefix, and EVERY backtrace frame is symbolized with its image, offset and symbol -- doing that by hand took a
 python script over NT_FILE and a gdb disassembly round in a real session, and getting the path or the scale wrong
