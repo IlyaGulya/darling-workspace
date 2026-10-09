@@ -126,6 +126,8 @@
 # Environment
 #   RELAY_INTEGRATION_PREFIX_ON   bootstrapped prefix with the ring enabled
 #   RELAY_INTEGRATION_PREFIX_OFF  matched prefix with the ring disabled
+#   RELAY_INTEGRATION_STAT_TOOL   stat client (default scripts/darling-stat in
+#                                 this repo)
 #   RELAY_INTEGRATION_THREADS     I3 thread count (default 32, max 64)
 #   RELAY_INTEGRATION_WARMUP      I4 warm-up mach traps (default 36)
 #   RELAY_INTEGRATION_RPC         I7 RPC count (default 200000)
@@ -267,8 +269,8 @@ i10_configs=(
 # I8 reads the server's own ring counters, which is the only way to attribute the
 # wake cost without strace and without the observer effect: strace suppresses the
 # doorbell because it slows the guest enough that the server keeps polling. The
-# tool is the one the ring-mode metadata test already uses.
-stat_tool="${RELAY_INTEGRATION_STAT_TOOL:-/home/ilyagulya/work/darling-gwn-resume/source-fixes/ring-comparison-server/tools/darling-stat}"
+# retained legacy abstract-socket client is maintained in this workspace.
+stat_tool="${RELAY_INTEGRATION_STAT_TOOL:-$workspace/scripts/darling-stat}"
 case "$strace_mode" in
 auto | sudo | none) ;;
 *) refuse "RELAY_INTEGRATION_STRACE must be auto, sudo or none (got $strace_mode)" ;;

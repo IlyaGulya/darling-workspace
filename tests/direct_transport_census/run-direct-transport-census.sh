@@ -70,7 +70,7 @@
 #                        (default /tmp/dr-on-matched)
 #   DTC_PREFIX_OFF       matched prefix without it (default /tmp/dr-off-matched)
 #   DTC_RUN_OFF          1 (default) also runs the OFF leg, 0 skips it
-#   DTC_STAT_TOOL        stat client (default the ring-comparison-server one)
+#   DTC_STAT_TOOL        stat client (default scripts/darling-stat in this repo)
 #   DTC_HOT_THREADS      W-A guest thread count (default 32, max 64)
 #   DTC_HOT_REQUESTS     W-A traps per thread after the gate (default 6250)
 #   DTC_HOT_PRE_MS       W-A pre hold (default 1500)
@@ -102,7 +102,7 @@ export DARLING_EUNION=1
 prefix_on="${DTC_PREFIX_ON:-/tmp/dr-on-matched}"
 prefix_off="${DTC_PREFIX_OFF:-/tmp/dr-off-matched}"
 run_off="${DTC_RUN_OFF:-1}"
-stat_tool="${DTC_STAT_TOOL:-/home/ilyagulya/work/darling-gwn-resume/source-fixes/ring-comparison-server/tools/darling-stat}"
+stat_tool="${DTC_STAT_TOOL:-$workspace/scripts/darling-stat}"
 
 hot_threads="${DTC_HOT_THREADS:-32}"
 hot_requests="${DTC_HOT_REQUESTS:-6250}"

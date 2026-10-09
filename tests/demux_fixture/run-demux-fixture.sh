@@ -55,27 +55,33 @@
 # DEMUX_FAST=1, which only shortens the deadlines -- the claims and the
 # mutation targets are unchanged.
 #
-# Usage: tests/demux_fixture/run-demux-fixture.sh
+# Usage: DEMUX_FOREST=/path/to/materialized/darling tests/demux_fixture/run-demux-fixture.sh
+#
+# DEMUX_FOREST is required: supply the source forest used for the matched
+# prefixes, including its darlingserver generator and include subtree. The
+# historical 51a0a5f1 forest is unavailable; a drifting West tree is not an
+# established replacement for that source contract.
 #
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 src="$here/demux-fixture.c"
-work="$(mktemp -d /tmp/demux-fixture-run.XXXXXX)"
-cleanup() { rm -rf -- "$work"; }
-trap cleanup EXIT
 
 cc="${CC:-gcc}"
 cflags=(-std=gnu11 -O2 -Wall -Wextra -Werror -static -fno-stack-protector -pthread)
-bin="$work/demux-fixture"
 image="${DEMUX_FIXTURE_DOCKER_IMAGE:-ubuntu:24.04}"
 run_timeout="${DEMUX_FIXTURE_TIMEOUT:-600}"
 
 # The materialized product forest the matched prefixes were built from (never
 # the drifting West tree): every struct the fixture copies and every anchor it
 # cites is taken from here, and the generated header is re-created by the
-# product's own generator so a drift is visible.
-forest="${DEMUX_FOREST:-/home/ilyagulya/work/darling-gwn-resume/darling-workspace/.west-test/runtime-build-cache/source/51a0a5f1fa8c5cf68f013d983fef11d1e4adafe564cf49e8b3626be026b01643/darling}"
+# product's own generator so a drift is visible. No equivalent to the missing
+# historical forest has been established, so source selection must be explicit.
+forest="${DEMUX_FOREST:-}"
+if [ -z "$forest" ]; then
+	printf 'FAIL DEMUX_FOREST is required: supply the materialized Darling source forest used to build the matched prefixes, with src/external/darlingserver/scripts/generate-rpc-wrappers.py and include/. The historical 51a0a5f1 forest (Darling commit 73498c5a00f3a0e97a4cdecdc148de67b1ad5c27) is unavailable; no equivalent replacement has been established.\n' >&2
+	exit 1
+fi
 gen="$forest/src/external/darlingserver/scripts/generate-rpc-wrappers.py"
 inc="$forest/src/external/darlingserver/include"
 supp="$inc/darlingserver/rpc-supplement.h"
@@ -84,6 +90,14 @@ note() { printf 'INFO %s\n' "$*"; }
 fail() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
 
 [ -r "$src" ] || fail "missing harness source: $src"
+[ -r "$gen" ] || fail "DEMUX_FOREST=$forest is missing the product's generator: $gen"
+[ -r "$supp" ] || fail "DEMUX_FOREST=$forest is missing the product's rpc-supplement.h: $supp"
+
+# Refuse missing source inputs before creating scratch files or compiling.
+work="$(mktemp -d /tmp/demux-fixture-run.XXXXXX)"
+cleanup() { rm -rf -- "$work"; }
+trap cleanup EXIT
+bin="$work/demux-fixture"
 
 # --------------------------------------------------------------------------
 # 1. compile on the host (static, so the same artifact runs in the container)
@@ -123,8 +137,6 @@ note "raw clone stub: $(objdump -d --disassemble=dmx_raw_clone_thread "$bin" | g
 #    against the fixture's.  A change in the product's structs or in the
 #    generated enum therefore shows up as a diff, not as a silent divergence.
 # --------------------------------------------------------------------------
-[ -r "$gen" ] || fail "missing the product's generator: $gen"
-[ -r "$supp" ] || fail "missing the product's rpc-supplement.h: $supp"
 
 python3 "$gen" "$work/rpc.h" "$work/rpc-internal.h" "$work/rpc.c" \
 	"darlingserver/rpc-supplement.h"

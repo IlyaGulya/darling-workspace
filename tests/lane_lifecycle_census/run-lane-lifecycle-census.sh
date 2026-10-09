@@ -10,7 +10,7 @@
 # --------------------------------
 # Three independent fact sources, all on the same live prefix:
 #
-#   * darlingserver's stat socket (tools/darling-stat <prefix>), which exposes in
+#   * darlingserver's stat socket (scripts/darling-stat <prefix>), which exposes in
 #     one JSON snapshot:
 #       - per_call.<callnum>.count                server-serviced calls per callnum
 #       - rpc_heatmap.<callnum>.{total,uds,ring,used_fiber,caller_s2c,verdict}
@@ -122,7 +122,7 @@
 #                        (default /tmp/dr-on-matched)
 #   LLC_PREFIX_OFF       matched prefix without it (default /tmp/dr-off-matched)
 #   LLC_RUN_OFF          1 (default) also runs the OFF leg, 0 skips it
-#   LLC_STAT_TOOL        stat client (default the ring-comparison-server one)
+#   LLC_STAT_TOOL        stat client (default scripts/darling-stat in this repo)
 #   LLC_WINDOWS          windows to run, space separated
 #                        (default "churn sim blockrecv psynch")
 #   LLC_CHURN_COUNT      churn threads created and joined one at a time (1024)
@@ -169,7 +169,7 @@ export DARLING_EUNION=1
 prefix_on="${LLC_PREFIX_ON:-/tmp/dr-on-matched}"
 prefix_off="${LLC_PREFIX_OFF:-/tmp/dr-off-matched}"
 run_off="${LLC_RUN_OFF:-1}"
-stat_tool="${LLC_STAT_TOOL:-/home/ilyagulya/work/darling-gwn-resume/source-fixes/ring-comparison-server/tools/darling-stat}"
+stat_tool="${LLC_STAT_TOOL:-$workspace/scripts/darling-stat}"
 
 windows="${LLC_WINDOWS:-churn sim blockrecv psynch}"
 churn_count="${LLC_CHURN_COUNT:-1024}"

@@ -13,8 +13,9 @@ refs, PR drafts, and agent handoff.
 - Paths, prefixes, the Xcode input and the rules that keep them usable are in
   `docs/environment.md`; read it before choosing a prefix or a build directory.
 - `/home/ilyagulya/work/darling-dev` and
-  `/home/ilyagulya/work/darling-gwn-resume` are LEGACY, read-only; their unique
-  unpublished state is preserved outside any GC-managed root (see the note).
+  `/home/ilyagulya/work/darling-gwn-resume` are RETIRED; do not recreate them as
+  source authorities. Recovery archives and live retained Git stores are outside
+  GC-managed roots; see `docs/environment.md`.
 
 ## Project tool environment
 

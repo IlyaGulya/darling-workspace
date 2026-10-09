@@ -12,14 +12,15 @@
 #     (e.g. src/startup/mldr/signal_atomic.h). The delta is therefore diff-based, which is complete by construction.
 set -u
 
+WS="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SRC_REPO=/home/ilyagulya/work/procctl-src
-DARLING=/home/ilyagulya/work/darling-gwn-resume/darling
+DARLING="$(cd -- "$WS/.." && pwd -P)/darling"
 PINNED=5f2d7401d878455cf3c3c0865ee5a4290dfa03f0
 REF=/home/ilyagulya/work/r1-clean-ref
 CLEAN=/home/ilyagulya/work/r1-clean-base
 CLEAN_BUILD=/home/ilyagulya/work/r1-clean-build
 CLEAN_PREFIX=/tmp/r1-clean-prefix
-EVID=/home/ilyagulya/work/darling-dev/evidence
+EVID="$(cd -- "$WS/.." && pwd -P)/hunt/r1-clean-base-reproduction"
 
 mat_one() { # $1 repository dir, $2 commit, $3 destination
 	local repo="$1" sha="$2" dest="$3" sha_n path dir
@@ -35,6 +36,12 @@ mat_one() { # $1 repository dir, $2 commit, $3 destination
 		fi
 	done < <(git -C "$repo" ls-tree -r "$sha" | awk '$2 == "commit" {print $3" "$4}')
 }
+
+git -C "$DARLING" cat-file -e "$PINNED^{commit}" || {
+	echo "Pinned reproduction commit unavailable in $DARLING: $PINNED" >&2
+	exit 1
+}
+mkdir -p "$EVID" || exit 1
 
 echo "== 0a. reference materialization of the base =="
 rm -rf "$REF"; mkdir -p "$REF"

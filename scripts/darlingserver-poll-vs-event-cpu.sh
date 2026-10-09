@@ -7,7 +7,7 @@ set -u
 SRC=/home/ilyagulya/work/procctl-src/src/external/darlingserver/src/server.cpp
 BUILD=/home/ilyagulya/work/ringmm-build
 PREFIX=/tmp/dr-on-matched
-WS=/home/ilyagulya/work/darling-gwn-resume/darling-workspace
+WS="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 BLOCKING='_stallDumpEnabled ? 500 : -1'
 POLLING='_stallDumpEnabled ? 500 : 2'
 

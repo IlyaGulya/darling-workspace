@@ -84,12 +84,34 @@ start|follow|cancel`, or `west dev run ... --detach` with `west dev follow|cance
 outside leaves a daemonized `darlingserver`; `scripts/darling-boot-run.sh` now detects it through the
 prefix directory capability and `.init.pid` and clears stale runtime files before the next boot.
 
-## Legacy workspaces (read-only, do not develop here)
+## Retired legacy workspaces
 
-    /home/ilyagulya/work/darling-dev          legacy; its root AGENTS.md points at the canonical workspace
-    /home/ilyagulya/work/darling-gwn-resume   legacy (Ring line); retained for its beads delta
+`/home/ilyagulya/work/darling-gwn-resume` and
+`/home/ilyagulya/work/darling-dev` have been removed. Do not recreate them as
+source authorities. Recovery instructions and checksums are in
+`hunt/ws-retire-2026-10-08/RECOVERY.md` and `SHA256SUMS`.
+The completed removal receipt is
+`hunt/legacy-retire-20261009/deletion-result-resumed.json`.
 
-Their unique state is preserved outside any GC-managed root. `darling-dev`'s working tree also held
+The external `darlingserver-port`, `darlingserver-timerfix`, and `tmp-apply-probe`
+worktrees use the live common store under
+`hunt/delete-prep-20261009/legacy-debugger/retained-git/darling/src/external/darlingserver/.git`.
+This retained Git store is not disposable cache: keep it while its worktrees
+depend on it. Migration and post-removal verification are retained under
+`hunt/legacy-retire-20261009/external-git-three/`.
+
+Runnable diagnostics must resolve the manifest/source workspace from their own
+location, not either legacy root. `r1-clean-base-reproduction.sh` uses the
+canonical sibling Darling repository for its unchanged pinned commit and writes
+new evidence under `<workspace>/hunt/r1-clean-base-reproduction`.
+The census runners use the maintained `scripts/darling-stat` client, with their
+existing explicit tool overrides. The demux fixture requires an explicit
+`DEMUX_FOREST` containing the reviewed generator and header inputs; missing
+historical inputs must not silently become a run against current source.
+Recovery archives belong under `<workspace>/hunt`, outside framework GC roots;
+they are preservation artifacts, not executable default paths.
+
+Their unique state is preserved outside GC-managed roots. The earlier partial archive below is historical; use the full recovery archive named above. `darling-dev`'s working tree also held
 ~2.6k uncommitted lines that existed as no reachable commit anywhere (rootless_shutdown_lifecycle.py
 174 -> 1364 lines, test_prefix.py +839, and the lifecycle module/contracts): they are now a keeper
 branch of that workspace, `legacy/in-progress-rootless-lifecycle-20261007` = 350d6b58.
@@ -132,13 +154,17 @@ The reviewed guest CommandLineTools profile materializes the `swift` submodule
 that this host has none for (the only helpers present are for `github.com`). When that fetch fails the
 bootstrap dies with `smudge filter lfs failed`.
 
-Recovery without any credential: the legacy workspace `/home/ilyagulya/work/darling-gwn-resume` already has
-those objects in its own content-addressed store, so copy them into this checkout's store and let git-lfs
-verify:
+The canonical checkout already holds the objects. Run from the West workspace
+root: `git -C darling/src/external/swift lfs fsck --objects`.
+For offline recovery if that store is lost, extract only the saved LFS payload
+into an empty recovery directory, not a new product workspace:
 
-    src=<legacy>/darling/src/external/swift/$(git -C <legacy>/.../swift rev-parse --git-dir)/lfs/objects
-    dst=$(git -C darling/src/external/swift rev-parse --git-dir)/lfs/objects
-    cp -an "$src/." "$dst/" && git -C darling/src/external/swift lfs fsck
+    archive=/home/ilyagulya/work/wr-fresh/hunt/ws-retire-2026-10-08/legacy-state.tar.zst
+    recovery=/absolute/path/to/empty-recovery-directory
+    tar --zstd -xf "$archive" -C "$recovery" darling-gwn-resume/darling/src/external/swift/.git/lfs/objects
+    src="$recovery/darling-gwn-resume/darling/src/external/swift/.git/lfs/objects"
+    dst="$(git -C darling/src/external/swift rev-parse --path-format=absolute --git-common-dir)/lfs/objects"
+    cp -an "$src/." "$dst/" && git -C darling/src/external/swift lfs fsck --objects
 
 `fsck OK` means the objects are correctly addressed (the filename is the SHA-256), so this is placement, not
 bypass. A more durable fix is to point the submodule at a reachable mirror: `git config lfs.url <mirror>`.

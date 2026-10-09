@@ -21,6 +21,23 @@ is byte-identical to the `mldr` built under cache key `6332e442...` (OFF: `e6556
 so the audit target and the running product are the same source. Paths below are relative
 to that forest's `darling/`.
 
+**Rerun inputs (2026-10-09).** The direct-transport census, lane-lifecycle census,
+and relay-integration runners now default to this workspace's
+`scripts/darling-stat`, the retained ring-comparison-server client's exact
+implementation (Python standard library only, abstract UNIX socket
+`darlingserver-stat:<realpath(prefix)>`). Their `DTC_STAT_TOOL`, `LLC_STAT_TOOL`,
+and `RELAY_INTEGRATION_STAT_TOOL` overrides remain available.
+The historical `51a0a5f1` demux forest was already absent before legacy-source
+preservation, and its receipt's Darling commit
+`73498c5a00f3a0e97a4cdecdc148de67b1ad5c27` was not recovered. Historical demux
+reproduction remains blocked on those source bytes or an established equivalent;
+current source is not a verified substitute. The runner therefore requires an
+explicit `DEMUX_FOREST=/path/to/materialized/darling` and refuses missing generator
+or header inputs before creating scratch files or compiling. Once the matched
+source is available, run
+`DEMUX_FOREST=/path/to/materialized/darling bash tests/demux_fixture/run-demux-fixture.sh`;
+the existing generated-header and layout-drift checks still apply.
+
 ---
 
 ## 1. Executive verdict
