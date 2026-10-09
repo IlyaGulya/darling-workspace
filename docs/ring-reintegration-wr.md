@@ -18,8 +18,8 @@ source of truth. The old patch/profile/lock layer stays `FROZEN_LEGACY`.
 - its build: `/home/ilyagulya/work/r1-repro-build` (configured against the
   forest; `rootless_bootstrap` builds rc=0).
 - secondary delta evidence:
-  `/home/ilyagulya/work/darling-dev/evidence/r1-transport-sources-20260928T112410Z.tar.gz`
-  (438 paths) + `.sha256`, and
+  `<workspace>/.hunt-value-audit/legacy-source/keepers/r1-source-baseline/r1-transport-sources-20260928T112410Z.tar.gz`
+  (438 paths) + `.sha256` (also in `.hunt-value-audit/keepers.tar.gz`), and
   `darling-workspace/diagnostics/ring-loader-fixes-20260930/` (the later
   loader fixes).
 - earlier reconstruction trees: `r1-clean-base`, `r1-clean-ref`,

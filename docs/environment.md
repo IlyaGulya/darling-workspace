@@ -88,17 +88,20 @@ prefix directory capability and `.init.pid` and clears stale runtime files befor
 
 `/home/ilyagulya/work/darling-gwn-resume` and
 `/home/ilyagulya/work/darling-dev` have been removed. Do not recreate them as
-source authorities. Recovery instructions and checksums are in
-`hunt/ws-retire-2026-10-08/RECOVERY.md` and `SHA256SUMS`.
-The completed removal receipt is
-`hunt/legacy-retire-20261009/deletion-result-resumed.json`.
+source authorities. The full legacy/runtime archives have also been removed.
+Useful source candidates, repros, diagnostic records and cleanup receipts are
+retained outside GC roots in `<workspace>/.hunt-value-audit/keepers.tar.gz`,
+with `keepers.SHA256SUMS` and the archive's `keepers-manifest.json`.
+This is selective retention, not a backup of every old file or Git reference.
+The archive-removal receipt is
+`<workspace>/.hunt-value-audit/cleanup/deletion-result.json`.
 
 The external `darlingserver-port`, `darlingserver-timerfix`, and `tmp-apply-probe`
 worktrees use the live common store under
 `hunt/delete-prep-20261009/legacy-debugger/retained-git/darling/src/external/darlingserver/.git`.
 This retained Git store is not disposable cache: keep it while its worktrees
-depend on it. Migration and post-removal verification are retained under
-`hunt/legacy-retire-20261009/external-git-three/`.
+depend on it. Compact migration and source-identity records are retained in
+`<workspace>/.hunt-value-audit/runtime/compact-cleanup-receipt.json` and the keeper package.
 
 Runnable diagnostics must resolve the manifest/source workspace from their own
 location, not either legacy root. `r1-clean-base-reproduction.sh` uses the
@@ -108,21 +111,14 @@ The census runners use the maintained `scripts/darling-stat` client, with their
 existing explicit tool overrides. The demux fixture requires an explicit
 `DEMUX_FOREST` containing the reviewed generator and header inputs; missing
 historical inputs must not silently become a run against current source.
-Recovery archives belong under `<workspace>/hunt`, outside framework GC roots;
-they are preservation artifacts, not executable default paths.
-
-Their unique state is preserved outside GC-managed roots. The earlier partial archive below is historical; use the full recovery archive named above. `darling-dev`'s working tree also held
-~2.6k uncommitted lines that existed as no reachable commit anywhere (rootless_shutdown_lifecycle.py
-174 -> 1364 lines, test_prefix.py +839, and the lifecycle module/contracts): they are now a keeper
-branch of that workspace, `legacy/in-progress-rootless-lifecycle-20261007` = 350d6b58.
-
-    /home/ilyagulya/work/wr-fresh/hunt/ws-retire-2026-10-07/
-        unpublished-branches.bundle   sha256 15963b43aeb21f693d7e3157a480b8a3e2279bf2754b90114d473ec6668ce99e
-                                      (62 refs; regenerate with `git bundle create <file>
-                                      $(git for-each-ref --format='%(refname)' refs/heads | tr '\n' ' ')`
-                                      and verify with `git bundle list-heads <file>`)
-        darling-dev-uncommitted.patch sha256 bac3ccde0a61607547b076359ad895e607233cafb5571449629a9c2b105bdfb1
-        ios-runtime-additions-receipt.json  the declared additions deployed into prefix-ios
+Retained evidence belongs outside framework GC roots; it is not an executable
+default or a second source authority. Keep the selective package and its checksum
+while the contained unmerged candidates and historical repro inputs remain useful.
+The retained R1 content-baseline capture is under
+`<workspace>/.hunt-value-audit/legacy-source/keepers/r1-source-baseline/`.
+Its old absolute pointers are provenance, not valid checkout paths.
+The former `350d6b58` Python lifecycle prototype was explicitly superseded by
+the Rust controller; it is not an unfinished product fix to restore.
 
 ## Cleaned on 2026-10-07
 
@@ -156,18 +152,11 @@ bootstrap dies with `smudge filter lfs failed`.
 
 The canonical checkout already holds the objects. Run from the West workspace
 root: `git -C darling/src/external/swift lfs fsck --objects`.
-For offline recovery if that store is lost, extract only the saved LFS payload
-into an empty recovery directory, not a new product workspace:
-
-    archive=/home/ilyagulya/work/wr-fresh/hunt/ws-retire-2026-10-08/legacy-state.tar.zst
-    recovery=/absolute/path/to/empty-recovery-directory
-    tar --zstd -xf "$archive" -C "$recovery" darling-gwn-resume/darling/src/external/swift/.git/lfs/objects
-    src="$recovery/darling-gwn-resume/darling/src/external/swift/.git/lfs/objects"
-    dst="$(git -C darling/src/external/swift rev-parse --path-format=absolute --git-common-dir)/lfs/objects"
-    cp -an "$src/." "$dst/" && git -C darling/src/external/swift lfs fsck --objects
-
-`fsck OK` means the objects are correctly addressed (the filename is the SHA-256), so this is placement, not
-bypass. A more durable fix is to point the submodule at a reachable mirror: `git config lfs.url <mirror>`.
+There is no longer a legacy archive copy of the Swift LFS payload. If the
+canonical store is lost, obtain the reviewed objects from a reachable LFS mirror;
+do not point recovery commands at the removed legacy archive.
+`fsck OK` verifies content addressing; changing `lfs.url` to a reviewed reachable
+mirror changes retrieval, not the required object identity.
 
 ## A bootstrap needs the submodules at their manifest pins
 

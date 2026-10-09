@@ -128,9 +128,12 @@ and verify build plus a ring-ON boot smoke.
 
 ### Secondary recovery input: the r1 transport source archive
 
-`/home/ilyagulya/work/darling-dev/evidence/r1-transport-sources-LATEST` ->
-`r1-transport-sources-20260928T112410Z.tar.gz` (438 non-directory paths) with a
-matching `.sha256` manifest. It carries the Sep-28 transport delta:
+The retained capture is
+`<workspace>/.hunt-value-audit/legacy-source/keepers/r1-source-baseline/r1-transport-sources-20260928T112410Z.tar.gz`
+(438 non-directory paths), with its matching `.sha256` manifest and original
+`LATEST` pointer. It is also included in `.hunt-value-audit/keepers.tar.gz`.
+The original legacy path and full recovery archive have been removed.
+It carries the Sep-28 transport delta:
 
 | area | paths | notable files |
 | --- | --- | --- |
