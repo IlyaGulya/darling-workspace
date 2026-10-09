@@ -117,11 +117,6 @@ struct DarlingArgs {
     dprefix: PathBuf,
     #[arg(long)]
     install_server: Option<PathBuf>,
-    /// Launch WITHOUT --rootless. Rootless is the launcher's default mode now, so this runner passes
-    /// --rootless; without it a non-setuid prefix refuses to start with "not setuid root, which is mandatory",
-    /// which is exactly the failure this flag exists to make unnecessary.
-    #[arg(long = "no-rootless")]
-    no_rootless: bool,
 }
 
 #[derive(Args)]
@@ -870,13 +865,12 @@ fn darling_command(args: &DarlingArgs) -> Result<(Vec<String>, HashMap<String, S
     let dprefix = expand_home(&args.dprefix);
     let mut env = HashMap::new();
     env.insert("DPREFIX".to_owned(), dprefix.display().to_string());
-    let mut command = vec![darling.display().to_string()];
-    if !args.no_rootless {
-        command.push("--rootless".to_owned());
-    }
-    command.push("shell".to_owned());
-    command.push("/bin/bash".to_owned());
-    command.push("-lc".to_owned());
+    let mut command = vec![
+        darling.display().to_string(),
+        "shell".to_owned(),
+        "/bin/bash".to_owned(),
+        "-lc".to_owned(),
+    ];
     command.push(
         args.common
             .command
