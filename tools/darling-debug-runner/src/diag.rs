@@ -8197,12 +8197,22 @@ fn run_core_lock(args: CoreLockArgs) -> Result<ExitCode> {
         "CORE-LOCK-SLOW frame_rbp={:#x} return_pc={:#x} lock={:#x} saved_self={:#x} saved_current={:#x}",
         lock.slow_rbp, lock.slow_ret_pc, lock.lock, lock.self_token, lock.current
     );
-    println!(
-        "CORE-LOCK-WORD lock={:#x} word={:#x} owner_in_word={:#x}",
-        lock.lock,
-        lock.word,
-        lock.word | 1
-    );
+    // The word's owner encoding is (word | 1) -- but only when the word names an owner at all. Printing
+    // "owner_in_word=0x1" for a zero word invented an owner out of the unlocked value, which is the opposite
+    // of what a reader needs when the whole question is whether the word was owned.
+    if lock.word == 0 {
+        println!(
+            "CORE-LOCK-WORD lock={:#x} word=0x0 (UNLOCKED: no owner is named, so nothing excluded another thread)",
+            lock.lock
+        );
+    } else {
+        println!(
+            "CORE-LOCK-WORD lock={:#x} word={:#x} owner_in_word={:#x}",
+            lock.lock,
+            lock.word,
+            lock.word | 1
+        );
+    }
     println!(
         "CORE-LOCK-LAYOUT note: the lock/self/current values are read from the slow caller's frame at the offsets this build's prologue stores them to; verify with x/i around return_pc if the frame is suspect"
     );

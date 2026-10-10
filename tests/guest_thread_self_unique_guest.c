@@ -34,8 +34,14 @@
 #define NDISPATCH 8
 
 static os_unfair_lock shared_lock = OS_UNFAIR_LOCK_INIT;
-static volatile int inside;
-static volatile int violations;
+/* OCCUPANCY, not a flag. A boolean set by the holder and cleared before its unlock can be read stale by an
+ * admitted thread and, worse, cleared by a thread that was itself admitted while another was inside, which
+ * hides later overlaps. A fetch-add/sub pair answers "was anyone already inside" atomically, and it stays
+ * defined behaviour even when exclusion is broken -- an ordinary race here is undefined and would make the
+ * oracle's own output unreliable exactly in the case it exists to report. */
+static int occupancy;
+static int violations;
+static int direct_zero;
 static pthread_mutex_t rec_lock = PTHREAD_MUTEX_INITIALIZER;
 
 struct rec {
@@ -47,12 +53,33 @@ struct rec {
 static struct rec recs[MAXREC];
 static int nrecs;
 
+/* Every census participant waits here, so "all these threads are live at once" is a fact of the run rather
+ * than an assumption about scheduling order. */
+static pthread_barrier_t census_barrier;
+static unsigned main_direct;
+
 /*
  * Read this thread's TSD self slot WITHOUT touching the lock implementation: take a private, freshly
  * initialized lock and look at the word. libplatform stores the thread's self token there, so a word that is
  * still zero after a successful lock means the token this thread reads is zero -- a token that excludes
  * nobody, because the CAS from NO_OWNER(0) to self(0) succeeds while leaving the word free.
  */
+/*
+ * The DIRECT reader: the same byte libplatform reads as the owner identity, fetched without going through the
+ * lock implementation at all. The private-lock probe below and this must agree; when they disagree, the probe
+ * is the one that is wrong, because it observes a lock rather than the thread.
+ */
+static unsigned
+direct_slot3(void)
+{
+	unsigned long v = 0;
+#if defined(__x86_64__)
+	__asm__ volatile("movq %%gs:24, %0" : "=r"(v));
+#endif
+	return (unsigned)v;
+}
+
+/* The lock-based probe, kept because it measures what the lock actually sees. */
 static int
 self_slot_is_zero(void)
 {
@@ -89,6 +116,8 @@ struct violation {
 static struct violation viol[16];
 static int nviol;
 
+/* The word's owner encoding: libplatform compares (current | 1) against self, so this is how the word is read
+ * back. It is NOT a mask: a zero word means unlocked, not "owned by token 1". */
 static unsigned
 owner_of(unsigned word)
 {
@@ -99,15 +128,16 @@ owner_of(unsigned word)
 static void
 mutex_round(void)
 {
-	unsigned before = *(volatile unsigned *)&shared_lock;
+	unsigned before = __atomic_load_n((unsigned *)&shared_lock, __ATOMIC_SEQ_CST);
 	os_unfair_lock_lock(&shared_lock);
-	unsigned after = *(volatile unsigned *)&shared_lock;
-	if (inside) {
-		/* Another thread is in the critical section while we hold the lock: the owner identity did
-		 * not exclude us, so the lock is not a lock. Record the word so the failure says which
-		 * token it held instead of only that it happened. */
-		__sync_fetch_and_add((int *)&violations, 1);
-		unsigned slot = (unsigned)__sync_fetch_and_add((int *)&nviol, 1);
+	int was_occupied = __atomic_fetch_add(&occupancy, 1, __ATOMIC_SEQ_CST);
+	unsigned after = __atomic_load_n((unsigned *)&shared_lock, __ATOMIC_SEQ_CST);
+	if (was_occupied != 0) {
+		/* Someone was already inside when the lock was granted to us: the owner identity did not
+		 * exclude us. Record the word and both readers so the failure says which token it held
+		 * instead of only that it happened. */
+		__atomic_fetch_add(&violations, 1, __ATOMIC_SEQ_CST);
+		unsigned slot = (unsigned)__atomic_fetch_add(&nviol, 1, __ATOMIC_SEQ_CST);
 		if (slot < sizeof(viol) / sizeof(viol[0])) {
 			viol[slot].word_before = before;
 			viol[slot].word_after = after;
@@ -115,10 +145,9 @@ mutex_round(void)
 			viol[slot].holder_token = owner_of(after);
 		}
 	}
-	inside = 1;
 	sched_yield();
 	usleep(50);
-	inside = 0;
+	__atomic_fetch_sub(&occupancy, 1, __ATOMIC_SEQ_CST);
 	os_unfair_lock_unlock(&shared_lock);
 }
 
@@ -127,7 +156,12 @@ thread_main(void *arg)
 {
 	(void)arg;
 	unsigned long me = (unsigned long)pthread_mach_thread_np(pthread_self());
+	unsigned direct = direct_slot3();
+	if (direct == 0) {
+		__atomic_fetch_add(&direct_zero, 1, __ATOMIC_SEQ_CST);
+	}
 	record((unsigned)mach_thread_self(), me, 0);
+	pthread_barrier_wait(&census_barrier);
 	for (int i = 0; i < NITER; ++i) {
 		mutex_round();
 	}
@@ -142,14 +176,22 @@ main(void)
 	pthread_t threads[NTHREADS];
 	int i;
 
+	main_direct = direct_slot3();
+	if (main_direct == 0) {
+		__atomic_fetch_add(&direct_zero, 1, __ATOMIC_SEQ_CST);
+	}
 	record((unsigned)mach_thread_self(), (unsigned long)pthread_mach_thread_np(pthread_self()), 0);
 
+	pthread_barrier_init(&census_barrier, NULL, NTHREADS + 1);
 	for (i = 0; i < NTHREADS; ++i) {
 		if (pthread_create(&threads[i], NULL, thread_main, NULL) != 0) {
 			fprintf(stderr, "TSSELF pthread_create failed at %d\n", i);
 			return 2;
 		}
 	}
+	/* Join the census: at this point the main thread and all NTHREADS spawned threads have published their
+	 * direct readings and are alive simultaneously. */
+	pthread_barrier_wait(&census_barrier);
 	for (i = 0; i < NTHREADS; ++i) {
 		pthread_join(threads[i], NULL);
 	}
@@ -158,6 +200,9 @@ main(void)
 	 * _pthread_wqthread_setup is what stores their port in the slot. */
 	dispatch_apply(NDISPATCH, DISPATCH_APPLY_AUTO, ^(size_t index) {
 		(void)index;
+		if (direct_slot3() == 0) {
+			__atomic_fetch_add(&direct_zero, 1, __ATOMIC_SEQ_CST);
+		}
 		record((unsigned)mach_thread_self(),
 		    (unsigned long)pthread_mach_thread_np(pthread_self()), 1);
 		for (int i = 0; i < 50; ++i) {
@@ -195,6 +240,7 @@ main(void)
 	printf("TSSELF threads=%d records=%d zeros=%d unstable=%d duplicate-live=%d dispatch=%d\n", NTHREADS,
 	    nrecs, zeros, unstable, duplicate_live, NDISPATCH);
 	printf("TSSELF main-self-slot-zero probes=%d zero=%d\n", 8, slot3_zero);
+	printf("TSSELF direct-slot3 main=0x%x participants-zero=%d\n", main_direct, direct_zero);
 	unsigned long first_id = 0;
 	int distinct_threads = 0;
 	for (i = 0; i < nrecs; ++i) {
@@ -219,7 +265,7 @@ main(void)
 	}
 
 	int ok = (zeros == 0) && (unstable == 0) && (duplicate_live == 0) && (violations == 0) &&
-	    (slot3_zero == 0);
+	    (slot3_zero == 0) && (direct_zero == 0);
 	printf("TSSELF pass=%d\n", ok ? 1 : 0);
 	return ok ? 0 : 1;
 }
