@@ -85,6 +85,11 @@ echo "ios-additions: installing ${#targets[@]} declared additions into $prefix"
 # refreshed with everything else, so the two copies cannot drift.
 guest_visible_required=(
 	"usr/lib/libxml2.2.dylib"
+	# MEASURED 2026-10-10: the T1-T4 gate's first command aborted with
+	# "dyld: Library not loaded: /usr/lib/libz.1.dylib ... Reason: image not found"
+	# while the file existed only under libexec/darling, which the guest does not
+	# search for /usr/lib. Declared here for the same reason as libxml2.2.
+	"usr/lib/libz.1.dylib"
 )
 required_list="$(mktemp)"
 printf '%s\n' "${guest_visible_required[@]}" >"$required_list"
