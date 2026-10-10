@@ -77,6 +77,18 @@ struct CommonArgs {
     gdb_ex: Vec<String>,
     #[arg(long)]
     capture_pattern: Option<String>,
+    /// Capture as soon as this REGEX appears in the watch log (or in the workload's own output when
+    /// no --stall-log is given), instead of waiting for silence. A workload that fails by its own
+    /// timeout prints a last line and then tears itself down, and a stall detector armed after that
+    /// point captures nothing: this names the marker instead.
+    #[arg(long)]
+    capture_on_line: Option<String>,
+    /// Capture when the target's threads are in a state you name, instead of when a log goes quiet.
+    /// Grammar: `state=<S|D|R>`, `wchan=<substring>`, `syscall=<number>`, `all-waiting=<seconds>`.
+    /// Example: --capture-on-state 'all-waiting=20' catches "every thread is parked and has been for
+    /// twenty seconds", which is what a hang looks like from outside and cannot be seen in a log.
+    #[arg(long)]
+    capture_on_state: Option<String>,
     #[arg(long, default_value_t = 2)]
     capture_snapshots: usize,
     #[arg(long, default_value_t = 3)]
@@ -185,9 +197,16 @@ impl StallDetector {
             .context("--stall-seconds is required with --stall-log")?;
         let log = expand_home(log);
         let offset = fs::metadata(&log).map_or(0, |metadata| metadata.len());
+        let pattern = Regex::new(pattern).context("invalid --stall-pattern")?;
+        // A pattern that matches the empty string (for example `^`) reports an event on every poll,
+        // because an empty tail still matches -- so the detector can never see silence and silently
+        // never fires. Refuse it instead of leaving a capture that was asked for inert.
+        if pattern.is_match("") {
+            bail!("--stall-pattern {pattern} matches the empty string, so it can never detect silence; use a pattern that appears only while the run is making progress");
+        }
         Ok(Some(Self {
             log,
-            pattern: Regex::new(pattern).context("invalid --stall-pattern")?,
+            pattern,
             after_output: args
                 .stall_after_output
                 .as_ref()
@@ -206,10 +225,13 @@ impl StallDetector {
         if !self.armed {
             let mut output = fs::read_to_string(stdout).unwrap_or_default();
             output.push_str(&fs::read_to_string(stderr).unwrap_or_default());
-            self.armed = self
-                .after_output
-                .as_ref()
-                .is_some_and(|pattern| pattern.is_match(&output));
+            self.armed = match &self.after_output {
+                // No marker named: watch from the start. Requiring one made --stall-pattern and
+                // --stall-seconds inert unless --stall-after-output was also given, so a capture
+                // that was asked for produced an empty bundle and said nothing about why.
+                None => true,
+                Some(pattern) => pattern.is_match(&output),
+            };
             if self.armed {
                 self.last_event = Instant::now();
             }
@@ -224,7 +246,13 @@ impl StallDetector {
             let mut new_text = String::new();
             file.read_to_string(&mut new_text)?;
             self.offset = file.stream_position()?;
-            let new_events = self.pattern.find_iter(&new_text).count() as u64;
+            // Only appended text can be progress: counting matches in an empty tail made `^` refresh
+            // the timer every poll (see from_args), which is how a real stall hid from the detector.
+            let new_events = if new_text.is_empty() {
+                0
+            } else {
+                self.pattern.find_iter(&new_text).count() as u64
+            };
             if new_events > 0 {
                 self.events += new_events;
                 self.last_event = Instant::now();
@@ -759,6 +787,23 @@ fn run_experiment(
         )
     });
     let result;
+    let marker_pattern = match &args.capture_on_line {
+        Some(p) => Some(Regex::new(p).context("invalid --capture-on-line")?),
+        None => None,
+    };
+    let marker_log = args.stall_log.clone();
+    let mut marker_offset: u64 = 0;
+    let state_expr = match &args.capture_on_state {
+        Some(e) => Some(StateTrigger::parse(e)?),
+        None => None,
+    };
+    let mut state_quiet_since: Option<Instant> = None;
+    // The interesting process is usually NOT there when the run starts: the linker is spawned by a
+    // shell inside the guest, so its host process (whose cmdline carries the guest path) appears only
+    // later. A pattern resolved once at startup therefore matched nothing and the trigger silently
+    // watched the wrapping shell instead -- a real capture fired on the wrong process and looked
+    // plausible. Resolve per poll, and say when the pattern matches nothing.
+    let mut target_note: Option<String> = None;
 
     loop {
         if let Some(status) = child.try_wait()? {
@@ -770,6 +815,66 @@ fn run_experiment(
             fs::write(bundle.join("timeout.txt"), "hard timeout\n")?;
             result = "timeout";
             break;
+        }
+        let state_target = match args.capture_pattern.as_deref() {
+            Some(pattern) => match find_pid_in_tree(child.id(), pattern) {
+                Ok(pid) => {
+                    target_note = None;
+                    pid
+                }
+                Err(_) => {
+                    target_note = Some(format!(
+                        "capture-pattern {pattern:?} matched no process in the tree; watching pid {} instead",
+                        child.id()
+                    ));
+                    child.id()
+                }
+            },
+            None => child.id(),
+        };
+        if let Some(expr) = &state_expr {
+            // STATE IS A BETTER TRIGGER THAN TEXT for a hang: a workload that stops working may print
+            // nothing at all, and its state is readable from /proc without touching the measured path.
+            // The predicate is named by the caller (see StateTrigger), and when it fires the matching
+            // threads are written out, so the capture is not a guess about why it fired.
+            if let Some(threads) = expr.matches(state_target) {
+                let mut report = format!("trigger={}\ntarget_pid={state_target}\n", expr.describe());
+                if let Some(note) = &target_note {
+                    report.push_str(&format!("note={note}\n"));
+                }
+                for t in &threads {
+                    report.push_str(&format!(
+                        "pid={} tid={} state={} wchan={} syscall={}\n",
+                        t.pid, t.tid, t.state, t.wchan, t.syscall
+                    ));
+                }
+                fs::write(bundle.join("state.txt"), report)?;
+                result = "state";
+                break;
+            }
+            match state_quiet_since {
+                Some(_) => {}
+                None => state_quiet_since = Some(Instant::now()),
+            }
+        }
+        if let Some(pattern) = &marker_pattern {
+            let watch = marker_log.as_ref().unwrap_or(&stdout);
+            if let Ok(mut file) = File::open(watch) {
+                let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+                if len < marker_offset {
+                    marker_offset = 0;
+                }
+                let _ = file.seek(SeekFrom::Start(marker_offset));
+                let mut text = String::new();
+                if file.read_to_string(&mut text).is_ok() {
+                    marker_offset = file.stream_position().unwrap_or(marker_offset);
+                    if pattern.is_match(&text) {
+                        fs::write(bundle.join("marker.txt"), "capture requested by --capture-on-line\n")?;
+                        result = "marker";
+                        break;
+                    }
+                }
+            }
         }
         if detector
             .as_mut()
@@ -1124,4 +1229,160 @@ fn main() -> Result<ExitCode> {
     } else {
         bail!("{result}")
     }
+}
+
+/// A named state predicate over the target's threads.
+///
+/// It exists because "the workload stopped working" is a fact about /proc, not about text: a hang can
+/// print nothing, and the condition worth capturing is "these threads are parked and stay parked".
+/// The grammar is deliberately tiny and each variant says what it means in `describe`, so a capture
+/// never fires for an unnamed reason.
+struct StateTrigger {
+    kind: StateTriggerKind,
+}
+
+enum StateTriggerKind {
+    State(String),
+    Wchan(String),
+    Syscall(String),
+    AllWaiting(u64),
+}
+
+struct ThreadState {
+    pid: u32,
+    tid: u32,
+    state: String,
+    wchan: String,
+    syscall: String,
+}
+
+impl StateTrigger {
+    fn parse(expr: &str) -> Result<Self> {
+        let (key, value) = expr
+            .split_once('=')
+            .with_context(|| format!("expected KEY=VALUE in --capture-on-state, got {expr:?}"))?;
+        let kind = match key {
+            "state" => StateTriggerKind::State(value.to_owned()),
+            "wchan" => StateTriggerKind::Wchan(value.to_owned()),
+            "syscall" => StateTriggerKind::Syscall(value.to_owned()),
+            "all-waiting" => StateTriggerKind::AllWaiting(
+                value
+                    .parse()
+                    .with_context(|| format!("--capture-on-state all-waiting expects seconds, got {value:?}"))?,
+            ),
+            other => bail!("unknown --capture-on-state key {other:?}; use state, wchan, syscall or all-waiting"),
+        };
+        Ok(Self { kind })
+    }
+
+    fn describe(&self) -> String {
+        match &self.kind {
+            StateTriggerKind::State(v) => format!("state={v}"),
+            StateTriggerKind::Wchan(v) => format!("wchan contains {v}"),
+            StateTriggerKind::Syscall(v) => format!("syscall={v}"),
+            StateTriggerKind::AllWaiting(v) => {
+                format!("all {v}s: every thread of a multi-threaded target waiting")
+            }
+        }
+    }
+
+    fn matches(&self, pid: u32) -> Option<Vec<ThreadState>> {
+        let threads = sample_threads(pid);
+        if threads.is_empty() {
+            return None;
+        }
+        match &self.kind {
+            StateTriggerKind::State(v) => {
+                let hits: Vec<_> = threads.into_iter().filter(|t| &t.state == v).collect();
+                (!hits.is_empty()).then_some(hits)
+            }
+            StateTriggerKind::Wchan(v) => {
+                let hits: Vec<_> = threads.into_iter().filter(|t| t.wchan.contains(v.as_str())).collect();
+                (!hits.is_empty()).then_some(hits)
+            }
+            StateTriggerKind::Syscall(v) => {
+                let hits: Vec<_> = threads.into_iter().filter(|t| &t.syscall == v).collect();
+                (!hits.is_empty()).then_some(hits)
+            }
+            StateTriggerKind::AllWaiting(seconds) => {
+                // A single-threaded process waiting for its child is normal (a compiler driver sits in
+                // pipe_read while the linker runs), so a target with one thread is never "stuck"; the
+                // hang this catches is a workload whose WORKERS are parked.
+                if threads.len() < 2 {
+                    return None;
+                }
+                let all = threads.iter().all(|t| is_waiting(&t.state, &t.wchan));
+                if !all {
+                    *all_waiting_since(pid) = None;
+                    return None;
+                }
+                let since = all_waiting_since(pid);
+                let started = since.get_or_insert_with(Instant::now);
+                (started.elapsed() >= Duration::from_secs(*seconds)).then_some(threads)
+            }
+        }
+    }
+}
+
+/// When the "everyone waiting" condition started holding, keyed by pid. A module-level map is enough
+/// here: one run captures one target at a time, and the value is reset the moment the condition breaks.
+fn all_waiting_since(pid: u32) -> &'static mut Option<Instant> {
+    static mut SINCE: Option<(u32, Option<Instant>)> = None;
+    unsafe {
+        match SINCE {
+            Some((p, _)) if p != pid => SINCE = Some((pid, None)),
+            None => SINCE = Some((pid, None)),
+            _ => {}
+        }
+        if let Some((_, ref mut since)) = SINCE {
+            since
+        } else {
+            unreachable!()
+        }
+    }
+}
+
+fn is_waiting(state: &str, wchan: &str) -> bool {
+    if state.starts_with('D') || state.starts_with('S') {
+        return true;
+    }
+    // A guest thread parked in an ulock wait can still be reported as running while it sits in the
+    // server, so the wchan is the honest half of the test.
+    let parked = [
+        "futex", "ulock", "poll", "ep_poll", "wait", "pause", "do_sys",
+    ];
+    parked.iter().any(|p| wchan.contains(p))
+}
+
+fn sample_threads(pid: u32) -> Vec<ThreadState> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(format!("/proc/{pid}/task")) else {
+        return out;
+    };
+    let mut tids: Vec<u32> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().to_string_lossy().parse::<u32>().ok())
+        .collect();
+    tids.sort_unstable();
+    for tid in tids {
+        let base = PathBuf::from(format!("/proc/{pid}/task/{tid}"));
+        let state = fs::read_to_string(base.join("stat"))
+            .ok()
+            .and_then(|s| {
+                // state is the field after the comm in parentheses
+                s.rsplit_once(')').map(|(_, rest)| {
+                    rest.split_whitespace().next().unwrap_or("?").to_string()
+                })
+            })
+            .unwrap_or_else(|| "?".into());
+        let wchan = fs::read_to_string(base.join("wchan"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "?".into());
+        let syscall = fs::read_to_string(base.join("syscall"))
+            .ok()
+            .and_then(|s| s.split_whitespace().next().map(|v| v.to_string()))
+            .unwrap_or_else(|| "?".into());
+        out.push(ThreadState { pid, tid, state, wchan, syscall });
+    }
+    out
 }
