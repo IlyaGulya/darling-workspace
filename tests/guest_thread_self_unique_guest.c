@@ -54,9 +54,32 @@ static struct rec recs[MAXREC];
 static int nrecs;
 
 /* Every census participant waits here, so "all these threads are live at once" is a fact of the run rather
- * than an assumption about scheduling order. */
-static pthread_barrier_t census_barrier;
+ * than an assumption about scheduling order. Hand-rolled, because the barrier API is not declared in this
+ * compilation mode and a missing declaration made the whole fixture fail to build. */
+static pthread_mutex_t barrier_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t barrier_cond = PTHREAD_COND_INITIALIZER;
+static int barrier_waiting;
+static int barrier_total;
 static unsigned main_direct;
+
+static void
+census_barrier(int participants)
+{
+	pthread_mutex_lock(&barrier_lock);
+	if (barrier_total == 0) {
+		barrier_total = participants;
+	}
+	barrier_waiting++;
+	if (barrier_waiting == barrier_total) {
+		barrier_waiting = 0;
+		pthread_cond_broadcast(&barrier_cond);
+	} else {
+		while (barrier_waiting != 0) {
+			pthread_cond_wait(&barrier_cond, &barrier_lock);
+		}
+	}
+	pthread_mutex_unlock(&barrier_lock);
+}
 
 /*
  * Read this thread's TSD self slot WITHOUT touching the lock implementation: take a private, freshly
@@ -161,7 +184,7 @@ thread_main(void *arg)
 		__atomic_fetch_add(&direct_zero, 1, __ATOMIC_SEQ_CST);
 	}
 	record((unsigned)mach_thread_self(), me, 0);
-	pthread_barrier_wait(&census_barrier);
+	census_barrier(NTHREADS + 1);
 	for (int i = 0; i < NITER; ++i) {
 		mutex_round();
 	}
@@ -182,7 +205,6 @@ main(void)
 	}
 	record((unsigned)mach_thread_self(), (unsigned long)pthread_mach_thread_np(pthread_self()), 0);
 
-	pthread_barrier_init(&census_barrier, NULL, NTHREADS + 1);
 	for (i = 0; i < NTHREADS; ++i) {
 		if (pthread_create(&threads[i], NULL, thread_main, NULL) != 0) {
 			fprintf(stderr, "TSSELF pthread_create failed at %d\n", i);
@@ -191,7 +213,7 @@ main(void)
 	}
 	/* Join the census: at this point the main thread and all NTHREADS spawned threads have published their
 	 * direct readings and are alive simultaneously. */
-	pthread_barrier_wait(&census_barrier);
+	census_barrier(NTHREADS + 1);
 	for (i = 0; i < NTHREADS; ++i) {
 		pthread_join(threads[i], NULL);
 	}
