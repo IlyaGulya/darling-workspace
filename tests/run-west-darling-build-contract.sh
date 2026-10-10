@@ -44,6 +44,7 @@ def make_args(**overrides):
         "deploy_bootchain": False,
         "shutdown_before_deploy": False,
         "skip_post_doctor": True,
+        "skip_boot_smoke": False,
         "force": False,
         "skip_doctor": True,
     }
@@ -66,6 +67,8 @@ def make_command():
 
 class Completed:
     returncode = 0
+    stdout = ""
+    stderr = ""
 
 
 with tempfile.TemporaryDirectory() as temp:
@@ -228,6 +231,72 @@ with tempfile.TemporaryDirectory() as temp:
     finally:
         db.subprocess.run = original_run
     assert destination.read_bytes() == b"old shellspawn\n"
+
+# A deploy is transactional even when the caller does not pass --deploy-manifest: a
+# failed post-deploy check must leave the prefix exactly as it was found. This is the
+# property the earlier tooling lacked (it kept the new files and restored only the
+# receipt, so the chain was left half-updated and every later check reported it).
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    build_dir = tempdir / "build"
+    prefix = tempdir / "prefix"
+    build_dir.mkdir()
+    (build_dir / "CMakeCache.txt").write_text("configured\n")
+    source = build_dir / db._SHELLSPAWN_DEPLOY[0]
+    destination = prefix / db._SHELLSPAWN_DEPLOY[1]
+    source.parent.mkdir(parents=True)
+    destination.parent.mkdir(parents=True)
+    source.write_bytes(b"new shellspawn\n")
+    destination.write_bytes(b"old shellspawn\n")
+
+    command = make_command()
+    command._closure_targets = lambda _build_dir, _names=None: []
+    command._doctor = lambda *args, **kwargs: 1
+    original_run = db.subprocess.run
+    db.subprocess.run = lambda *args, **kwargs: Completed()
+    try:
+        try:
+            command._run_locked(
+                make_args(
+                    targets=[db._SHELLSPAWN_DEPLOY[0]],
+                    deploy_shellspawn=True,
+                    skip_post_doctor=False,
+                ),
+                tempdir,
+                build_dir,
+                prefix,
+            )
+        except SystemExit as error:
+            assert error.code == 1, error.code
+        else:
+            raise AssertionError("a failed post-deploy check without --deploy-manifest passed")
+    finally:
+        db.subprocess.run = original_run
+
+    assert destination.read_bytes() == b"old shellspawn\n"
+    manifests = sorted((prefix / ".darling-deploy-txn").glob("*.json"))
+    assert len(manifests) == 1, manifests
+    assert '"state": "restored"' in manifests[0].read_text(), manifests[0].read_text()
+
+# _dirty_components must name a component whose working tree has uncommitted changes:
+# a deploy compiles the tree as it is, so that content becomes deployed bytes that match
+# no committed revision. MEASURED: a dirty diagnostic probe shipped this way and killed
+# shellspawn with SIGSEGV, which the boot smoke could only report as a dead chain.
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    xnu = tempdir / "darling" / "src" / "external" / "xnu"
+    xnu.mkdir(parents=True)
+    db.subprocess.run = original_run
+    original_run(["git", "init", "-q", str(xnu)], check=True)
+    (xnu / "probe.c").write_text("int main(void) { return 0; }\n")
+    command = make_command()
+    assert command._dirty_components(tempdir) == ["xnu (1 path(s))"], command._dirty_components(tempdir)
+    original_run(["git", "-C", str(xnu), "add", "probe.c"], check=True)
+    original_run(
+        ["git", "-C", str(xnu), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "probe"],
+        check=True,
+    )
+    assert command._dirty_components(tempdir) == [], command._dirty_components(tempdir)
 
 print("PASS west-darling-build-contract")
 PY

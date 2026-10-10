@@ -83,6 +83,19 @@ _BOOTCHAIN_DEPLOYS = [
     ("src/launchd/src/launchd", "libexec/darling/sbin/launchd"),
     _SHELLSPAWN_DEPLOY,
 ]
+# Components whose working-tree content is compiled into the deployed runtime. A deploy
+# compiles whatever is in the tree, so an uncommitted experiment becomes deployed bytes
+# with no committed provenance -- MEASURED 2026-10-10: a diagnostic probe in
+# libsystem_kernel/sigexc shipped this way and killed shellspawn with SIGSEGV at 0x0,
+# which the boot smoke could only report as "shellspawn did not become ready".
+_RUNTIME_COMPONENTS = [
+    ("darling", "."),
+    ("darlingserver", "src/external/darlingserver"),
+    ("xnu", "src/external/xnu"),
+    ("libplatform", "src/external/libplatform"),
+    ("libdispatch", "src/external/libdispatch"),
+    ("libpthread", "src/external/libpthread"),
+]
 
 
 class DarlingBuild(WestCommand):
@@ -101,9 +114,12 @@ class DarlingBuild(WestCommand):
         p.add_argument("--targets", nargs="*", default=None,
                        help="ninja targets to build (default: dyld + all closure dylibs)")
         p.add_argument("--deploy", action="store_true",
-                       help="after building, deploy selected runtime artifacts into the prefix (backs up first)")
+                       help="after building, deploy selected runtime artifacts into the prefix. "
+                            "The deploy is transactional by default: every replaced file and the "
+                            "receipt are restored if the post-deploy check fails")
         p.add_argument("--deploy-manifest", metavar="PATH",
-                       help="record a transactional deploy manifest at PATH (requires --deploy)")
+                       help="write the deploy transaction manifest at PATH (requires --deploy; "
+                            "default: <prefix>/.darling-deploy-txn/<utc>-<pid>.json)")
         p.add_argument("--restore-deploy", metavar="PATH",
                        help="restore one deploy manifest without building")
         p.add_argument("--deploy-extra-prefix", action="append", default=[], metavar="PREFIX",
@@ -223,14 +239,21 @@ class DarlingBuild(WestCommand):
             extra_prefixes = [Path(p) for p in args.deploy_extra_prefix]
             if args.shutdown_before_deploy:
                 self._shutdown_prefixes(prefix, extra_prefixes)
-            transaction = None
-            if args.deploy_manifest:
-                try:
-                    transaction = DeploymentTransaction(
-                        Path(args.deploy_manifest), prefix, extra_prefixes
-                    )
-                except DeploymentTransactionError as error:
-                    self.die(str(error))
+            # ALWAYS transactional: the deploy replaces live runtime files, and any
+            # failure (including the post-deploy boot smoke) must leave the prefix
+            # exactly as it was. Without this, a failed deploy kept the new files
+            # while the receipt was restored, so the chain was left half-updated and
+            # every later doctor check reported the mismatch.
+            try:
+                transaction = DeploymentTransaction(
+                    self._deploy_manifest_path(args, prefix), prefix, extra_prefixes
+                )
+            except DeploymentTransactionError as error:
+                self.die(str(error))
+            self._warn_deploy_scope(args, deploy_closure_names, deploy_dyld)
+            provenance = self._deploy_provenance(topdir)
+            if provenance:
+                self.wrn(provenance)
             try:
                 receipt_written = None
                 receipt_backup = None
@@ -267,19 +290,23 @@ class DarlingBuild(WestCommand):
                         boot_smoke=not args.skip_boot_smoke,
                     )
                     if rc != 0:
-                        self.err("post-deploy doctor FAILED — rolling back the transaction.")
+                        self.err(
+                            "post-deploy check FAILED — restoring the previous deployment "
+                            "(runtime files and receipt) from the deploy transaction."
+                        )
+                        self.err(self._deploy_scope_hint(args, deploy_closure_names, deploy_dyld))
+                        if provenance:
+                            self.err(provenance)
                         raise SystemExit(1)
-                if transaction is not None:
-                    transaction.commit()
-                    self.inf(f"transactional deploy manifest: {transaction.manifest_path}")
+                transaction.commit()
+                self.inf(f"transactional deploy manifest: {transaction.manifest_path}")
             except BaseException:
                 if receipt_written is not None:
                     self._restore_receipt(prefix, receipt_backup)
-                if transaction is not None:
-                    try:
-                        transaction.rollback()
-                    except DeploymentTransactionError as error:
-                        self.err(f"transaction rollback failed: {error}")
+                try:
+                    transaction.rollback()
+                except DeploymentTransactionError as error:
+                    self.err(f"transaction rollback failed: {error}")
                 raise
         else:
             self.inf("(not deployed; pass --deploy to copy into the prefix)")
@@ -484,6 +511,106 @@ class DarlingBuild(WestCommand):
         else:
             path.write_bytes(previous)
 
+    def _deploy_manifest_path(self, args, prefix) -> Path:
+        """Where this deploy records its transaction.
+
+        An explicit --deploy-manifest path wins; otherwise every deploy gets its own
+        manifest (and its own .backups tree) under the prefix, so a rollback can never
+        restore a backup that a later deploy has already overwritten.
+        """
+        if args.deploy_manifest:
+            return Path(args.deploy_manifest)
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        return Path(prefix) / ".darling-deploy-txn" / f"{stamp}-{os.getpid()}.json"
+
+    def _deploy_scope_parts(self, args, closure_names, deploy_dyld):
+        """Return (replaced, missing): the runtime parts this deploy replaces, and the
+        coherence flags it leaves unset. The runtime is one chain -- closure+dyld,
+        darlingserver and the bootchain must move to one build together -- so a partial
+        deploy can leave a set that boots broken.
+        """
+        parts = []
+        if deploy_dyld:
+            parts.append("dyld")
+        if closure_names is None:
+            parts.append("closure dylibs")
+        elif closure_names:
+            parts.append(f"{len(closure_names)} closure dylib(s)")
+        if args.deploy_darlingserver:
+            parts.append("darlingserver")
+        if args.deploy_launcher:
+            parts.append("launcher")
+        if args.deploy_mldr or args.deploy_shellspawn or args.deploy_bootchain:
+            parts.append("bootchain")
+        missing = []
+        if "darlingserver" not in parts:
+            missing.append("--deploy-darlingserver")
+        if "bootchain" not in parts:
+            missing.append("--deploy-bootchain")
+        return parts, missing
+
+    def _deploy_scope_hint(self, args, closure_names, deploy_dyld) -> str:
+        """Say what this deploy left in place, for the message after a failed boot check."""
+        parts, missing = self._deploy_scope_parts(args, closure_names, deploy_dyld)
+        hint = "this deploy replaced " + (", ".join(parts) if parts else "nothing") + "."
+        if missing:
+            hint += (
+                " A partial deploy can leave the chain mixed: retry with "
+                + " ".join(missing)
+                + " so the whole runtime moves to one build."
+            )
+        return hint
+
+    def _dirty_components(self, topdir) -> list[str]:
+        """Name the runtime components whose working tree has uncommitted changes.
+
+        The build compiles the tree as it is, so a dirty component ships uncommitted
+        content into the prefix: the deployed bytes then have no committed provenance,
+        and MEASURED such a diagnostic probe crashed the boot chain.
+        """
+        dirty = []
+        for name, rel in _RUNTIME_COMPONENTS:
+            root = Path(topdir) / "darling"
+            if rel != ".":
+                root = root / rel
+            if not (root / ".git").exists():
+                continue
+            completed = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            changes = [line for line in (getattr(completed, "stdout", "") or "").splitlines() if line.strip()]
+            if changes:
+                dirty.append(f"{name} ({len(changes)} path(s))")
+        return dirty
+
+    def _deploy_provenance(self, topdir) -> str:
+        """Describe the source provenance of the runtime this deploy will install."""
+        dirty = self._dirty_components(topdir)
+        if not dirty:
+            return ""
+        return (
+            "working-tree provenance: a deploy compiles the tree as it is, and these runtime "
+            "components have uncommitted changes: " + ", ".join(dirty)
+            + ". The deployed bytes then match no committed revision; commit or stash them "
+            "before trusting a deploy."
+        )
+
+    def _warn_deploy_scope(self, args, closure_names, deploy_dyld) -> None:
+        parts, missing = self._deploy_scope_parts(args, closure_names, deploy_dyld)
+        self.inf("deploy scope: " + (", ".join(parts) if parts else "nothing"))
+        if missing:
+            self.wrn(
+                "partial deploy: the rest of the runtime stays as deployed, and the runtime is "
+                "one chain, so a mixed set may not boot. Add "
+                + " ".join(missing)
+                + " to move it together. (The deploy is transactional: a failed post-deploy "
+                "check restores the previous deployment.)"
+            )
+
     def _deploy(self, build_dir, prefix, closure_names=None, deploy_dyld=True,
                 deploy_darlingserver=False, deploy_launcher=False, deploy_mldr=False,
                 deploy_shellspawn=False, deploy_bootchain=False,
@@ -520,69 +647,12 @@ class DarlingBuild(WestCommand):
                     self.err(f"built boot-chain binary missing at {src}")
                     raise SystemExit(1)
 
-        # backup both closure copies once (timestamped) before overwriting
-        bak = prefix / f".doctor-deploy-bak"
-        self.inf(f"== deploy to {1 + len(roots)} closure copies (backup -> {bak}) ==")
-        backup_trees = [(base, "base")] + [(root, f"root-{i}") for i, root in enumerate(roots)]
-        for tree, tag in backup_trees:
-            b = bak / tag / "usr/lib/system"
-            b.mkdir(parents=True, exist_ok=True)
-            backup_paths = []
-            if deploy_dyld:
-                backup_paths.append("usr/lib/dyld")
-            names = closure_names if closure_names is not None else _CLOSURE_BASENAMES
-            if "libSystem.B.dylib" in names:
-                backup_paths.append("usr/lib/libSystem.B.dylib")
-            for f in backup_paths:
-                src = tree / f
-                if src.exists():
-                    dst = bak / tag / f
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
-            sysdir = tree / "usr/lib/system"
-            if sysdir.is_dir():
-                if closure_names is None:
-                    files = sysdir.glob("*.dylib")
-                else:
-                    files = (sysdir / name for name in closure_names if name != "libSystem.B.dylib")
-                for f in files:
-                    if f.exists():
-                        shutil.copy2(f, b / f.name)
-        if deploy_darlingserver:
-            for root in roots:
-                src = root / "bin/darlingserver"
-                if src.exists():
-                    dst = bak / f"{root.name or 'prefix'}-bin" / "bin/darlingserver"
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
-        if deploy_launcher:
-            for root in roots:
-                src = root / "bin/darling"
-                if src.exists():
-                    dst = bak / f"{root.name or 'prefix'}-bin" / "bin/darling"
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
-        if deploy_mldr:
-            for _, dst_rel in _MLDR_DEPLOYS:
-                src = prefix / dst_rel
-                if src.exists():
-                    dst = bak / "base-mldr" / dst_rel
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
-        if deploy_shellspawn:
-            _, dst_rel = _SHELLSPAWN_DEPLOY
-            src = prefix / dst_rel
-            if src.exists():
-                dst = bak / "base-shellspawn" / dst_rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
-        if deploy_bootchain:
-            for _, dst_rel in _BOOTCHAIN_DEPLOYS:
-                src = prefix / dst_rel
-                if src.exists():
-                    dst = bak / "base-bootchain" / dst_rel
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
+        # No ad-hoc backup tree here: every replaced file is recorded by the deploy
+        # transaction, which restores it (and the receipt) when the post-deploy
+        # check fails. The removed .doctor-deploy-bak tree was write-only, was not
+        # timestamped despite its comment, and was overwritten by each deploy, so a
+        # rollback could restore a state that was already half-updated.
+        self.inf(f"== deploy to {1 + len(roots)} closure copies ==")
 
         resolved = self._closure_targets(build_dir, closure_names)
         name_to_path = {Path(t).name: build_dir / t for t in resolved}
