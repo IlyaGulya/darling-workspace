@@ -247,6 +247,14 @@ EXPLICIT_CONTRACTS = (
 # and the census below fails the tier if a contract is in neither this mapping
 # nor CONTRACTS: an unaccounted contract silently proves nothing.
 EXCLUDED_CONTRACTS = {
+    "tests/run-symbol-ownership-contract.sh":
+        "artifact contract: it reads the symbol tables of BUILT or DEPLOYED libraries with llvm-nm and fails when a "
+        "public concurrency primitive (os_unfair_lock_lock/unlock/trylock/lock_with_options) has two definers, which is "
+        "how a guest bound a silently empty stub that lived in libsystem_kernel while the real implementation lived in "
+        "libsystem_platform. The host tier builds no Darling artifacts and owns no prefix, so it cannot see an artifact "
+        "to judge; run it from the prefix-backed lane with DPREFIX, or from the build lane with the two dylibs named as "
+        "arguments, as the last step of any change that touches these libraries. It exits 77 and prints UNMEASURED when "
+        "it is given nothing to inspect, because an unmeasured ownership must never read as a clean one",
     "tests/run-dtape-kqchan-modify-runtime-contract.sh":
         "guest-runtime gate: it host-builds a prebuilt guest Mach-O fixture and executes it in a "
         "booted Darling prefix (DPREFIX) whose darlingserver is under test, then asserts the "
