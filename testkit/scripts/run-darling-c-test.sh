@@ -111,6 +111,10 @@ run_id="${WEST_GUEST_C_FIXTURE_ID:-$$.$RANDOM}"
 guest_tmpdir="/private/var/tmp"
 guest_src="${guest_tmpdir}/${safe_name}.${run_id}.c"
 guest_bin="${guest_tmpdir}/${safe_name}.${run_id}"
+# The compiler's own output is written to a file under the prefix (host-visible) and echoed between markers.
+# Sharing the guest's fd 2 with the in-path instruments is how a compile failure arrived with NO message at all:
+# the spam and the diagnostic are one stream, and a reader cannot tell a silent failure from a loud one.
+guest_compile_log="${guest_tmpdir}/${safe_name}.${run_id}.compile.log"
 # Extra link inputs are staged beside the source under the same run id. A
 # sibling index keeps two inputs with the same basename distinct.
 guest_link_files=()
@@ -190,7 +194,7 @@ dump_boot_trace() {
 timeout_seconds="${DARLING_GUEST_TIMEOUT_SECONDS:-60}"
 
 cleanup_guest_artifacts() {
-	local guest_paths="'$guest_src' '$guest_bin'"
+	local guest_paths="'$guest_src' '$guest_bin' '$guest_compile_log'"
 	local guest_link
 	for guest_link in "${guest_link_files[@]}"; do
 		guest_paths+=" '$guest_link'"
@@ -247,9 +251,19 @@ if [ "$rc" -eq 0 ] && [[ "${#link_files[@]}" -gt 0 ]]; then
 fi
 if [ "$rc" -eq 0 ]; then
 	set +e
-	run_guest_stage compile "set +e; $guest_cc $guest_cflags -o '$guest_bin' '$guest_src'$guest_link_args; rc=\$?; printf 'ORACLE_RC=%s\\n' \"\$rc\"; exit \"\$rc\""
+	run_guest_stage compile "set +e; $guest_cc $guest_cflags -o '$guest_bin' '$guest_src'$guest_link_args > '$guest_compile_log' 2>&1; rc=\$?; printf 'ORACLE_RC=%s\\n' \"\$rc\"; exit \"\$rc\""
 	rc=$?
 	set -e
+	# The compiler's output is NOT echoed by a guest command: the guest shell in this harness has no cat, no head
+	# and no awk (measured: a guest `cat` exits 127 and the diagnostics vanished as a result). The compile log lives
+	# under the prefix, which is host-visible, so the host prints it -- the same property that recovers every other
+	# diagnostic in this tree. In-path instruments share the guest's fd 2 and therefore also land in this file; the
+	# file is read by content, not by line pattern.
+	if [ -f "${prefix}${guest_compile_log}" ]; then
+		printf 'WEST_COMPILE_LOG_BEGIN\n'
+		cat "${prefix}${guest_compile_log}"
+		printf 'WEST_COMPILE_LOG_END\n'
+	fi
 fi
 if [ "$rc" -eq 0 ]; then
 	set +e
