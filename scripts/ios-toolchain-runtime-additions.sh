@@ -45,6 +45,7 @@ done
 # records the dyld error that asked for it, so the list can be audited against evidence.
 targets=(
 	src/external/zlib/install                       # /usr/lib/libz.1.dylib missing
+	src/external/libxml2/install                    # /usr/lib/libxml2.2.dylib missing (T4: Foundation loads it, Apple ld aborts)
 	src/external/libcxx/install                     # libc++ ABI: verbose abort + std::__fs::filesystem
 	src/external/foundation/install                 # Foundation.framework
 	src/external/cfnetwork/src/install              # CFNetwork.framework
@@ -75,11 +76,24 @@ echo "ios-additions: installing ${#targets[@]} declared additions into $prefix"
 
 # Refresh the guest-visible copy of everything libexec/darling now holds and the prefix already
 # exposes: the two trees only shadow each other where both have the file.
+#
+# A dependency named by the toolchain's OWN dyld error may not be in the guest-visible tree yet, and
+# the walk below cannot create it: it only refreshes files both trees already have. These are the
+# exceptions. The real Apple ld aborted with "Library not loaded: /usr/lib/libxml2.2.dylib" while
+# loading Foundation, and the file existed only under libexec/darling, which the guest does not
+# search for /usr/lib. Declared here, they are installed into the guest-visible tree and then
+# refreshed with everything else, so the two copies cannot drift.
+guest_visible_required=(
+	"usr/lib/libxml2.2.dylib"
+)
+required_list="$(mktemp)"
+printf '%s\n' "${guest_visible_required[@]}" >"$required_list"
 refreshed_list="$(mktemp)"
 ( cd "$prefix/libexec/darling" && find . -type f -print ) 2>/dev/null | while read -r rel; do
+	rel="${rel#./}"
 	src="$prefix/libexec/darling/$rel"
 	dst="$prefix/$rel"
-	if [ -e "$dst" ]; then
+	if [ -e "$dst" ] || grep -Fxq "$rel" "$required_list"; then
 		install -m "$(stat -c '%a' "$src")" "$src" "$dst" 2>/dev/null && echo "$rel" || true
 	fi
 done >"$refreshed_list"
@@ -98,6 +112,7 @@ def digest(rel):
 want = [
     "libexec/darling/usr/lib/libc++.1.dylib",
     "libexec/darling/usr/lib/libz.1.dylib",
+    "usr/lib/libxml2.2.dylib",
     "libexec/darling/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
 ]
 open(receipt,'w').write(json.dumps({
@@ -109,5 +124,5 @@ PYEOF
 	echo "ios-additions: receipt written to $receipt"
 fi
 
-rm -f "$refreshed_list"
+rm -f "$refreshed_list" "$required_list"
 echo "ios-additions: done"
