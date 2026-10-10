@@ -50,13 +50,22 @@ int main(void) {
 	failed += load_required("/usr/lib/swift/libswiftCore.dylib", "swift-core");
 	failed += load_required("/usr/lib/libarchive.2.dylib", "libarchive");
 
-	/* Reported, not asserted: see the file comment. */
+	/* Reported, not asserted: see the file comment. When it does load, the symbol
+	 * Xcode 26.3's DVTSystemPrerequisites references as undefined DATA must be
+	 * exported -- without it dyld refuses that framework with "Symbol not found:
+	 * _PKInstallErrorDomain", which is a different failure from a missing file. */
 	{
 		void *handle = dlopen(
 			"/System/Library/PrivateFrameworks/PackageKit.framework/Versions/A/PackageKit",
 			RTLD_NOW | RTLD_LOCAL);
 		if (handle != NULL) {
 			printf("SWIFT_RUNTIME_LOADED component=packagekit\n");
+			if (dlsym(handle, "PKInstallErrorDomain") == NULL) {
+				printf("SWIFT_RUNTIME_SYMBOL_ABSENT component=packagekit symbol=PKInstallErrorDomain\n");
+				failed += 1;
+			} else {
+				printf("SWIFT_RUNTIME_SYMBOL_PRESENT component=packagekit symbol=PKInstallErrorDomain\n");
+			}
 			dlclose(handle);
 		} else {
 			const char *error = dlerror();
