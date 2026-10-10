@@ -7008,8 +7008,48 @@ fn job_instrument_log(state_dir: &Path, job_log: &Path) -> PathBuf {
         }
         candidates.push(path);
     }
-    if let Some(prefix) = job_prefix(&JobArgs { state_dir: state_dir.to_path_buf(), prefix: None, json: false, lines: 0, step_timeout_seconds: 0, pids: Vec::new() }, state_dir) {
+    if let Some(prefix) = job_prefix(
+        &JobArgs {
+            state_dir: state_dir.to_path_buf(),
+            prefix: None,
+            json: false,
+            lines: 0,
+            step_timeout_seconds: 0,
+            pids: Vec::new(),
+        },
+        state_dir,
+    ) {
         candidates.push(prefix.join("private/var/log/dserver.log"));
+        // The prefix's own run artifacts are where several workloads keep their guest output (a
+        // contract that redirects `darling shell` writes there, not into the harness log), and
+        // reading only the harness log made the census report zero instruments -- which reads like
+        // "nothing happened" when it means "looked in the wrong place".
+        let tmp = prefix.join("private/var/tmp");
+        let mut artifacts: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+        if let Ok(entries) = fs::read_dir(&tmp) {
+            for e in entries.flatten() {
+                let path = e.path();
+                let meta = match e.metadata() {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                if !meta.is_file() {
+                    continue;
+                }
+                if let Ok(mtime) = meta.modified() {
+                    if let Some(jm) = job_mtime {
+                        if mtime < jm {
+                            continue;
+                        }
+                    }
+                    artifacts.push((mtime, path));
+                }
+            }
+        }
+        artifacts.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_, path) in artifacts {
+            candidates.push(path);
+        }
     }
     for c in &candidates {
         if let Ok(text) = fs::read_to_string(c) {
@@ -7085,7 +7125,36 @@ fn run_job(args: JobArgs) -> Result<ExitCode> {
             argv.push("--prefix".into());
             argv.push(p.display().to_string());
         }
-        steps.push(step("trap", argv));
+        let mut trap_step = step("trap", argv);
+        // A kernel log spans the whole boot, so its rows include crashes of earlier runs: reporting
+        // them as this job's evidence is worse than reporting nothing. Linux hands pids out in
+        // increasing order, and the job's own command pid is recorded, so a row with a smaller pid
+        // belongs to an older run and is dropped -- with the count stated, so the reader can see the
+        // filter rather than trust it.
+        let job_pid = fs::read_to_string(state_dir.join("command-pid"))
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok());
+        if let Some(job_pid) = job_pid {
+            let mut kept = Vec::new();
+            let mut dropped = 0usize;
+            for line in trap_step.output.iter() {
+                let pid = line
+                    .split_whitespace()
+                    .find_map(|w| w.strip_prefix("pid="))
+                    .and_then(|v| v.parse::<u32>().ok());
+                match pid {
+                    Some(p) if p < job_pid => dropped += 1,
+                    _ => kept.push(line.clone()),
+                }
+            }
+            if dropped > 0 {
+                trap_step.output = kept;
+                trap_step.output.push(format!(
+                    "DIAG-NOTE {dropped} kernel-log row(s) with pid < {job_pid} (the job's own command pid) were dropped: they are older runs, not this failure"
+                ));
+            }
+        }
+        steps.push(trap_step);
     }
     let _ = &mut core_note;
 
