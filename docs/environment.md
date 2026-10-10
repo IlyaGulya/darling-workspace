@@ -183,3 +183,25 @@ this looked like prefix corruption and cost a recreation.
 
 Pass `DPREFIX` (or `DARLING_PREFIX`, which the harness also exports) on every direct launcher invocation.
 Before concluding that a prefix needs recreation, re-run the same command with `DPREFIX` set.
+
+## A prefix holds the profile's runtime until you deploy your development build
+
+MEASURED 2026-10-10. A bootstrap materializes the profile's pinned sources, builds a runtime from them and
+deploys that into the prefix; it also rebuilds the runtime artifacts in the configured build dir. A change in
+the working tree is therefore NOT in the prefix after a bootstrap. Evidence: immediately after a bootstrap the
+deployed guest `libsystem_kernel.dylib` contained none of a development marker that the build dir still carried
+(0 occurrences deployed, 30 built); after an explicit `west darling-build --build-dir <build> --prefix
+<prefix> --deploy --deploy-darlingserver` all three copies (both prefix closure copies and the build dir)
+shared one digest again, and the stale-source doctor check stopped reporting until that deploy happened.
+
+Rules:
+
+- To measure a development change in a prefix, deploy it (`west darling-build ... --deploy`), and do that
+  AFTER any bootstrap, never before.
+- A deploy that names only some targets can leave a chain that does not boot (`shellspawn` never becomes
+  ready, `Rootless shellspawn did not become ready within 30000ms`). Deploy the set the prefix expects
+  (dyld + closure + darlingserver + mldr/mldr32), or re-bootstrap, which deploys a consistent set.
+- Check before trusting a measurement: `west darling-doctor --scope runtime --prefix P --build-dir B` reports
+  "the prefix does not hold the current build" and names the artifact when the deployed bytes and the build
+  tree have diverged, with the remedy. `--build-dir` must be passed: the default is not this workspace's build
+  tree and the runtime scope then fails on a missing `CMakeCache.txt`.

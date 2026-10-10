@@ -489,6 +489,11 @@ class BootstrapRuntimeProfileMixin:
                 self.inf(
                     f"prefix bootstrap passed for {prefix_text}: {profile_name} ({target})"
                 )
+                self.inf(
+                    "  the prefix now holds THIS PROFILE's runtime, built from the profile's pinned "
+                    "sources -- not the working tree: a development change reaches the prefix only "
+                    "through an explicit 'west darling-build --deploy' run AFTER this bootstrap"
+                )
                 marker_path = deployment.prefix / RETAINED_RUNTIME_PROFILE_MARKER
                 fingerprint = runtime_identity(
                     topdir=Path(self.topdir),

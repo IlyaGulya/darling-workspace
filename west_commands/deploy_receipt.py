@@ -223,9 +223,13 @@ def stale_source_problems(receipt: dict[str, Any]) -> list[ReceiptProblem]:
             problems.append(
                 ReceiptProblem(
                     f"build source {src.name}",
-                    f"the build tree moved after this deploy: {src} is {actual[:12]} but the "
-                    f"receipt recorded {str(recorded)[:12]}; redeploy (west darling-build "
-                    f"--deploy) or re-bootstrap the prefix so the whole chain comes from one build",
+                    f"the prefix does not hold the current build: {src} is {actual[:12]} while the "
+                    f"receipt recorded {str(recorded)[:12]} for the deployed bytes, so the chain and "
+                    f"the build tree have diverged. This is the normal state right after a "
+                    f"bootstrap, which deploys the profile's own runtime and rebuilds the build "
+                    f"tree, so a development change is in the prefix only after an explicit "
+                    f"deploy: run west darling-build --deploy (or re-bootstrap and redeploy) so "
+                    f"the whole chain comes from one build",
                 )
             )
     return problems
