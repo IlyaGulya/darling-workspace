@@ -922,7 +922,6 @@ def collect_status(
     topdir: Path,
     manifest_repo: Path,
     manifest: Any,
-    profile: str,
     bead: str | None,
     prefix: Path | None,
     build_dir: Path | None,
@@ -940,8 +939,6 @@ def collect_status(
         raise StatusError(f"invalid West manifest repository: {manifest_repo}")
     if manifest is None:
         raise StatusError("West manifest is unavailable")
-    if not isinstance(profile, str) or not profile:
-        raise StatusError("profile must be a non-empty string")
     if not west_argv or not all(isinstance(item, str) and item for item in west_argv):
         raise StatusError("west_argv must be a non-empty argv list")
 
@@ -964,21 +961,6 @@ def collect_status(
             cwd=manifest_repo,
         ),
     )
-    patch_section = _json_command_section(
-        "west patch status typed profile composition",
-        _run_bounded(
-            [
-                *west_argv,
-                "patch",
-                "status",
-                f"--profile={profile}",
-                "--strict",
-                "--json",
-            ],
-            cwd=manifest_repo,
-        ),
-    )
-
     doctor_argv = [*west_argv, "darling-doctor"]
     if prefix is not None:
         doctor_argv.append(f"--prefix={prefix}")
@@ -999,7 +981,6 @@ def collect_status(
         "git": git_section,
         "bead": bead_section,
         "handoff": handoff_section,
-        "patch": patch_section,
         "doctor": doctor_section,
         "source_worktrees": _source_worktree_records(roots),
         "deployment_transactions": _deployment_transactions(roots, prefix),
@@ -1026,7 +1007,7 @@ def collect_status(
         next_safe_action = "resolve degraded status authorities, then rerun west dev status"
     else:
         state = "healthy"
-        next_safe_action = f"west dev check quick --profile {profile}"
+        next_safe_action = "west dev check quick"
     return {
         "schema_version": SCHEMA_VERSION,
         "operation": "status",
@@ -1035,7 +1016,6 @@ def collect_status(
         "inputs": {
             "topdir": str(topdir),
             "manifest_repo": str(manifest_repo),
-            "profile": profile,
             "bead": bead,
             "prefix": str(prefix) if prefix is not None else None,
             "build_dir": str(build_dir) if build_dir is not None else None,

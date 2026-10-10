@@ -2,7 +2,7 @@
 
 This repository contains private coordination state, not Darling source code.
 It is the source of truth for workspace manifests, tasks, unpublished branch
-refs, PR drafts, and agent handoff.
+refs, and agent handoff.
 
 ## Canonical environment
 
@@ -71,10 +71,8 @@ refs, PR drafts, and agent handoff.
   Python environment.
 
 - Canonical fix source: the clean `fix/*` branch.
-- Portable integration source: patch files and `patches.yml`.
-- Canonical PR text: `pr-drafts/*.md`.
 - Process state: the owning Bead.
-- Fork and upstream PRs are published views, not sources of truth.
+- This is a hard fork: no upstream publication, no pull requests.
 - Run source commands in the West workspace, not in this manifest repository.
 - Use `west dw beads ...` for issue operations. For comments, use
   `west dw beads comment <id> <text>`; it is a workspace alias for the Beads
@@ -129,7 +127,6 @@ refs, PR drafts, and agent handoff.
   preserved; the raw `syscall` number in a guest is LINUX-numbered (`write` is 1);
   a silent probe is not evidence until its presence in the DEPLOYED artifact is
   confirmed; and a run can be served by another prefix's live runtime.
-- Use `west patch verify|apply|clean|list` for local integration profiles.
 - Use `west darling-prefix-repair --prefix <prefix>` when guest tests report
   missing prefix prerequisites such as `private/var/tmp`, canonical
   `CommandLineTools`, or `DarlingCLT` clang links. Do not repair those by
@@ -140,7 +137,7 @@ refs, PR drafts, and agent handoff.
   prefix-backed selection: `west test --prefix <prefix>
   --bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal` for the
   baseline launcher, or `homebrew-guest-toolchain-provisioning` to also install
-  the reviewed guest CommandLineTools. Both reject `--profile`/`--patch` and the
+  the reviewed guest CommandLineTools. Both are standalone and reject the
   CTest selection options. A bootstrapped prefix has `<prefix>/bin/darling` and
   retains `<prefix>/.west-runtime-profile.json`; `west test` names that bootstrap
   command when a selection finds the selected prefix unusable. See
@@ -149,7 +146,7 @@ refs, PR drafts, and agent handoff.
   `guest-toolchain: darling-command-line-tools`; `west test` provisions the
   official CommandLineTools packages through Darling's guest `installer` when
   the prefix does not already contain them. The package cache is external to
-  patchsets; never commit CLT payloads or generated snapshots.
+  the workspace source; never commit CLT payloads or generated snapshots.
 - CLT provisioning validates size, XAR boundaries, the compressed-TOC SHA-1
   and independently reviewed full-file SHA-256 before installation. Reject
   integrity mismatches before executing the installer. Publisher authentication
@@ -174,36 +171,11 @@ refs, PR drafts, and agent handoff.
   first. The command refuses non-debug paths, live `DARLING_PREFIX` owners, and
   mounts; add `--sudo` only after that inspection reports an ownership failure.
 - Treat clean `fix/*` branches as canonical editable source.
-- Treat patch files and `patches.yml` as portable integration artifacts.
-- Treat `integration/*` branches and profile `west.lock.yml` files as generated.
-- Never edit `integration/*`, open PRs from them, or edit generated locks.
-- Never edit a patch without refreshing its full source SHA and checksum.
-- Unified patch archives contain significant blank context lines encoded as a
-  single space, so `git diff --check` reports false trailing-whitespace errors
-  when it checks the archive as ordinary text. Run the whitespace check with
-  `':(exclude)patches/**/*.patch'`, then use `west patch export --check` and
-  `west patch verify` to validate the patch payload itself. Do not rewrite
-  those context lines or disable whitespace checks for source files.
-- Publish PRs only with `west pr`, one Bead at a time, from clean `fix/*`
-  branches. Never publish generated, backup, or historical mega-branches.
-- Fork-local draft PRs are staging review objects, not private artifacts.
-- Safe read-only PR commands are `list`, `dashboard`, `check`, `publish-plan`,
-  `sync`, and `open --print`.
-- Do not run any mutating PR command without explicit user approval:
-  `fork-draft`, `upstream-draft`, `update-body`, or `ready`.
-- Upstream PRs are strictly opt-in. Approval to create or update a fork-local
-  PR never permits creating, updating, reopening, marking ready, or otherwise
-  mutating an upstream PR. Every upstream mutation requires separate explicit
-  user approval naming the upstream action.
-- Never bulk-publish fixes or merge PRs from workspace automation.
-- Never change a GitHub PR body directly. Update `pr-drafts/*.md`, then run the
-  explicitly approved `west pr update-body`.
-- Never publish when `west pr check` fails.
-- Treat `publication-status` in a patch profile as an architecture gate:
-  `blocked` is local-only, `provisional` may be staged in a fork-local draft
-  but not published upstream, and only `ready` may be published upstream.
-- Do not remove or weaken a publication blocker without resolving its owning
-  Bead and updating the foundational review evidence.
+- This workspace is a hard fork: nothing is published upstream and no pull
+  request is opened. Keep work local (Beads, branches, diagnostic evidence,
+  optional handoff bundles).
+- Do not push branches, tags, or updates without explicit approval covering
+  that exact action and destination.
 - Session durability is: accepted component commits reachable from declared
   remotes, the accepted workspace manifest commit reachable from its remote,
   committed Beads state, and working trees that are clean or explicitly
@@ -224,8 +196,8 @@ refs, PR drafts, and agent handoff.
   Preserve every changed canonical runner/tool branch in its actual keeper
   bundle and verify the tip with `git bundle list-heads`; do not assume that
   a successful forest handoff included it. Keep local context paths and
-  diagnostic archives outside product patches.
-- Never add workspace metadata, PR drafts, agent state, or Beads files to the
+  diagnostic archives outside the product source.
+- Never add workspace metadata, agent state, or Beads files to the
   Darling source repositories.
 - Do not push investigation branches unless explicitly requested.
 - Resolve edit destinations against the intended repository root. Use absolute
@@ -309,8 +281,6 @@ refs, PR drafts, and agent handoff.
   current-minus source forest can mix profiles and turn RED into an unrelated
   build/link failure. Keep `runtime-artifacts` minimal: do not deploy dyld or
   other broad artifacts unless the patch/test is actually about that artifact.
-  Run `west patch check --quality` after metadata edits that affect runtime
-  proof shape.
 - Runtime builds reuse an identity-keyed source forest and build tree. The store
   is `<manifest>/.west-test/runtime-build-cache`, a `.west-test/` state root;
   `WEST_RUNTIME_BUILD_CACHE_DIR` relocates it, `WEST_RUNTIME_BUILD_CACHE=off`
@@ -390,7 +360,7 @@ refs, PR drafts, and agent handoff.
 - Do not close patch coverage with source matching. Tests that grep, parse, or
   assert that specific code text exists are audit checks only; they must not be
   counted as the patch's behavioral test and must not be recorded as `kind:
-  contract` or any non-source `coverage-tier` to make `west patch check` show
+  contract` or any non-source `coverage-tier` to make the tier report
   HOST/MODEL/COMPILE/RUNTIME coverage. A patch is covered only by
   a test that executes behavior: guest/runtime test, C/host fixture, model test
   that drives the state machine, generator test that runs the generator and
@@ -515,9 +485,6 @@ refs, PR drafts, and agent handoff.
   a SHA-256 manifest. When evidence survives only as a hash or verdict record in
   a Bead or handoff, say so explicitly and re-run the gate instead of citing the
   destroyed archive as independently re-verifiable.
-- `tests/run-west-patch-verify-contract.sh` is the focused behavioral contract
-  for disposable worktrees used by `west patch verify`; update it when changing
-  patch applicability, temporary-worktree cleanup, or Git maintenance policy.
 - Run noisy or long `west test --prove-red` and full guest CTest selections
   through the supported job owner, not an output-limited foreground transport
   or bespoke background shell. Use the managed scenario when one exists;
@@ -559,11 +526,6 @@ assertions. `west test --profile <P>` loads tests only from
 declarations, so a stacked profile does not see its base profile's tests.
 Attach a test to an entry that profile already owns rather than adding an entry
 whose patch file lives in another profile.
-- A profile resolves a patch entry to a file inside its own directory, and the
-lock-first mapping locks the series the profile owns. An entry outside that
-locked batch is invisible to the materializer while still breaking
-`west patch apply`, `check` and `export`, so a declaration that needs one means
-the series itself has to change, not the test.
 - Register every contract runner: `tests/run-*-contract*.sh` in
 `CONTRACTS` and `tests/west_test_contracts/*contract*.py` in
 `EXPLICIT_CONTRACTS` of `ci/run-host-tier.py`, or list it in
@@ -598,50 +560,21 @@ drives other runners holds more than one worker slot (`CONTRACT_WEIGHTS` in
 pool of `cpu_count` workers lets several of them oversubscribe the machine and
 a load failure is indistinguishable from a regression. Never fix that class of
 failure with a retry: a retry hides the failure this rule exists to surface.
-- A profile-composition lock is derived, not hand-written. It records the tree
-each module starts from and the tree every locked patch produces, and only a
-replay of the locked series knows those values, so
-`scripts/generate_profile_composition.py --check` is the review step and the
-same command without `--check` reissues the file, naming the field that
-disagreed. A series change stales the receipt of every profile whose chain
-contains it - for the homebrew chain that is five files - and the materialization
-refuses to run until they are reissued. The generator never reads a value out of
-the checked-in lock, the materialization still validates against it, and a
-style-only difference is reported as a tooling bug instead of being written over.
-- `west patch export` refreshes the patch file and `patches.yml`. It does not
-refresh the immutable lock, the migration receipt, or the profile-composition
-binding, and it cannot: the lock needs a published immutable tag, and the
-binding needs a replay. A series change is therefore complete only when all
-four agree, which is what the migration-inventory and composition contracts and
-the materialization check. The export now names the ones it left behind as soon
-as it writes the artifact: the lock with the refspec that publishes the commit,
-the receipt row with the counts it still records, and the derivation to re-run
-with the closure of profiles it moves. It reports and never rewrites them - a
-lock that cannot be published and a composition that cannot be replayed are
-exactly the values that must not be guessed.
 - Never pin a derived value in a contract. A tree the derivation computes, a
 digest of a generated file, or a boundary the replay produces will move for
 legitimate reasons, and a literal turns that into a regression report about the
 ledger instead of about the code. Bind the value to its source - the file it is
 derived from, the prerequisite it must agree with - and leave the value itself
-to the gate that recomputes it: `--check` for a derived registry and
-`--materialize-profile` for a profile composition. A stale receipt is what the
-digest check catches; a literal only reports that the derivation ran.
-- Name the supported command for the situation, not the tool. Five situations
+to the gate that recomputes it (`--check` for a derived registry). A stale
+receipt is what the digest check catches; a literal only reports that the
+derivation ran.
+- Name the supported command for the situation, not the tool. Four situations
   agents keep hand-rolling, and what to run instead:
   - An isolated authoring checkout: `west dev start --source SRC --destination
     DEST --base BASE --branch BRANCH --bead BEAD --module MODULE --evidence
     PATH`. It clones every repository in the gitlink closure, so `--dry-run`
     first if the source is large; it writes no discovery record yet, so record
     the destination yourself and remove it with `rm -rf DEST` when done.
-  - Patch topology diagnosis - which module is out of state, which lock a patch
-    belongs to: `west patch explain`, and `west patch preflight --repo CLONE
-    --lock LOCK` for a lock's own evidence. Preflight judges the lock, its
-    objects and its tags, not the checkout you are on, so it cannot see a module
-    sitting on the wrong branch; `west patch apply` reports that, all of it.
-  - Profile replay diagnosis: `west test --profile P --env ENV
-    --materialize-profile` for the whole chain, `west patch materialize-lock
-    --repo CLONE --lock SCHEMA_V2_LOCK` for one lock in isolation.
   - Where a guest run stopped (without grepping its two logs): `scripts/dwdiag progress --log RUN_LOG
   [--guest-log MLDR_DIAG_LOG] [--mode M]` prints whether the workload spoke, the guest loader's last stage, the op it
   published and the last plane op the server serviced; `dwdiag verdict` prints the same summary as `VERDICT-STAGE` on
@@ -708,7 +641,7 @@ digest check catches; a literal only reports that the derivation ran.
     was produced by an older tool or a hand-rolled command and cannot support a claim about a specific build;
     when two runs disagree, compare their `mldr=`/`dylib=`/`dyld=` digests before comparing anything else.
   - State root ownership: `west dev status --json` reports the live job
-    registry, temporary worktrees, source worktrees and the patch/doctor
+    registry, temporary worktrees, source worktrees and the doctor
     sections; `west dev context NAME --prefix PATH` selects the prefix a run
     uses; `<topdir>/.west-test/` holds the framework's own caches (runtime
     build, stock stack, verdicts).
@@ -794,27 +727,6 @@ the behavior under test. Pair it with a concrete guest-visible
   Keep submodule label normalization in `west_commands/test_ctest.py`.
 - Use `runner: python` for non-executable Python test files; do not use
   `command:` just to spell `python3 path/to/test.py`.
-- `west patch export` must not create unrelated `patches.yml` formatting churn.
-  Treat block-scalar/quoting rewrites as a tooling bug, not acceptable review
-  noise.
-- `west patch export` preflights all selected entries before writing patch files.
-  If it reports stale `source-base`/`source-commit` metadata or suspiciously
-  large output, repair the metadata/tooling first; use `--allow-large-output`
-  only for a reviewed intentional large patch.
-  Export also rejects committed generated evidence such as JSON snapshots,
-  census captures, handoff notes, and build-output logs. Keep those in the
-  diagnostic archive, not in a product patch; `west patch check --quality`
-  reports existing violations and `west patch verify` refuses to apply them.
-  Export and verify also reject `Co-Authored-By` trailers naming Claude
-  or Codex; preserve real authorship and remove automation trailers from local
-  commit messages before exporting a patch.
-  Use `west patch export --profile <profile> --patch <path>` for focused
-  checks/exports of a single profile entry; full-profile export remains the
-  default when no patch selector is given.
-- When moving or inserting entries in `patches.yml`, anchor edits on unique
-  `- path:` blocks or use a structural edit and verify the resulting ordering.
-  Do not insert after generic repeated keys such as `github:`/`upstream:`; patch
-  order is semantic and must match each entry's `source-base`.
 - For stacked runtime RED proofs, prefer materializing the selected profile
   minus the patch under test through `guest-runtime-deploy`. Keep the guest test blocked
   with the exact materialization conflict when that composition cannot run.

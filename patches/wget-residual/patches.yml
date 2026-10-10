@@ -57,8 +57,6 @@ patches:
   source-base: 681329d6b6cb007e86316c572b138de88f1cfb8b
   source-commit: 23ccdeddaf85df02ef1c0e9570d2103308e21d2e
   bead: dar-gwn.7
-  publication-status: blocked
-  publication-blocker: Complete stock wget source-install acceptance and portable rootless closure coverage remain under dar-gwn.7.
   test-exception:
     reason: manual-runtime-regression
     scope: CoreServices loading was reproduced through unmodified libunistring test-alignasof and passed after closure deployment; the portable dynamic-loader regression belongs to dar-gwn.7.
@@ -69,8 +67,6 @@ patches:
   source-base: 812e6e820009dde5f5af832233ebd120b7258fb6
   source-commit: f1575e01386ca9068626f9cd9ebc7d2872183b99
   bead: dar-gwn.7
-  publication-status: blocked
-  publication-blocker: Deployed guest regression and complete stock wget acceptance remain under dar-gwn.7.
   tests:
   - name: eunion_content_fd_validation
     kind: contract
@@ -144,8 +140,6 @@ patches:
   source-base: a99d52248f437be96239a22c8ce5f58fbf32d221
   source-commit: d6ca60236ea0ab0d9adefb05afe63eb3ed03b3fc
   bead: dar-gwn.7
-  publication-status: blocked
-  publication-blocker: Full guest acceptance and a portable waitq-enrollment regression remain under dar-gwn.7.
   test-exception:
     reason: manual-runtime-regression
     scope: The libunistring mutex stage reproduced a waitq double-enrollment panic and passed on the diagnostic runtime; a deterministic raw-lock-within-XNU-wait fixture belongs to dar-gwn.7.
@@ -156,8 +150,6 @@ patches:
   source-base: d6ca60236ea0ab0d9adefb05afe63eb3ed03b3fc
   source-commit: 9be2568f5489684168f61cb1dfecf76d0cc50849
   bead: dar-gwn.7
-  publication-status: blocked
-  publication-blocker: Full guest acceptance and portable overlapping-dispatch runtime proof remain under dar-gwn.7; model coverage is not runtime coverage.
   tests:
   - name: microthread_dispatch_handoff_model
     kind: contract
@@ -190,8 +182,6 @@ patches:
   source-base: 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
   source-commit: 3332f4035976af51133bc4fd296f3bb0cd6c897a
   bead: dar-gwn.7
-  publication-status: blocked
-  publication-blocker: Canonical combined-runtime materialization and complete stock wget acceptance remain under dar-gwn.7.
   tests:
   - name: posix_spawn_cloexec_default_guest
     use: spawn-cloexec-guest
@@ -203,8 +193,6 @@ patches:
   source-base: a2f99243227c57847308527a2a921d1bb77b1135
   source-commit: 1422236fb030234ed9ec52216da04087cac9de84
   bead: dar-gwn.7
-  publication-status: blocked
-  publication-blocker: Canonical combined-runtime materialization and complete stock wget acceptance remain under dar-gwn.7; the foundational rootless publication gate is unchanged.
   tests:
   - name: rootless_socket_owner_exec_guest
     use: spawn-cloexec-guest
@@ -216,8 +204,6 @@ patches:
   source-base: 1422236fb030234ed9ec52216da04087cac9de84
   source-commit: 0eaf1ec6e9b375691d850d87d2543ef029e44a32
   bead: dar-gwn.7.2
-  publication-status: blocked
-  publication-blocker: Foundational rootless architecture review and publication remain gated by dar-gwn.7; exec-order runtime acceptance is tracked in dar-gwn.7.2.
   tests:
   - name: exec_completion_order_host
     kind: contract
@@ -246,8 +232,6 @@ patches:
   source-base: 681329d6b6cb007e86316c572b138de88f1cfb8b
   source-commit: c02cdd1220ee3907458f418714055f5aeb2f5c4d
   bead: dar-gwn.8
-  publication-status: blocked
-  publication-blocker: Local lifecycle repair; canonical rootless composition and publication review remain under dar-gwn.7.
   tests:
   - name: rootless_shutdown_guest_tree_host
     kind: contract
@@ -284,8 +268,6 @@ patches:
   source-base: 681329d6b6cb007e86316c572b138de88f1cfb8b
   source-commit: f43cbf12a701fa4308a9ba166f88c671765f0499
   bead: dar-gwn.8
-  publication-status: blocked
-  publication-blocker: Canonical rootless composition and publication review remain under dar-gwn.7.
   tests:
   - name: runtime_prefix_concurrent_unlink_host
     kind: contract
@@ -309,8 +291,6 @@ patches:
   source-base: c02cdd1220ee3907458f418714055f5aeb2f5c4d
   source-commit: 58111ee357fa6d9d971f0aa1d1763321604525f6
   bead: dar-gwn.8
-  publication-status: blocked
-  publication-blocker: Canonical rootless composition and publication review remain under dar-gwn.7.
   tests:
   - name: runtime_lifecycle_owner_host
     kind: contract
@@ -349,8 +329,6 @@ patches:
   source-base: 3332f4035976af51133bc4fd296f3bb0cd6c897a
   source-commit: e8c8127d553578929d3867e35b14d9fc5c5edcae
   bead: dar-3jw9
-  publication-status: blocked
-  publication-blocker: Supported native/current-minus/fixed runtime proof and private-child identity prerequisites are complete under dar-759a.5; owning-patch publication review and explicit authorization remain under dar-3jw9. Full wget acceptance is not this patch's gate.
   tests:
   - ctest-name: darling/posix_spawn_failure_ownership
     use: xnu-signal-runtime-proof
@@ -370,8 +348,6 @@ patches:
   source-base: e8c8127d553578929d3867e35b14d9fc5c5edcae
   source-commit: 0e54f6a1261216f2eafb880b534288f349027901
   bead: dar-759a.5.3
-  publication-status: blocked
-  publication-blocker: Deployed pending-mask RED/GREEN is complete under dar-759a.5.3; canonical publication review and explicit authorization remain outstanding. SIG_IGN pending discard is a separate defect under dar-cpuk.
   tests:
   - ctest-name: darling/sigpending_mask_copyout
     use: xnu-signal-runtime-proof
@@ -391,8 +367,6 @@ patches:
   source-base: 0e54f6a1261216f2eafb880b534288f349027901
   source-commit: 8a2b2f11325cd647495a03fa309d0851fc48fd2f
   bead: dar-cpuk
-  publication-status: blocked
-  publication-blocker: dar-cpuk owns deployed pending-discard regression and canonical review; publication is not authorized.
   tests:
   - ctest-name: darling/sigaction_ignore_pending
     use: xnu-signal-runtime-proof
@@ -412,8 +386,6 @@ patches:
   source-base: 8a2b2f11325cd647495a03fa309d0851fc48fd2f
   source-commit: b0c7888e903fb44266baffa92ec9cb5391fe9019
   bead: dar-1c53
-  publication-status: blocked
-  publication-blocker: dar-1c53 owns deployed handler-mask regression and canonical review; publication is not authorized.
   tests:
   - ctest-name: darling/signal_handler_mask
     use: xnu-signal-runtime-proof
@@ -433,8 +405,6 @@ patches:
   source-base: f1575e01386ca9068626f9cd9ebc7d2872183b99
   source-commit: affe1a99fff7df754f80deb1450e4a4a523f2b4d
   bead: dar-gwn.7.4
-  publication-status: blocked
-  publication-blocker: Legacy directory cursor sharing, concurrent cache access and descriptor-state capacity remain architecture blockers; scoped large-directory acceptance does not waive canonical review or publication authorization.
   tests:
   - name: eunion_large_directory
     kind: contract
@@ -462,8 +432,6 @@ patches:
   source-base: f673c801cbc4011d3ae35301bb8b5073eb41c103
   source-commit: f78837758ca5d861135e5653ac56a5e35e988981
   bead: dar-fgjm
-  publication-status: blocked
-  publication-blocker: Single stock source-install and HTTPS acceptance passed; the original intermittent freeze remains under dar-gwn.7, and canonical publication review and explicit publication authorization are still required.
   tests:
   - ctest-name: darling/kqueue_close_pipe_eof
     kind: guest
@@ -508,8 +476,6 @@ patches:
   source-base: 23ccdeddaf85df02ef1c0e9570d2103308e21d2e
   source-commit: 2fe91cebde866d372cddc69626a95555672a76c1
   bead: dar-gwn.9
-  publication-status: blocked
-  publication-blocker: Local Homebrew prerequisite repair; rootless composition and publication review remain under dar-gwn.7.
   tests:
   - name: homebrew_build_tools_preflight
     kind: guest
@@ -541,8 +507,6 @@ patches:
   source-base: 2fe91cebde866d372cddc69626a95555672a76c1
   source-commit: 1a2869c9ed4f17488563bdd0a902e62e2d929530
   bead: dar-gwn.7
-  publication-status: blocked
-  publication-blocker: Guest stack-placement review and original intermittent wget freeze remain under dar-gwn.7; local runtime proof does not authorize publication.
   tests:
   - name: mldr_stack_growth_reservation
     kind: guest
@@ -580,8 +544,6 @@ patches:
   source-base: affe1a99fff7df754f80deb1450e4a4a523f2b4d
   source-commit: 8b87c8a76d0faf2d8a2808e74c330dea5e3ca952
   bead: dar-gwn.7.6
-  publication-status: blocked
-  publication-blocker: IPv4 interface precedence repair is accepted under dar-gwn.7.6; socket ABI review, existing ancillary-message limitations, and explicit publication authorization remain separate gates.
   tests:
   - name: udp_packet_info_guest
     kind: guest
@@ -603,8 +565,6 @@ patches:
   source-base: a65d68be2146d85928e511aabc8f3a2b05e564ba
   source-commit: 2bb4b2f19174fdb3fd5116b256d463220443b094
   bead: dar-gwn.7.5.1
-  publication-status: blocked
-  publication-blocker: Local native Perl packaging acceptance is complete under dar-gwn.7.5.1; canonical packaging review and explicit publication authorization remain required.
   tests:
   - name: storable_xs_roundtrip
     kind: guest
@@ -627,8 +587,6 @@ patches:
   source-base: 63f667cf06d7ed59553adebb0c8d70a117135ac9
   source-commit: 6022fa46aa56009d0d989124f27d777e2afed97e
   bead: dar-gwn.7.5.2
-  publication-status: blocked
-  publication-blocker: Requires the homebrew XNU task-self cache reset interface; local post-fork loader proof under dar-gwn.7.5 does not authorize publication.
   tests:
   - name: dyld_postfork_fcntl_load
     kind: guest
@@ -651,8 +609,6 @@ patches:
   source-base: 1a2869c9ed4f17488563bdd0a902e62e2d929530
   source-commit: c01533c97a7a94e3dca30dd3282ed8038abf8b6f
   bead: dar-gwn.7.5.3
-  publication-status: blocked
-  publication-blocker: Component schema 2 requires matched tooling; rootless filesystem and bootstrap publication gates remain local-only.
   tests:
   - name: localhost_resolution_guest
     kind: guest

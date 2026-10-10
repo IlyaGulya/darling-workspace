@@ -10,11 +10,6 @@ patches:
   - path: darling/runtime-load-smoke.patch
     module: darling
     bead: dar-agent-infra-hardening-twz1.18
-    publication-status: blocked
-    publication-blocker: >-
-      Test-only carrier: this profile declares no source change. It binds a
-      generated guest fixture to the runtime under test, so it is not a
-      publication source and has no exported series.
     tests:
       - name: runtime_load_on
         kind: guest

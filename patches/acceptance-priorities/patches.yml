@@ -8,8 +8,6 @@ patches:
     source-commit: 2fe91cebde866d372cddc69626a95555672a76c1
     sha256sum: 64b3f523f70ca7427c3c961a5da72632685536345e9329307824720179ac4d45
     bead: dar-gwn.7.7
-    publication-status: blocked
-    publication-blocker: "Disposable acceptance experiment, not publication source."
     tests:
       - name: comparison_on_ring_fd_lifetime
         kind: guest

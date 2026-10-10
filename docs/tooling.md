@@ -966,9 +966,6 @@ reader has to guess.
 * the source root the build tree was configured against, taken from `CMAKE_HOME_DIRECTORY` in its cache;
 * for every component (darlingserver, mldr, xnu, launchd, dyld): revision, branch, dirty tracked file count and
   untracked file count, or `no-git`/`missing` when the directory is not a repository;
-* the patch-series identity: sha256 of the profile's `patches.yml`, of the workspace `west.lock.yml`, and of
-  the profile-composition lock (searched one level under `locks/`, because the registry itself lives in a
-  subdirectory);
 * the hashes of the artifacts actually deployed into the prefix, because a source identity says nothing about
   the binary a run executed.
 
@@ -979,8 +976,8 @@ source are legitimate. What is refused is calling such a run the evidence for a 
 
 MEASURED USE, both arms: against the scratch build the witness reports
 `PROVENANCE-NON-CANONICAL ... reasons=src/external/darlingserver:untracked=21,...` (correct: that tree is
-untracked) while still naming the revision it was cut from, the patches.yml hash, the composition lock hash
-and four deployed artifact hashes including the server's; and a one-run series that PASSED was refused with
+untracked) while still naming the revision it was cut from and four deployed artifact hashes including the
+server's; and a one-run series that PASSED was refused with
 `PROVENANCE-REFUSED` and exit 2, which is the deliberately tested negative contract.
 
 ### Crash records identify their own image (2026-10-01)

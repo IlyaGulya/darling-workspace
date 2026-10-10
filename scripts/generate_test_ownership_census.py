@@ -613,7 +613,6 @@ def main() -> int:
                     "path": patch["path"],
                     "bead": patch.get("bead"),
                     "module": patch.get("module"),
-                    "publication": patch.get("publication-status"),
                     "tests": classified,
                     "exception": patch.get("test-exception"),
                     "disposition": disposition,

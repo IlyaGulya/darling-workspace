@@ -22,9 +22,8 @@ its observer:
 
 ```sh
 scripts/west-job.sh start --state-dir /absolute/path/to/new-job -- \
-  mise run west test --profile wget-residual \
-  --patch xnu/posix-spawn-failure-ownership.patch --env darling \
-  --prefix /absolute/path/to/prepared-prefix --prove-red
+  mise run west test --env darling \
+  --prefix /absolute/path/to/prepared-prefix
 scripts/west-job.sh follow --state-dir /absolute/path/to/new-job
 # Reconnect with follow; request owner cleanup when cancellation is needed:
 scripts/west-job.sh cancel --state-dir /absolute/path/to/new-job
@@ -49,8 +48,7 @@ mise run west test --prefix /absolute/path/to/owned-prefix \
   --bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal
 mise run west test --prefix /absolute/path/to/owned-prefix \
   --bootstrap-runtime-profile homebrew-guest-toolchain-provisioning
-mise run west test --prefix /absolute/path/to/owned-prefix --profile wget-residual \
-  --patch xnu/posix-spawn-failure-ownership.patch --env darling
+mise run west test --prefix /absolute/path/to/owned-prefix --env darling
 ```
 
 The diagnostic prints the same command in bare West form (`west test --prefix
@@ -58,7 +56,7 @@ The diagnostic prints the same command in bare West form (`west test --prefix
 arguments unchanged.
 
 `--bootstrap-runtime-profile` is prefix provisioning, not a test selection. It
-is refused together with `--profile`/`--patch`, with the CTest selectors
+is refused together with the CTest selectors
 (`--bead`, `--label`, `--submodule`, `--changed`, `--fuzz`, `--stress`), and with
 `--list`, `--with-runtime-profile`, `--reuse-prefix-runtime` and raw CTest
 passthrough arguments. It runs `darling-doctor --scope workspace`, builds and
@@ -192,10 +190,11 @@ Local Linux RED/GREEN evidence is not a native macOS or hosted-matrix PASS.
 
 ### Inventory boundary and evidence
 
-The collector normalizes concrete `patches/*/patches.yml` files with the
-production `test_manifest.load_test_profile`, resolving repository names through
-West. It counts each file's entries independently, not inherited/composed runtime
-stacks. A binding is a patch-to-test entry, not a unique executable or a PASS.
+The collector normalizes the concrete test declarations in the workspace with
+the production `test_manifest.load_test_profile`, resolving repository names
+through West. It counts each declaration's entries independently, not
+inherited/composed runtime stacks. A binding is a test-to-case entry, not a
+unique executable or a PASS.
 
 
 The collector `scripts/audit-test-registration.py` and reviewed applicability
@@ -210,8 +209,8 @@ mise exec -- uv run --no-project --with west==1.5.0 python -B \
 
 The collector configures testkit for discovery only, does not build product
 targets or execute tests. Every binding requires explicit applicability review,
-independent of runner or coverage tier. Policy is keyed by
-`profile:patch-path:ordinal`, with a SHA-256 fingerprint of the normalized test
+independent of runner or coverage tier. Policy is keyed by the binding
+identity, with a SHA-256 fingerprint of the normalized test
 declaration and relative West project path. An unknown binding, reused name on a
 new binding, or changed declaration fails before a successful snapshot is
 written. Source-content/reference review is separate from this metadata
@@ -222,7 +221,7 @@ and explicit unresolved prerequisites.
 
 ### Applicability review commands
 
-Moving reviewed policy when declarations change profile or shift index is a
+Moving reviewed policy when declarations change or shift index is a
 supported command in the same collector, not hand work. All three modes read the
 declaration identity the census writes; none of them builds or executes anything:
 
@@ -238,7 +237,7 @@ policy, and identity mismatches, and exits non-zero while any of them remains.
 `carry` moves the policy and reason verbatim between the keys the reviewer names,
 in one invocation when a re-recording moves many. `rekey` does the same for a
 pure index shift, where old and new keys are ordinals of the same
-`profile:patch-path`. The reviewer always supplies the mapping: the tool never
+declaration. The reviewer always supplies the mapping: the tool never
 guesses one, refuses to invent a policy for a key that had none, refuses to
 carry a review across keys whose declarations differ in more than the key, and
 refuses to overwrite a record the mapping names neither as a source nor as a
@@ -283,17 +282,16 @@ bypass a current metadata/applicability review.
 
 
 Resolve `unresolved_in_current_checkout` script references against their
-declared profile sources. Live-tree absence does not establish missing
-materialized-profile coverage. Inventory discovery does not execute guest or
-native test cases.
+declared sources. Live-tree absence does not establish missing coverage.
+Inventory discovery does not execute guest or native test cases.
 
 ### Authority, identity and selection
 
 - Keep fixture sources and source-owned CMake/CTest registrations colocated
   with their owning project. Do not move all suites into workspace testkit.
 - CTest/source registration defines the scenario, arguments, environment,
-  resources, working directory, deadline and verdict. Patch metadata binds
-  that case to patch-specific runtime prerequisites, diagnostics and RED proof.
+  resources, working directory, deadline and verdict. Test metadata binds
+  that case to runtime prerequisites, diagnostics and RED proof.
   Preserve legitimate direct host/model/source/build runners.
 - Identify a case by project, source-suite scope and existing declared case
   name; retain exact discovered CTest names as execution instances. For example,
@@ -313,7 +311,7 @@ native test cases.
 
 ### CTest selection bridge
 
-Patch metadata can bind existing CTest registrations with `ctest: <label-regex>`,
+Test metadata can bind existing CTest registrations with `ctest: <label-regex>`,
 `ctest-name: <exact-existing-name>`, or both for a scoped exact-name selection.
 These references do not copy fixture commands or require new `name:` labels.
 A reference cannot override `command`; explicit fixture runners are separate.
@@ -327,7 +325,7 @@ guest runner. Darling runtime and RED ownership must use a Darling-scoped
 binding, separate from a native reference to the same scenario.
 
 `--list` configures discovery without building product targets, executing tests,
-or acquiring a prefix. A source-bound profile may need temporary worktrees.
+or acquiring a prefix. A source-bound selection may need temporary worktrees.
 Both listing and execution replay the exact discovered registrations. CTest
 indices are local to that configured build, not persistent case IDs: existing
 names and suite directories retain identity, including equal names in different
@@ -421,9 +419,8 @@ No result from one role substitutes for another.
 
 `tests/posix_spawn_failure_guest.c` has one source-owned CTest definition,
 `posix_spawn_failure_ownership`, with Darling and installed macOS variants.
-Patch metadata binds these names. The dedicated runtime provider selects
-`wget-residual`. Both dyld and libsystem_kernel are runtime artifacts
-because dyld embeds the syscall emulation path.
+Test metadata binds these names. Both dyld and libsystem_kernel are runtime
+artifacts because dyld embeds the syscall emulation path.
 
 The fixture checks:
 
@@ -444,8 +441,7 @@ ci/run-test-tier.sh macos-installed /absolute/path/to/bundle \
   -R '^macos/posix_spawn_failure_ownership$'
 ci/run-test-tier.sh macos-ssh HOST /absolute/path/to/bundle \
   -R '^macos/posix_spawn_failure_ownership$'
-mise run west test --profile wget-residual \
-  --patch xnu/posix-spawn-failure-ownership.patch --env darling \
+mise run west test --env darling \
   --prefix /absolute/path/to/prefix --prove-red
 ```
 
@@ -455,28 +451,8 @@ selection binds it before the initial prefix shutdown as well as during the
 provider's deployment/execution. Conflicting launcher environments for one
 selection are rejected before acquiring the prefix.
 
-Source inputs declared by `wget-residual` locks use Git bundles under
-`source-bundles/wget-residual/`. Relative `mirror.url` paths resolve against the
-declaring lock file's directory. Validate every declared base/source tag,
-ordered commit graph and tree; an unavailable bundle fails even if the caller
-has the objects. Keep source inputs outside generated `handoff/`, which the
-transactional handoff replaces wholesale.
-
-Runtime-source admission follows the registered typed mapping and its
-profile-composition lock, not a hardcoded list of profile names. Register a new
-composition in `locks/patch-stack/lock-first-profiles-v1.yml`; its prerequisite
-trees, ordered series, batch count and final trees must all validate before
-materialization.
-
-The lock-first contract
-(`tests/run-west-patch-stack-lock-first-contract.sh`) exercises the real
-profiles and therefore switches live module repositories to their profile
-branches for the duration of the run. Do not run it in parallel with any other
-West operation that materializes or applies a profile; its assertions must also
-stay derived (planner output versus the declared inventory) or structural, never
-hash literals of checked-in composition data, because those churn on every
-reviewed profile refresh and the canonical boundary evidence is
-`west patch verify`, which replays the real trees.
+Runtime-source admission uses the registered typed mapping, not a hardcoded
+list of profile names.
 
 Applicability preflight has a 300-second per-profile default.
 `--runtime-build-timeout-seconds` overrides both source preflight and build
@@ -489,7 +465,7 @@ compiler diagnostics containing the marker do not satisfy that oracle.
 
 ### Reproducible Homebrew build prerequisites
 
-The opt-in `homebrew-lz4-source` runtime profile uses `wget-residual` and
+The opt-in `homebrew-lz4-source` runtime profile uses
 the source-owned `rootless_toolchain` component. It includes native `cut`,
 system `openssl` with its configuration/certificate data, and Perl 5.18/5.28
 standard libraries and XS bundles. Perl uses its normal CMake install rules,
@@ -565,8 +541,7 @@ starts without observing; `mise run dw dev follow JOB` reconnects and
 `mise run dw dev cancel JOB` requests owner cleanup. `--dry-run` displays the
 underlying command without building, booting, or creating a job.
 
-Retained runtime reuse checks the selected source profile and its complete
-`base-profile` chain in the manifest repository, the source lock, runtime
+Retained runtime reuse checks the selected runtime profile, runtime
 definitions, source module revisions from the West root, and the deployed
 launcher. A changed input or an older fingerprint schema requires a new
 `homebrew-prepare` run; do not rewrite a retained marker to bypass this check.
@@ -614,16 +589,16 @@ its workload. Do not obtain shared GREEN by weakening assertions or merely
 adding `ENVS macos`. Review errno domains, descriptor inheritance, attribute
 support, timing assumptions and ABI availability against a native reference.
 
-Keep applicability decisions with the owning patch and Bead. Retain internal
+Keep applicability decisions with the owning change and its Bead. Retain internal
 RPC/fault/trace, DCC, overlay and prefix-lifecycle gates on Darling; expose a
 separate semantic reference when the workload has a meaningful public contract.
 Require compatible native-reference, bad-runtime RED and fixed-runtime GREEN
 evidence through supported runners. Cut each case over completely before
 removing its duplicate wrapper. Workspace-only registration changes do not
-rewrite canonical source commits; source fixture changes require
-fix-branch/export SHA and checksum refresh.
+rewrite canonical source commits; source fixture changes require a
+fix-branch SHA and checksum refresh.
 
-Tie publication checks to the owning patch's semantic proof and review; do not
+Tie publication checks to the owning change's semantic proof and review; do not
 substitute an unrelated package gate for that evidence.
 
 ## Test architecture
@@ -636,8 +611,8 @@ interfaces.
 
 - Keep upstream-compatible testcase sources and install layout as the portability
   seam.
-- Put local ergonomics in metadata and `west test`: `bead:*`, `profile:*`,
-  `patch:*`, `submod:*`, `env:*`, `diag:*`, `fuzz:*`, and `stress:*` labels.
+- Put local ergonomics in metadata and `west test`: `bead:*`,
+  `submod:*`, `env:*`, `diag:*`, `fuzz:*`, and `stress:*` labels.
 - Support five runnable kinds through the same CTest surface: host
   unit/contract tests, Darling guest/runtime tests, macOS oracle tests, external
   package/repro gates, and bounded fuzz/stress jobs.
@@ -648,69 +623,7 @@ interfaces.
   normal committed regressions.
 - Use `west test` selectors and metadata to identify the proof for a patch.
 
-### Patch-Local Red-Test Metadata
-
-Local patch profiles do not need a separate upstream `darling-testsuite` patch
-for every fix. The default workflow is: the smallest deterministic red test
-travels with the fix in the same source repo and, when practical, the same patch
-file/profile entry. Cross-repo bugs can use a small adjacent test patch in the
-same profile. Upstream `darling-testsuite` supplies the portable testcase style;
-upstream publication is not a local test prerequisite.
-
-`patches.yml` entries may declare runnable proof metadata:
-
-```yaml
-- path: darlingserver/example-fix.patch
-  module: darling/src/external/darlingserver
-  bead: dar-example
-  tests:
-  - name: example_contract
-    kind: contract        # unit|contract|guest|package|fuzz|stress|build|gate
-    coverage-tier: host   # runtime|compile|host|model|source
-    runs: host            # host|guest|macos
-    diag: bare            # bare|guarded|forensic
-    red: true             # this proves RED->GREEN for the fix
-    red-proof:
-      mode: self          # self|source-base; normal runs still expect GREEN
-      why-self: The script contains explicit bad and fixed arms.
-    runner: source-contract-script
-    script: tests/run-example-contract.sh
-    note: Fails on the parent commit, passes with this patch.
-```
-
-Profiles may also define compact defaults. `test-profiles` are reusable test
-defaults; `artifact-profiles` are reusable runtime deploy plans;
-`resource-profiles` are caches/oracles/external runtime resources; and
-`fixture-profiles` are setup/cleanup state. A test can use one or more profiles
-with `use` or `extends`; later test fields override profile fields, nested
-mappings merge recursively, and lists are replaced unless a field documents
-special append behavior.
-
-New manifests should use the explicit compact axes:
-
-- `runs: host|guest|macos` declares where the test executes. `runs: guest`
-  expands to the Darling guest envelope (`env: darling`, prefix lifecycle,
-  launcher/debug timeout/cleanup); this must not be hidden in a catch-all field.
-- `red-proof: source|runtime|self|none` declares how `west test --prove-red`
-  proves the test fails without the fix. Keep this separate from `expect`,
-  which describes green-run result expectations.
-- `artifacts` lists build outputs that `west test` builds/deploys/restores
-  during runtime proof.
-- `resources` lists runtime/test resources such as DCC caches, host traces,
-  stat deltas, or external services.
-- `fixtures` lists setup/cleanup state such as E-UNION overlays or seeded
-  prefix templates.
-
-Do not introduce `needs`; it is too broad. Use `artifacts`, `resources`, and
-`fixtures` so the manifest says what kind of dependency is involved.
-
-Runtime preflight uses `west patch verify --applicability-only`: on a clean CI
-runner the fork's local `source-branch` refs are intentionally absent, so this
-mode checks patch integrity and application to the pinned manifest revisions
-without confusing missing developer branches with a runtime failure. Full
-`west patch verify` checks source-branch/export drift for publishing.
-
-E-UNION host behavior follows the same rule. `testkit/CMakeLists.txt` builds
+E-UNION host behavior has its own CTest path. `testkit/CMakeLists.txt` builds
 the production XNU sources and the workspace harness as a CTest target, while
 the fixture setup is a CTest fixture prepared by
 `experiments/e-union/run.sh --prepare-fixture DIR`. Both normal GREEN runs and
@@ -718,26 +631,9 @@ source-base RED runs select
 the `eunion-host` label; only `DARLING_XNU_SRC` changes between them. The
 source-bound host suite is opt-in through
 `-DDARLING_ENABLE_EUNION_HOST_SUITE=ON`; West supplies that flag only for the
-separate materialized source build. The default testkit build keeps it off, so
+separate source build. The default testkit build keeps it off, so
 guest CTest selection cannot compile an E-UNION harness against the unpatched
 checkout before runtime-profile deployment.
-
-Where a host test is declared is part of what it means. `west test --profile <P>`
-reads tests only from `patches/<P>/patches.yml`; `base-profile` composes the tree
-but does not inherit test declarations, and a patch entry resolves to a file
-inside that profile's own directory. The E-UNION host suites are the worked
-example: they compile `experiments/e-union/runner.c`, whose
-`large_directory_checks()` runs unconditionally and asserts behaviour that needs
-`xnu/eunion-large-directory.patch` and `xnu/eunion-content-fd-validation.patch`,
-and both series belong to `wget-residual`. Declared under `homebrew` they were
-structurally RED - the same harness reported `305 tests, 14 failed` on the
-homebrew tree and `305 tests, 0 failed` on the wget-residual tree. They hang off
-a wget-residual entry now, and the host tier sweeps `wget-residual` as well as
-`homebrew` (about 100 seconds end to end, mostly materialization) so they run in
-CI where their chain satisfies them. Relocating a declaration is not free: an
-entry outside the profile's locked series is invisible to the lock-first
-materializer while still breaking `west patch apply`, `check` and `export`, so a
-series changes only when the series, not the test, is the thing that is wrong.
 
 ### What the contract census credits
 
@@ -745,7 +641,7 @@ series changes only when the series, not the test, is the thing that is wrong.
 (`CONTRACTS`, `EXPLICIT_CONTRACTS`) nor excluded with a reason
 (`EXCLUDED_CONTRACTS`). The transitive part of that rule is deliberately narrow:
 a contract is credited only when a source the tier already reaches invokes it
-**by path**. Four ways of naming a contract prove nothing, and all four were
+**by path**. Four ways of naming a contract prove nothing, and all of them were
 found in the tree:
 
 - a variable assignment that stores the path for a call made elsewhere:
@@ -761,15 +657,11 @@ found in the tree:
   execution of the contract behind it.
 - a comment. While this rule was being written, a comment naming the chain in
   the runner was itself enough to keep it "covered".
-- a test-synthesized profile under `patches/__*`. Those are fixtures a running
-  test materializes, not declarations, and one leftover credited the chain
-  again.
 
 The eleven contracts that chain owns are registered individually in
 `EXPLICIT_CONTRACTS` now, so they execute in about 1.6 seconds together. The
 chain runner itself stays in `EXCLUDED_CONTRACTS` with its reason: its west
-steps materialize profiles whose lock-first batches fetch
-`refs/tags/patch-stack/*` from the immutable mirror. That fetch is bounded and
+steps need the immutable mirror. That fetch is bounded and
 non-interactive, so it now fails closed with a named unreachable-mirror error
 instead of hanging for twenty minutes, but a workstation without mirror access
 still cannot run the chain to the end. Registering the chain is what finishes the
@@ -808,106 +700,7 @@ invocation. It runs in about two seconds, is registered in the tier it checks,
 and still fails when a tier command line changes (verified by mutating the
 wget-residual sweep argv and a guest-toolchain command line).
 
-### Reissuing a profile composition
-
-A `locks/patch-stack/<profile>-profile-composition-v2.yml` lock is the receipt
-for a profile's series: per module, the tree the module starts from, the tree
-every locked patch produces, and the final and integration-final trees. Only a
-replay knows those values, and `scripts/generate_profile_composition.py` does
-that replay - the same lock-first machinery the materializer uses - then renders
-the file in the checked-in style.
-
-The worked example is the thread-create fix joining the `mldr` series. The
-materialization refused to run with
-
-```
-darling/mldr-thread-create-futex-wait.patch: immutable replay tree a07675d1c363cb8ac1c4f38b2a1051dfe11d5627
-differs from expected profile boundary tree 8dd0c122dc6eb51d743f15d70ce0fc2c351fe698
-```
-
-and the derivation reproduced `a07675d1` independently. Comparing the two trees
-showed exactly two differing files, and the derived blobs were the fixed ones
-(`ea61d009`, from the fix commit) against the receipt's pre-fix ones
-(`daf89968`, from the first commit) - so the receipt was stale, not the replay
-wrong. Reissuing five files (homebrew, perf, arch, wget-residual,
-ring-comparison) made `west test --profile homebrew --env host
---materialize-profile` materialize and run 64 metadata cases with no failures.
-
-Two properties make the derivation trustworthy rather than circular. It never
-reads a value out of the checked-in lock - trees come from a replay of the
-locked immutable refs, and the entry list is built from the typed mapping rather
-than through `plan()`, which would bind a dependent profile's still-stale
-prerequisite digest. And the receipt stays a check: materialization compares
-against it on every run, which is exactly how the drift was found.
-
-Rules the derivation follows, each with its reason:
-
-- **The entry list comes from the mapping, not from the lock.** A dependent
-  profile cannot even be planned while its checked-in lock still records the old
-  digest of the prerequisite being reissued.
-- **`starting.tree` of a module is the tree before its first locked patch.** For
-  a stacked profile that is the prerequisite profile's final tree, which is why
-  the profile graph is derived prerequisite-first.
-- **Nested modules reproduce byte-for-byte; a parent tree does not
-  necessarily.** A parent tree carries gitlink commit IDs, which are generated
-  lifecycle evidence, and `verify_inherited_parent_boundary` exists to normalize
-  untouched child records for that reason.
-- **`integration_final_tree` equals `final_tree`** for every module, which the
-  generator asserts instead of assuming.
-- **A style-only difference is a failure, not a write.** Formatting churn in a
-  generated registry hides the real change; the same principle already applies
-  to `west patch export`.
-- **A write run reports the same field-level diff as `--check` and exits zero**;
-  only `--check` promises not to have fixed anything.
-
-Cost is the reason this is a deliberate command and not part of the tier: each
-invocation replays every profile in the requested chain, needs the immutable
-mirror, and takes minutes. The tier's gate for a stale receipt is the profile
-materialization it already runs; the focused contract
-`tests/run-profile-composition-derivation-contract.sh` covers the derivation's
-decisions cheaply - which field a drift is reported against, the style refusal,
-the module mapping, and a prerequisite described from the derived bytes.
-
-### What an export leaves behind
-
-A series lives in four artifacts, and `west patch export` writes two of them:
-
-| artifact | refreshed by |
-|---|---|
-| `patches/<profile>/<path>.patch` and `patches.yml` | `west patch export` |
-| `locks/patch-stack/<module>-<patch>-v1.yml` | hand-edited today; needs a create-only tag published to the mirror first |
-| `locks/patch-stack/migration-inventory-v1.yml` | hand-edited today; restates the lock |
-| `locks/patch-stack/<profile>-profile-composition-*.yml` | `scripts/generate_profile_composition.py` |
-
-The other two cannot be derived inside the export, so it reports instead of
-guessing, at the moment the change is in hand. On a consistent tree it says
-nothing; with a lock that still describes the previous series it prints, for
-each exported entry:
-
-```
-darling-mldr-thread-create-futex-wait-v1.yml: still records source_commit dd6b42e5…,
-but darling/mldr-thread-create-futex-wait.patch now exports c0640633… (2 commit(s))
-  publish it create-only: git push https://github.com/darling-next/darling.git c0640633…:refs/tags/patch-stack/v1/sources/c0640633…
-  then refresh the lock (schema-v2, mirror.source_oid/source_ref, source_commit,
-  ordered_commits, expected_tree) and its row in migration-inventory-v1.yml -
-  neither has a refresh command today
-  reissue the compositions this moves: scripts/generate_profile_composition.py
-  --profile homebrew (its dependents: perf, wget-residual, arch, ring-comparison)
-```
-
-The dependents are the transitive closure of the compositions that name this
-profile as a prerequisite, which is why the homebrew chain lists four further
-profiles: those are the leaves a homebrew change reaches.
-
-This exists because the alternative was measured. Adding one commit to the
-thread-create series was found late and three times over: first by a receipt
-contract, then by the tier's registry contract, and finally by the homebrew
-profile materialization, which is the most expensive place to learn it. The
-report is covered by `tests/run-patch-series-bindings-contract.sh`, which proves
-the four decisions cheaply on a synthetic locks root: which binding is behind,
-the commit the artifact carries, the refspec that publishes it, the receipt row
-that still disagrees, and the transitive closure - plus silence when everything
-agrees, because a reminder that fires on a current tree is noise.
+### Test metadata and runners
 
 Guest
 E-UNION cases use `guest-c-fixture` metadata because their lower and
@@ -950,16 +743,6 @@ artifact-profiles:
     module: darling/src/external/xnu
     build-targets: [system_kernel]
     deploy: [usr/lib/system/libsystem_kernel.dylib]
-
-patches:
-- path: xnu/example-fix.patch
-  module: darling/src/external/xnu
-  tests:
-  - use: guest-c-runtime-red
-    name: example_guest
-    script: tests/example_guest.c
-    ok-marker: EXAMPLE_GUEST_OK
-    artifacts: xnu-kernel
 ```
 
 Explicit metadata and compact profiles are supported. Prefer compact profiles
@@ -991,14 +774,9 @@ runner sees it. Set the field explicitly whenever the default would obscure an
 intentional distinction, especially for `model`.
 
 `red: true` does **not** mean the test should fail on the latest checkout.
-Normal `west test --profile ...` runs are regression runs and must pass on the
+Normal `west test` runs are regression runs and must pass on the
 current/fixed tree. It means the test is intended to prove a RED->GREEN
-regression. That proof is exercised explicitly:
-
-```sh
-mise run west test --profile homebrew --patch darling/mldr-thread-create-futex-wait.patch
-mise run west test --profile homebrew --patch darling/mldr-thread-create-futex-wait.patch --prove-red
-```
+regression. That proof is exercised explicitly with `west test --prove-red`.
 
 RED proof modes:
 
@@ -1025,7 +803,7 @@ RED proof modes:
   `deploy` paths so the runner knows which source tree to materialize, what to
   build, and which prefix files to swap. `--prove-red --list` prints the deploy
   plan. Before allocating a runtime source forest, west validates every layer
-  of the selected `base-profile` stack with `west patch verify`; an invalid
+  of the selected runtime profile; an invalid
   layer is a profile applicability error, never a runtime RED result. Execution
   then creates a temporary bad source forest and CMake/Ninja build
   dir, shuts down the selected prefix, backs up the declared deploy paths,
@@ -1087,8 +865,8 @@ Source/text checks are allowed only as auxiliary drift guards:
 ```
 
 `kind: source-contract` can prove that a hunk/symbol/comment is present or absent
-on a source tree, but it does not prove runtime behavior. `west patch check`
-therefore does **not** count source-contracts as patch coverage. A patch with
+on a source tree, but it does not prove runtime behavior, so it does **not**
+count as behavioral coverage. A declaration with
 only source-contracts is reported as `SOURCE ... missing behavioral test` until
 it also has a behavioral host/guest/build/package/fuzz/stress/gate test or a
 real `test-exception`.
@@ -1281,8 +1059,8 @@ GREEN. `stub-headers` may list empty generated headers for isolated production
 
 Use `runner: source-contract-script` for workspace-hosted shell contracts that
 execute current test assets against a source tree selected by `source-env`.
-`west test` sets that environment variable to the selected profile's source tree
-for normal GREEN runs, including `--materialize-profile`, and overrides it with
+`west test` sets that environment variable to the selected source tree
+for normal GREEN runs, and overrides it with
 the temporary bad/source-base worktree for `--prove-red`. This keeps
 workspace-hosted suites honest: the test asset can live in the workspace while
 the source under test still comes from the current profile tree.
@@ -1416,7 +1194,7 @@ Leftover processes make the run fail even if the payload passed. Pass
 `--keep-prefix-running` only when intentionally keeping the prefix warm for a
 manual debug loop.
 
-For patch metadata, `diag: guarded` and `diag: forensic` are enforced by
+For test metadata, `diag: guarded` and `diag: forensic` are enforced by
 `west test`, not by each script. `guarded` wraps the structured invocation in
 `darling-debug-runner run --timeout-seconds ...`, writes a small debug bundle,
 and uses prefix-owned shutdown for guest commands (process-group termination for
@@ -1526,13 +1304,10 @@ there rather than in the orchestrator.
 `command:` is intentionally an override for corner cases only. Prefer
 `runner/script`, `build-target`, or `ctest` so `west test` owns how tests
 are launched, filtered, deduplicated, and eventually wrapped by diagnostics.
-`west patch check` validates structured entries and resolves `repo` against the
-West manifest/path map. `west test` validates the script path against the actual
-checkout immediately before running, because a profile may reference tests added
-by another patch in the same stack and the current subrepo branch may not be the
-profile integration tree.
+`west test` validates the script path against the actual
+checkout immediately before running.
 
-If a non-documentation patch truly cannot carry a committed red test, record an
+If a non-documentation change truly cannot carry a committed red test, record an
 explicit exception:
 
 ```yaml
@@ -1541,68 +1316,14 @@ explicit exception:
     note: Comment-only warning for code compiled out in all configurations.
 ```
 
-The local gates are:
-
-```sh
-mise run west patch check --profile arch
-mise run west patch check --profile arch --strict
-mise run west test --profile arch --list --red-only
-mise run west test --profile arch --patch darlingserver/stack-pool-empty-stack-handle.patch --list
-mise run west test --profile arch --patch darlingserver/stack-pool-empty-stack-handle.patch
-```
-
-Patch export must keep review diffs narrow. `west patch export` updates patch
-files plus the touched entry's `source-commit` and `sha256sum` fields in
-`patches.yml`; it must not reserialize unrelated entries or rewrite block
-scalars/quoting across the profile. Export preflights the whole selected
-profile before writing: every `source-branch`, `source-base`, and
-`source-commit` must resolve, and suspicious patch-size growth is rejected
-unless `--allow-large-output` is passed deliberately. Use
-`west patch export --profile <profile> --patch <path>` for focused checks or
-exports of one entry; the selector uses the exact `patches.yml` path and does
-not write unrelated patch files or metadata entries.
-
-The export gate also rejects generated evidence files in a patch: JSON
-snapshots, census/stat captures, handoff notes, and build-output logs. These
-belong in a diagnostic archive, not in a product branch or review patch.
-`west patch check --quality` reports existing violations, while
-`west patch verify` and export refuse them. A large patch is acceptable only
-when its source tree contains real product code/tests and the explicit
-`--allow-large-output` override is reviewed; the override never permits
-generated evidence.
-The same gate rejects legacy `Co-Authored-By` trailers naming Claude or Codex;
-those automation trailers must be removed from local commit messages before
-export, while real authorship and unrelated trailers remain intact.
-
-Some gates need a consistent patch profile rather than the developer's current
-mixture of fix branches. Mark those with `requires-profile: arch` (or another
-profile name). `west test` will list those tests anywhere. On execution, if the
-live checkout is not already fully on `integration/<profile>`, profile-bound
-metadata tests are temporarily materialized in detached worktrees; this keeps
-the developer's current checkout stable while making headers, source files, and
-test assets come from the intended profile.
-
-With `--materialize-profile`, selected profile metadata tests run from temporary
-detached worktrees built from the frozen West manifest and typed immutable
-schema-v2 locks. For composed profiles, typed prerequisite profiles are replayed
-first in dependency order. Historical patch archives and stale
-`integration/<profile>` branches are not materialization inputs. The live
-checkout is not switched, and list mode never materializes worktrees.
-
 For a bounded diagnostic A/B of a declared runtime provider, use
 `--runtime-cmake-define NAME=VALUE`. The override is applied only to the
 disposable runtime source/build/deploy transaction and is shown in its CMake
 configuration; the profile remains the owner of required artifacts, source
 modules, launcher environment, and cleanup. The option is for feature flags
 such as `DARLING_GUEST_RECVSPIN=0`, not for changing framework-owned build
-identity (`DARLING_PATCH_PROFILE`, install prefix, or build type). It must not
+identity (install prefix or build type). It must not
 be committed into a profile merely to make a diagnosis pass.
-
-Use `west patch check --quality` for low-noise structural audit warnings that
-are not basic schema validity. `--strict-quality` turns those warnings into a
-failing gate. Current checks intentionally focus on patterns that caused false
-RED proofs in practice: XNU `system_kernel` runtime proofs without materialized
-darlingserver, and non-dyld tests that deploy dyld as an unrelated artifact.
 
 ## Compatibility test registration
 
@@ -1687,7 +1408,7 @@ Enable expensive tracing explicitly; do not classify silence as a hang.
 
 Storage is bounded by GC: `west test --gc` keeps the newest `--keep-last N`
 bundles and drops any over `--max-bundle-mb` (catches stray forensic
-cores/traces). It also prunes stale runtime/source-profile scratch dirs older
+cores/traces). It also prunes stale runtime and proof scratch dirs older
 than `--proof-scratch-max-age-hours` and retains at most
 `--proof-scratch-keep-last N` fresh scratch dirs. The count cap matters after
 a string of recent build failures: preserved CTest source/build trees cannot
@@ -1784,11 +1505,10 @@ with that source and artifact layout.
   we do not fork the framework.
 - ORCHESTRATION (`west test`, changed-only, beads, debug-runner) stays in this
   private workspace — Darling and darling-testsuite stay clean CTest.
-- Keep publication scope and submodule pointer changes explicit in the owning PR.
+- Keep publication scope and submodule pointer changes explicit in the owning change.
 - Use the CI execution contract at the start of this document for host,
-  rootless guest and native installed tiers. Source-bound host cases use
-  `west test --profile homebrew --materialize-profile` so they compile against
-  the selected patched sources.
+  rootless guest and native installed tiers. Source-bound host cases run
+  through `west test` so they compile against the checked-out sources.
 
 ## Local Compatibility Suite
 

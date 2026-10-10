@@ -208,12 +208,6 @@ print(\"job-status: complete\")
     fake_west = root / "bin" / "fake-west"
     bead_payload = {"id": "B-42", "state": "open", "cwd": str(manifest_repo)}
     handoff_payload = {"ready": True, "changes": [], "cwd": str(manifest_repo)}
-    patch_payload = {
-        "schema_version": 1,
-        "operation": "status",
-        "state": "clean",
-        "profile": "contract-profile",
-    }
     doctor_payload = {
         "schema_version": 1,
         "operation": "doctor",
@@ -230,12 +224,10 @@ if os.getcwd() != {str(manifest_repo)!r}:
     raise SystemExit(96)
 if args == [\"dw\", \"beads\", \"show\", \"B-42\", \"--json\"]:
     print(json.dumps({bead_payload!r}, sort_keys=True, separators=(\",\", \":\")))
+elif args == [\"dw\", \"beads\", \"show\", \"B-OVERFLOW\", \"--json\"]:
+    sys.stdout.write(\"X\" * ({dev_status.MAX_CAPTURE_BYTES} + 17))
 elif args == [\"dw\", \"handoff\", \"--dry-run\", \"--json\"]:
     print(json.dumps({handoff_payload!r}, sort_keys=True, separators=(\",\", \":\")))
-elif args == [\"patch\", \"status\", \"--profile=contract-profile\", \"--strict\", \"--json\"]:
-    print(json.dumps({patch_payload!r}, sort_keys=True, separators=(\",\", \":\")))
-elif args == [\"patch\", \"status\", \"--profile=overflow-profile\", \"--strict\", \"--json\"]:
-    sys.stdout.write(\"X\" * ({dev_status.MAX_CAPTURE_BYTES} + 17))
 elif args == [\"darling-doctor\", \"--prefix={str(prefix)}\", \"--build-dir={str(build_dir)}\", \"--json\"]:
     print(json.dumps({doctor_payload!r}, sort_keys=True, separators=(\",\", \":\")))
 elif args == [\"darling-doctor\", \"--prefix={str(oversized_root)}\", \"--json\"]:
@@ -262,7 +254,6 @@ else:
             workspace,
             manifest_repo,
             manifest,
-            "contract-profile",
             "B-42",
             prefix,
             build_dir,
@@ -272,7 +263,6 @@ else:
             workspace,
             manifest_repo,
             manifest,
-            "contract-profile",
             "B-42",
             prefix,
             build_dir,
@@ -282,7 +272,6 @@ else:
             workspace,
             manifest_repo,
             manifest,
-            "contract-profile",
             None,
             None,
             None,
@@ -292,8 +281,7 @@ else:
             workspace,
             manifest_repo,
             manifest,
-            "overflow-profile",
-            None,
+            "B-OVERFLOW",
             prefix,
             build_dir,
             west_argv,
@@ -311,11 +299,10 @@ else:
     assert status["state"] == "healthy"
     assert status["degraded_sections"] == []
     assert status["in_progress_sections"] == []
-    assert status["next_safe_action"] == "west dev check quick --profile contract-profile"
+    assert status["next_safe_action"] == "west dev check quick"
     assert status["inputs"] == {
         "topdir": str(workspace),
         "manifest_repo": str(manifest_repo),
-        "profile": "contract-profile",
         "bead": "B-42",
         "prefix": str(prefix),
         "build_dir": str(build_dir),
@@ -336,7 +323,6 @@ else:
         "git": "Git porcelain v2",
         "bead": "west dw beads routed Bead JSON",
         "handoff": "west dw handoff --dry-run --json",
-        "patch": "west patch status typed profile composition",
         "doctor": "west darling-doctor authoritative defaults with explicit overrides",
         "source_worktrees": "west_commands.source_worktree record version 1",
         "deployment_transactions": "west_commands.deploy_transaction manifest version 1",
@@ -401,14 +387,6 @@ else:
         "--json",
     ]
     assert results["handoff"]["data"] == handoff_payload
-    assert results["patch"]["argv"] == west_argv + [
-        "patch",
-        "status",
-        "--profile=contract-profile",
-        "--strict",
-        "--json",
-    ]
-    assert results["patch"]["data"] == patch_payload
     assert results["doctor"]["argv"] == west_argv + [
         "darling-doctor",
         f"--prefix={prefix}",
@@ -498,15 +476,15 @@ else:
     ]
     assert optional["results"]["doctor"]["data"] == doctor_payload
 
-    overflow_patch = overflow["results"]["patch"]
-    assert overflow_patch["health"] == "degraded"
-    assert overflow_patch["rc"] == 0
-    assert overflow_patch["stdout"] == "X" * dev_status.MAX_CAPTURE_BYTES
-    assert overflow_patch["stdout_truncated"] is True
-    assert overflow_patch["stderr_truncated"] is False
+    overflow_bead = overflow["results"]["bead"]
+    assert overflow_bead["health"] == "degraded"
+    assert overflow_bead["rc"] == 0
+    assert overflow_bead["stdout"] == "X" * dev_status.MAX_CAPTURE_BYTES
+    assert overflow_bead["stdout_truncated"] is True
+    assert overflow_bead["stderr_truncated"] is False
     assert overflow["state"] == "degraded"
     assert overflow["in_progress_sections"] == []
-    assert overflow["degraded_sections"] == ["patch"]
+    assert overflow["degraded_sections"] == ["bead"]
     assert overflow["next_safe_action"] == (
         "resolve degraded status authorities, then rerun west dev status"
     )
@@ -520,7 +498,6 @@ else:
                 workspace,
                 manifest_repo,
                 manifest,
-                "contract-profile",
                 None,
                 None,
                 None,
@@ -530,7 +507,6 @@ else:
                 workspace,
                 manifest_repo,
                 manifest,
-                "contract-profile",
                 None,
                 None,
                 None,
@@ -559,7 +535,6 @@ else:
             workspace,
             manifest_repo,
             manifest,
-            "contract-profile",
             None,
             None,
             None,
@@ -589,7 +564,6 @@ else:
             workspace,
             manifest_repo,
             manifest,
-            "contract-profile",
             None,
             None,
             None,
@@ -632,7 +606,6 @@ else:
             workspace,
             manifest_repo,
             manifest,
-            "contract-profile",
             None,
             prefix,
             build_dir,
@@ -674,7 +647,6 @@ else:
             workspace,
             manifest_repo,
             manifest,
-            "contract-profile",
             None,
             None,
             None,
@@ -711,7 +683,6 @@ else:
             workspace,
             manifest_repo,
             manifest,
-            "contract-profile",
             None,
             oversized_root,
             None,

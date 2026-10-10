@@ -335,7 +335,6 @@ def malformed_contract() -> None:
 
 def parser_contract() -> None:
     dev_parser = build_parser(dev.DarlingDev())
-    assert dev_parser.parse_args(["dev", "status"]).profile == "homebrew"
     assert dev_parser.parse_args(
         ["dev", "check", "quick", "--evidence", "out.json"]
     ).profile == "homebrew"
@@ -359,7 +358,7 @@ def parser_contract() -> None:
         profiles.names,
         profiles.completion,
     ) == (
-        "all",
+        "runtime",
         [],
         False,
         False,
@@ -384,7 +383,7 @@ def parser_contract() -> None:
     dev_actions = dev_parser._subparsers._group_actions[0].choices[
         "dev"
     ]._subparsers._group_actions[0].choices
-    for action_name in ("status", "check", "package"):
+    for action_name in ("check", "package"):
         action = next(
             candidate
             for candidate in dev_actions[action_name]._actions
@@ -528,46 +527,47 @@ def dev_output_contract() -> None:
 
             human_args = parser.parse_args(["dev", "profiles"])
             command.do_run(human_args, [])
-            assert emitted[0] == "west dev profiles: valid patch=7 runtime=4"
+            assert emitted[0] == "west dev profiles: valid runtime=4"
             assert shlex.split(emitted[1].removeprefix("details: ")) == [
                 "/recorded/west launcher",
                 "dev",
                 "profiles",
-                "--kind=all",
+                "--kind=runtime",
                 "--json",
             ]
-            rows = [
-                line
-                for line in emitted
-                if line.startswith(("patch   ", "runtime "))
-            ]
-            assert len(rows) == dev._HUMAN_PREVIEW_LIMIT
+            runtime_rows = [line for line in emitted if line.startswith("runtime ")]
+            assert len(runtime_rows) == 4
             assert all(
-                len(line) <= dev._HUMAN_ITEM_CHARACTER_LIMIT for line in rows
+                len(line) <= dev._HUMAN_ITEM_CHARACTER_LIMIT
+                for line in runtime_rows
             )
-            assert emitted[-1] == "... 3 additional profiles omitted"
             assert emitted == [
-                "west dev profiles: valid patch=7 runtime=4",
+                "west dev profiles: valid runtime=4",
                 "details: "
                 + shlex.join(
                     [
                         "/recorded/west launcher",
                         "dev",
                         "profiles",
-                        "--kind=all",
+                        "--kind=runtime",
                         "--json",
                     ]
                 ),
                 *[
-                    f"patch   patch {index} patches={index} "
-                    f"path=patches/patch {index}/patches.yml "
-                    f"description=patch {index} description"
-                    for index in range(7)
+                    f"runtime runtime {index} source=patch {index}:darling/runtime-{index} "
+                    "purpose=runtime path=testkit/runtime-profiles.yml"
+                    for index in range(4)
                 ],
-                "runtime runtime 0 source=patch 0:darling/runtime-0 "
-                "purpose=runtime path=testkit/runtime-profiles.yml",
-                "... 3 additional profiles omitted",
             ]
+
+            patch_human_args = parser.parse_args(
+                ["dev", "profiles", "--kind", "patch"]
+            )
+            emitted.clear()
+            command.do_run(patch_human_args, [])
+            assert emitted[0] == "west dev profiles: valid runtime=0"
+            patch_rows = [line for line in emitted if line.startswith("patch   ")]
+            assert len(patch_rows) == 7
         finally:
             dev._west_argv = real_west_argv
 
@@ -582,7 +582,7 @@ def dev_output_contract() -> None:
         command.topdir = str(root.parent)
         emitted: list[str] = []
         command.inf = emitted.append
-        args = parser.parse_args(["dev", "profiles", "--json"])
+        args = parser.parse_args(["dev", "profiles", "--kind", "patch", "--json"])
         try:
             command.do_run(args, [])
         except SystemExit as error:
@@ -731,11 +731,11 @@ printf '%s\\0' "${{COMPREPLY[@]}}"
         assert complete(["west", "patch", "apply", "--profile", "alpha s"])[0] == [
             "alpha space"
         ]
-        assert complete(["west", "dev", "status", "--profile=be"])[0] == [
+        assert complete(["west", "dev", "check", "--profile=be"])[0] == [
             "--profile=beta"
         ]
         assert complete(
-            ["west", "dev", "status", "--profile", "=", "be"]
+            ["west", "dev", "check", "--profile", "=", "be"]
         )[0] == ["beta"]
         assert complete(["west", "-v", "test", "--profile", "alpha"])[0] == [
             "alpha",
@@ -745,7 +745,7 @@ printf '%s\\0' "${{COMPREPLY[@]}}"
             ["west", "--verbose", "--quiet", "test", "--profile", "be"]
         )[0] == ["beta"]
         assert complete(
-            ["west", "-z", "/tmp/workspace", "dev", "status", "--profile", "be"]
+            ["west", "-z", "/tmp/workspace", "dev", "check", "--profile", "be"]
         )[0] == ["beta"]
         assert complete(
             [

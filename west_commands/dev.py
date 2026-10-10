@@ -29,6 +29,7 @@ from profile_catalog import (
     PATCH_PROFILE_KIND,
     PROFILE_KINDS,
     PROFILE_OPTION,
+    RUNTIME_PROFILE_KIND,
     add_profile_argument,
     bash_profile_completion,
     collect_profile_catalog,
@@ -111,7 +112,6 @@ def _status_json_command(
         *_replay_west_argv(payload, current_west_argv),
         "dev",
         "status",
-        f"{PROFILE_OPTION}={inputs.get('profile', 'homebrew')}",
     ]
     for option, key in (
         ("--bead", "bead"),
@@ -220,14 +220,10 @@ def _render_human(
     state = payload.get("state", "unknown")
     if operation == "profiles":
         profiles = payload.get("profiles", [])
-        patch_count = sum(
-            profile.get("kind") == PATCH_PROFILE_KIND for profile in profiles
+        runtime_count = sum(
+            profile.get("kind") != PATCH_PROFILE_KIND for profile in profiles
         )
-        runtime_count = len(profiles) - patch_count
-        command.inf(
-            f"west dev profiles: {state} "
-            f"patch={patch_count} runtime={runtime_count}"
-        )
+        command.inf(f"west dev profiles: {state} runtime={runtime_count}")
         command.inf(
             "details: "
             + _profiles_json_command(
@@ -401,10 +397,10 @@ class DarlingDev(WestCommand):
         add_scenario_parsers(subparsers)
 
         profiles = subparsers.add_parser(
-            "profiles", help="discover patch and CTest runtime profiles"
+            "profiles", help="discover CTest runtime profiles and their purposes"
         )
         profiles.add_argument(
-            "--kind", choices=PROFILE_KINDS, default=ALL_PROFILE_KIND
+            "--kind", choices=PROFILE_KINDS, default=RUNTIME_PROFILE_KIND
         )
         profiles.add_argument(
             "--purpose",
@@ -418,9 +414,6 @@ class DarlingDev(WestCommand):
         profile_output.add_argument("--completion", choices=("bash",))
 
         status = subparsers.add_parser("status", help="summarize local feature-work state")
-        add_profile_argument(
-            status, PROFILE_OPTION, PATCH_PROFILE_KIND, default="homebrew"
-        )
         status.add_argument("--bead")
         status.add_argument("--prefix", type=Path)
         status.add_argument("--build-dir", type=Path)
@@ -526,7 +519,6 @@ class DarlingDev(WestCommand):
                     topdir=topdir,
                     manifest_repo=manifest_repo,
                     manifest=self.manifest,
-                    profile=args.profile,
                     bead=args.bead,
                     prefix=args.prefix.resolve() if args.prefix else None,
                     build_dir=args.build_dir.resolve() if args.build_dir else None,

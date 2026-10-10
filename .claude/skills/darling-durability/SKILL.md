@@ -1,8 +1,8 @@
 ---
 name: darling-durability
 description: >-
-  Preserve Darling changes across checkout, integration regeneration, and handoff.
-  Use before ending a changing session, before checkout/update/patch application,
+  Preserve Darling changes across checkout, update, and handoff.
+  Use before ending a changing session, before checkout/update,
   or when dirty source work is found. Preserve canonical fix branches and stage
   only explicitly owned manifest and handoff changes.
 ---
@@ -26,10 +26,7 @@ configuration. Do not search conversation archives for installation copies.
 ## What must survive
 
 - Clean `fix/*` branches are canonical editable product source.
-- Patch archives and their full source SHA/checksum metadata are portable inputs.
 - The manifest repository owns workspace metadata, Beads, drafts, and handoff.
-- `integration/*` branches and profile `west.lock.yml` files are generated,
-  not a place to retain fixes. Do not edit generated branches or locks.
 - Dirty worktrees are not made durable by `mise run west dw handoff` alone.
 - The West-root sibling `darling-debug-runner` is an independent repository.
   Forest handoff does not retain its branches merely because the runner is used
@@ -48,8 +45,7 @@ and `mise run west ...` for advanced West commands. Both tasks select the pinned
 mise environment for every command and forward arguments without an extra
 separator. From the West root use `mise -C darling-workspace run dw ...` or
 `mise -C darling-workspace run west ...`. Preserve advanced interfaces such as
-`mise run west patch`, `mise run west pr`, and `mise run west dw handoff`;
-do not invent unsupported managed verbs.
+`mise run west dw handoff`; do not invent unsupported managed verbs.
 
 ## Triage before changing repository state
 
@@ -60,7 +56,7 @@ do not invent unsupported managed verbs.
 2. Classify each change as owned keeper, another person's work, or disposable
    experiment/evidence. Do not discard, stage, reformat, or commit someone else's
    changes as part of your task.
-3. Before rebasing, switching, resetting, or regenerating an integration, preserve
+3. Before rebasing, switching, or resetting, preserve
    at-risk commits with an explicit local rescue ref or verified bundle, and back
    up owned uncommitted changes outside disposable worktrees. A branch reference
    alone does not preserve uncommitted files.
@@ -75,28 +71,22 @@ do not invent unsupported managed verbs.
    manifest/source tips. A release executable or target directory is not a
    durable replacement for source; derive runner identity from the repository.
 
-## Commit and export narrowly
+## Commit narrowly
 
 - Commit only the exact owned source paths on the canonical fix branch. Inspect
   pre-existing staged changes so the commit cannot absorb unrelated work.
-- Refresh changed patch inputs with `mise run west patch export`, using the focused
-  `--profile` and `--patch` selectors when applicable. Update the full source
-  SHA and checksum together. Do not hand-edit archives or accept unrelated YAML
-  formatting churn. Never edit generated locks to make verification pass.
-- Validate through `mise run west patch export --check`,
-  `mise run west patch verify`, and relevant behavior checks. Unified patch archives have significant blank
-  context lines: exclude `patches/**/*.patch` from ordinary whitespace checks
-  and validate the payload with patch tooling instead.
+- Validate through the relevant behavior checks; follow the manifest's test
+  metadata, coverage-tier and RED-proof rules.
 - Commit owned manifest changes with an explicit path list, separate from
   handoff-generated changes. NEVER use `git add -A`, broad directory staging,
   or a blanket reset/clean as a shortcut. If the index contains unrelated work,
   isolate your commit without altering that work.
 - Keep generated logs, snapshots, test archives, and diagnostic evidence in the
-  external diagnostic archive, not in product patches. An experiment does not
+  external diagnostic archive, not in product source. An experiment does not
   become product source merely to make it durable.
 - Keep reproducible configuration declarations in source; keep machine-local dev
   contexts, prefix contents, downloaded CLT caches, compiled executors, and
-  diagnostic bundles outside product patches. Preserve reviewed toolchain
+  diagnostic bundles outside product source. Preserve reviewed toolchain
   integrity metadata in its authoritative source, not a copied cache stamp.
   For catalog-backed CLT packages, catalog SHA-1 covers the compressed XAR TOC;
   the reviewed SHA-256 covers the whole package. Derive SDK identity from
@@ -172,10 +162,9 @@ need not be made globally clean to finish your task.
 
 ## Publication and runtime boundaries
 
-- Local durability does not authorize a push. Never publish branches, tags, or PR
+- Local durability does not authorize a push. Never push branches, tags, or
   updates without explicit approval covering that exact action and destination.
-  Fork approval does not authorize upstream changes. Preserve publication gates;
-  do not silently reclassify blocked fixes.
+  This is a hard fork: nothing is published upstream.
 - Handoff does not require booting Darling, redeploying artifacts, or resetting
   all prefixes to a remembered baseline. If this session used a runtime, verify
   only its owned prefix's lifecycle and declared restore obligations through the

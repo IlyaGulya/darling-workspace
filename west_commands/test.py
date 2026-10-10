@@ -209,7 +209,7 @@ class DarlingTest(
             PROFILE_OPTION,
             PATCH_PROFILE_KIND,
             metavar="NAME",
-            help="run tests declared by a patch profile's patches.yml metadata",
+            help="run tests declared by a test profile's patches.yml metadata",
         )
         parser.add_argument(
             "--patch",

@@ -78,8 +78,7 @@ def declared_bindings(workspace, project_paths):
                      "bead": patch.get("bead"), "source_commit": patch.get("source-commit")}
             tests = patch.get("tests") or []
             patches.append({**owner, "test_count": len(tests),
-                            "exception": patch.get("test-exception"),
-                            "publication_status": patch.get("publication-status")})
+                            "exception": patch.get("test-exception")})
             for ordinal, test in enumerate(tests, 1):
                 repo = test.get("repo", patch["module"])
                 repo_root = workspace if repo in {"darling-workspace", "manifest"} else workspace.parent / project_paths.get(repo, repo)

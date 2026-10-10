@@ -171,7 +171,7 @@ setup_local() {
   target_agents="$DW_DARLING_SRC/AGENTS.md"
 
   mkdir -p "$(dirname "$exclude")"
-  for pattern in '.beads/' 'AGENTS.md' 'pr-drafts/' '.bv/'; do
+  for pattern in '.beads/' 'AGENTS.md' '.bv/'; do
     grep -Fqx "$pattern" "$exclude" 2>/dev/null ||
       printf '%s\n' "$pattern" >>"$exclude"
   done

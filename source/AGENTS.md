@@ -55,33 +55,32 @@ Do not run raw `br`/`bd` from source or create a second issue database. Optional
 `bv --robot-*` triage belongs in the manifest directory; recheck issue state with
 `west dw beads` before claiming. Never launch an unattended interactive `bv`.
 
-- Edit canonical clean `fix/*` branches. Integration branches and profile locks
-  are generated; do not edit or publish them.
-- Export source changes through `west patch export`, refreshing full source SHA
-  and checksum together. Preserve publication blockers and use focused profile
-  verification. Follow the manifest's behavioral coverage and RED-proof rules;
+- Edit canonical clean `fix/*` branches. Integration branches are generated;
+  do not edit or publish them.
+- Publish source changes from clean `fix/*` branches. Preserve publication
+  blockers. Follow the manifest's behavioral coverage and RED-proof rules;
   source-text matching or an unrelated startup failure is not regression proof.
 - Use declared runtime providers for build/deploy/restore. For manual focused
   validation, use serialized `west darling-build`; never race raw Ninja builds.
   A libsystem_kernel behavior change also requires dyld deployment because dyld
   contains a static emulation path. Do not validate against remembered hashes.
-- Keep `.beads/`, agent instructions, PR drafts and handoff state out of source
+- Keep `.beads/`, agent instructions, and handoff state out of source
   commits. Stage exact owned paths; do not absorb unrelated work.
 
 ## Completion and durability
 
 1. Record actual verdicts, diagnostic paths and unresolved blockers in the Bead.
    Preserve full bootstrap failure evidence before interpreting a restored prefix.
-2. Commit owned source changes and refresh their portable patch metadata; commit
-   owned manifest changes separately. No blanket staging or automatic push.
+2. Commit owned source changes and manifest changes separately. No blanket
+   staging or automatic push.
 3. An ephemeral handoff is optional. Run `mise -C ../darling-workspace run west
    dw handoff` only when an explicit local-only state genuinely needs portable
    archival; if it is run, commit only the files it actually changed.
 4. Verify every changed canonical tip in its keeper bundle. A forest handoff may
    omit sibling tooling repositories; preserve those explicitly. Local contexts
-   and diagnostic archives are not product patches.
-5. No push or mutating PR operation without explicit approval for that action and
-   destination. Fork approval never permits an upstream mutation.
+   and diagnostic archives are not product source.
+5. No push or publication operation without explicit approval for that action
+   and destination. This is a hard fork: nothing goes upstream.
 
 The manifest's `mise run dw setup-local` installs this template only when no source
 instruction file exists. It preserves differing installed copies: inspect local

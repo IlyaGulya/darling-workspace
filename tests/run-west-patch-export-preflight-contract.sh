@@ -39,8 +39,6 @@ patches:
   source-base: $source_base_value
   source-commit: $source_commit_value
   bead: dar-jqlo
-  publication-status: blocked
-  publication-blocker: export preflight contract fixture
 YAML
 }
 
@@ -55,8 +53,6 @@ patches:
   source-branch: $stack_first_branch
   source-commit: $stack_first_commit
   bead: dar-jqlo
-  publication-status: blocked
-  publication-blocker: export preflight contract fixture
 - path: test/second.patch
   sha256sum: 0000000000000000000000000000000000000000000000000000000000000000
   module: darling/src/external/darlingserver
@@ -64,8 +60,6 @@ patches:
   source-base: $stack_stale_base
   source-commit: $stack_second_commit
   bead: dar-jqlo
-  publication-status: blocked
-  publication-blocker: export preflight contract fixture
 YAML
 }
 

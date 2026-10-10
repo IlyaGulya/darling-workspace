@@ -14,11 +14,6 @@ west-commands:
       - name: patch
         class: DarlingPatch
         help: Apply tracked Darling patch profiles
-  - file: west_commands/pr.py
-    commands:
-      - name: pr
-        class: DarlingPr
-        help: Manage staged and upstream Darling pull requests
   - file: west_commands/test.py
     commands:
       - name: test

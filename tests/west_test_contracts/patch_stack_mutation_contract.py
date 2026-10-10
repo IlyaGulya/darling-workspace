@@ -253,7 +253,6 @@ def build_fixture(root: Path) -> Fixture:
         "source-branch": "fix/mutation-production",
         "source-commit": source,
         "bead": "dar-4ush.6",
-        "publication-status": "blocked",
     })
     write_yaml(workspace / profile_rel, profile_value)
     mapping_value = {

@@ -16,11 +16,6 @@ consumers:
     operation: authoring-output-refresh
     access: write
     executes_archive: false
-  - id: pr-review-provenance
-    path: west_commands/pr.py
-    operation: dashboard-and-publish-checksum
-    access: read
-    executes_archive: false
   - id: guest-macho-owner-metadata
     path: ci/guest_macho_batch_specs.py
     operation: owning-patch-path-and-checksum-metadata

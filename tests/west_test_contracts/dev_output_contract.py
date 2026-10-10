@@ -120,7 +120,6 @@ with tempfile.TemporaryDirectory(prefix="dev-output-contract-") as temporary:
         "state": "in_progress",
         "transaction_id": None,
         "inputs": {
-            "profile": "-profile with space",
             "bead": "dar-test.1",
             "prefix": str(root / "prefix with space"),
             "build_dir": None,
@@ -145,7 +144,6 @@ with tempfile.TemporaryDirectory(prefix="dev-output-contract-") as temporary:
         "/recorded/west launcher",
         "dev",
         "status",
-        "--profile=-profile with space",
         "--bead=dar-test.1",
         f"--prefix={root / 'prefix with space'}",
         "--json",

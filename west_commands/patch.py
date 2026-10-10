@@ -2017,21 +2017,6 @@ class DarlingPatch(WestCommand):
             if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
                 self.die(f"{patch['path']}: source-commit must be a full SHA")
 
-            publication_status = patch.get("publication-status")
-            if publication_status not in {"ready", "provisional", "blocked"}:
-                self.die(
-                    f"{patch['path']}: invalid publication-status "
-                    f"{publication_status!r}"
-                )
-            if (
-                publication_status != "ready"
-                and not patch.get("publication-blocker")
-            ):
-                self.die(
-                    f"{patch['path']}: {publication_status} fixes require "
-                    "publication-blocker"
-                )
-
             repo = self._repo(patch["module"])
             if require_source_branches:
                 source_branch = patch["source-branch"]
@@ -2058,9 +2043,6 @@ class DarlingPatch(WestCommand):
             bead = patch.get("bead")
             if bead and bead not in bead_ids:
                 self.die(f"{patch['path']}: unknown Bead {bead}")
-            pr_draft = patch.get("pr-draft")
-            if pr_draft and not (manifest_repo / pr_draft).is_file():
-                self.die(f"{patch['path']}: missing PR draft {pr_draft}")
             self.inf(f"verified {path.relative_to(manifest_repo)}")
 
         self._verify_applicability(profile, grouped, offline=offline)

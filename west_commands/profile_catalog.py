@@ -178,7 +178,7 @@ _darling_west_profile_values() {{
         break
     done
     case "$command:$action" in
-        patch:*|test:*|dev:status|dev:check|dev:package)
+        patch:*|test:*|dev:check|dev:package)
             patch_context=1
             ;;
     esac

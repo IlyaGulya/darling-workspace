@@ -8,8 +8,6 @@ patches:
     source-base: 9980737fcbfdd37f24118ae6b2ad26046f157f1a
     source-commit: 9ef131b2de45be69cdac0fb8c491a73e670b2e9e
     bead: dar-gwn.7.7.5
-    publication-status: blocked
-    publication-blocker: Shared descriptor ownership requires matched native acceptance; publication is not authorized.
     tests:
       - name: ring_fd_ownership_guest
         kind: guest
@@ -30,8 +28,6 @@ patches:
     source-base: 9736367393c97fdb3cd3d393f15cc922744a9c5a
     source-commit: 5c01c2f64445b96bac00f4c91845b7c67f73317e
     bead: dar-gwn.7.7.1
-    publication-status: blocked
-    publication-blocker: Experimental common ring composition under dar-gwn.7.7; matched OFF/ON runtime acceptance and architecture review are required. No publication authorized.
     tests:
       - name: ring_completion_outcomes_host
         kind: contract
@@ -78,8 +74,6 @@ patches:
     source-base: bc8e688a3b88a000643a063d7a71d302e9d0bf9e
     source-commit: 6bedae813d2608944bb43a3b1922587308850970
     bead: dar-gwn.7.7.2
-    publication-status: blocked
-    publication-blocker: Experimental common ring composition under dar-gwn.7.7; matched OFF/ON runtime acceptance and architecture review are required. No publication authorized.
     tests:
       - name: ring_host_gates
         kind: contract
@@ -136,8 +130,6 @@ patches:
     source-base: a57991e2651226a675654bd96e5d9ab6bec288c5
     source-commit: 15f5405f735a2c0fa4bdd1d21b341bd4db123279
     bead: dar-gwn.7.7.4
-    publication-status: blocked
-    publication-blocker: Matched OFF/ON package acceptance remains required; original CPack crash attribution remains unproven.
     tests:
       - name: malloc_region_generation_native
         kind: guest

@@ -19,12 +19,6 @@ ARCHIVE_CONSUMERS = {
     ("west-command-authoring-export", "west_commands/patch.py", "authoring-output-refresh", "write"),
     ("authoring-export", "scripts/export_patches.py", "authoring-output-refresh", "write"),
     (
-        "pr-review-provenance",
-        "west_commands/pr.py",
-        "dashboard-and-publish-checksum",
-        "read",
-    ),
-    (
         "guest-macho-owner-metadata",
         "ci/guest_macho_batch_specs.py",
         "owning-patch-path-and-checksum-metadata",
@@ -166,11 +160,6 @@ def main() -> None:
             "west_commands/patch.py",
             "output.write_bytes(plan.exported)",
             "_update_profile_metadata(profile_path, metadata_updates)",
-        ),
-        "pr-review-provenance": (
-            "west_commands/pr.py",
-            'self.profile_path.parent / patch["path"]',
-            "patch_path.read_bytes()",
         ),
         "authoring-export": (
             "scripts/export_patches.py",

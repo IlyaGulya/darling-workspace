@@ -8,8 +8,6 @@ patches:
   source-branch: fix/libunwind-static-no-jump-tables-for-dyld
   source-base: a91da1a0e262e04eb601152a84228ff733e48422
   bead: dar-rru4
-  publication-status: blocked
-  publication-blocker: local build-tooling fix for focused dyld/libsystem_kernel validation; needs upstream build review because it changes static libunwind codegen for dyld.
   tests:
   - name: dyld_static_libunwind_link
     kind: build
@@ -26,8 +24,6 @@ patches:
   source-branch: fix/ring-committed-unknown-guest
   source-base: d068e65d28bb0c059a0e1f4ea327c2f88c722c6f
   bead: dar-rpc-correctness-z27x.2
-  publication-status: blocked
-  publication-blocker: ring/duplex transport is still experimental and flag-gated; correctness patch is local until the perf#18 ring ABI is productized/reviewed.
   tests:
   - name: ring_committed_unknown_contract_test
     kind: contract
@@ -50,8 +46,6 @@ patches:
   source-branch: fix/rpc-transport-interrupt-status
   source-base: 8d746cb73e874b057a2db9f453bbd0812b5e46e3
   bead: dar-rpc-correctness-z27x.6
-  publication-status: blocked
-  publication-blocker: local RPC teardown/interrupt correctness hardening; needs broader fork/signal storm soak before upstreaming.
   tests:
   - name: rpc_disconnect_status_contract_test
     kind: contract
@@ -73,8 +67,6 @@ patches:
   source-branch: fix/rpc-disconnect-status-contract-test
   source-base: aadfa984275b74ad6e6f35d144bff20fe6c14565
   bead: dar-rpc-correctness-z27x.6
-  publication-status: blocked
-  publication-blocker: follow-up committed red test for local RPC teardown/interrupt correctness hardening.
   tests:
   - name: rpc_disconnect_status_contract_test
     kind: contract
@@ -98,8 +90,6 @@ patches:
   source-base: 47be9978d37afc387b999d8a052d1f1c08ef5a5d
 
   bead: dar-a0arch-redesign-253u
-  publication-status: blocked
-  publication-blocker: 'A0-ARCH wake/wait protocol redesign (stages 0-3: fuzzer, typed wake tokens, MicroState machine + taped XNU wait-state funnel, interrupt-as-cancellation replacing jumpToResime stack-borrowing). Eliminates the #114 storm-on-condvar SEGV crash class. 40 commits. LANDED, deployed d81b5cf1; synth 16/16, quick gate 19/19, perf A/B no-regression, stage 4 no-go. Wants design review before upstreaming. See dar-a0arch-redesign-253u + tests/A0-ARCH-STAGE{1,2,3}.md.'
   tests:
   - name: a0_gate_full_strict
     kind: guest
@@ -123,8 +113,6 @@ patches:
   source-base: 5288c5cd0d131b2bcb51db192e3953d9bd7932df
 
   bead: dar-rpc-correctness-z27x.8
-  publication-status: blocked
-  publication-blocker: focused a0 synth gate is currently red independent of this patch; see dar-a0-focused-synth-forkwait-cvstorm-red-swcg
   tests:
   - name: standard_signal_coalescing_contract_test
     kind: contract
@@ -151,8 +139,6 @@ patches:
   source-base: 51add588931a4c32d268ff07aa3e2396d868dd2e
 
   bead: dar-xl0d
-  publication-status: blocked
-  publication-blocker: local a0 gate harness stabilization for cleanboot/shellspawn flakes
   test-exception:
     reason: harness-only
     scope: A0 shellspawn retry harness reliability instrumentation
@@ -167,8 +153,6 @@ patches:
   source-base: 8e72db007790419b36af1db70e0c68da16910870
 
   bead: dar-rpc-correctness-z27x.2
-  publication-status: blocked
-  publication-blocker: static contract gate for experimental ring/duplex transport; publish only with the underlying ring ABI review.
   tests:
   - name: ring_committed_unknown_contract_test
     kind: contract
@@ -193,8 +177,6 @@ patches:
   source-base: 03038154d97be0a2a7b5c7ba08beb45a2b5f410b
 
   bead: dar-rpc-correctness-z27x.4
-  publication-status: blocked
-  publication-blocker: local fail-closed duct-tape policy sweep; needs broader Darwin-policy parity review before upstreaming.
   tests:
   - name: duct_tape_fail_closed_stubs_test
     kind: contract
@@ -219,8 +201,6 @@ patches:
   source-base: 54640a382eb9d14414f3f48dded6f179853160a0
 
   bead: dar-rpc-correctness-z27x.1
-  publication-status: blocked
-  publication-blocker: local RPC correctness hardening; needs soak under fork/signal storm and broader UDS/ring transport review before upstreaming.
   tests:
   - name: rpc_serial_contract_test
     kind: contract
@@ -245,8 +225,6 @@ patches:
   source-base: f41af247723c284a0ef7609008ec62c4605153c1
 
   bead: dar-rpc-correctness-z27x.6
-  publication-status: blocked
-  publication-blocker: local A0 repro instrumentation for the nestwait/interrupt_enter -111 class; not a correctness fix.
   test-exception:
     reason: instrumentation-only
     scope: A0 client RPC log and digest diagnostics
@@ -261,8 +239,6 @@ patches:
   source-base: f1419bc3a8a0cb484f8d4fcecb38d1802051d0c7
 
   bead: dar-rpc-correctness-z27x.6
-  publication-status: blocked
-  publication-blocker: local RPC teardown/interrupt correctness hardening; needs broader fork/signal storm soak before upstreaming.
   tests:
   - name: rpc_disconnect_send_contract_test
     kind: contract
@@ -287,8 +263,6 @@ patches:
   source-base: 24546ba90dbe4592f9c6c1d228078daa5698ea86
 
   bead: dar-9f8b
-  publication-status: blocked
-  publication-blocker: local darlingserver crash hardening for A0 ring-on fork/wait storm; needs longer soak before upstreaming.
   tests:
   - name: dserver_stack_pool_tests_run
     kind: contract
@@ -307,8 +281,6 @@ patches:
   source-base: a60da290ee3f18790b17194d01919251eafbfd1a
 
   bead: dar-9f8b
-  publication-status: blocked
-  publication-blocker: local A0 repro instrumentation for focused ring-on fork/wait crash diagnosis; not a correctness fix.
   test-exception:
     reason: instrumentation-only
     scope: focused A0 synth marker diagnostics
@@ -323,8 +295,6 @@ patches:
   source-base: 1b806454d58b3e4a36c8507c8bfcd545bead5582
 
   bead: dar-rpc-correctness-z27x.8
-  publication-status: blocked
-  publication-blocker: follow-up committed red tests for local standard-signal coalescing and RPC disconnect-send contracts.
   tests:
   - name: standard_signal_coalescing_contract_test
     kind: contract
@@ -360,8 +330,6 @@ patches:
   source-commit: a0877988b130f665ffbf9ee921482c2cbd67f925
 
   bead: dar-rpc-correctness-z27x.5
-  publication-status: blocked
-  publication-blocker: local RPC cleanup hardening; should be reviewed with the broader typed reply/message-ingest lifecycle cleanup before upstreaming.
   tests:
   - name: message_ctrunc_contract
     kind: contract
@@ -402,8 +370,6 @@ patches:
   source-commit: b545cdbe9e2f6c16828f484c36a5bef177b2b61a
 
   bead: dar-cvstorm2-flood-lost-progress-s41p
-  publication-status: blocked
-  publication-blocker: requires reviewed immutable hosted closure and explicit ARCH_ONLY ownership acceptance.
   tests:
   - name: standard_signal_coalescing_source_contract
     kind: source-contract
@@ -457,8 +423,6 @@ patches:
   source-base: b545cdbe9e2f6c16828f484c36a5bef177b2b61a
   source-commit: 305781e7f5c6d4db7cc12c1ba8e3882f7b360cbf
   bead: dar-7tq3
-  publication-status: blocked
-  publication-blocker: requires reviewed immutable hosted closure and explicit ARCH_ONLY ownership acceptance.
   test-exception:
     reason: no focused behavioral harness for the server timerfd arm rule
     scope: dtape_hook_timer_arm deadline ordering (expired-deadline guard and later-override clamp)
@@ -470,8 +434,6 @@ patches:
   source-base: 305781e7f5c6d4db7cc12c1ba8e3882f7b360cbf
   source-commit: ddc0bf7bf8941daeebeb964a5bb4a99c29fdf5f6
   bead: dar-ssr1
-  publication-status: blocked
-  publication-blocker: "requires reviewed immutable hosted closure and explicit ARCH_ONLY ownership acceptance; the port has not yet been through a build and the acceptance gates."
   test-exception:
     reason: "the subsystem's behavioural gate is the canonical acceptance suite, which needs this patch materialized and built first"
     scope: "process-management plane and descriptor courier (server.cpp, thread.cpp, call.cpp, process.cpp, ring.cpp, rpc-supplement.h and the duct-tape layer)"
@@ -483,8 +445,6 @@ patches:
   source-base: 92724cffeeec2e1fff3f7fa861cee74e41746dff
   source-commit: 30835a356bc7f310e4580d4f05c1ab9112235c87
   bead: dar-test-infra-sp5.6.1
-  publication-status: blocked
-  publication-blocker: local Tier 0 CI/test transport; requires an actual clean Jenkins execution before publication review.
   tests:
   - name: host_regression_ctest
     kind: contract
@@ -511,8 +471,6 @@ patches:
   source-base: 30835a356bc7f310e4580d4f05c1ab9112235c87
   source-commit: 78cf1a0ebca04b1c91ed4130408f7ea4973cbddf
   bead: dar-mu8f
-  publication-status: blocked
-  publication-blocker: Runtime RED->GREEN proof is pending a normal-capacity local Darling source forest; no remote publication is requested.
   tests:
   - name: shellspawn_signal_exit_status_guest
     kind: guest

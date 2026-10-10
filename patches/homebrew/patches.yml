@@ -53,7 +53,6 @@ patches:
   source-branch: fix/psynch-cvwait-balanced
   source-commit: 0a1980bfc8cce7b24f86a300310eb72dab2e4141
   bead: dar-q95.1
-  publication-status: ready
   tests:
   - name: psynch_cvwait_sequence_contract
     kind: contract
@@ -96,7 +95,6 @@ patches:
       Direct guest ABI proof for the equal-generation boundary. The bad
       darlingserver rejects csgen == lockseq with EINVAL; the fixed runtime
       enters the bounded wait and returns ETIMEDOUT.
-  pr-draft: pr-drafts/darlingserver-psynch-cvwait-balanced.md
   github:
     fork:
       repo: IlyaGulya/darlingserver
@@ -112,7 +110,6 @@ patches:
   source-branch: fix/microthread-resume-race
   source-commit: a99d52248f437be96239a22c8ce5f58fbf32d221
   bead: dar-q95.8
-  publication-status: ready
   tests:
   - name: microthread_resume_race_contract
     kind: contract
@@ -180,7 +177,6 @@ patches:
       suspends. Fixed darlingserver records the early resume permit and returns
       from thread_suspend; bad current-minus runtime drops the wake and the
       guest fixture times out.
-  pr-draft: pr-drafts/darlingserver-microthread-resume-race.md
   github:
     fork:
       repo: IlyaGulya/darlingserver
@@ -196,8 +192,6 @@ patches:
   source-branch: fix/fork-checkin-bound
   source-commit: daf32392e80071c7f43f45de5393bd128731e56d
   bead: dar-q95.13
-  publication-status: blocked
-  publication-blocker: timeout is a defensive bound, not a fork lifecycle fix; see dar-q95.29.7
   tests:
   - name: fork_checkin_bound_contract
     kind: contract
@@ -277,7 +271,6 @@ patches:
       darlingserver times out after the guarded 1s test timeout, the guest
       atfork parent hook returns instead of wedging, and current-minus runtime
       without the bound remains stuck under the guest runner timeout.
-  pr-draft: pr-drafts/darlingserver-fork-checkin-bound.md
   github:
     fork:
       repo: IlyaGulya/darlingserver
@@ -293,8 +286,6 @@ patches:
   source-branch: fix/fork-checkin-sticky-flag
   source-commit: 5d91d3ea50bce1839cb04007b47cf7ebeee711b7
   bead: dar-gwn.6.5
-  publication-status: blocked
-  publication-blocker: needs review of the sticky-flag vs the underlying duct-tape sigexc-forced-clear_wait semaphore handoff/abort race; the real defect is that a signal-aborted semaphore wait loses a handed-off up(). The sticky flag is a correct, minimal fix at the fork-checkin layer but a broader duct-tape fix may be preferable upstream. Validated locally (RED->GREEN forkstorm2 + brew libunistring past the make stall).
   tests:
   - name: fork_checkin_sticky_flag_contract
     kind: contract
@@ -424,7 +415,6 @@ patches:
       runtime without the sticky flag loses the wakeup and leaves the retry
       without a server reply, so the direct oracle reports -EAGAIN after its
       bounded receive timeout.
-  pr-draft: pr-drafts/darlingserver-fork-checkin-sticky-flag.md
   github:
     fork:
       repo: IlyaGulya/darlingserver
@@ -440,8 +430,6 @@ patches:
   source-base: c9a0107fe772be7a0a12f5dca75d26e1038446ee
   source-commit: 49319e1789d7f9e04b18530aa1239fb6eae99604
   bead: dar-r7fc.6
-  publication-status: blocked
-  publication-blocker: test-only runtime instrumentation; keep local until a supported upstream diagnostics interface is designed
   test-exception:
     reason: test-instrumentation
     scope: opt-in DSERVER_PSYNCH_TRACE_FILE runtime diagnostic hook
@@ -457,7 +445,6 @@ patches:
   source-branch: fix/psynch-cvsignal-args
   source-commit: 6dc451c247b85bd2428c42283702ee5346e30ff0
   bead: dar-q95.2
-  publication-status: ready
   tests:
   - name: psynch_cvsignal_args_contract
     kind: source-contract
@@ -515,7 +502,6 @@ patches:
       darlingserver test hook records RPC arguments produced by real guest
       syscalls; bad libsystem_kernel truncates cvlsgen and passes mugen as the
       cvbroad mutex, fixed runtime records the full generations and mutex.
-  pr-draft: pr-drafts/xnu-psynch-cvsignal-args.md
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -532,8 +518,6 @@ patches:
   source-branch: fix/fstatfs-missing-proc-mounts
   source-commit: 32dd08e513243b1d1056dd9bc718d10ab44d233c
   bead: dar-vqr9
-  publication-status: blocked
-  publication-blocker: guest boot/canary validation pending; see dar-vqr9
   tests:
   - name: fstatfs_missing_proc_contract
     kind: unit
@@ -567,7 +551,6 @@ patches:
   source-branch: fix/select-pselect-fdset
   source-commit: 014ae062d051cfdd48a0095f3cc05b19900a20ca
   bead: dar-q95.3
-  publication-status: ready
   tests:
   - name: select_fdset_conversion
     kind: unit
@@ -636,7 +619,6 @@ patches:
       Mach-O. The source-driven case above remains the rebuild/toolchain path;
       this runner only executes the checked-in artifact in a tier-owned fresh
       rootless prefix.
-  pr-draft: pr-drafts/xnu-select-pselect-fdset.md
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -652,8 +634,6 @@ patches:
   source-branch: fix/darwin-priority
   source-commit: d021cbe8dac2e47e56f5321021246331edae55ff
   bead: dar-q95.10
-  publication-status: blocked
-  publication-blocker: success-returning priority no-op has no Darwin semantics; see dar-q95.29.4
   tests:
   - name: darwin_priority_contract
     kind: unit
@@ -705,7 +685,6 @@ patches:
       DARLING_NOOVERLAYFS: '1'
       DARLING_EUNION: '1'
       WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
-  pr-draft: pr-drafts/xnu-darwin-priority.md
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -721,8 +700,6 @@ patches:
   source-branch: fix/socket-siocgifconf
   source-commit: c06036cc3d7c4b55966490b594a266148b039245
   bead: dar-q95.11
-  publication-status: blocked
-  publication-blocker: empty-success SIOCGIFCONF is an explicit compatibility stub; see dar-q95.29.4
   tests:
   - name: socket_siocgifconf_contract
     kind: unit
@@ -774,7 +751,6 @@ patches:
       DARLING_NOOVERLAYFS: '1'
       DARLING_EUNION: '1'
       WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
-  pr-draft: pr-drafts/xnu-socket-siocgifconf.md
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -790,8 +766,6 @@ patches:
   source-branch: fix/fork-postfork-child
   source-commit: 86cb1cf68d174a5255e075528ec8679abebb4b20
   bead: dar-q95.12
-  publication-status: provisional
-  publication-blocker: supported host-runtime fork recovery design under dar-q95.29.9
   tests:
   - name: fork_postfork_child_contract
     kind: contract
@@ -826,7 +800,6 @@ patches:
       a guest smoke test would only observe indirect fork lifecycle symptoms.
       Broader deployed fork runtime validation is owned by the fork lifecycle
       work (dar-q95.29.9 / dar-r7fc.2.1).
-  pr-draft: pr-drafts/xnu-fork-postfork-child.md
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -842,8 +815,6 @@ patches:
   source-branch: fix/fork-wait-timeout-parent
   source-commit: 9159de2e2b985d24c57df445a44ee75afefbcdcc
   bead: dar-r7fc.2.1
-  publication-status: provisional
-  publication-blocker: companion to defensive fork-checkin timeout handling; upstream shape should be reviewed together with the broader fork lifecycle fix under dar-r7fc.2.1.
   tests:
   - name: fork_wait_timeout_parent_guest
     kind: guest
@@ -908,7 +879,6 @@ patches:
   source-branch: fix/bzero-return-register
   source-commit: 71d3d9e661ab85581e4ea5fb66af5e691df6f6b9
   bead: dar-q95.4
-  publication-status: ready
   tests:
   - name: bzero_return_register_contract
     kind: contract
@@ -962,7 +932,6 @@ patches:
       DARLING_NOOVERLAYFS: '1'
       DARLING_EUNION: '1'
       WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
-  pr-draft: pr-drafts/libplatform-bzero-return-register.md
   merge-pr: https://github.com/darlinghq/darling-libplatform/pull/5
   github:
     fork:
@@ -991,8 +960,6 @@ patches:
   source-branch: fix/disable-nsgetexecutablepath
   source-commit: b37ac3179fae9e090104d93a218c835452e17c21
   bead: dar-q95.5
-  publication-status: blocked
-  publication-blocker: package workaround must be replaced by _NSGetExecutablePath; see dar-q95.29.4
   tests:
   - name: perl_nsgetexecutablepath_config_contract
     kind: contract
@@ -1007,7 +974,6 @@ patches:
     repo: darling-workspace
     script: tests/perl_nsgetexecutablepath_config_contract.py
     note: Host RED->GREEN contract that every shipped Perl config disables unavailable _NSGetExecutablePath consistently.
-  pr-draft: pr-drafts/perl-disable-nsgetexecutablepath.md
   github:
     fork:
       repo: IlyaGulya/darling-perl
@@ -1023,7 +989,6 @@ patches:
   source-branch: fix/libressl-283-nist-strict-aliasing
   source-commit: 7599e3e01d3b1a742aa0293123290f267b6eb720
   bead: dar-q95.6
-  publication-status: ready
   tests:
   - name: libressl_nist_darling_cmake_target_regress
     use: darling-cmake-target-source-red
@@ -1077,7 +1042,6 @@ patches:
       supplies -fno-strict-aliasing explicitly. True RED proof needs a Darling
       CMake target/source-build runner that exercises crypto44's
       target_compile_options.
-  pr-draft: pr-drafts/libressl-283-nist-strict-aliasing.md
   github:
     fork:
       repo: IlyaGulya/darling-libressl
@@ -1094,8 +1058,6 @@ patches:
   source-branch: fix/cancel-stale-wait-timer
   source-commit: 33229e0c695e9467b68c1634213849d5f54d7f5d
   bead: dar-q95.15
-  publication-status: provisional
-  publication-blocker: direct timer cancellation parity and race tests under dar-q95.29.6
   tests:
   - name: cancel_stale_wait_timer_contract
     kind: contract
@@ -1156,7 +1118,6 @@ patches:
       timer and waits for the explicit signal; current-minus bad runtime without
       the thread_unblock cancellation can deliver a bogus timeout into the later
       untimed wait.
-  pr-draft: pr-drafts/darlingserver-cancel-wait-timer.md
   github:
     fork:
       repo: IlyaGulya/darlingserver
@@ -1172,20 +1133,6 @@ patches:
   source-branch: fix/processcall-exception-guard
   source-commit: f1566efa3cbf2754c48bc62e3f0b0479fff72ba0
   bead: dar-gwn.1.5
-  publication-status: blocked
-  publication-blocker: |-
-    brew install not yet green end-to-end. dar-gwn.1.5 leg B core still open: the spurious
-    SI_USER SIGSEGV delivered to a syscall-parked guest thread via the sigexc path; also the
-    dar-gwn.1 fetch-phase reply-loss hang. This patch now guards ALL THREE server-killing throw
-    sites including the event-loop Call::callFromMessage at server.cpp:541, which is the path
-    that turns the leg-B SEGV's pending-call-overwrite throw into a server terminate + dar-pot
-    guest leak. ONE clean before/after captured (brew install libunistring): pre-fix produced
-    "terminate called ... Thread's pending call overwritten while active" + dead server + 14
-    orphaned mldr; post-fix had the same SEGV trigger but the server stayed alive, no terminate,
-    clean exit. Non-regressive across repeated boots (0 zombie darlingserver, 0 post-cleanup
-    mldr leak). Caveat: the overwrite race is flaky, so the guard's log+drop line was not
-    separately caught firing in a controlled boot; justification rests on the one before/after
-    plus static proof this is the only uncaught throw site on the event-loop path.
   tests:
   - name: processcall_exception_guard_contract
     kind: contract
@@ -1278,7 +1225,6 @@ patches:
       - test_fault.consume name=processcall.uidgid_throw
       - call.processcall_throw name=uidgid
     note: Guest runtime fault gate for a throwing uidgid processCall; fixed darlingserver converts the exception into a reply so setuid returns, consumes the one-shot fault, and a second public setuid proves the server stayed alive. Runtime RED builds current stack minus this patch and observes the old uncaught processCall throw path.
-  pr-draft: pr-drafts/darlingserver-processcall-exception-guard.md
   github:
     fork:
       repo: IlyaGulya/darlingserver
@@ -1294,16 +1240,6 @@ patches:
   source-branch: fix/ingest-error-reply
   source-commit: 2d7b59dac209ecdb8a9854a3030b758e8428e42b
   bead: dar-gwn.6.2
-  publication-status: blocked
-  publication-blocker: |-
-    brew install not yet green end-to-end with this fix. Stacks on
-    processcall-exception-guard (a52a15e): that guard contains the throws and
-    drops the message; this turns the drops at the three ingest sites
-    (non-existent process/thread -> -ESRCH, pending-call-overwrite -> -EAGAIN)
-    into replies so the parked guest thread's recvmsg returns instead of
-    hanging into a SEGV under the Homebrew fork/signal storm. Needs the live
-    before/after on brew reinstall wget at the libunistring phase to confirm
-    the 0x3e8 SEGV clears.
   tests:
   - name: ingest_error_reply_contract
     kind: contract
@@ -1412,19 +1348,6 @@ patches:
   source-branch: fix/dar-gwn-1-7-pushreply-pipe-leak
   source-commit: 9158f95de70c397304ec87f901dd3e86eb3567f0
   bead: dar-gwn.1.7
-  publication-status: blocked
-  publication-blocker: |-
-    brew install not yet green end-to-end. This fixes the flavor-C lost-reply
-    hang: a push_reply that throws in callFromMessage leaked the client
-    synchronization-pipe write fd, hanging the guest forever (the server stays
-    alive but idle). Stacks on processcall-exception-guard (a52a15e): without
-    that guard the throw crashes the server instead, so this only matters once
-    throws are contained. Live-verified mechanism (in-binary forced-throw
-    injection: the guest thread whose push_reply was sabotaged kept running
-    instead of wedging in recvmsg; server stayed alive, 0 terminate) plus a
-    deterministic standalone pipe-protocol test (old code hangs, fixed code
-    unblocks via EOF). Still open: the orthogonal psynch download-queue hang
-    that blocks driving a full from-source brew build to completion.
   tests:
   - name: pushreply_pipe_leak_contract
     kind: contract
@@ -1496,7 +1419,6 @@ patches:
     - env: DSERVER_TEST_PREFIX_MARKER
       prefix-relative-path: private/var/tmp/dserver-pushreply-prefix-marker
     note: Guest runtime repro for the push_reply pipe leak. The fixture calls the real libsystem_kernel push-reply hook with a deliberately unreadable pushed-reply pointer; fixed darlingserver closes the sync pipe on readMemory failure so the hook returns EOF and a follow-up setuid proves the server is alive, while current-minus-patch leaves the write fd leaked and the guest blocks until timeout.
-  pr-draft: pr-drafts/darlingserver-pushreply-pipe-leak.md
   github:
     fork:
       repo: IlyaGulya/darlingserver
@@ -1512,27 +1434,6 @@ patches:
   source-branch: fix/exc-fatal-reply-bound
   source-commit: 8ee1bb6a5adcb8139ae96deade0e062f9b1069f9
   bead: dar-gwn.1.10
-  publication-status: blocked
-  publication-blocker: |-
-    brew install not yet green end-to-end. This fixes the dar-gwn.1.10
-    exception-delivery deadlock: a fatal EXC_BAD_ACCESS delivered to an
-    in-process EXCEPTION_DEFAULT handler that consumes it but never resumes
-    the faulting thread (gnulib's printf-OOM nocrash_init probe in
-    libunistring ./configure) wedges forever, because the faulting microthread
-    blocks in mach_exception_raise holding a libsystem_c lock the handler's
-    exit() path then needs. macOS unwedges this via task teardown; darlingserver
-    has no task_terminate, so both guest threads park in recvmsg and the process
-    hangs. Fix bounds the fatal-exception reply wait (MACH_RCV_TIMEOUT 3s) so
-    exception_triage falls through to the host ux_handler -> default SIGSEGV ->
-    guest terminates (macOS-faithful). Scoped to EXC_BAD_ACCESS only after a
-    live-verified regression: bounding EXC_BAD_INSTRUCTION broke the brew/Ruby
-    download path's legitimate SIGILL catch-and-resume (deterministic SIGILL
-    crash at the first fetch), gone once narrowed. Proven RED->GREEN by the
-    deterministic gnulib-nocrash_init unit repro (dar-gwn110-repro/run-repro6.sh:
-    baseline wedges 8s+ all-threads-recvmsg + server idle; fixed terminates ~3s
-    after fault, no wedge). Full from-source brew run still blocked upstream of
-    this by the orthogonal download_queue psynch cond_wait ETIMEDOUT
-    (dar-gwn.1.8/.1.9 family), so end-to-end green is not yet demonstrable.
   tests:
   - name: exc_fatal_reply_bound_contract
     kind: contract
@@ -1584,7 +1485,6 @@ patches:
     - -Wextra
     - -Werror
     note: Guest runtime regression for a fatal EXC_BAD_ACCESS delivered to an EXCEPTION_DEFAULT handler that consumes the message and never replies; fixed darlingserver bounds the reply wait and lets the child terminate instead of wedging. Runtime RED builds the current stack minus this patch and its declared downstream skip closure.
-  pr-draft: pr-drafts/darlingserver-exc-fatal-reply-bound.md
   github:
     fork:
       repo: IlyaGulya/darlingserver
@@ -1600,27 +1500,6 @@ patches:
   source-branch: fix/assert-wait-cancel-stale-timer
   source-commit: 69715cc293f08a15f76c223f7e43571949aa585f
   bead: dar-gwn.1.9
-  publication-status: blocked
-  publication-blocker: |-
-    brew install not yet green end-to-end. This closes the residual half of
-    the dar-gwn.1.8/.1.9 download_queue ETIMEDOUT abort that the
-    thread_unblock() cancel (cancel-stale-wait-timer, dar-gwn.2) did not
-    reach. Root cause (instrumented, DSERVER_TMRTRACE): a timed psynch cvwait
-    is woken (THREAD_AWAKENED) and its continuation re-blocks in a new untimed
-    wait before the prior wait's wait_timer is serviced, via a wakeup path
-    that does not route through thread_unblock(); the leftover timer then
-    fires thread_timer_expire -> clear_wait_internal(THREAD_TIMED_OUT) on the
-    new untimed wait, surfacing as a bogus ETIMEDOUT that Ruby's
-    rb_native_cond_wait makes a fatal [BUG] (Homebrew download_queue.rb:184).
-    Fix cancels any leftover armed wait_timer at the top of
-    waitq_assert_wait64_locked before (re)arming, matching XNU's invariant
-    that a thread entering assert_wait has no live wait_timer. Proven
-    RED->GREEN by a deterministic fork/exec-storm Ruby repro
-    (dar-gwn18-etimedout-repro/sleep_stress2.rb): baseline aborts at
-    download_queue.rb:184 within RUN1/ROUND0 and TMRTRACE shows the stale
-    untimed-wait timeout firing; fixed shows 0 stale across tens of thousands
-    of timer expiries and no abort. Complements (does not replace)
-    cancel-stale-wait-timer. Full from-source brew end-to-end still pending.
   tests:
   - name: assert_wait_cancel_stale_timer_contract
     kind: contract
@@ -1695,7 +1574,6 @@ patches:
       the same diagnostic hook but no prepare-for-wait cleanup, so it traces only
       wait_prepare_fault_uncleared and fails instead of relying on generic timing
       stress.
-  pr-draft: pr-drafts/darlingserver-assert-wait-cancel-stale-timer.md
   github:
     fork:
       repo: IlyaGulya/darlingserver
@@ -1712,22 +1590,6 @@ patches:
   source-base: 69715cc293f08a15f76c223f7e43571949aa585f
   source-commit: ec379950edcf9710f81f1d0fcffc5287f996a0a2
   bead: dar-gwn.6.3
-  publication-status: blocked
-  publication-blocker: |-
-    brew install not yet green end-to-end with this fix. Implements the
-    __pthread_canceled / __pthread_markcancel RPC handlers (Call::PthreadCanceled
-    and Call::PthreadMarkcancel), which were TODO stubs replying -ENOSYS for
-    every action. The stub broke the guest libpthread cancellation handshake:
-    under a cancelable-syscall + fork storm the guest spun re-issuing
-    dserver_callnum_pthread_canceled forever (~670/sec, 167k calls observed
-    while brew's portable-ruby built libunistring) -- a livelock. Carries
-    per-thread cancel state on dtape_thread (cancel_disable / cancel_pending /
-    canceled, mirroring XNU UT_CANCELDISABLE / UT_CANCEL / UT_CANCELED) and
-    implements XNU semantics (action1 clear-disable->0, action2 set-disable->0,
-    action0 canceled?0:EINVAL; markcancel arms the target's pending bit). Stacks
-    on ingest-error-reply (dar-gwn.6.2). Needs the live brew reinstall wget run
-    from the full integration tree to confirm the #31 livelock clears and brew
-    advances past the libunistring phase.
   tests:
   - name: pthread_cancel_state_contract
     kind: contract
@@ -1820,7 +1682,6 @@ patches:
   source-base: f07f265bfbcf071c1adfc808de971e053ea5edc5
   source-commit: 22aed109147ee29fec3cddf469f2ad1408de27f7
   bead: dar-q95.29.2
-  publication-status: ready
   tests:
   - name: psynch_kernel_return_contract
     red: true
@@ -1887,8 +1748,6 @@ patches:
   source-branch: fix/getattrlist-name-objtype
   source-commit: cacba0fd01468e316e58e3c5a15a4d3c5273fcc5
   bead: dar-q95.17
-  publication-status: blocked
-  publication-blocker: short-buffer overflow and attribute encoder correctness; see dar-q95.29.1
   tests:
   - name: getattrlist_pack_name_objtype_contract
     kind: contract
@@ -1966,7 +1825,6 @@ patches:
       DARLING_NOOVERLAYFS: '1'
       DARLING_EUNION: '1'
       WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
-  pr-draft: pr-drafts/xnu-getattrlist-name-objtype.md
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -1982,8 +1840,6 @@ patches:
   source-branch: fix/getattrlistbulk
   source-commit: 69775cf24aa169d585921818695fff0ae19b3e64
   bead: dar-q95.18
-  publication-status: blocked
-  publication-blocker: duplicated non-conformant bulk attribute encoder; see dar-q95.29.1
   tests:
   - name: getattrlistbulk_pack_contract
     kind: contract
@@ -2041,7 +1897,6 @@ patches:
     - darling-prefix
     note: |
       Guest runtime gate for public getattrlistbulk(2): creates a directory with regular files and a subdirectory, verifies length-prefixed RETURNED_ATTRS/NAME/OBJTYPE records, and checks small-buffer continuation by reading one record per call.
-  pr-draft: pr-drafts/xnu-getattrlistbulk.md
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -2057,7 +1912,6 @@ patches:
   source-branch: fix/getattrlist-shared-packer
   source-commit: ef2998176083f062fb034575912c5936c35e64db
   bead: dar-q95.29.1
-  publication-status: ready
   tests:
   - name: getattrlist_shared_packer
     kind: guest
@@ -2110,7 +1964,6 @@ patches:
   source-base: 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
   source-commit: 8df32150517d967213e1a4e9a87fa315d50917b9
   bead: dar-q95.19
-  publication-status: ready
   tests:
   - name: psynch_return_contract
     kind: contract
@@ -2175,7 +2028,6 @@ patches:
       psynch error contract across the syscall boundary. Blocked by
       dar-q95.29.2.1 because current GREEN reaches pthread_cond_timedwait but
       returns EINVAL under signal interruption.
-  pr-draft: pr-drafts/xnu-psynch-negative-errno.md
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -2191,8 +2043,6 @@ patches:
   source-branch: fix/sigexc-sa-restart
   source-commit: 7bdf08bfa0e56d6fc1487dcf4dc99c95a24f5c6c
   bead: dar-q95.20
-  publication-status: provisional
-  publication-blocker: signal restart state-machine and conformance tests under dar-q95.29.5
   tests:
   - name: sigexc_sa_restart_contract
     kind: contract
@@ -2257,7 +2107,6 @@ patches:
       DARLING_NOOVERLAYFS: '1'
       DARLING_EUNION: '1'
       WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
-  pr-draft: pr-drafts/xnu-sigexc-sa-restart.md
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -2273,7 +2122,6 @@ patches:
   source-branch: fix/sigexc-debug-flood
   source-commit: 2d63bfc1a6cd24d5d961e15bc29b7b1d9299c3a0
   bead: dar-gwn.1.9
-  publication-status: ready
   tests:
   - name: sigexc_debug_flood_contract
     kind: contract
@@ -2319,7 +2167,6 @@ patches:
       would be an indirect noisy oracle. Broader deployed kprintf/log-flood
       runtime coverage is tracked separately by
       dar-sigexc-hotpath-kprintf-runtime-gate-9mpv.
-  pr-draft: pr-drafts/xnu-sigexc-debug-flood.md
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -2335,25 +2182,6 @@ patches:
   source-branch: fix/sigexc-default-resend-self
   source-commit: a07f3001fb5fdfea471ac30bb79ef1b510cae29b
   bead: dar-gwn.6.4
-  publication-status: blocked
-  publication-blocker: |-
-    Fixes the dar-gwn.6.4 / dar-gwn.1.5 process-group-kill cascade. sigexc_handler's
-    "emulating default signal effects" path re-raised the fatal default signal with
-    kill(0, sig); pid 0 targets the caller's ENTIRE process group, not just the
-    process, so a crashing child (e.g. gnulib's CHECK_PRINTF_SAFE printf-OOM conftest,
-    which crashes by design) broadcast its SIGSEGV to its parent bash/configure/ruby
-    and killed the whole build ("terminated by uncaught signal SEGV" -> libunistring
-    install RC=1). Fix re-raises to THIS thread via tgkill(getpid(), gettid(), sig)
-    (raise() semantics), matching macOS's per-process ux_handler delivery.
-    VALIDATED: (1) server-side sigprocess trace (DSERVER_DARGWN64SIG) showed the
-    BEFORE=cross-process SIGSEGV (sender=conftest nsid, code=0 SI_USER, 0x3e8 sig)
-    to two parent bash pids; AFTER=0 cross-process deliveries across 156 events in a
-    live libunistring fork-storm. (2) Portable grpkill_oracle (dar-gwn110-repro)
-    A/B: real macOS 26.5.1 PASS == native Linux PASS == Darling-fixed PASS;
-    Darling-unfixed FAIL. (3) brew reinstall wget: libunistring config.log ran PAST
-    the OOM probe (L7255->29569, reached configure tail) with 0 "uncaught signal".
-    Blocker: full brew-green end-to-end RC still being confirmed; also overlaps the
-    dar-gwn.1.5 sigexc leg (re-opened) -- reconcile before publish.
   tests:
   - name: sigexc_default_resend_self_contract
     kind: contract
@@ -2417,7 +2245,6 @@ patches:
       DARLING_NOOVERLAYFS: '1'
       DARLING_EUNION: '1'
       WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
-  pr-draft: pr-drafts/xnu-sigexc-default-resend-self.md
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -2433,22 +2260,6 @@ patches:
   source-branch: fix/ulock-wait-eintr-retry
   source-commit: b78ebea327517adcae316f6a85c98d50f0c3e5bf
   bead: dar-gwn.6
-  publication-status: blocked
-  publication-blocker: >-
-    Fixes the dar-gwn.6 os_unfair_lock corruption-abort SIGILL: under a
-    fork/exec signal storm sys_ulock_wait returned -EINTR, which Darling's
-    generic BSD-syscall cerror stub converted to -1, which os_unfair_lock's
-    slow path (switch(-ret), only EINTR/EFAULT/EOWNERDEAD non-fatal) routed to
-    _os_unfair_lock_corruption_abort -> ud2 -> SIGILL. Fix retries the futex on
-    EINTR internally for untimed UL_COMPARE_AND_WAIT/UL_UNFAIR_LOCK waits (and
-    drops the bogus 0x800 mask in ulock_wake). TDD: live [dargwn6] sigexc trace
-    + symbolize.sh pinned the fault to __os_unfair_lock_lock_slow+0x13f (ud2);
-    RED = sleep_stress2.rb fork-storm crashes at ROUND ~200; with the fix the
-    SIGILL is eliminated (0 across a RUNS=8 NWORK=10 ROUNDS=600 storm, well past
-    the baseline failure point). Blocked: a SEPARATE orthogonal failure
-    (dar-gwn.1.5: a reaped-child SIGCHLD mis-delivered as a fatal signal with
-    SI_USER, observed as SIGFPE handler=SIG_DFL) still ends the same storm, so
-    full from-source brew end-to-end is not yet green.
   tests:
   - name: ulock_eintr_retry_contract
     kind: contract
@@ -2534,7 +2345,6 @@ patches:
       DARLING_NOOVERLAYFS: '1'
       DARLING_EUNION: '1'
       WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
-  pr-draft: pr-drafts/xnu-ulock-wait-eintr-retry.md
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -2550,8 +2360,6 @@ patches:
   source-branch: fix/mldr-glibc-fork-reset
   source-commit: 159d141cbff62c6ca8b1c2c24a40f44853c5fc5d
   bead: dar-q95.14
-  publication-status: blocked
-  publication-blocker: private glibc _rtld_global heuristic is version-sensitive; see dar-q95.29.9
   tests:
   - name: glibc_fork_lock_reset
     kind: contract
@@ -2566,7 +2374,6 @@ patches:
     runner: self-contract-script
     script: tests/regression/run-glibc-fork-lock-reset.sh
     note: Host RED->GREEN model for resetting glibc loader locks after raw fork.
-  pr-draft: pr-drafts/mldr-glibc-fork-reset.md
   github:
     fork:
       repo: IlyaGulya/darling
@@ -2588,8 +2395,6 @@ patches:
   source-branch: fix/sandbox-exec-pass-through
   source-commit: c44476a36ee892b73184ddde36b6e9a50fa2d2f6
   bead: dar-q95.21
-  publication-status: blocked
-  publication-blocker: pass-through silently removes sandbox security; see dar-q95.29.4
   tests:
   - name: sandbox_exec_pass_through_contract
     kind: contract
@@ -2631,7 +2436,6 @@ patches:
       - printf ok
       stdout: ok
     note: Host RED->GREEN contract that sandbox-exec consumes sandbox flags and execs the requested command unchanged.
-  pr-draft: pr-drafts/top-level-sandbox-exec-pass-through.md
   github:
     fork:
       repo: IlyaGulya/darling
@@ -2648,8 +2452,6 @@ patches:
   source-base: d014d57080972464a2baabfa299cc6e85041dd0e
   source-commit: b597d6855c64ee0d9bed23e4d518560170ec1c49
   bead: dar-q95.22
-  publication-status: provisional
-  publication-blocker: SDK identity provenance and install-tree consistency under dar-q95.29.8
   tests:
   - name: sdk_homebrew_detection_contract
     kind: contract
@@ -2664,7 +2466,6 @@ patches:
     repo: darling-workspace
     script: tests/sdk_homebrew_detection_contract.py
     note: Host RED->GREEN contract that Homebrew can discover a JSON-described macOS 11.3 SDK through a matching versioned symlink.
-  pr-draft: pr-drafts/top-level-sdk-homebrew-detection.md
   github:
     fork:
       repo: IlyaGulya/darling
@@ -2681,7 +2482,6 @@ patches:
   source-base: 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
   source-commit: aad62153c971cb93f0953490b2513b5b1aeeeaff
   bead: dar-gwn.1.6
-  publication-status: ready
   tests:
   - name: vchroot_pathnull_guard_contract
     kind: contract
@@ -2748,7 +2548,6 @@ patches:
       DARLING_NOOVERLAYFS: '1'
       DARLING_EUNION: '1'
       WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
-  pr-draft: pr-drafts/xnu-vchroot-pathnull-guard.md
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -2765,8 +2564,6 @@ patches:
   source-base: aad62153c971cb93f0953490b2513b5b1aeeeaff
   source-commit: 5c3019fca1d85533f34735bf40c97156c87b6d4f
   bead: dar-7zvt.1
-  publication-status: blocked
-  publication-blocker: E-UNION core is a local architectural consolidation; publication remains blocked until the repackaged rootless stack passes its full guest audit.
   tests:
   - name: eunion_path_direnum_guest
     use: eunion-guest-c-runtime
@@ -2863,8 +2660,6 @@ patches:
   source-base: 5c3019fca1d85533f34735bf40c97156c87b6d4f
   source-commit: cb2cf623d9cd641ed4f9e899a0187acdedc423ea
   bead: dar-7zvt.2
-  publication-status: blocked
-  publication-blocker: E-UNION syscall coverage and hardening are a local architectural consolidation; publication remains blocked until the repackaged rootless stack passes its full guest audit.
   tests:
   - name: eunion_mutation_guest
     use: eunion-guest-c-runtime
@@ -3146,8 +2941,6 @@ patches:
   source-base: d014d57080972464a2baabfa299cc6e85041dd0e
   source-commit: 06f98a4481ffcb2467f5ad8f269ed16a6a61571c
   bead: dar-gax
-  publication-status: blocked
-  publication-blocker: workspace-local build-process guard (runs `west patch status --strict` against patches.yml); depends on the west patch tooling + workspace layout, so not upstreamable as-is. Could be reshaped into an upstream-agnostic build hook later.
   tests:
   - name: build_drift_gate_contract
     kind: contract
@@ -3194,8 +2987,6 @@ patches:
   source-base: d014d57080972464a2baabfa299cc6e85041dd0e
   source-commit: acf345173c280ce1b607a0e4a80b9585ab4202d7
   bead: dar-gwn.6.6
-  publication-status: provisional
-  publication-blocker: MAP_FIXED unconditionally replaces any mapping at the commpage slot; safe at this point in setup_space (only mldr loader artifacts present, Mach-O not yet mapped) but the collision-handling contract wants a second reviewer before upstreaming. See dar-gwn.6.6.
   tests:
   - name: commpage_map_fixed_contract
     kind: contract
@@ -3239,8 +3030,6 @@ patches:
   source-base: f018846695366df54e77089d9a03824528f72c41
   source-commit: 1618c856360ccf298629b8d602901a8e32308368
   bead: dar-stackmmap-eexist-9j9
-  publication-status: blocked
-  publication-blocker: changes the guest main-stack placement contract (fixed slot -> kernel-chosen fallback on EEXIST); proven safe + validated GREEN x2 locally but wants a second reviewer on the stack_top/KERN_USRSTACK invariant before upstreaming. See dar-stackmmap-eexist-9j9.
   tests:
   - name: mldr_stack_mapping_contract
     kind: contract
@@ -3278,8 +3067,6 @@ patches:
   source-base: cb2cf623d9cd641ed4f9e899a0187acdedc423ea
   source-commit: 50db68ce8504da6c9c8f24ddfd31d737b1f1db23
   bead: dar-gyvb
-  publication-status: blocked
-  publication-blocker: The disabled ownership API behavior is fixed locally; publication waits for review against the current E-UNION stack.
   tests:
   - name: chown_disabled_null_guard_contract
     kind: contract
@@ -3303,7 +3090,6 @@ patches:
       EFAULT regression. Real ownership behavior is covered by dar-nmda.
       The former ENOTSUP guest binary remains an immutable historical corpus
       artifact, not a current runtime gate.
-  pr-draft: pr-drafts/xnu-chown-disabled-null-guard.md
   github:
     fork:
       repo: IlyaGulya/darling-xnu
@@ -3320,8 +3106,6 @@ patches:
   source-base: f223ee035651e9b9f7d3952c654bb0d0dc238d34
   source-commit: ecc6d9ed939f80de3f1c06bff549e1e9bc94c0d0
   bead: dar-6x4.1
-  publication-status: blocked
-  publication-blocker: returns EBADF on guarded-fd dup2/dup/fcntl instead of aborting; correct vs macOS and validated (gnulib fd tests + libunistring make check GREEN) but the guarded-fd-as-out-of-range contract wants a second reviewer before upstreaming. See dar-6x4.1.
   tests:
   - name: fd_guard_ebadf_contract
     kind: contract
@@ -3394,8 +3178,6 @@ patches:
   source-base: 44cf90665c86a454bad1839b7a6895b669d48be3
   source-commit: d5e46fac68148664e9c68e55a57970ee7919916c
   bead: dar-cps
-  publication-status: blocked
-  publication-blocker: sys_abort_with_payload now re-raises to self via tgkill instead of kill(0) process-group broadcast; matches macOS (abort terminates only the caller) and validated RED->GREEN by tests/regression/abort_with_payload_no_group_broadcast.c + brew reinstall -s gettext, but wants a second reviewer before upstreaming. See dar-cps.
   tests:
   - name: abort_with_payload_self_signal_contract
     kind: contract
@@ -3498,8 +3280,6 @@ patches:
   source-base: ec379950edcf9710f81f1d0fcffc5287f996a0a2
   source-commit: 1cd32102de88fbbff5aef764c7e084aea0e93f4e
   bead: dar-dar6x4-perf-5dq.6
-  publication-status: blocked
-  publication-blocker: new observability surface (abstract stat socket + JSON metrics) added for the dar-6x4 perf epic; reachable host-side because the net namespace is shared while mnt is not. Validated live (darling-stat snapshot + darling-progress-watch reports PROGRESSING under a fork-heavy workload) and RED->GREEN by tests/metrics_histogram_test.cpp + tests/progress_classifier_test.py, but wants design review of the socket surface before upstreaming. See dar-dar6x4-perf-5dq.6.
   tests:
   - name: progress_classifier
     kind: contract
@@ -3521,8 +3301,6 @@ patches:
   source-base: 73a11f00a54d62504b7162325a88993dfaa6e087
   source-commit: c0640633d073cb7500d55ada7b8e7950ba79a69f
   bead: dar-dar6x4-perf-5dq.1
-  publication-status: blocked
-  publication-blocker: replaces the UNBOUNDED thread-create-checkin busy-spin (sched_yield) with an ADAPTIVE bounded-spin-then-FUTEX_WAIT handshake in __darling_thread_create (keeps the fast-path spin so the common sub-100us checkin is not regressed, but caps CPU so a slow checkin can never monopolise a core). Correctness validated RED->GREEN by tests/regression/thread_create_checkin_wait.c (creator ~1ms CPU vs a core spinning 141-300ms) and futex compiled into both creator+child paths. Live single-storm A/B was within noise (~+3.6% creates/s fixed); a pure-FUTEX variant regressed the fast warm-server case ~25% (p50 16us spin beats a futex round-trip), which is why the adaptive form was chosen. Multistorm aggregate A/B was too noisy on this host (clickhouse contention, baseline alone 5.4k-8.3k/s) to resolve. Wants a second reviewer + a clean-host perf measurement before upstreaming. See dar-dar6x4-perf-5dq.1.
   tests:
   - name: thread_create_checkin_wait
     kind: contract
@@ -3553,8 +3331,6 @@ patches:
   source-base: bd18a8bd71753b8321e513fe19cb724345f6b873
   source-commit: 3aa068c72bbcc622fcbec82986f4a716b28f1a0a
   bead: dar-dar6x4-perf-5dq.8
-  publication-status: blocked
-  publication-blocker: runs cheap, non-blocking RPCs INLINE on the darlingserver event loop instead of always handing every message to the worker pool. perf #2a profiling proved ~70% of server CPU under a fork/checkin storm was the main-loop->worker condvar handoff (pthread_cond_signal->futex_wake) for work that is <1% of CPU, which is why enabling the multi-threaded work queue regressed throughput ~32% vs single-threaded (and why upstream left DSERVER_SINGLE_THREADED on). Thread::doWork() never blocks its caller, so inlining is safe in both cases - a blocking call suspends its microthread (setcontext back to the loop) and resumes on the pool. Live A/B (8-proc tcstorm multistorm, DSERVER_SINGLE_THREADED=OFF): inline+MT 4676-7295 checkin/s vs ST baseline ~3830 vs naive-MT ~2594; checkin p99 512us->64us; 99.998% of RPCs handled inline (241 of 11.27M to the pool). Boot + 200x fork/exec/wait correctness verified, server stable across runs. RED->GREEN by tests/server_inline_fastpath.c (gates ctx-switches/item: handoff ~1/item fails, inline ~0/item passes). Stacks on the perf #0 progress-metrics commit (adds inline_handled/queued_to_pool counters). Wants design review (does this make the worker pool default-on? interaction with the DSERVER_SINGLE_THREADED flag) + a clean-host perf measurement before upstreaming. See dar-dar6x4-perf-5dq.8.
   tests:
   - name: server_inline_fastpath
     kind: contract
@@ -3585,8 +3361,6 @@ patches:
   source-base: 3aa068c72bbcc622fcbec82986f4a716b28f1a0a
   source-commit: 496fe0259c42288bf21c6cb7e6d9340a67e32b29
   bead: dar-6x4
-  publication-status: blocked
-  publication-blocker: fixes a real darlingserver DEADLOCK (not slowness) under fork+exec storms (make -jN, libunistring/gettext builds) that intermittently wedges the server - rpcs_serviced goes flat, every guest hangs in recvmsg, no recovery. Root cause pinned live with gdb (__cur_writer == MAIN thread tid, the single worker blocked in pthread_rwlock_rdlock with __readers WRLOCKED|WRPHASE) - notifyCheckin() exec branch held the per-process std--shared_mutex _rwlock across the suspending dtape_task_create / dtape_thread_create / dtape_semaphore_* calls. _rwlock ownership is per-OS-thread, but perf #2b (server-inline-fastpath) runs cheap RPCs INLINE on the MAIN event-loop thread while a suspended microthread resumes on the WORKER; an exec checkin running inline on MAIN then strands the write lock owned by MAIN, and a sibling fork-checkin on the single worker blocks forever in _notifyListeningKqchannels() reading the same process lock - the only thread that could resume the holder. Pre-#2b this could not happen (all microthreads ran on the one worker; lock acquired+released on the same OS thread), so this is a latent hazard that perf #2b activated. Fix drops _rwlock around the dtape work and re-acquires it to publish the new task/thread/semaphore handles, mirroring the pattern the thread-clear loop just above already uses around the blocking notifyDead(). A/B under heavy fork+exec load - pristine inline-on WEDGED on attempt 1; forcing all calls to the worker pool (no inline) 20/20 builds clean; this fix with inline ON 20/20 builds clean. fork/exec/wait/exit-code correctness verified (HELLO_EXEC_OK, child fork chain, rc 7 propagation). RED-to-GREEN by tests/inline_suspend_rwlock_deadlock.c (a process rwlock held by one OS thread across a microthread suspension while another OS thread reads it - RED arm deadlocks via watchdog/exit 1, GREEN arm releases-before-suspend and passes; HOST test under 5s). Rebased over the fork-checkin helper/sticky split so the exec replacement path resets ForkCheckinState instead of the old raw atomic flag. Wants design review of the broader invariant (audit that no other Process _rwlock write region can suspend) before upstreaming. See dar-6x4 and epic dar-dar6x4-perf-5dq.
   tests:
   - name: inline_suspend_rwlock_deadlock
     kind: contract
@@ -3666,8 +3440,6 @@ patches:
   source-base: 67f40c81b103ba8fcbc2ee07965af7f9ac4d84e4
   source-commit: 3fd7a8ed87d7e187854f946b470885f6f660b205
   bead: dar-dar6x4-perf-5dq.3
-  publication-status: blocked
-  publication-blocker: makes mldr's RPC recv hook (dserver_rpc_hooks_receive_message) do a bounded NON-BLOCKING recv spin (MSG_DONTWAIT + CPU pause between polls) before the blocking recvmsg, so a fast checkin reply is grabbed without the thread sleeping. Faithful in-guest measurement showed the per-thread create cost is ~95% the checkin RPC round-trip (~205us) and only ~5% socket setup (~10us), and of that round-trip the server's own work is ~8us (post perf #2b) - the rest is the recvmsg sleep/wakeup latency this attacks (so socket pooling, the obvious option, was rejected as low-ROI). Single-storm A/B (same run, warmup cancels) cut per-checkin RPC latency 237us->183us (~23%); fork/exec/wait/pipe/exit-code correctness 200/200 ok; symmetric to the perf #1 creator-side adaptive wait and bounded so it never busy-waits unboundedly. Default on (DARLING_PERF3_RECVSPIN=512; =0 restores legacy blocking recv). CAVEAT not yet resolved- aggregate throughput A/B on this oversubscribed host (load 68/12 cores, node+clickhouse contention) was noise-dominated and could not confirm a throughput win (one ordering showed ON slightly slower), so the claim is a per-checkin LATENCY reduction, not a measured throughput gain; pause (not sched_yield) was chosen specifically to bound the saturation downside. Wants a clean-host throughput measurement + review of the default-on choice before upstreaming. RED->GREEN by tests/perf3_recv_adaptive_test.c (client voluntary ctx-switches/round-trip- blocking 0.79 FAIL, adaptive 0.00 PASS). See dar-dar6x4-perf-5dq.3.
   tests:
   - name: mldr_recv_adaptive_spin
     kind: contract
@@ -3698,8 +3470,6 @@ patches:
   source-base: 496fe0259c42288bf21c6cb7e6d9340a67e32b29
   source-commit: 86cb8e34cc708eef1a26ae6a5287a00ef77aeca4
   bead: dar-dar6x4-perf-5dq.16
-  publication-status: blocked
-  publication-blocker: adds a server-side per-call-number RPC count + log2 latency histogram table (metrics.hpp/cpp, thread.cpp) exposed as a sparse per_call JSON object over the existing stat socket, to decompose which RPCs dominate. Diagnostic/observability only; over a real 46777-RPC build it proved server service time is tiny everywhere (top 6 calls = 62%, all sub-16us self-traps) so the 57% wait is recvmsg WAKEUP latency, not server work -- which redirected the perf effort to the guest side (.18 cache, .19 guest-sleep). RED->GREEN tests/per_call_metrics_test.cpp. Stacks on the dar-6x4 checkin-rwlock fix (source-base 5e5d6888). Wants design review of the added metrics surface before upstreaming. See dar-dar6x4-perf-5dq.16.
   tests:
   - name: per_call_metrics_contract
     kind: contract
@@ -3784,8 +3554,6 @@ patches:
   source-base: 86cb8e34cc708eef1a26ae6a5287a00ef77aeca4
   source-commit: 82183e60cbcab3c9b3b7e627feb6019e598c6965
   bead: dar-dar6x4-perf-5dq.17
-  publication-status: blocked
-  publication-blocker: adds a NO_REPLY ("fire-and-forget") flag to the RPC wrapper generator -- the client wrapper sends and returns 0 without waiting for a reply (skipping the ~200us recvmsg reply-wait sleep that perf #6 showed dominates build wall-clock), and the server _sendReply is a no-op. Applied to pure setters set_dyld_info + set_executable_path (scalar args copied into the request datagram, status discarded). set_thread_handles was tried and reverted (early pthread init too sensitive). Ordering safe -- per-thread datagrams processed in send order. GOTCHA -- mldr statically links the rpc wrappers, so a NO_REPLY change requires rebuilding mldr+dylib+server together or guest launchd hangs in recvmsg. Validated boot + make -j8 500/500. RED->GREEN tests/no_reply_rpc_test.sh. Stacks on per-call-rpc-metrics. Wants review that each NO_REPLY call is truly reply-independent before upstreaming. See dar-dar6x4-perf-5dq.17.
   tests:
   - name: no_reply_rpc_generator_contract
     kind: contract
@@ -3816,8 +3584,6 @@ patches:
   source-base: 82183e60cbcab3c9b3b7e627feb6019e598c6965
   source-commit: 3ab48c982a7fc9d5410ebec219bd357b975a26ae
   bead: dar-dar6x4-perf-5dq.19
-  publication-status: blocked
-  publication-blocker: generator half of the guest-side per-callnum recvmsg-sleep accountant -- brackets each reply-bearing wrapper's receive with __darling_rpc_sleep_account_begin()/_end(start, dserver_callnum_<name>) guarded by #ifdef DARLING_RPC_SLEEP_ACCOUNT (default OFF -> byte-identical wrappers, zero cost), so a diagnostic build can attribute the 57pct reply-wait per call number. NO_REPLY calls get no accounting. The accountant itself (table+rdtsc+dump) is the paired xnu commit. Decomposed the wait -- mach_msg_overwrite 19%, kprintf 14.5%, fork_wait_for_child 12.6%. RED->GREEN tests/rpc_sleep_account_test.sh. Diagnostic instrumentation; stays local. Stacks on no-reply-fire-and-forget-rpcs. See dar-dar6x4-perf-5dq.19.
   tests:
   - name: rpc_sleep_account_generator_contract
     kind: contract
@@ -3848,8 +3614,6 @@ patches:
   source-base: a0328833b5ea96dd0055a16bf0c55bbafa227dd0
   source-commit: 8a0fd576e28a44dffbced8cb09bd1afb5db67f9e
   bead: dar-dar6x4-perf-5dq.18
-  publication-status: blocked
-  publication-blocker: caches the immutable task self port guest-side (header-only dependency-injected cache in cached_self_ports.h + mach_traps.c) so task_self_trap stops doing an RPC on every call; reset on fork via mach_init_doit. Only task_self_trap is cacheable (mach_task_self_ is never deallocated); host_self/thread_self return caller-deallocated send rights and are deliberately NOT cached. Measured task_self_trap 6162->4109 (-33%, -4.4% total build RPCs) -- modest, which is why the effort moved to volume reduction (kprintf .20) and recv-spin generalization (.14). RED->GREEN tests/cached_self_ports_test.c. Wants a clean-host measurement + review of the fork-reset coverage before upstreaming. See dar-dar6x4-perf-5dq.18.
   tests:
   - name: cached_self_ports
     kind: unit
@@ -3882,8 +3646,6 @@ patches:
   source-base: 8a0fd576e28a44dffbced8cb09bd1afb5db67f9e
   source-commit: 54b093a396bd9c0706fdeb533bd57a7b7820613a
   bead: dar-dar6x4-perf-5dq.19
-  publication-status: blocked
-  publication-blocker: libsystem_kernel half of the guest-side recvmsg-sleep accountant (paired with the darlingserver generator commit). Single shared per-callnum table + rdtsc timing + per-process exit dump, behind option DARLING_RPC_SLEEP_ACCOUNT (default OFF -> emulation byte-identical to baseline, zero diagnostic symbols/strings). Design forced by the libc-free below-libSystem RPC path -- rdtsc not clock_gettime (the clock syscall in the send/recv atomic region wedges the guest), stack-local start stamp not __thread (TLS aborts pre-pthread), dump from sys_exit not a destructor (dyld rejects initializers in this image), one .c compiled once (the generated rpc.c is in two object libs). Validated ON build boots + make -j8 300/300. Diagnostic instrumentation; stays local. Stacks on cache-task-self-trap. See dar-dar6x4-perf-5dq.19.
   tests:
   - name: guest_per_callnum_sleep_account_contract
     kind: contract
@@ -3971,8 +3733,6 @@ patches:
   source-base: 54b093a396bd9c0706fdeb533bd57a7b7820613a
   source-commit: 3ddcd29a21b5dd9c10d44fe369beb7c7c5a8781a
   bead: dar-dar6x4-perf-5dq.20
-  publication-status: blocked
-  publication-blocker: gates three UNCONDITIONAL hot-path kprintf debug traces that perf #9-decompose measured at 14.5% of a clean build's recvmsg reply-wait, each being a full synchronous RPC round-trip with no build value. execve.c "execve expand" (every exec), filio.c "dtype for fd" (hot ioctl), sigexc.c "darling_sigexc_self()" (every process startup). New hotpath_kdebug() macro (common/simple.h) compiles to nothing unless -DDARLING_HOTPATH_KPRINTF_DEBUG (still type-checks args via if(0)); execve/filio use it, sigexc routes through its existing kern_printf/DEBUG_SIGEXC gate. Genuine error/guard kprintf left intact. NOTE -- these traces are compiled into BOTH libsystem_kernel.dylib AND dyld (dyld statically links VARIANT_DYLD sigexc.c) so dyld must be rebuilt+redeployed too. Validated -- server kprintf log over a real build 144->0, guest breakdown drops kprintf entirely, build 100/100. RED->GREEN tests/hotpath_kprintf_gate_contract.sh covers hotpath_kdebug semantics plus compiled execve/filio object behavior; a real sigexc runtime/build gate is tracked separately as dar-sigexc-hotpath-kprintf-runtime-gate-9mpv. This one is plausibly upstreamable (pure debug-noise removal) but wants review of the macro choice first. Stacks on guest-per-callnum-sleep-account. See dar-dar6x4-perf-5dq.20.
   tests:
   - name: hotpath_kdebug_default_contract
     kind: contract
@@ -4080,8 +3840,6 @@ patches:
   source-base: 3ddcd29a21b5dd9c10d44fe369beb7c7c5a8781a
   source-commit: e1db4266f50415c013371fc57e8f38a0423493ec
   bead: dar-dar6x4-perf-5dq.14
-  publication-status: blocked
-  publication-blocker: ports perf #3's bounded recv-spin (which only ever landed in mldr's copy of dserver-rpc-defs.h) into libsystem_kernel.dylib's RPC receive hook, so the guest build processes (clang/make/sh) also grab a fast RPC reply before sleeping instead of always blocking in recvmsg. Attacks the perf #6 57% __skb_wait reply-wait for the guest's OWN reply-bearing RPCs (mach_msg_overwrite 19% + mach_reply_port 8.7% + mach_port_deallocate 8.4% + self-traps -- perf #9-decompose). Bounded LINUX_MSG_DONTWAIT poll with a CPU pause then a blocking recvmsg fallback; never busy-waits unboundedly (symmetric to perf #1/#3). libc-free (raw syscall + ia32_pause, no env/TLS in the signal-blocked atomic region). Budget is compile-time DARLING_GUEST_RECVSPIN (default 512) -- CMake cache var lets A/B set 0 to disable. NOTE -- the hook is compiled into BOTH the dylib AND dyld so both must be rebuilt+redeployed. RED to GREEN tests/dylib_recv_adaptive_spin_test.sh. Correctness validated (clean boot + 200/200 fork-heavy build) before the prefix env degraded. Wall-clock A/B inconclusive (boot-noise-dominated for a few-percent RPC change, as perf #6 predicted) AND blocked by a separate env issue -- the prefix server lacks the dar-6x4 checkin-suspend crash fix 5e5d688 and segfaults under fork storms. Stacks on gate-hotpath-kprintf-debug. See dar-dar6x4-perf-5dq.14.
   tests:
   - name: dylib_recv_adaptive_spin_enabled_contract
     kind: contract
@@ -4151,8 +3909,6 @@ patches:
   source-base: f0cdc82b8ac35a9feb9e499958f486ed53c25d85
   source-commit: 92d87609088cbf50155519972d3919a5477ccea3
   bead: dar-productize-darling-rootless-mode-jkla.2
-  publication-status: blocked
-  publication-blocker: AF_UNIX boundary fix is locally accepted; immutable hosted refs and landing require a separate publication authorization.
   tests:
   - name: eunion_af_unix_path_length_host
     kind: contract
@@ -4197,8 +3953,6 @@ patches:
   source-base: 3ab48c982a7fc9d5410ebec219bd357b975a26ae
   source-commit: 24ae886e723cc37d41f472f210a216c36a3cd8e1
   bead: dar-l8k
-  publication-status: blocked
-  publication-blocker: fixes a heap use-after-free in Process::notifyCheckin's exec/"replace task" branch that crashed darlingserver under fork+exec storms (~1 in 3-6 heavy builds) and deterministically at boot under an ASan server build. The branch released the old dtape thread + task BEFORE republishing the new dtape thread as the microthread's current thread; the old task's IPC-space teardown (dtape_task_release -> ipc_space_terminate -> ipc_right_terminate -> ipc_port_destroy) reads current_thread()->ith_assertions (IMPORTANCE_INHERITANCE=1), and current_thread() resolves to mainThread->_dtapeThread which was still the just-freed old dtape_thread -> UAF (free at process.cpp dtape_thread_release, use at ipc_port.c:936; the rare prod symptom was a downstream SIGSEGV in the main loop's malloc on a corrupted freelist). Fix publishes _dtapeTask/_dtapeThread + new semaphores under _rwlock first, drops the lock, then releases the old thread/task (releases stay unlocked because dtape_task_release can suspend the microthread, same constraint as the dtape_*_create calls). Pinned via an ASan darlingserver build (DSERVER_ASAN=ON, detect_stack_use_after_return=0 to see past the fiber/ucontext fake-stack noise). RED->GREEN host gate tests/checkin_retask_current_thread_uaf.c + run-checkin-retask-current-thread-uaf.sh model the exact free/use ordering under ASan. Validated -- ASan server boots clean 3/3 (was UAF 3/3 pre-fix); fork-heavy make -j8 6/6 DONE clean. Distinct from 5e5d688 (that was the checkin _rwlock-across-suspend deadlock; this is the exec re-task current_thread UAF). Needs upstream review before publishing. See dar-l8k.
   tests:
   - name: checkin_retask_current_thread_uaf
     kind: contract
@@ -4267,24 +4021,6 @@ patches:
   source-base: 24ae886e723cc37d41f472f210a216c36a3cd8e1
   source-commit: b983a36ada0c2d13125ca6c5c62cc0d417c272dc
   bead: dar-pot
-  publication-status: blocked
-  publication-blocker: |-
-    dar-pot root fix: orphaned mldr guests leak across sessions and wedge fresh
-    boots. darlingserver creates the guest PID namespace via clone(CLONE_NEWPID);
-    the clone child (launchd, ns PID 1) now sets prctl(PR_SET_PDEATHSIG, SIGKILL)
-    so that when darlingserver dies for any reason, ns-PID-1 dies with it and the
-    kernel cascade-kills every guest in the namespace -- no guest can outlive its
-    server, so none can accumulate. Set AFTER perma_drop_privileges (a credential
-    change clears the pdeathsig) and BEFORE spawnLaunchd; survives the exec into
-    mldr (not set-uid). Base = manifest-rev (the clone region is byte-identical
-    across the homebrew/perf/arch stacks, so this is profile-independent and lives
-    in the foundational homebrew profile). RED->GREEN hermetic host-model gate
-    tests/pot_lifetime_binding_test.c + run-pot-lifetime-binding.sh (nobind arm
-    reproduces the orphan = GUEST-SURVIVED; bind arm = GUEST-REAPED). LIVE-verified
-    on the fixed binary (baseline d81b5cf1 + this fix, md5 6d854a92): 3/3 clean brew
-    reinstalls leave zero mldr + zero zombie darlingserver after shutdown, and a
-    SIGKILL of darlingserver alone (no darling shutdown) cascade-kills the guest via
-    the pdeathsig. Needs upstream review before publishing. See dar-pot.
   tests:
   - name: pot_lifetime_binding
     kind: contract
@@ -4338,8 +4074,6 @@ patches:
   source-base: b983a36ada0c2d13125ca6c5c62cc0d417c272dc
   source-commit: 6621f77c06cc847a6ff15009f0afe3e824d17ff1
   bead: dar-r7fc.7
-  publication-status: blocked
-  publication-blocker: test-only runtime diagnostics; keep local until a supported upstream diagnostics interface is designed
   tests:
   - name: dserver_test_diagnostics_trace
     kind: guest
@@ -4372,8 +4106,6 @@ patches:
   source-base: 6621f77c06cc847a6ff15009f0afe3e824d17ff1
   source-commit: 9d5e7b6c29cdf74f43c73b41538a0dd86066e9ea
   bead: dar-test-infra-sp5.30
-  publication-status: blocked
-  publication-blocker: Test-only RPC diagnostics; retain locally until rootless E-UNION bootstrap has a product fix and a supported upstream diagnostic interface.
   tests:
   - name: semaphore_rpc_trace_guest
     kind: guest
@@ -4442,8 +4174,6 @@ patches:
   source-base: 9d5e7b6c29cdf74f43c73b41538a0dd86066e9ea
   source-commit: 98325d76d25f7dcb450e8005b2590910c8df52c7
   bead: dar-yfp4.3.1
-  publication-status: blocked
-  publication-blocker: Test-only cancellation diagnostics; retain locally until the E-UNION launchd cancellation loop is explained and a product fix has a behavioral proof.
   tests:
   - name: pthread_cancellation_rpc_trace_guest
     kind: guest
@@ -4508,8 +4238,6 @@ patches:
   source-base: 98325d76d25f7dcb450e8005b2590910c8df52c7
   source-commit: c9f536170d32d5f7c0b89f4f83fae33c7e9bba6c
   bead: dar-yfp4.3.2
-  publication-status: blocked
-  publication-blocker: Test-only execution-path diagnostics; retain locally until the E-UNION launchd service spawn loop has a product fix with a behavioral proof.
   tests:
   - name: eunion_exec_path_trace_guest
     kind: guest
@@ -4572,8 +4300,6 @@ patches:
   source-base: 1ca29fe8e8c2c5f784522f9144809057918c4c36
   source-commit: aeb4e184d9ee31bff62812e54d8d44bc9ae70d65
   bead: dar-7zvt.3
-  publication-status: blocked
-  publication-blocker: Rootless runtime integration is a local architectural consolidation; publication remains blocked until the complete lifecycle stack passes its fresh-prefix guest audit.
   test-exception:
     reason: integration-runtime-provider
     scope: The server startup and E-UNION runtime-prefix behavior are exercised by the rootless bootstrap provider together with the top-level launcher, mldr, XNU and dyld artifacts; a server-only minus-patch verdict is not meaningful.
@@ -4627,8 +4353,6 @@ patches:
   source-base: 14a9d36495cb84a7af6abf49ac30cf0a3e27a648
   source-commit: dd0b23f1e3b8e9470016e67df40e18a28718b737
   bead: dar-productize-darling-rootless-mode-jkla.1
-  publication-status: blocked
-  publication-blocker: Typed runtime-mode integration is locally accepted; immutable hosted refs and landing require a separate publication authorization.
   tests:
   - name: rootless_runtime_server_mode_contract
     kind: contract
@@ -4660,8 +4384,6 @@ patches:
   source-base: dd0b23f1e3b8e9470016e67df40e18a28718b737
   source-commit: a2f99243227c57847308527a2a921d1bb77b1135
   bead: dar-productize-darling-rootless-mode-jkla.3
-  publication-status: blocked
-  publication-blocker: Typed prefix lifecycle is locally authored; immutable hosted refs and landing require separate publication authorization.
   tests:
   - name: rootless_prefix_lifecycle_server_contract
     kind: contract
@@ -4689,8 +4411,6 @@ patches:
   source-base: ce9c990df38ed6a97ee57ef6195eca982765cdf6
   source-commit: 614850a641f25d37410f7116619818f55eff539e
   bead: dar-gwn.7.7.5
-  publication-status: blocked
-  publication-blocker: FD-less vchroot path RPC is a local architecture change under acceptance review; it is not a publication candidate until the runtime gate (guest vchroot, invalid/closed descriptor rejected before the RPC, zero SCM_RIGHTS on the vchroot call, pinned ordinary Docker) passes.
   test-exception:
     reason: runtime-gate-pending
     scope: vchroot zero-descriptor-transport differential and pinned ordinary Docker
@@ -4761,8 +4481,6 @@ patches:
   source-base: 492a00f4929e5aba60607d9fed3e868bc4a3aeba
   source-commit: 72006d6a61504c5123b463f8369a8e09bc4b23cf
   bead: dar-7zvt.3
-  publication-status: blocked
-  publication-blocker: Rootless runtime integration is a local architectural consolidation; publication remains blocked until the complete lifecycle stack passes its fresh-prefix guest audit.
   tests:
   - name: mldr_main_tsd_contract
     kind: contract
@@ -4849,8 +4567,6 @@ patches:
   source-base: 72006d6a61504c5123b463f8369a8e09bc4b23cf
   source-commit: e257950104da34ec0646f2faeb5a23e1e80c05d4
   bead: dar-test-infra-sp5.45
-  publication-status: blocked
-  publication-blocker: Rootless bootstrapper ordering remains local until fresh-prefix guest CI is stable across repeated runs.
   test-exception:
     reason: integration-runtime-provider
     scope: The fix changes launchd's rootless system bootstrap scheduling; its contract is exercised by the existing fresh-prefix rootless guest bootstrap smoke rather than a source-only launchd unit.
@@ -4866,8 +4582,6 @@ patches:
   source-base: 38d47a35ce0a0718718c31705fb642aa1833dfcc
   source-commit: b5cbf7b8fdb3ca43befab5ca212a5008a3aa9c43
   bead: dar-test-infra-sp5.45.9
-  publication-status: blocked
-  publication-blocker: Product-owned rootless initialization is local until the fresh-prefix three-path CI audit is complete.
   tests:
   - name: rootless_prefix_initialization_guest
     kind: guest
@@ -4973,8 +4687,6 @@ patches:
   source-base: 88a1b9b1260e58266e9b6b687831065271ec4b90
   source-commit: f8aa7404f19979d0ec4b54573238194b98de385a
   bead: dar-7zvt.4
-  publication-status: blocked
-  publication-blocker: Test-only rootless readiness control remains local until the lifecycle regression suite is portable.
   test-exception:
     reason: test-instrumentation
     scope: The hook is inert unless DARLING_TEST_SHELLSPAWN_READY_DELAY_MS is explicitly supplied by the rootless lifecycle proof.
@@ -4985,8 +4697,6 @@ patches:
   source-base: f8aa7404f19979d0ec4b54573238194b98de385a
   source-commit: 0d817c9f105d90048de1a592277455d54a85fb96
   bead: dar-7zvt.4
-  publication-status: blocked
-  publication-blocker: Rootless lifecycle remains local until the fresh-prefix guest and cleanup audit is complete.
   test-exception:
     reason: integration-runtime-provider
     scope: Structured shellspawn result errors are exercised by the adjacent fast-exit guest proof; a protocol-only minus-patch invocation cannot produce a meaningful standalone guest verdict.
@@ -5113,8 +4823,6 @@ patches:
   source-base: bcb438afefa11cf431038a16440b026fc37e8077
   source-commit: db7b5b404366fa630edeb5189f174518aad189ad
   bead: dar-productize-darling-rootless-mode-jkla.1
-  publication-status: blocked
-  publication-blocker: Typed launcher/bootstrap integration is locally accepted; immutable hosted refs and landing require a separate publication authorization.
   tests:
   - name: rootless_typed_runtime_mode_contract
     kind: contract
@@ -5146,8 +4854,6 @@ patches:
   source-base: db7b5b404366fa630edeb5189f174518aad189ad
   source-commit: da784f52c4e5b7a3ecbc628e6e619171ba78435c
   bead: dar-productize-darling-rootless-mode-jkla.3
-  publication-status: blocked
-  publication-blocker: Crash-consistent prefix lifecycle is locally authored; immutable hosted refs and landing require separate publication authorization.
   tests:
   - name: rootless_prefix_lifecycle_contract
     kind: contract
@@ -5174,8 +4880,6 @@ patches:
   source-branch: fix/normalize-payload-paths-base
   source-commit: 25b9dbfe954faa04991a8152519b155d9df6e2a8
   bead: dar-test-infra-sp5.45
-  publication-status: provisional
-  publication-blocker: Guest installer behavior is green locally; fork publication waits for the complete runtime-provider CI audit.
   tests:
   - name: command_line_tools_installer_guest
     kind: guest
@@ -5222,8 +4926,6 @@ patches:
   source-base: 25b9dbfe954faa04991a8152519b155d9df6e2a8
   source-commit: 825fde7532045c27263ad041e47cdadb2b5bd3b7
   bead: dar-test-infra-sp5.45.9
-  publication-status: blocked
-  publication-blocker: Installer archive containment remains local until the fresh-prefix three-path CI audit is complete.
   tests:
   - name: installer_archive_path_containment
     kind: contract
@@ -5247,8 +4949,6 @@ patches:
   source-base: cb2cf623d9cd641ed4f9e899a0187acdedc423ea
   source-commit: 0ae4c3fecc658859002346356ddfc2ae01391166
   bead: dar-arsg
-  publication-status: blocked
-  publication-blocker: Local fresh-prefix CLT and lz4 acceptance passed; canonical clean-ODB validation, immutable hosted source closure and release review remain required.
   test-exception:
     reason: behavioral-proof-in-wget-residual-profile
     scope: >-
@@ -5276,8 +4976,6 @@ patches:
   source-base: da784f52c4e5b7a3ecbc628e6e619171ba78435c
   source-commit: 681329d6b6cb007e86316c572b138de88f1cfb8b
   bead: dar-arsg
-  publication-status: blocked
-  publication-blocker: Local fresh-prefix lz4 source-install and shutdown/reuse acceptance passed; canonical clean-ODB validation, immutable hosted source closure and release review remain required.
   tests:
   - name: rootless_homebrew_source_install
     kind: guest
@@ -5298,8 +4996,6 @@ patches:
   source-base: 50db68ce8504da6c9c8f24ddfd31d737b1f1db23
   source-commit: 812e6e820009dde5f5af832233ebd120b7258fb6
   bead: dar-nmda
-  publication-status: blocked
-  publication-blocker: Local ownership runtime and stock lz4 acceptance passed; canonical clean-ODB validation, immutable hosted source closure and release review remain required.
   tests:
   - name: eunion_ownership_host
     kind: contract
@@ -5337,8 +5033,6 @@ patches:
   source-base: e0b55ebd7346773fb7aaa7c0723dd00accc08692
   source-commit: 396820985f09272b82b0c74f35955df5706149a3
   bead: dar-gwn.7.7.5
-  publication-status: blocked
-  publication-blocker: FD-less vchroot path RPC is a local architecture change under acceptance review; it is not a publication candidate until the runtime gate (guest vchroot, invalid/closed descriptor rejected before the RPC, zero SCM_RIGHTS on the vchroot call, pinned ordinary Docker) passes.
   test-exception:
     reason: runtime-gate-pending
     scope: vchroot zero-descriptor-transport differential and pinned ordinary Docker
