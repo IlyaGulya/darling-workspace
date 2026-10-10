@@ -183,6 +183,37 @@ This is the leading hypothesis for the linker wedge and for the "server is gone"
 around it: both are the same lost-wakeup/panic pair, reached by an ordinary process that holds an unfair
 lock while another thread is blocked in the primitive.
 
+## Bounded reproducer of the parking, in seconds
+
+The state above is reachable without Xcode. `tests/ios_ring_strand_guest.c` (driven by
+`tests/run-ios-ring-strand-contract.sh`) parks four waiters on ONE word with `timeout=0` and wakes them one
+at a time, so both the wait and the wake have to survive the ring, i.e. `gr_wait_reply` -- it also carries
+the pthread_mutex psynch arm that the sibling `tests/ios_psynch_route_guest.c` hangs in. A watchdog prints
+the verdict itself after `IOS_RING_STRAND_DEADLINE_MS` (default 5000) of no progress, so a strand reports
+`stranded=N` instead of hanging the run:
+
+    IOS-UNFAIR-LOCK pass=0 waiters=4 stranded=4 stage=psynch-contend host_futex_wait=1 depth_contract=violated expect_host_futex=0 ops=137 reason=deadline_ms=5000
+
+The parking is forced AND observed deterministically. Forcing: `DARLING_GUEST_RING_BLOCKING=0`
+(dserver-ring.c:3345-3368) sends the blocking family down the pre-migration datagram, `mach_driver_get_fd`
+declines it, and `sys_ulock_wait` parks in the host futex. Observing: which transport a wait used is read
+from the guest alone, with no new print layer -- `ulock_wait_futex` returns the constant 1 while the
+server-owned queue returns the true remaining depth, so four one-at-a-time wakes yield `{1,1,1,1}`
+(`host_futex_wait=1`) on the futex and `{0,1,2,3}` (`depth_contract=ok`) on the queue.
+The two arms are the gate: the datagram arm passes ON the parking (`host_futex_wait=1`, all waiters
+back), while the product arm passes only on `host_futex_wait=0` with `depth_contract=ok`, i.e. the
+blocking family really riding the ring lane to the server-owned queue. MEASURED on the deployed
+runtime (2026-10-10, `DPREFIX=prefix-ios`, `hunt/t4-bsdreply-trace/ring-strand-2.log`): the product arm
+shows the futex signature too (`returns=1,1,1,1 depth_contract=violated host_futex_wait=1`), so it
+reports `pass=0` -- the RED for step 6 of the implementation map -- while the datagram arm reports
+`pass=1`.
+
+`tests/run-ios-ring-strand-contract.sh` runs both arms and prints them side by side (its per-arm line
+carries `fixture=` and `harness=` separately, because the harness's own verdict also covers prefix
+hygiene):
+
+    DPREFIX=... DARLING_BUILD_DIR=... bash tests/run-ios-ring-strand-contract.sh
+
 ## New work, not a regression
 
 `git log --all -- '*ulock*'` in `darlingserver` returns only the initial imports, and there has never been a

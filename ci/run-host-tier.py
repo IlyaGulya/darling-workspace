@@ -283,6 +283,17 @@ EXCLUDED_CONTRACTS = {
         "call's value (the SIGILL the real ld died of during T4). The host tier has no product build, "
         "no prefix lifecycle and no guest runtime; run it with DARLING_BUILD_DIR=<configured build> "
         "and DPREFIX from the prefix-backed lane",
+    "tests/run-ios-ring-strand-contract.sh":
+        "guest-runtime gate: the same host-build/boot/verdict mechanism as "
+        "tests/run-ios-unfair-lock-contract.sh, narrowed by IOS_UNFAIR_LOCK_FIXTURE to "
+        "tests/ios_ring_strand_guest.c, which reproduces the T4 'invisible parking' in seconds: a "
+        "blocking ulock wait that does not get a ring lane takes the pre-migration datagram, is "
+        "declined by mach_driver_get_fd and parks in a host futex the server cannot see (forced "
+        "deterministically by the tree's own DARLING_GUEST_RING_BLOCKING=0 arm, whose constant-1 "
+        "return is required), plus the pthread_mutex psynch arm the measured psynch reproducer hangs "
+        "in. An in-guest watchdog prints stranded=N and a harness --wait bound the run. The host tier "
+        "has no product build, no prefix lifecycle and no guest runtime; run it with "
+        "DARLING_BUILD_DIR=<configured build> and DPREFIX from the prefix-backed lane",
     "tests/run-ios-toolchain-contract.sh":
         "guest-runtime gate: it executes the REAL Apple clang from an Xcode tree inside a booted "
         "Darling prefix (DPREFIX) and compiles arm64 iPhoneOS objects against that Xcode's "

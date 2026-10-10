@@ -90,15 +90,37 @@ server_debug_env=()
 if [ "${IOS_UNFAIR_LOCK_SERVER_DEBUG:-0}" = 1 ]; then
 	server_debug_env=(--env DSERVER_LOG_LEVEL=debug --env DSERVER_LOG_STDERR=1)
 fi
+# GUEST-side knobs (one or more KEY=VALUE words, set on the guest leaf command so the fixture reads
+# them from its own environment -- the same mechanism the census runner uses for
+# DARLING_GUEST_LANE_STATS). Default empty: a plain run exercises the product transport.
+guest_env=()
+# Each whitespace-separated KEY=VAL becomes its own --env. Passing the whole string after a single
+# --env made every pair except the first a positional argument, which the harness rejected with
+# "unknown argument: KEY=VAL" (MEASURED: the datagram arm reported verdict-missing for that reason).
+for kv in ${IOS_UNFAIR_LOCK_GUEST_ENV:-}; do
+	guest_env+=(--env "$kv")
+done
+# The fixture's own result line, named by the caller, lets the harness stop on it instead of
+# sleeping out --wait. Default empty keeps the harness's own poll line.
+poll_arg=()
+[ -n "${IOS_UNFAIR_LOCK_POLL:-}" ] && poll_arg=(--poll "$IOS_UNFAIR_LOCK_POLL")
+# DIAGNOSTIC ONLY (default off): keep the failing incarnation alive for an external observer (host
+# wchan/LLDB) instead of shutting it down. The harness explains the inspection and the cleanup.
+freeze_arg=()
+[ "${IOS_UNFAIR_LOCK_FREEZE_ON_FAIL:-0}" = 1 ] && freeze_arg=(--freeze-on-fail)
 harness="$(bash "$boot_run" --prefix "$prefix" --wait "${IOS_UNFAIR_LOCK_WAIT:-60}" \
 	--marker 'IOS-UNFAIR-LOCK pass=1' \
-	"${server_debug_env[@]}" \
+	"${server_debug_env[@]}" "${guest_env[@]}" "${poll_arg[@]}" "${freeze_arg[@]}" \
 	--log "$log" \
 	--cmd 'exec /private/var/tmp/ios_unfair_lock_guest' 2>&1)" || true
 printf '%s\n' "$harness" | tail -12
 
 fail=0
 printf '%s\n' "$harness" | grep -q 'VERDICT: PASS' || fail=1
+# The fixture's own machine-readable result IS the evidence: echo the lines the verdict was read
+# from, so pass=/stranded= are visible without retaining the workdir.
+echo "ios-unfair-lock: fixture verdict lines:"
+grep -a 'IOS-UNFAIR-LOCK' "$log" | tail -4 || true
 if ! grep -q 'IOS-UNFAIR-LOCK pass=1' "$log"; then
 	fail=1
 	echo "ios-unfair-lock: the fixture did not report pass=1"
@@ -113,7 +135,7 @@ if ! grep -q 'IOS-UNFAIR-LOCK pass=1' "$log"; then
 fi
 
 if [ "$fail" -eq 0 ]; then
-	echo "IOS-UNFAIR-LOCK PASS: single-thread lock/unlock/lock, contention and 1000 repetitions all survive"
+	echo "IOS-UNFAIR-LOCK PASS"
 else
 	echo "IOS-UNFAIR-LOCK FAIL"
 fi
