@@ -47,6 +47,22 @@ struct rec {
 static struct rec recs[MAXREC];
 static int nrecs;
 
+/*
+ * Read this thread's TSD self slot WITHOUT touching the lock implementation: take a private, freshly
+ * initialized lock and look at the word. libplatform stores the thread's self token there, so a word that is
+ * still zero after a successful lock means the token this thread reads is zero -- a token that excludes
+ * nobody, because the CAS from NO_OWNER(0) to self(0) succeeds while leaving the word free.
+ */
+static int
+self_slot_is_zero(void)
+{
+	os_unfair_lock probe = OS_UNFAIR_LOCK_INIT;
+	os_unfair_lock_lock(&probe);
+	unsigned word = *(volatile unsigned *)&probe;
+	os_unfair_lock_unlock(&probe);
+	return word == 0;
+}
+
 static void
 record(unsigned token, unsigned long thread_id, int dispatch)
 {
@@ -60,15 +76,44 @@ record(unsigned token, unsigned long thread_id, int dispatch)
 	pthread_mutex_unlock(&rec_lock);
 }
 
+/* What the lock word held around a violation. The guest may read its own lock: this is the test, not a probe
+ * inside the lock's implementation. `owner` is the word with the low bit masked off, which is how the
+ * implementation encodes "waiters exist". */
+struct violation {
+	unsigned word_before;
+	unsigned word_after;
+	unsigned own_token;
+	unsigned holder_token;
+};
+
+static struct violation viol[16];
+static int nviol;
+
+static unsigned
+owner_of(unsigned word)
+{
+	return word | 1u;
+}
+
 /* The mutual-exclusion oracle. Everything it needs is a shared unfair lock and a flag. */
 static void
 mutex_round(void)
 {
+	unsigned before = *(volatile unsigned *)&shared_lock;
 	os_unfair_lock_lock(&shared_lock);
+	unsigned after = *(volatile unsigned *)&shared_lock;
 	if (inside) {
 		/* Another thread is in the critical section while we hold the lock: the owner identity did
-		 * not exclude us, so the lock is not a lock. */
+		 * not exclude us, so the lock is not a lock. Record the word so the failure says which
+		 * token it held instead of only that it happened. */
 		__sync_fetch_and_add((int *)&violations, 1);
+		unsigned slot = (unsigned)__sync_fetch_and_add((int *)&nviol, 1);
+		if (slot < sizeof(viol) / sizeof(viol[0])) {
+			viol[slot].word_before = before;
+			viol[slot].word_after = after;
+			viol[slot].own_token = (unsigned)mach_thread_self();
+			viol[slot].holder_token = owner_of(after);
+		}
 	}
 	inside = 1;
 	sched_yield();
@@ -123,6 +168,15 @@ main(void)
 	int zeros = 0;
 	int unstable = 0;
 	int duplicate_live = 0;
+	int slot3_zero = 0;
+	for (i = 0; i < 8; ++i) {
+		/* Repeat: a slot burned into the pthread structure from an earlier thread would show up as an
+		 * inconsistency between attempts, and this is the arm that names the defect's mechanism. */
+		if (self_slot_is_zero()) {
+			slot3_zero++;
+		}
+	}
+	for (i = 0; i < nrecs; ++i) {
 	for (i = 0; i < nrecs; ++i) {
 		if (recs[i].token == 0) {
 			zeros++;
@@ -141,6 +195,7 @@ main(void)
 
 	printf("TSSELF threads=%d records=%d zeros=%d unstable=%d duplicate-live=%d dispatch=%d\n", NTHREADS,
 	    nrecs, zeros, unstable, duplicate_live, NDISPATCH);
+	printf("TSSELF main-self-slot-zero probes=%d zero=%d\n", 8, slot3_zero);
 	unsigned long first_id = 0;
 	int distinct_threads = 0;
 	for (i = 0; i < nrecs; ++i) {
@@ -159,7 +214,13 @@ main(void)
 	printf("UNFAIRLOCK-MUTEX pass=%d threads=%d iterations=%d violations=%d\n",
 	    (violations == 0) ? 1 : 0, NTHREADS + NDISPATCH, NTHREADS * NITER + NDISPATCH * 50, violations);
 
-	int ok = (zeros == 0) && (unstable == 0) && (duplicate_live == 0) && (violations == 0);
+	for (i = 0; i < nviol && i < 16; ++i) {
+		printf("UNFAIRLOCK-VIOLATION i=%d word_before=0x%x word_after=0x%x own=0x%x holder_in_word=0x%x\n", i,
+		    viol[i].word_before, viol[i].word_after, viol[i].own_token, viol[i].holder_token);
+	}
+
+	int ok = (zeros == 0) && (unstable == 0) && (duplicate_live == 0) && (violations == 0) &&
+	    (slot3_zero == 0);
 	printf("TSSELF pass=%d\n", ok ? 1 : 0);
 	return ok ? 0 : 1;
 }
