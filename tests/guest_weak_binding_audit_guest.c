@@ -22,6 +22,10 @@
 #include <sys/event.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/ipc.h>
+#include <sys/msg.h>
+#include <sys/sem.h>
+#include <sys/shm.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <unistd.h>
@@ -69,6 +73,17 @@ int main(int argc, char **argv)
 	report_image("close", (void *)&close);
 	report_image("dup", (void *)&dup);
 	report_image("listen", (void *)&listen);
+	/* Public names that the duplicate-symbol scan found defined in BOTH libsystem_kernel.dylib and
+	 * libsystem_c.dylib -- the os_unfair_lock shape, but with public API names. The source tree has the real
+	 * implementations in libc/ (compat-43/setreuid.c, setregid.c; sys/msgctl.c, semctl.c, shmctl.c), so the
+	 * question the scan cannot answer is which image the guest actually binds, and whether the loser is a
+	 * placeholder. A bogus id must produce -1/EINVAL from a real implementation; a stub that returns success
+	 * would be the defect. */
+	report_image("setreuid", (void *)&setreuid);
+	report_image("setregid", (void *)&setregid);
+	report_image("msgctl", (void *)&msgctl);
+	report_image("semctl", (void *)&semctl);
+	report_image("shmctl", (void *)&shmctl);
 	report_hook("kqueue_impl");
 	report_hook("kevent_impl");
 	report_hook("kevent64_impl");
@@ -111,5 +126,26 @@ int main(int argc, char **argv)
 
 	printf("WEAKBIND pass=%d kq=%d kevent=%d dup-seen=%d\n",
 	       (kq >= 0 && kevent_rc == 0 && d >= 0) ? 1 : 0, kq, kevent_rc, d >= 0);
+
+	/* Discriminating calls for the duplicated public names: a real implementation rejects a bogus id. */
+	{
+		struct msqid_ds mds;
+		struct shmid_ds sds;
+		union { int val; } sarg;
+		errno = 0;
+		int mrc = msgctl(-1, IPC_STAT, &mds);
+		printf("WEAKBIND call  msgctl(-1,IPC_STAT)          -> %d (errno %d %s)\n",
+		       mrc, errno, mrc < 0 ? strerror(errno) : "ok");
+		errno = 0;
+		int src = shmctl(-1, IPC_STAT, &sds);
+		printf("WEAKBIND call  shmctl(-1,IPC_STAT)          -> %d (errno %d %s)\n",
+		       src, errno, src < 0 ? strerror(errno) : "ok");
+		errno = 0;
+		int src2 = semctl(-1, 0, GETVAL, sarg);
+		printf("WEAKBIND call  semctl(-1,0,GETVAL)          -> %d (errno %d %s)\n",
+		       src2, errno, src2 < 0 ? strerror(errno) : "ok");
+		printf("WEAKBIND dup-public msgctl=%d shmctl=%d semctl=%d (expect -1 each)\n",
+		       mrc, src, src2);
+	}
 	return (kq >= 0 && kevent_rc == 0 && d >= 0) ? 0 : 1;
 }
