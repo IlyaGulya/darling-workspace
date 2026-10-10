@@ -5815,6 +5815,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Verdict(a) => run_verdict(a),
         DiagCommand::Suite(a) => run_suite(a),
         DiagCommand::Progress(a) => run_progress(a),
+        DiagCommand::Job(a) => run_job(a),
         DiagCommand::Courier(a) => run_courier(a),
         DiagCommand::Witness(a) => run_witness(a),
         DiagCommand::Prefix(a) => run_prefix(a),
@@ -6150,6 +6151,11 @@ pub enum DiagCommand {
     /// the failure this exists to catch: a guard that silently does nothing cannot be told from no guard at all, and a
     /// hand-written grep over one log finds a line but cannot tell you which of the other instruments never spoke.
     Witness(WitnessArgs),
+    /// Diagnose one finished run as a whole: census the instruments, say where it stopped, join the wait/wake
+    /// vocabulary, look for a loop, then read a core or the kernel's report -- and report what the processes are
+    /// doing now, per thread, with the kernel stacks when root is available. This exists so a job owner never has
+    /// to know which of the other commands answers which question, which is how evidence gets missed.
+    Job(JobArgs),
     /// Read a stopped guest's stacks: per-thread rsp from the debugger, then the words above it,
     /// filtered to guest images and symbolized. Host gdb cannot walk a Darwin-ABI frame, so this
     /// is how a stuck guest gets function names instead of a plausible story. With --catch SIGNAL
@@ -6808,4 +6814,417 @@ mod macho_vmaddr_tests {
     fn a_non_macho_or_missing_image_is_not_converted() {
         assert_eq!(macho_vmaddr_for_fileoff("/nonexistent/image", 0x10), None);
     }
+}
+
+
+// ----------------------------------------------------------------------------------------------------------------
+// job: one finished run explains itself
+// ----------------------------------------------------------------------------------------------------------------
+
+/// A job's own diagnosis, as one command.
+///
+/// WHY THIS EXISTS. Every investigation re-derived the same sequence by hand -- census the instruments, ask where the
+/// run stopped, join the wait/wake vocabulary, look for a loop, then read a core or the kernel's report -- and each
+/// time the *choice* of tool was the caller's, so evidence was routinely missed (a job log read for instruments that
+/// only the boot log carries reports zeros, which reads like "nothing happened"). A job owner that already knows the
+/// run should not make its caller guess any of it.
+///
+/// It DELEGATES: each step is the existing subcommand, invoked with arguments this code builds. Nothing here parses a
+/// log itself, so there is still exactly one implementation of every question.
+#[derive(clap::Args, Debug)]
+pub struct JobArgs {
+    /// State directory of a finished west job (`west-job.sh start|status|follow` print it).
+    #[arg(long)]
+    pub state_dir: PathBuf,
+    /// Prefix whose images resolve symbols. Defaults to DWDIAG_PREFIX, then DPREFIX, then `DPREFIX=` in the recorded command.
+    #[arg(long)]
+    pub prefix: Option<PathBuf>,
+    /// One JSON object instead of the human block.
+    #[arg(long)]
+    pub json: bool,
+    /// Lines kept per step.
+    #[arg(long, default_value_t = 24)]
+    pub lines: usize,
+    /// Seconds allowed per step.
+    #[arg(long, default_value_t = 60)]
+    pub step_timeout_seconds: u64,
+    /// Dump thread state for these pids instead of the prefix census (comma separated).
+    #[arg(long, value_delimiter = ',')]
+    pub pids: Vec<u32>,
+}
+
+#[derive(Default)]
+struct JobStep {
+    label: String,
+    command: String,
+    status: Option<i32>,
+    output: Vec<String>,
+    note: Option<String>,
+}
+
+fn job_step(
+    exe: &Path,
+    label: &str,
+    argv: &[String],
+    lines: usize,
+    timeout_seconds: u64,
+) -> JobStep {
+    let command = format!("{} {}", exe.display(), argv.join(" "));
+    let out = Command::new("timeout")
+        .arg(timeout_seconds.to_string())
+        .arg(exe)
+        .args(argv)
+        .output();
+    let mut step = JobStep {
+        label: label.to_string(),
+        command,
+        ..Default::default()
+    };
+    match out {
+        Ok(o) => {
+            step.status = o.status.code();
+            let mut text = String::from_utf8_lossy(&o.stdout).into_owned();
+            text.push_str(&String::from_utf8_lossy(&o.stderr));
+            step.output = text
+                .lines()
+                .take(lines)
+                .map(|l| l.to_string())
+                .collect();
+            if o.status.code().is_none() {
+                step.note = Some(format!(
+                    "{} was killed by a signal (its reason is in the lines above)",
+                    label
+                ));
+            } else if o.status.code() != Some(0) && step.output.is_empty() {
+                step.note = Some(format!(
+                    "{} exited {:?} with no output; that is the tool saying it could not read, not that nothing happened",
+                    label,
+                    o.status.code()
+                ));
+            }
+        }
+        Err(e) => {
+            step.note = Some(format!("{} could not be started: {e}", label));
+        }
+    }
+    step
+}
+
+fn read_small(path: &Path) -> Option<String> {
+    fs::read_to_string(path).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+fn read_kernel(path: &Path, lines: usize, sudo: bool) -> Option<String> {
+    if let Ok(text) = fs::read_to_string(path) {
+        let joined: Vec<&str> = text.lines().take(lines).collect();
+        if !joined.is_empty() {
+            return Some(joined.join("|"));
+        }
+    }
+    if !sudo {
+        return None;
+    }
+    let out = Command::new("sudo")
+        .arg("-n")
+        .arg("head")
+        .arg("-n")
+        .arg(lines.to_string())
+        .arg(path)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let joined: Vec<&str> = text.lines().take(lines).collect();
+    if joined.is_empty() {
+        None
+    } else {
+        Some(format!("via-sudo {}", joined.join("|")))
+    }
+}
+
+fn sudo_available() -> bool {
+    // One probe that is true for root and for a passwordless sudoer alike; when it is false the
+    // caller is told the stack needs root rather than being handed a silent gap.
+    Command::new("sudo")
+        .arg("-n")
+        .arg("true")
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn job_prefix(args: &JobArgs, state_dir: &Path) -> Option<PathBuf> {
+    if let Some(p) = &args.prefix {
+        return Some(p.clone());
+    }
+    for key in ["DWDIAG_PREFIX", "DPREFIX"] {
+        if let Ok(v) = std::env::var(key) {
+            if !v.is_empty() {
+                return Some(PathBuf::from(v));
+            }
+        }
+    }
+    let recorded = fs::read_to_string(state_dir.join("command")).ok()?;
+    recorded
+        .split_whitespace()
+        .find_map(|w| w.strip_prefix("DPREFIX=").map(PathBuf::from))
+}
+
+fn job_instrument_log(state_dir: &Path, job_log: &Path) -> PathBuf {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = fs::read_dir(state_dir.join("activity-logs.d")) {
+        for e in entries.flatten() {
+            let path = e.path();
+            let text = fs::read_to_string(&path).unwrap_or_default();
+            let text = text.replace('\u{0}', "\n");
+            for line in text.lines() {
+                if !line.is_empty() {
+                    candidates.push(PathBuf::from(line));
+                }
+            }
+        }
+    }
+    let job_mtime = fs::metadata(job_log).and_then(|m| m.modified()).ok();
+    let mut boots: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    if let Ok(entries) = fs::read_dir("/tmp") {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("darling-boot-") || !name.ends_with(".log") {
+                continue;
+            }
+            if let Ok(m) = e.metadata().and_then(|m| m.modified()) {
+                boots.push((m, e.path()));
+            }
+        }
+    }
+    boots.sort_by(|a, b| b.0.cmp(&a.0));
+    for (mtime, path) in boots {
+        if let Some(jm) = job_mtime {
+            if mtime < jm {
+                continue;
+            }
+        }
+        candidates.push(path);
+    }
+    if let Some(prefix) = job_prefix(&JobArgs { state_dir: state_dir.to_path_buf(), prefix: None, json: false, lines: 0, step_timeout_seconds: 0, pids: Vec::new() }, state_dir) {
+        candidates.push(prefix.join("private/var/log/dserver.log"));
+    }
+    for c in &candidates {
+        if let Ok(text) = fs::read_to_string(c) {
+            if text.lines().any(|l| {
+                l.starts_with("[ople") || l.starts_with("[ulk") || l.starts_with("[srv-") || l.starts_with("[pc-")
+            }) {
+                return c.clone();
+            }
+        }
+    }
+    job_log.to_path_buf()
+}
+
+fn newest_core_since(dir: &Path, job_log: &Path) -> Option<PathBuf> {
+    let job_mtime = fs::metadata(job_log).and_then(|m| m.modified()).ok()?;
+    let mut cores: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for e in fs::read_dir(dir).ok()?.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("core.") {
+            continue;
+        }
+        if let Ok(m) = e.metadata().and_then(|m| m.modified()) {
+            cores.push((m, e.path()));
+        }
+    }
+    cores.sort_by(|a, b| b.0.cmp(&a.0));
+    cores
+        .into_iter()
+        .find(|(m, _)| *m >= job_mtime)
+        .map(|(_, p)| p)
+}
+
+fn run_job(args: JobArgs) -> Result<ExitCode> {
+    let state_dir = args.state_dir.clone();
+    if !state_dir.is_dir() {
+        bail!("no state directory: {}", state_dir.display());
+    }
+    let job_log = state_dir.join("log");
+    if !job_log.is_file() {
+        bail!("no run log: {}", job_log.display());
+    }
+    let exe = std::env::current_exe().context("resolving this binary")?;
+    let rc = fs::read_to_string(state_dir.join("rc")).ok().map(|s| s.trim().to_string());
+    let prefix = job_prefix(&args, &state_dir);
+    let instr_log = job_instrument_log(&state_dir, &job_log);
+    let cores_dir = std::env::var("DWDIAG_CORES_DIR").unwrap_or_else(|_| "/tmp/t4cores".to_string());
+    let cores_dir = PathBuf::from(cores_dir);
+
+    let mut steps: Vec<JobStep> = Vec::new();
+    let mut step = |label: &str, argv: Vec<String>| {
+        job_step(&exe, label, &argv, args.lines, args.step_timeout_seconds)
+    };
+
+    steps.push(step("witness", vec!["diag".into(), "witness".into(), "--log".into(), instr_log.display().to_string()]));
+    steps.push(step("progress", vec!["diag".into(), "progress".into(), "--log".into(), job_log.display().to_string()]));
+    steps.push(step("waits", vec!["diag".into(), "waits".into(), "--log".into(), instr_log.display().to_string()]));
+    steps.push(step("loops", vec!["diag".into(), "loops".into(), "--log".into(), job_log.display().to_string()]));
+
+    let mut core_note;
+    if let Some(core) = newest_core_since(&cores_dir, &job_log) {
+        core_note = None;
+        steps.push(step(
+            "core",
+            vec!["diag".into(), "core".into(), "--core".into(), core.display().to_string(), "--traces".into()],
+        ));
+    } else {
+        core_note = Some(format!(
+            "no core newer than this job under {}; reading the kernel log instead",
+            cores_dir.display()
+        ));
+        let mut argv = vec!["diag".into(), "trap".into()];
+        if let Some(p) = &prefix {
+            argv.push("--prefix".into());
+            argv.push(p.display().to_string());
+        }
+        steps.push(step("trap", argv));
+    }
+    let _ = &mut core_note;
+
+    // Process state: what the processes are DOING, not what they wrote.
+    let mut process_lines: Vec<String> = Vec::new();
+    let mut process_note: Option<String> = None;
+    if let Some(p) = &prefix {
+        let mut pids = args.pids.clone();
+        let census = job_step(
+            &exe,
+            "processes",
+            &["diag".into(), "processes".into(), "--prefix".into(), p.display().to_string(), "--list".into()],
+            args.lines,
+            args.step_timeout_seconds,
+        );
+        let census_text = census.output.join("\n");
+        if pids.is_empty() {
+            for line in census_text.lines() {
+                if let Some(first) = line.split_whitespace().next() {
+                    if let Ok(pid) = first.parse::<u32>() {
+                        pids.push(pid);
+                    }
+                }
+            }
+            pids.truncate(4);
+        }
+        if pids.is_empty() {
+            process_note = Some(format!(
+                "no guest process of {} is running now; process state cannot be read after exit",
+                p.display()
+            ));
+        } else {
+            let sudo = sudo_available();
+            for pid in pids {
+                let base = PathBuf::from(format!("/proc/{pid}"));
+                let wchan = read_small(&base.join("wchan")).unwrap_or_else(|| "unreadable".into());
+                let syscall = fs::read_to_string(base.join("syscall"))
+                    .ok()
+                    .and_then(|s| s.split_whitespace().next().map(|v| v.to_string()))
+                    .unwrap_or_else(|| "unreadable".into());
+                let cmd = fs::read_to_string(base.join("cmdline"))
+                    .map(|s| s.replace('\u{0}', " ").trim().to_string())
+                    .unwrap_or_else(|_| "unreadable".into());
+                process_lines.push(format!("DIAG[threads] pid={pid} wchan={wchan} syscall={syscall} cmd={}", &cmd[..cmd.len().min(60)]));
+                let mut tids: Vec<u32> = Vec::new();
+                if let Ok(entries) = fs::read_dir(base.join("task")) {
+                    for e in entries.flatten() {
+                        if let Ok(t) = e.file_name().to_string_lossy().parse::<u32>() {
+                            tids.push(t);
+                        }
+                    }
+                }
+                tids.sort_unstable();
+                for tid in tids.into_iter().take(8) {
+                    let tbase = base.join("task").join(tid.to_string());
+                    let twchan = read_small(&tbase.join("wchan")).unwrap_or_else(|| "?".into());
+                    match read_kernel(&tbase.join("stack"), 3, sudo) {
+                        Some(stack) => process_lines.push(format!("      tid={tid} wchan={twchan} stack={stack}")),
+                        None => process_lines.push(format!(
+                            "      tid={tid} wchan={twchan} kernel-stack-unreadable (needs root, and sudo -n is unavailable)"
+                        )),
+                    }
+                }
+                process_lines.push(format!(
+                    "DIAG-HINT for a guest that dies by signal: {} unwind --pid {pid} --catch SIGSEGV",
+                    exe.display()
+                ));
+            }
+        }
+    } else {
+        process_note = Some(
+            "no prefix known (DWDIAG_PREFIX or DPREFIX), so process state cannot be censused".to_string(),
+        );
+    }
+
+    if args.json {
+        let mut obj = String::from("{");
+        obj.push_str(&format!("\"state_dir\":\"{}\",", jesc(&state_dir.display().to_string())));
+        obj.push_str(&format!("\"rc\":{},", rc.as_deref().unwrap_or("null")));
+        obj.push_str(&format!("\"job_log\":\"{}\",", jesc(&job_log.display().to_string())));
+        obj.push_str(&format!("\"instrument_log\":\"{}\",", jesc(&instr_log.display().to_string())));
+        match &prefix {
+            Some(p) => obj.push_str(&format!("\"prefix\":\"{}\",", jesc(&p.display().to_string()))),
+            None => obj.push_str("\"prefix\":null,"),
+        }
+        obj.push_str("\"steps\":[");
+        for (i, s) in steps.iter().enumerate() {
+            if i > 0 {
+                obj.push(',');
+            }
+            obj.push_str(&format!(
+                "{{\"label\":\"{}\",\"command\":\"{}\",\"status\":{},\"output\":[",
+                jesc(&s.label),
+                jesc(&s.command),
+                s.status.map(|v| v.to_string()).unwrap_or_else(|| "null".into())
+            ));
+            for (j, line) in s.output.iter().enumerate() {
+                if j > 0 {
+                    obj.push(',');
+                }
+                obj.push_str(&format!("\"{}\"", jesc(line)));
+            }
+            obj.push_str("]}");
+        }
+        obj.push_str("],\"process_state\":[");
+        for (i, line) in process_lines.iter().enumerate() {
+            if i > 0 {
+                obj.push(',');
+            }
+            obj.push_str(&format!("\"{}\"", jesc(line)));
+        }
+        obj.push_str("]}");
+        println!("{obj}");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    println!("DIAG-BEGIN state={}", state_dir.display());
+    if let Some(rc) = &rc {
+        println!("DIAG-RC rc={rc}");
+    }
+    println!("DIAG-LOGS job={} instruments={}", job_log.display(), instr_log.display());
+    if let Some(note) = core_note {
+        println!("DIAG-NOTE {note}");
+    }
+    for s in &steps {
+        println!("\nDIAG[{}] {}", s.label, s.command);
+        for line in &s.output {
+            println!("{line}");
+        }
+        if let Some(note) = &s.note {
+            println!("DIAG-NOTE {note}");
+        }
+    }
+    if let Some(note) = &process_note {
+        println!("\nDIAG-NOTE {note}");
+    }
+    for line in &process_lines {
+        println!("{line}");
+    }
+    println!("DIAG-END state={}", state_dir.display());
+    Ok(ExitCode::SUCCESS)
 }

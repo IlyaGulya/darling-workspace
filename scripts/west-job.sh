@@ -27,6 +27,16 @@ phase markers and the final rc. `west dev follow` uses it by default.
 Cancel sends SIGINT to the registered command and waits for owner cleanup.
 WEST_JOB_CANCEL_GRACE_SECONDS defaults to 30; only an unresponsive owner
 triggers the identity-checked descendant and process-group fallback.
+
+A failed job explains itself. start records the effective core-size limit and
+core pattern (and raises the limit for the job and its children), and follow and
+wait run scripts/west-job-diagnose.sh when the job's rc is non-zero: witness,
+progress, waits, loops, then a core written by this job or, failing that, the
+kernel's report of the fault. Output is bounded to 24 lines per step and 60
+seconds per step; a step that cannot read something says so instead of printing
+a zero. Set WEST_JOB_NO_AUTODIAG=1 to skip it, WEST_JOB_DIAG_LINES and
+WEST_JOB_DIAG_TIMEOUT_SECONDS to widen it, and DWDIAG_PREFIX (or DPREFIX) to
+give it a prefix to symbolize against.
 USAGE
 	exit 2
 }
@@ -320,6 +330,25 @@ read_rc() {
 	printf '%s\n' "$rc"
 }
 
+# A FAILED JOB EXPLAINS ITSELF. Called from every completion path, so a reader never has to know that
+# a diagnosis exists, which tool answers which question, or what arguments it takes. The hook states
+# when it cannot run and why, rather than leaving a silent gap in the evidence.
+diagnose_if_failed() {
+	local rc="${1:-}"
+	[ -n "$rc" ] || return 0
+	[ "$rc" = "0" ] && return 0
+	# The diagnosis is a subcommand of the shared tool, not a script beside this one: one place to
+	# learn it from (`dwdiag diag --help`), one implementation, one JSON mode. If the tool is missing
+	# that is said here, because a failure with no diagnosis must not look like a failure with none.
+	local diag_tool
+	diag_tool="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dwdiag"
+	if [ -x "$diag_tool" ]; then
+		"$diag_tool" job --state-dir "$state_dir" || true
+	else
+		printf 'DIAG-SKIP %s is not executable, so the automatic diagnosis cannot run\n' "$diag_tool"
+	fi
+}
+
 wait_for_pid_exit() {
 	local pid_file="$1"
 	# pidwait can report no matching PID when the process exits in the small
@@ -416,6 +445,17 @@ start_job() {
 			finish 143
 		}
 		trap forward_cancel TERM INT HUP
+		# DIAGNOSTICS ARE PART OF THE RUN, NOT A SEPARATE STEP TO REMEMBER. A guest fault is only
+		# readable if the crashing process inherited a core-size limit, and the pattern has to name a
+		# file; both used to be discovered by hand after the fact. State the effective setup in the
+		# log so nobody has to guess it later, and never fail the run because of it.
+		ulimit -c unlimited 2>/dev/null || true
+		_core_pattern="$(cat /proc/sys/kernel/core_pattern 2>/dev/null || echo unknown)"
+		printf "[west-job diag] cores-limit=%s core-pattern=%s\n" "$(ulimit -c)" "$_core_pattern"
+		case "$_core_pattern" in
+			/*) ;;
+			*) printf "[west-job diag] the core pattern does not name a file, so a fault leaves no core; run: sudo scripts/dwdiag cores on\n" ;;
+		esac
 		# An asynchronous Bash child inherits SIGINT ignored. Bash cannot reset
 		# a signal ignored on entry; restore it outside the shell before exec.
 		env --default-signal=INT -- "$@" &
@@ -443,6 +483,7 @@ status_job() {
 	local rc
 	if rc="$(read_rc)"; then
 		printf 'completed rc=%s state=%s\n' "$rc" "$state_dir"
+		diagnose_if_failed "$rc"
 		return
 	fi
 	echo "west job has no live process or recorded exit status: $state_dir" >&2
@@ -454,7 +495,10 @@ follow_job() {
 	# memory instead of recounting and rescanning the entire log on every tick.
 	# --quiet silences only the observer's own heartbeat; job output is unchanged.
 	export WEST_JOB_FOLLOW_HEARTBEAT="${WEST_JOB_FOLLOW_HEARTBEAT:-1}"
-	exec python3 - "$state_dir" "$follow_timeout_seconds" "${activity_logs[@]}" <<'PY'
+	# The observer propagates the job's rc, and `set -e` would end this function on that non-zero
+	# status before anything below it ran -- which is exactly how the automatic diagnosis stayed
+	# silent. Calling it inside `if` makes the status a condition instead of an exit.
+	if python3 - "$state_dir" "$follow_timeout_seconds" "${activity_logs[@]}" <<'PY'
 import os
 from pathlib import Path
 import re
@@ -702,6 +746,15 @@ while True:
         remaining = timeout_seconds - (now - started) if timeout_seconds else 1
         wait_for_owner(min(1, max(0.001, remaining)))
 PY
+	then
+		local observer_rc=0
+	else
+		local observer_rc=$?
+	fi
+	local final_rc=""
+	final_rc="$(read_rc 2>/dev/null || true)"
+	diagnose_if_failed "$final_rc"
+	exit "$observer_rc"
 }
 
 wait_job() {
@@ -714,6 +767,7 @@ wait_job() {
 	fi
 	local rc
 	if rc="$(read_rc)"; then
+		diagnose_if_failed "$rc"
 		exit "$rc"
 	fi
 	echo "west job exited without recording rc: $state_dir" >&2
