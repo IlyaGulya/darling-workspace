@@ -64,10 +64,11 @@ trap 'rm -f "$product_out" "$datagram_out"' EXIT
 # The fixture's own result line is the poll line: the harness then stops on it instead of sleeping
 # out --wait. The guest knob is set on the guest leaf command, exactly like the census runner sets
 # DARLING_GUEST_LANE_STATS (tests/lane_lifecycle_census/run-lane-lifecycle-census.sh:589).
+extra_guest_env="${IOS_UNFAIR_LOCK_GUEST_ENV:-}"
 IOS_UNFAIR_LOCK_FIXTURE="$fixture" \
 IOS_UNFAIR_LOCK_WAIT="$wait_s" \
 IOS_UNFAIR_LOCK_POLL='IOS-UNFAIR-LOCK pass=' \
-IOS_UNFAIR_LOCK_GUEST_ENV="IOS_RING_STRAND_DEADLINE_MS=$deadline_ms" \
+IOS_UNFAIR_LOCK_GUEST_ENV="IOS_RING_STRAND_DEADLINE_MS=$deadline_ms${extra_guest_env:+ $extra_guest_env}" \
 	bash "$runner" "$@" >"$product_out" 2>&1
 product_rc=$?
 
@@ -85,7 +86,7 @@ fi
 IOS_UNFAIR_LOCK_FIXTURE="$fixture" \
 IOS_UNFAIR_LOCK_WAIT="$wait_s" \
 IOS_UNFAIR_LOCK_POLL='IOS-UNFAIR-LOCK pass=' \
-IOS_UNFAIR_LOCK_GUEST_ENV="IOS_RING_STRAND_DEADLINE_MS=$deadline_ms DARLING_GUEST_RING_BLOCKING=0 IOS_RING_STRAND_ARMS=ulock" \
+IOS_UNFAIR_LOCK_GUEST_ENV="IOS_RING_STRAND_DEADLINE_MS=$deadline_ms DARLING_GUEST_RING_BLOCKING=0 IOS_RING_STRAND_ARMS=ulock${extra_guest_env:+ $extra_guest_env}" \
 	bash "$runner" "$@" >"$datagram_out" 2>&1
 
 # The harness's own end-of-run verdict (marker match + prefix hygiene) is reported separately from
