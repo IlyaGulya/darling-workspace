@@ -26,9 +26,19 @@ def run_boot_smoke(topdir, prefix, wait_seconds: int = 45) -> tuple[bool, str]:
     fails, which MEASURED killed the caller (the doctor exited 143 with an empty report, and the
     same kill took the strand contract's driver).
     """
-    script = Path(topdir) / "scripts" / "darling-boot-run.sh"
-    if not script.is_file():
-        return False, f"no {script}"
+    script = None
+    for candidate in (
+        Path(topdir) / "scripts" / "darling-boot-run.sh",
+        Path(topdir) / "darling-workspace" / "scripts" / "darling-boot-run.sh",
+    ):
+        # Callers pass the west topdir (the workspace root) or the manifest checkout; both are seen
+        # in this workspace, and MEASURED a mismatch made the check fail in 0.22s with "no ...script"
+        # while the prefix was healthy.
+        if candidate.is_file():
+            script = candidate
+            break
+    if script is None:
+        return False, f"no darling-boot-run.sh under {topdir}"
     with tempfile.TemporaryDirectory(prefix="boot-smoke-") as tmp:
         log_path = Path(tmp) / "run.log"
         try:
@@ -41,8 +51,18 @@ def run_boot_smoke(topdir, prefix, wait_seconds: int = 45) -> tuple[bool, str]:
                     str(wait_seconds),
                     "--marker",
                     MARKER,
+                    # The harness judges by its poll line, not by --marker: without --poll it waits
+                    # for another test's pattern (RING_MACH_TEST mode=.*pass=) and reports FAIL after
+                    # the full wait, which MEASURED cost 45s and looked like an unbootable chain.
+                    "--poll",
+                    MARKER,
                     "--cmd",
-                    f"/bin/sh -c 'echo {MARKER}'",
+                    # A guest shell BUILTIN, not a program: MEASURED, a minimal bootstrap prefix has
+                    # no /bin/echo and no /bin/sh, so "/bin/sh -c 'echo …'" and "/bin/echo …" both
+                    # failed with "No such file or directory" and the harness reported FAIL after its
+                    # full wait, which looked exactly like an unbootable chain. The builtin makes the
+                    # healthy run cost ~14s instead of a full timeout.
+                    f"echo {MARKER}",
                     "--log",
                     str(log_path),
                 ],
