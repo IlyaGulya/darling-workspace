@@ -35,6 +35,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +118,14 @@ class DarlingDoctor(WestCommand):
             "--no-baseline-file",
             action="store_true",
             help="ignore darling-workspace/deploy-baseline.md5 (only use flags/env)",
+        )
+        p.add_argument(
+            "--boot-smoke",
+            action="store_true",
+            help="runtime scope: start the prefix and require a guest shell. This is the check the "
+            "artifact comparisons cannot make -- a chain can match its receipt and still never "
+            "reach a shell (MEASURED: a targeted deploy left shellspawn unreachable while every "
+            "digest matched). Costs about 30-60s and needs the prefix stopped.",
         )
         p.add_argument(
             "--receipt-mode",
@@ -213,6 +222,11 @@ class DarlingDoctor(WestCommand):
                 "runtime",
                 "4. extra runtime prefixes vs primary prefix",
                 lambda: self._check_extra_prefixes(args),
+            ),
+            (
+                "runtime",
+                "5. runtime boot smoke",
+                lambda: self._check_boot_smoke(args),
             ),
         )
         for scope, section, attempt in attempts:
@@ -668,6 +682,90 @@ class DarlingDoctor(WestCommand):
             self._problem(f"{problem.label}: {problem.message}")
         for problem in stale_source_problems(payload):
             self._problem(f"{problem.label}: {problem.message}")
+
+    def _check_boot_smoke(self, args):
+        """Start the prefix and require a guest shell.
+
+        The other runtime checks judge artifacts and lifecycle files. This one exercises what they
+        cannot see: that the deployed chain boots. MEASURED: a targeted deploy left a chain that
+        never reached a shell (shellspawn not ready within 30s) while every artifact digest matched
+        its receipt, and nothing named the property that was actually broken. Off by default because
+        it starts the prefix (about 30-60s); pass --boot-smoke to run it.
+        """
+        if not getattr(args, "boot_smoke", False):
+            self._warn(
+                "runtime boot smoke not requested; pass --boot-smoke to start the prefix and "
+                "require a guest shell (the check that catches a chain which does not boot)"
+            )
+            return
+        self._section("5. runtime boot smoke")
+        script = Path(self.manifest.repo_abspath) / "scripts" / "darling-boot-run.sh"
+        if not script.is_file():
+            self._warn(f"no {script} (skip)")
+            return
+        try:
+            log_dir = tempfile.mkdtemp(prefix="doctor-boot-smoke-")
+            log_path = Path(log_dir) / "run.log"
+            result = subprocess.run(
+                [
+                    str(script),
+                    "--prefix",
+                    str(args.prefix),
+                    "--wait",
+                    "45",
+                    "--marker",
+                    "SELFCHECK-BOOT-OK",
+                    "--cmd",
+                    "/bin/sh -c 'echo SELFCHECK-BOOT-OK'",
+                    "--log",
+                    str(log_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=300,
+                # Its own session: the harness signals its own process group when a guest run fails
+                # (MEASURED: this doctor died with SIGTERM and lost its report while the harness
+                # reported shellspawn never becoming ready, and the same kill took the strand
+                # contract's driver), so the check must not share that group.
+                start_new_session=True,
+            )
+        except subprocess.TimeoutExpired:
+            self._problem(
+                "the runtime boot smoke timed out: the prefix did not reach a shell in 300s; "
+                "re-bootstrap it (west test --prefix P --bootstrap-runtime-profile ...) or deploy "
+                "the whole chain (dyld + closure + darlingserver + mldr/mldr32)"
+            )
+            return
+        output = (result.stdout or "") + (result.stderr or "")
+        if result.returncode == 0 and "VERDICT: PASS" in output and "SELFCHECK-BOOT-OK" in output:
+            self._ok("the prefix reached a guest shell")
+            return
+        lines = [line for line in output.strip().splitlines() if line.strip()]
+        # The harness prints an ownership census to its console and the reason it stopped to its own
+        # run log, so read both before quoting: MEASURED, the console alone named only sshd sessions.
+        if log_path.is_file():
+            try:
+                lines.extend(
+                    line
+                    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                    if line.strip()
+                )
+            except OSError:
+                pass
+        interesting = [
+            line
+            for line in lines
+            if "shellspawn" in line or "VERDICT" in line or "Rootless" in line
+        ]
+        tail = "\n".join((interesting or lines)[-4:])
+        self._problem(
+            "the prefix did not reach a guest shell: "
+            + tail
+            + " -- the deployed chain is not bootable; re-bootstrap the prefix (west test --prefix "
+            "P --bootstrap-runtime-profile ...) or deploy the whole chain (dyld + closure + "
+            "darlingserver + mldr/mldr32)"
+        )
 
     def _check_baseline_historical(self, args):
         self._section("3. deployed binaries vs known-good baseline")
