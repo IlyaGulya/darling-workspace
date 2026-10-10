@@ -3427,6 +3427,21 @@ pub struct WaitsArgs {
 }
 
 #[derive(clap::Args, Debug)]
+pub struct CoreLockArgs {
+    /// The core file to read. Without it, the newest `core.*` under --dir is used.
+    #[arg(long)]
+    core: Option<PathBuf>,
+    /// Directory holding cores when --core is not given.
+    #[arg(long, default_value = "/tmp/t4cores")]
+    dir: PathBuf,
+    /// Skip the per-thread self-token census (which needs one reader per thread).
+    #[arg(long)]
+    no_tokens: bool,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args, Debug)]
 pub struct FutexArgs {
     /// The capture bundle to read; `dwdiag run`/`capture` prints it as `BUNDLE=<dir>`. Both the workload's tree
     /// (`capture-tree`) and the daemonized server's tree (`guarded-tree`) are read, because the two halves of a
@@ -5861,6 +5876,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Symbolize(a) => run_symbolize(a),
         DiagCommand::Waits(a) => run_waits(a),
         DiagCommand::Futex(a) => run_futex(a),
+        DiagCommand::CoreLock(a) => run_core_lock(a),
         DiagCommand::Unwind(a) => run_unwind(a),
         DiagCommand::Trap(a) => run_trap(a),
         DiagCommand::Loops(a) => run_loops(a),
@@ -6207,6 +6223,11 @@ pub enum DiagCommand {
     /// side is missing. A waiter and its waker usually live in different processes, so comparing virtual
     /// addresses is meaningless; this is the join that a stall needs and that was done by hand every time.
     Futex(FutexArgs),
+    /// Recover, from a core, the unfair lock a dying thread was aborting on: the lock address, its word, the
+    /// self token the slow path compared against, and every live thread's self token. It exists because this exact
+    /// step was done by hand three times, twice wrongly, and because the only honest answer it can give about
+    /// acquisition history is "a core is one instant".
+    CoreLock(CoreLockArgs),
     /// Report which INSTRUMENTS fired in a run log, and which stayed SILENT. A registered instrument with zero hits is
     /// the failure this exists to catch: a guard that silently does nothing cannot be told from no guard at all, and a
     /// hand-written grep over one log finds a line but cannot tell you which of the other instruments never spoke.
@@ -7887,5 +7908,266 @@ mod futex_tests {
         assert_eq!(u.resolution, "unmapped");
         assert!(u.shared.is_none());
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+// --------------------------------------------------------------- core-lock recovery
+
+/// What the core says about one aborting thread's unfair lock. Every field is read from the core; none is inferred
+/// from a symbol and none is a claim about what happened before the snapshot.
+#[derive(Debug, Default, Clone)]
+struct CoreLock {
+    trap_tid: String,
+    trap_pc: u64,
+    /// The abort's argument as it stood at the trap. The trap instructions do not write it, which is what makes it
+    /// trustworthy -- and that is verified by reading the instructions, not assumed.
+    trap_arg: u64,
+    gs_base: u64,
+    slot3: u64,
+    slow_rbp: u64,
+    slow_ret_pc: u64,
+    lock: u64,
+    self_token: u64,
+    current: u64,
+    word: u64,
+    /// (tid, self token) for every thread the core held.
+    tokens: Vec<(String, u64)>,
+}
+
+const CORE_LOCK_SCRIPT: &str = r#"set pagination off
+set confirm off
+printf "@trap tid=%d pc=%#lx rdi=%#lx rbp=%#lx gs=%#lx\n", $_thread, $pc, $rdi, $rbp, $gs_base
+printf "@tok tid=%d slot3=%#lx\n", $_thread, *(unsigned long*)($gs_base+24)
+set $slow = *(unsigned long*)$rbp
+printf "@slow tid=%d rbp=%#lx retpc=%#lx\n", $_thread, $slow, *(unsigned long*)($slow+8)
+printf "@slowargs lock=%#lx self=%#lx current=%#lx\n", *(unsigned long*)($slow-8), *(unsigned int*)($slow-16), *(unsigned int*)($slow-24)
+printf "@word lock=%#lx word=%#lx\n", *(unsigned long*)($slow-8), *(unsigned int*)(*(unsigned long*)($slow-8))
+thread apply all printf "@alltid tid=%d slot3=%#lx\n", $_thread, *(unsigned long*)($gs_base+24)
+"#;
+
+fn hex_field(line: &str, name: &str) -> Option<u64> {
+    let at = line.find(&format!("{name}="))?;
+    let rest = &line[at + name.len() + 1..];
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    parse_hex_or_dec(&rest[..end])
+}
+
+/// Parse the gdb script's `@`-lines. Kept separate from running gdb so the interpretation is testable on captured
+/// output -- the alternative is a command whose only test is a multi-gigabyte core.
+fn parse_core_lock(text: &str) -> CoreLock {
+    let mut out = CoreLock::default();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("@trap ") {
+            out.trap_tid = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_start_matches("tid=")
+                .to_string();
+            out.trap_pc = hex_field(rest, "pc").unwrap_or(0);
+            out.trap_arg = hex_field(rest, "rdi").unwrap_or(0);
+            out.gs_base = hex_field(rest, "gs").unwrap_or(0);
+        } else if let Some(rest) = line.strip_prefix("@tok ") {
+            out.slot3 = hex_field(rest, "slot3").unwrap_or(0);
+        } else if let Some(rest) = line.strip_prefix("@slow ") {
+            out.slow_rbp = hex_field(rest, "rbp").unwrap_or(0);
+            out.slow_ret_pc = hex_field(rest, "retpc").unwrap_or(0);
+        } else if let Some(rest) = line.strip_prefix("@slowargs ") {
+            out.lock = hex_field(rest, "lock").unwrap_or(0);
+            out.self_token = hex_field(rest, "self").unwrap_or(0);
+            out.current = hex_field(rest, "current").unwrap_or(0);
+        } else if let Some(rest) = line.strip_prefix("@word ") {
+            out.word = hex_field(rest, "word").unwrap_or(0);
+        } else if let Some(rest) = line.strip_prefix("@alltid ") {
+            let tid = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_start_matches("tid=")
+                .to_string();
+            if let Some(t) = hex_field(rest, "slot3") {
+                out.tokens.push((tid, t));
+            }
+        }
+    }
+    out
+}
+
+/// The self tokens held by more than one live thread. An empty result is the measurement that RULES OUT a duplicate
+/// live name at this instant; it cannot rule out a name recycled from a thread that has already died.
+fn duplicate_tokens(tokens: &[(String, u64)]) -> Vec<u64> {
+    let mut dups: Vec<u64> = Vec::new();
+    for (i, (_, t)) in tokens.iter().enumerate() {
+        if *t == 0 {
+            continue;
+        }
+        if tokens
+            .iter()
+            .enumerate()
+            .any(|(j, (_, o))| j != i && o == t)
+            && !dups.contains(t)
+        {
+            dups.push(*t);
+        }
+    }
+    dups
+}
+
+fn run_core_lock(args: CoreLockArgs) -> Result<ExitCode> {
+    let core = match &args.core {
+        Some(c) => c.clone(),
+        None => {
+            let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+            if let Ok(entries) = fs::read_dir(&args.dir) {
+                for e in entries.flatten() {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if !name.starts_with("core.") {
+                        continue;
+                    }
+                    let Ok(md) = e.metadata() else { continue };
+                    let Ok(t) = md.modified() else { continue };
+                    if newest.as_ref().map(|(nt, _)| t > *nt).unwrap_or(true) {
+                        newest = Some((t, e.path()));
+                    }
+                }
+            }
+            newest
+                .map(|(_, p)| p)
+                .with_context(|| format!("no core.* under {}", args.dir.display()))?
+        }
+    };
+    let script = std::env::temp_dir().join("dwdiag-core-lock.gdb");
+    fs::write(&script, CORE_LOCK_SCRIPT)?;
+    let mut cmd = Command::new("gdb");
+    cmd.arg("-nx").arg("-q").arg("-batch").arg("-c").arg(&core).arg("-x").arg(&script);
+    if args.no_tokens {
+        // Keep the trap and slow-frame reads; drop the per-thread census that costs one reader each.
+        let trimmed = CORE_LOCK_SCRIPT.replace(
+            "thread apply all printf \"@alltid tid=%d slot3=%#lx\\n\", $_thread, *(unsigned long*)($gs_base+24)\n",
+            "",
+        );
+        fs::write(&script, trimmed)?;
+    }
+    let out = cmd.output().context("gdb is required to read a core")?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    if !out.stderr.is_empty() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        for line in err.lines().filter(|l| !l.trim().is_empty()).take(4) {
+            println!("CORE-LOCK-GDB {line}");
+        }
+    }
+    let lock = parse_core_lock(&text);
+    println!(
+        "CORE-LOCK core={} trap_tid={} trap_pc={:#x} abort_arg={:#x}",
+        core.display(),
+        lock.trap_tid,
+        lock.trap_pc,
+        lock.trap_arg
+    );
+    println!(
+        "CORE-LOCK-THREAD gs_base={:#x} slot3(self token)={:#x}",
+        lock.gs_base, lock.slot3
+    );
+    println!(
+        "CORE-LOCK-SLOW frame_rbp={:#x} return_pc={:#x} lock={:#x} saved_self={:#x} saved_current={:#x}",
+        lock.slow_rbp, lock.slow_ret_pc, lock.lock, lock.self_token, lock.current
+    );
+    println!(
+        "CORE-LOCK-WORD lock={:#x} word={:#x} owner_in_word={:#x}",
+        lock.lock,
+        lock.word,
+        lock.word | 1
+    );
+    println!(
+        "CORE-LOCK-LAYOUT note: the lock/self/current values are read from the slow caller's frame at the offsets this build's prologue stores them to; verify with x/i around return_pc if the frame is suspect"
+    );
+    if !lock.tokens.is_empty() {
+        let mut sorted = lock.tokens.clone();
+        sorted.sort();
+        for (tid, t) in &sorted {
+            println!("CORE-LOCK-TOKEN tid={tid} slot3={t:#x}");
+        }
+        let zeros: Vec<&String> = lock
+            .tokens
+            .iter()
+            .filter(|(_, t)| *t == 0)
+            .map(|(tid, _)| tid)
+            .collect();
+        if !zeros.is_empty() {
+            println!(
+                "CORE-LOCK-TOKEN-ZERO tids={zeros:?} (a thread whose self token is 0 cannot exclude anyone on an unowned unfair lock and clears whatever word its unlock writes; decide whether these are guest pthreads before blaming them)"
+            );
+        }
+        let dups = duplicate_tokens(&lock.tokens);
+        if dups.is_empty() {
+            println!(
+                "CORE-LOCK-TOKENS-UNIQUE ({} live threads, no shared non-zero self token at this instant)",
+                lock.tokens.len()
+            );
+        } else {
+            println!(
+                "CORE-LOCK-TOKENS-DUPLICATE tokens={dups:?} (two live threads share a self token: an unfair lock held by one reads as held by the other)"
+            );
+        }
+    }
+    if lock.slow_ret_pc != 0 {
+        println!(
+            "CORE-LOCK-NEXT the return PC on this frame is the caller of the slow path; symbolize it against the image with: dwdiag symbolize --binary <image> --addr {:#x}",
+            lock.slow_ret_pc
+        );
+    }
+    println!(
+        "CORE-LOCK-HISTORY unavailable: a core is one instant, so this command does not say whether the owner re-entered or the word was left by an earlier holder, and it will not guess"
+    );
+    if args.json {
+        let toks: Vec<String> = lock
+            .tokens
+            .iter()
+            .map(|(tid, t)| format!("{{\"tid\":\"{tid}\",\"slot3\":\"{:#x}\"}}", t))
+            .collect();
+        println!(
+            "CORE-LOCK-JSON {{\"core\":\"{}\",\"trap_tid\":\"{}\",\"trap_pc\":\"{:#x}\",\"abort_arg\":\"{:#x}\",\"lock\":\"{:#x}\",\"word\":\"{:#x}\",\"saved_self\":\"{:#x}\",\"saved_current\":\"{:#x}\",\"slow_ret_pc\":\"{:#x}\",\"tokens\":[{}]}}",
+            core.display(),
+            lock.trap_tid,
+            lock.trap_pc,
+            lock.trap_arg,
+            lock.lock,
+            lock.word,
+            lock.self_token,
+            lock.current,
+            lock.slow_ret_pc,
+            toks.join(",")
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod core_lock_tests {
+    use super::*;
+
+    // Captured from a real core (the T4 linker's SIGILL), so the parser is tested against what gdb actually prints.
+    const CAPTURED: &str = "@trap tid=1 pc=0x7b6fe7af5237 rdi=0xa03 rbp=0x7b6fe4df8d30 gs=0x7b6fe4dfa0e0\n@tok tid=1 slot3=0xa03\n@slow tid=1 rbp=0x7b6fe4df8dd0 retpc=0x7b6fe7aef804\n@slowargs lock=0x7b6fd80a8e00 self=0xa03 current=0xa03\n@word lock=0x7b6fd80a8e00 word=0xa03\n@alltid tid=5 slot3=0x903\n@alltid tid=4 slot3=0x1303\n@alltid tid=3 slot3=0x0\n@alltid tid=2 slot3=0x103\n@alltid tid=1 slot3=0xa03\n";
+
+    #[test]
+    fn parses_the_lock_the_self_and_the_word_from_captured_output() {
+        let l = parse_core_lock(CAPTURED);
+        assert_eq!(l.lock, 0x7b6fd80a8e00);
+        assert_eq!(l.self_token, 0xa03);
+        assert_eq!(l.current, 0xa03);
+        assert_eq!(l.word, 0xa03);
+        assert_eq!(l.trap_arg, 0xa03);
+        assert_eq!(l.tokens.len(), 5);
+        assert_eq!(l.slow_ret_pc, 0x7b6fe7aef804);
+    }
+
+    #[test]
+    fn a_zero_token_is_not_a_duplicate_and_no_live_token_is_shared_here() {
+        let l = parse_core_lock(CAPTURED);
+        assert!(duplicate_tokens(&l.tokens).is_empty());
+        let with_duplicate = vec![("1".to_string(), 0xa03), ("2".to_string(), 0xa03)];
+        assert_eq!(duplicate_tokens(&with_duplicate), vec![0xa03]);
+        let with_zeros = vec![("1".to_string(), 0), ("2".to_string(), 0)];
+        assert!(duplicate_tokens(&with_zeros).is_empty());
     }
 }
