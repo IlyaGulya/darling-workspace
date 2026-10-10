@@ -1,7 +1,17 @@
 # ADR: one implementation per public concurrency symbol; no weak no-op stub may satisfy it
 
-Status: proposed (2026-10-10). Supersedes `0002-publish-thread-owner-token-before-guest-execution.md`,
-whose premise (an unpublished owner token) measurement refuted.
+Status: accepted (2026-10-10). Implemented and proven: the four public stubs are gone, the emulation's own
+locks moved to a private `libsimple_lock`, and the guest's lock image, exclusion behaviour and the T4
+end-to-end gate were measured on one runtime (xnu `95588ba` on `fix/private-ulock-return-channel`;
+evidence in `evidence/dar-liaq-unfair-lock-stub/`). Supersedes
+`0002-publish-thread-owner-token-before-guest-execution.md`, whose premise (an unpublished owner token)
+measurement refuted.
+
+The rule is deliberately stated as a property of bindings, not of the source, because the same audit is now
+being applied to the kqueue-shaped placeholders (`kqueue_impl`, `kevent_impl`, `kevent64_impl`,
+`kqueue_close`, `kqueue_closed_fd`, `kqueue_dup`, `__darling_kqueue_register_listen`): those are either
+private or loud (`kqueue_impl` prints "No kqueue implementation?!" before returning `-ENOSYS`), and the
+question that decides whether hiding them is safe is which of them the guest can actually reach and bind.
 
 ## Context
 
