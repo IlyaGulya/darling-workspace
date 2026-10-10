@@ -3129,6 +3129,10 @@ pub struct ProgressArgs {
     /// The guest loader diagnostic file (`MLDR_DIAG_LOG`), when the run enabled one.
     #[arg(long)]
     guest_log: Option<PathBuf>,
+    /// The prefix this run used, when it must not be read out of the log. The server-identity comparison below is
+    /// only meaningful against the prefix the run actually served from.
+    #[arg(long)]
+    prefix: Option<PathBuf>,
     /// A REGRESSION TRIPWIRE, not a proof: fail (exit 2) when fewer plane publishes were seen than this. MEASURED
     /// need: two broken boots showed `plane-publishes=6` where a healthy boot shows 40+, and noticing that required
     /// remembering the healthy number -- the tool must say it instead of leaving it to the reader.
@@ -3418,6 +3422,17 @@ pub struct WaitsArgs {
     /// The run log to read. Defaults to the newest `dwdiag` verdict log in the temp directory.
     #[arg(long)]
     log: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct FutexArgs {
+    /// The capture bundle to read; `dwdiag run`/`capture` prints it as `BUNDLE=<dir>`. Both the workload's tree
+    /// (`capture-tree`) and the daemonized server's tree (`guarded-tree`) are read, because the two halves of a
+    /// shared futex normally live in different processes.
+    #[arg(long)]
+    bundle: PathBuf,
     #[arg(long)]
     json: bool,
 }
@@ -5294,9 +5309,40 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
         // and compares that hash with the deployed prefix binary: MATCH is the only state in which "the deploy took
         // effect" is a fact.
         {
-            let deployed: u64 = fs::read("/tmp/dr-on-matched/bin/darlingserver")
-                .map(|b| b.len() as u64)
+            // The deployed binary to compare against must be the one from THIS run's prefix. Without a resolved
+            // prefix the comparison has no subject, and saying so is the only honest output.
+            let prefix = resolve_prefix(args.prefix.clone(), Some(&args.log));
+            let deployed_path = prefix.as_ref().map(|p| p.join("bin/darlingserver"));
+            let deployed_hash = match &deployed_path {
+                Some(p) => match sha256_of(p) {
+                    Ok(h) => Some(h),
+                    Err(e) => {
+                        println!("SERVER-IDENTITY deployed={} UNMEASURED ({e})", p.display());
+                        None
+                    }
+                },
+                None => {
+                    println!(
+                        "SERVER-IDENTITY deployed=UNMEASURED (no prefix resolved: no --prefix, no DWDIAG_PREFIX, no prefix= in the log)"
+                    );
+                    None
+                }
+            };
+            let deployed_size = deployed_path
+                .as_ref()
+                .and_then(|p| fs::metadata(p).ok())
+                .map(|m| m.len())
                 .unwrap_or(0);
+            if let Some(h) = &deployed_hash {
+                println!(
+                    "SERVER-IDENTITY deployed={} sha256={} size={deployed_size}",
+                    deployed_path
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default(),
+                    h
+                );
+            }
             let mut found = 0usize;
             if let Ok(entries) = fs::read_dir("/proc") {
                 for e in entries.flatten() {
@@ -5331,21 +5377,29 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
                     let started_ago = start_ticks
                         .map(|ticks| up - (ticks as f64 / 100.0))
                         .unwrap_or(-1.0);
-                    let sum = std::process::Command::new("sha256sum")
-                        .arg(&exe)
-                        .output()
-                        .ok()
-                        .and_then(|o| String::from_utf8(o.stdout).ok())
-                        .and_then(|s| {
-                            s.split_whitespace()
-                                .next()
-                                .map(|h| h.chars().take(16).collect::<String>())
-                        })
+                    let running_hash = sha256_of(&exe).ok();
+                    let sum: String = running_hash
+                        .as_deref()
+                        .map(|h| h.chars().take(16).collect())
                         .unwrap_or_default();
-                    let verdict = if size != deployed {
-                        format!("SIZE-MISMATCH (deployed is {deployed} bytes, running is {size})")
-                    } else {
-                        "same size as the deployed binary (hash not compared byte-wise)".to_string()
+                    // Compare the two binaries' HASHES. A size comparison cannot establish that the running server
+                    // is the deployed one -- the trap this project keeps recording is a stale server -- and a
+                    // verdict of "hash not compared" is not a measurement at all.
+                    let verdict = match (&deployed_hash, &running_hash) {
+                        (Some(d), Some(r)) if d == r => {
+                            "MATCH (the running server is the deployed binary)".to_string()
+                        }
+                        (Some(d), Some(r)) => format!(
+                            "HASH-MISMATCH (deployed {}.. is {deployed_size} bytes, running {}.. is {size} bytes)",
+                            &d[..16.min(d.len())],
+                            &r[..16.min(r.len())]
+                        ),
+                        (Some(_), None) => {
+                            format!("UNMEASURED (cannot read {exe_s} to hash the running server)")
+                        }
+                        (None, _) => {
+                            "UNMEASURED (no deployed binary was resolved to compare against)".to_string()
+                        }
                     };
                     println!(
                         "SERVER-IDENTITY pid={name} exe={exe_s} sha256={sum} started_ago={started_ago:.1}s -- {verdict}"
@@ -5806,6 +5860,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Cycle(a) => run_cycle(a),
         DiagCommand::Symbolize(a) => run_symbolize(a),
         DiagCommand::Waits(a) => run_waits(a),
+        DiagCommand::Futex(a) => run_futex(a),
         DiagCommand::Unwind(a) => run_unwind(a),
         DiagCommand::Trap(a) => run_trap(a),
         DiagCommand::Loops(a) => run_loops(a),
@@ -6147,6 +6202,11 @@ pub enum DiagCommand {
     /// Count the packets per TRANSPORT for a run log, and judge the AF_UNIX endpoint's purity. Rows with no
     /// instrument behind them are printed UNMEASURED, never as zero: a census that cannot see a transport must say so.
     Courier(CourierArgs),
+    /// Resolve the futex waits a capture bundle holds through BOTH sides' memory maps and join them by
+    /// shared-object identity (device, inode, file offset + displacement), naming the object and saying which
+    /// side is missing. A waiter and its waker usually live in different processes, so comparing virtual
+    /// addresses is meaningless; this is the join that a stall needs and that was done by hand every time.
+    Futex(FutexArgs),
     /// Report which INSTRUMENTS fired in a run log, and which stayed SILENT. A registered instrument with zero hits is
     /// the failure this exists to catch: a guard that silently does nothing cannot be told from no guard at all, and a
     /// hand-written grep over one log finds a line but cannot tell you which of the other instruments never spoke.
@@ -6227,10 +6287,15 @@ pub struct CourierArgs {
     json: bool,
     /// The DEPLOYED artifact whose instruments this census relies on (default: the live prefix's loader). A silent
     /// instrument and an instrument that sent nothing look identical in a log; the artifact decides which.
-    /// Deployed artifacts whose instruments this census relies on; defaults to the live prefix's loader and kernel
-    /// image when none is given.
+    /// Deployed artifacts whose instruments this census relies on; defaults to the live prefix's loader, kernel
+    /// image and server when none is given.
     #[arg(long)]
     artifact: Vec<PathBuf>,
+    /// The prefix whose deployed artifacts the defaults come from. Without it the prefix is read out of the run
+    /// log (`prefix=...`) or DWDIAG_PREFIX; if none resolves, every instrument check is UNMEASURED rather than
+    /// silently taken from another prefix.
+    #[arg(long)]
+    prefix: Option<PathBuf>,
 }
 
 // THE TRANSPORT CENSUS. One row per transport, with the log token that counts it and its source instrument. A row whose
@@ -6326,14 +6391,28 @@ fn run_courier(args: CourierArgs) -> Result<ExitCode> {
     );
     // The ARTIFACT decides whether a zero is evidence: a token that is not in the deployed binary means the row was
     // never measured, however quiet the log is. (A silent probe is not evidence -- this project's own rule.)
-    let default_artifacts = vec![
-        PathBuf::from("/tmp/dr-on-matched/libexec/darling/usr/libexec/darling/mldr"),
-        PathBuf::from("/tmp/dr-on-matched/libexec/darling/usr/lib/system/libsystem_kernel.dylib"),
-        // The SERVER carries the plane's own instruments (plane-wake, courier-send, urgent-service), so a census of
-        // those rows cannot be judged without it: a zero whose instrument is missing from this binary is not
-        // evidence. MEASURED need: the urgent plane's instrument lives here and was not in the default set.
-        PathBuf::from("/tmp/dr-on-matched/bin/darlingserver"),
-    ];
+    // The artifacts must come from the prefix THIS RUN used: a default pointing at some other prefix decides the
+    // census against the wrong binary, which is worse than not deciding it.
+    let resolved_prefix = resolve_prefix(args.prefix.clone(), Some(&log));
+    let default_artifacts: Vec<PathBuf> = match &resolved_prefix {
+        Some(p) => vec![
+            p.join("libexec/darling/usr/libexec/darling/mldr"),
+            p.join("libexec/darling/usr/lib/system/libsystem_kernel.dylib"),
+            // The SERVER carries the plane's own instruments (plane-wake, courier-send, urgent-service), so a
+            // census of those rows cannot be judged without it: a zero whose instrument is missing from this
+            // binary is not evidence.
+            p.join("bin/darlingserver"),
+        ],
+        None => {
+            println!(
+                "COURIER-WARN no prefix resolved (no --prefix, no DWDIAG_PREFIX, no prefix= in the log): every instrument check below is UNMEASURED"
+            );
+            Vec::new()
+        }
+    };
+    if let Some(p) = &resolved_prefix {
+        println!("COURIER-PREFIX {}", p.display());
+    }
     let artifacts = if args.artifact.is_empty() {
         &default_artifacts
     } else {
@@ -6374,7 +6453,14 @@ fn run_courier(args: CourierArgs) -> Result<ExitCode> {
                     "UNMEASURED".to_string(),
                     "instrument ABSENT from the deployed artifact",
                 ),
-                _ => (format!("{n}"), i),
+                // None means the token could not be looked for at all (nothing readable to look in, or no token
+                // defined). `n` is then a count of log lines, not a measurement of this transport, and reporting it
+                // as one is how an unmeasured zero became PASS.
+                None => (
+                    "UNMEASURED".to_string(),
+                    "instrument could not be checked: no readable deployed artifact",
+                ),
+                Some(true) => (format!("{n}"), i),
             },
             None => ("UNMEASURED".to_string(), "no instrument in the tree yet"),
         };
@@ -6390,7 +6476,7 @@ fn run_courier(args: CourierArgs) -> Result<ExitCode> {
         };
         println!("{:<48} {:>8}  {}", row.name, count, inst);
         if row.must_be_zero {
-            if inst.starts_with("instrument ABSENT") || inst.starts_with("no instrument") {
+            if count == "UNMEASURED" {
                 violations.push(format!("{} UNMEASURED ({inst})", row.name));
             } else if n > 0 {
                 violations.push(format!("{} = {n} (must be 0)", row.name));
@@ -7302,4 +7388,504 @@ fn run_job(args: JobArgs) -> Result<ExitCode> {
     }
     println!("DIAG-END state={}", state_dir.display());
     Ok(ExitCode::SUCCESS)
+}
+
+// ---------------------------------------------------------------------------------------------
+// FUTEX PAIRING (`dwdiag futex`)
+//
+// WHY THIS EXISTS: a stall in this project keeps arriving as "two threads are in futex_wait_queue",
+// which is true and useless. The waiting thread and whoever must wake it are normally DIFFERENT
+// processes (the loader waits on a ring the server publishes), so comparing virtual addresses says
+// nothing -- equal addresses are neither necessary nor sufficient. What does identify the byte is the
+// kernel's own naming of it in both processes: the device and inode of the file, the file offset of
+// the mapping plus the displacement of the address inside it. This command does that join from a
+// capture bundle, so the question stops being answered by hand.
+// ---------------------------------------------------------------------------------------------
+
+/// One memory region with the fields a shared-object identity needs.
+#[derive(Clone, Debug)]
+struct MapRegion {
+    lo: u64,
+    hi: u64,
+    shared: bool,
+    file_off: u64,
+    dev: String,
+    ino: u64,
+    file: String,
+}
+
+fn parse_maps_full(text: &str) -> Vec<MapRegion> {
+    let mut v = Vec::new();
+    for line in text.lines() {
+        let mut it = line.split_whitespace();
+        let (Some(range), Some(perm), Some(off), Some(dev), Some(ino)) =
+            (it.next(), it.next(), it.next(), it.next(), it.next())
+        else {
+            continue;
+        };
+        let (Some(a), Some(b)) = (range.split('-').next(), range.split('-').nth(1)) else {
+            continue;
+        };
+        let (Ok(lo), Ok(hi), Ok(file_off)) = (
+            u64::from_str_radix(a, 16),
+            u64::from_str_radix(b, 16),
+            u64::from_str_radix(off, 16),
+        ) else {
+            continue;
+        };
+        let Ok(ino) = ino.parse::<u64>() else { continue };
+        let file = line.splitn(6, ' ').nth(5).unwrap_or("").trim().to_string();
+        v.push(MapRegion {
+            lo,
+            hi,
+            shared: perm.contains('s'),
+            file_off,
+            dev: dev.to_string(),
+            ino,
+            file,
+        });
+    }
+    v
+}
+
+/// The byte two processes share: same device, same inode, same file offset. Virtual addresses are not part of it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ObjectKey {
+    dev: String,
+    ino: u64,
+    file_off: u64,
+    file: String,
+}
+
+#[derive(Clone, Debug)]
+struct FutexWait {
+    tree: &'static str,
+    pid: u32,
+    label: String,
+    tid: u32,
+    addr: u64,
+    op: u64,
+    val: u64,
+    wchan: String,
+    shared: Option<ObjectKey>,
+    /// How the address was resolved, in words: `shared`, `private-anon`, `private-file` or `unmapped`. An
+    /// unresolved wait is reported with its reason instead of being dropped.
+    resolution: &'static str,
+}
+
+#[derive(Debug, Default)]
+struct FutexReport {
+    processes: usize,
+    waits: Vec<FutexWait>,
+    /// (pid, tid, address, snapshot file) of every wait already recorded, so a process kept in two trees or a
+    /// thread captured in several generations is not reported as several waits.
+    seen: std::collections::BTreeSet<(u32, u32, u64, String)>,
+    /// For each shared object, every OTHER mapping of it (pid, address): the other half of the join.
+    peers: BTreeMap<ObjectKey, Vec<(String, u64)>>,
+}
+
+fn parse_hex_or_dec(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("0x") {
+        u64::from_str_radix(rest, 16).ok()
+    } else {
+        s.parse::<u64>().ok()
+    }
+}
+
+fn first_line_of(path: &Path) -> String {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|t| t.lines().next().map(|l| l.to_string()))
+        .unwrap_or_default()
+}
+
+fn resolve_futex_addr(maps: &[MapRegion], addr: u64) -> (&'static str, Option<ObjectKey>) {
+    for r in maps {
+        if r.lo <= addr && addr < r.hi {
+            if r.shared && !r.file.is_empty() {
+                return (
+                    "shared",
+                    Some(ObjectKey {
+                        dev: r.dev.clone(),
+                        ino: r.ino,
+                        file_off: r.file_off + (addr - r.lo),
+                        file: r.file.clone(),
+                    }),
+                );
+            }
+            return (
+                if r.file.is_empty() {
+                    "private-anon"
+                } else {
+                    "private-file"
+                },
+                None,
+            );
+        }
+    }
+    ("unmapped", None)
+}
+
+fn pair_futex(bundle: &Path) -> Result<FutexReport> {
+    // Both trees: the workload's and the daemonized server's. The server is not a descendant of the workload, so
+    // reading only one tree is exactly how the other half of a shared futex goes missing.
+    let trees = [
+        ("capture-tree", bundle.join("capture-tree")),
+        ("guarded-tree", bundle.join("guarded-tree")),
+    ];
+    let mut report = FutexReport::default();
+    let mut maps_by_pid: Vec<(String, Vec<MapRegion>)> = Vec::new();
+    for (tree, dir) in &trees {
+        let Ok(entries) = fs::read_dir(dir) else { continue };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let Some(rest) = name.strip_prefix("pid-") else { continue };
+            let Ok(pid) = rest.parse::<u32>() else { continue };
+            let pdir = e.path();
+            report.processes += 1;
+            let maps = fs::read_to_string(pdir.join("proc-maps.txt"))
+                .map(|t| parse_maps_full(&t))
+                .unwrap_or_default();
+            maps_by_pid.push((pid.to_string(), maps.clone()));
+            let label = first_line_of(&pdir.join("proc-cmdline.txt"));
+            let Ok(files) = fs::read_dir(&pdir) else { continue };
+            for f in files.flatten() {
+                let n = f.file_name().to_string_lossy().to_string();
+                // A syscall snapshot is a MOMENT, not a trace: it says who is waiting now, never who woke whom.
+                let (tid, wchan_name) = if n == "proc-syscall.txt" {
+                    (pid, "proc-wchan.txt".to_string())
+                } else if n.ends_with("-syscall.txt") {
+                    let Some(t) = n
+                        .split("-tid-")
+                        .nth(1)
+                        .and_then(|r| r.split('-').next())
+                        .and_then(|t| t.parse::<u32>().ok())
+                    else {
+                        continue;
+                    };
+                    (t, n.replace("-syscall.txt", "-wchan.txt"))
+                } else {
+                    continue;
+                };
+                let Ok(text) = fs::read_to_string(f.path()) else { continue };
+                let f: Vec<&str> = text.split_whitespace().collect();
+                if f.len() < 4 {
+                    continue;
+                }
+                // The raw number is LINUX-numbered in a guest: futex is 202 on x86_64, 98 on i386, 422 for
+                // futex_time64. Accept all three rather than reading a wait as "not a futex".
+                let Some(nr) = f[0].parse::<i64>().ok() else { continue };
+                if !matches!(nr, 202 | 98 | 422) {
+                    continue;
+                }
+                let (Some(addr), Some(op)) = (parse_hex_or_dec(f[1]), parse_hex_or_dec(f[2])) else {
+                    continue;
+                };
+                let val = parse_hex_or_dec(f[3]).unwrap_or(0);
+                let (resolution, shared) = resolve_futex_addr(&maps, addr);
+                // The SAME process appears in both trees (the guarded tree keeps the ancestors of the target, and
+                // the same thread is snapshotted once per capture generation). Recording the snapshot's own name
+                // lets the report collapse those repeats instead of listing one wait six times.
+                let wait_key = (pid, tid, addr, n.clone());
+                if !report.seen.insert(wait_key) {
+                    continue;
+                }
+                report.waits.push(FutexWait {
+                    tree,
+                    pid,
+                    label: label.chars().take(60).collect(),
+                    tid,
+                    addr,
+                    op,
+                    val,
+                    wchan: first_line_of(&pdir.join(wchan_name)),
+                    shared,
+                    resolution,
+                });
+            }
+        }
+    }
+    // The join: for every shared object a wait resolved to, find the OTHER processes that map the same object and
+    // the address it has there. This is what makes "the peer is mapped but not waiting" a statement instead of a
+    // guess, and it is also what exposes an object mapped by nobody else.
+    let mut peer_keys: Vec<ObjectKey> = report.waits.iter().filter_map(|w| w.shared.clone()).collect();
+    peer_keys.sort();
+    peer_keys.dedup();
+    for key in &peer_keys {
+        for (pid, maps) in &maps_by_pid {
+            // A process that is itself waiting on this byte is not the missing waker -- it is the other half of a
+            // mutual wait, which is a different diagnosis and gets its own line (MUTUAL-WAIT below). The possible
+            // wakers are therefore the mappings held by processes that are NOT waiting.
+            for r in maps {
+                if !r.shared || r.dev != key.dev || r.ino != key.ino {
+                    continue;
+                }
+                if key.file_off < r.file_off {
+                    continue;
+                }
+                let addr = r.lo + (key.file_off - r.file_off);
+                let this_pid_waits = report
+                    .waits
+                    .iter()
+                    .any(|w| w.shared.as_ref() == Some(key) && w.pid.to_string() == *pid);
+                if addr < r.hi && !this_pid_waits {
+                    let e = report.peers.entry(key.clone()).or_default();
+                    let pair = (pid.clone(), addr);
+                    if !e.contains(&pair) {
+                        e.push(pair);
+                    }
+                }
+            }
+        }
+    }
+    Ok(report)
+}
+
+fn run_futex(args: FutexArgs) -> Result<ExitCode> {
+    let report = pair_futex(&args.bundle)?;
+    if args.json {
+        // Hand-written JSON, like every other output of this tool: it must be readable by a machine without
+        // pulling in a serializer whose presence would be the only reason the type is shaped this way.
+        let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+        let mut out = String::from("{\"processes\":");
+        out.push_str(&report.processes.to_string());
+        out.push_str(",\"waits\":[");
+        for (i, w) in report.waits.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!(
+                "{{\"tree\":\"{}\",\"pid\":{},\"tid\":{},\"addr\":{},\"op\":{},\"val\":{},\"wchan\":\"{}\",\"resolution\":\"{}\",\"label\":\"{}\"",
+                w.tree,
+                w.pid,
+                w.tid,
+                w.addr,
+                w.op,
+                w.val,
+                esc(&w.wchan),
+                w.resolution,
+                esc(&w.label)
+            ));
+            match &w.shared {
+                Some(k) => out.push_str(&format!(
+                    ",\"object\":{{\"dev\":\"{}\",\"ino\":{},\"file_off\":{},\"file\":\"{}\"}}}}",
+                    esc(&k.dev),
+                    k.ino,
+                    k.file_off,
+                    esc(&k.file)
+                )),
+                None => out.push_str(",\"object\":null}"),
+            }
+        }
+        out.push_str("],\"peers\":{");
+        for (n, (k, list)) in report.peers.iter().enumerate() {
+            if n > 0 {
+                out.push(',');
+            }
+            let key = format!("{}:{}:{}", k.dev, k.ino, k.file_off);
+            let addrs: Vec<String> = list
+                .iter()
+                .map(|(pid, a)| format!("{{\"pid\":\"{pid}\",\"addr\":{a}}}"))
+                .collect();
+            out.push_str(&format!("\"{key}\":[{}]", addrs.join(",")));
+        }
+        out.push_str("}}");
+        println!("FUTEX-JSON {out}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!(
+        "FUTEX bundle={} processes={} waits={}",
+        args.bundle.display(),
+        report.processes,
+        report.waits.len()
+    );
+    if report.waits.is_empty() {
+        println!(
+            "FUTEX-NONE no futex syscall snapshot resolved in this bundle: either nothing was waiting when it was taken, or the capture kept no per-thread syscall file (name them with --capture-snapshots and --capture-tree)"
+        );
+    }
+    // One row per distinct wait STATE, not per snapshot: the same thread is captured in several generations, and
+    // repeating its line once per generation turned a four-wait stall into a thirty-line report. The count is kept,
+    // because "it was still waiting when the last capture was taken" is a fact worth keeping.
+    let mut by_object: BTreeMap<String, BTreeMap<(u32, u32, u64, u64, u64, String), usize>> = BTreeMap::new();
+    for w in &report.waits {
+        let id = match &w.shared {
+            Some(k) => format!("OBJECT shared dev={} ino={} off={:#x} name={}", k.dev, k.ino, k.file_off, k.file),
+            None => format!("OBJECT {} pid={} addr={:#x}", w.resolution, w.pid, w.addr),
+        };
+        *by_object
+            .entry(id)
+            .or_default()
+            .entry((w.pid, w.tid, w.addr, w.op, w.val, w.wchan.clone()))
+            .or_insert(0) += 1;
+    }
+    for (id, waits) in &by_object {
+        println!("{id}");
+        for ((pid, tid, addr, op, val, wchan), n) in waits {
+            println!(
+                "  WAIT pid={pid} tid={tid} addr={addr:#x} op={op:#x} val={val:#x} wchan={wchan} snapshots={n}"
+            );
+        }
+        // Peers belong to the OBJECT, so they are printed once for it: repeating them per waiting thread is how a
+        // four-wait report looked like forty lines.
+        let mut any_peer = false;
+        let keys: Vec<ObjectKey> = report
+            .peers
+            .keys()
+            .filter(|k| id.contains(&format!("ino={} off={:#x}", k.ino, k.file_off)))
+            .cloned()
+            .collect();
+        for k in &keys {
+            if let Some(peers) = report.peers.get(k) {
+                for (pid, addr) in peers {
+                    println!(
+                        "  PEER-MAPS pid={pid} addr={addr:#x} (mapped by a process that is NOT waiting on it: this side could be the waker that never came)"
+                    );
+                    any_peer = true;
+                }
+            }
+        }
+        // More than one PROCESS waiting on one byte is a deadlock-shaped fact and must not be left implicit.
+        let key_here = report
+            .waits
+            .iter()
+            .filter(|w| w.shared.is_some() && id.contains(&format!("ino={}", w.shared.as_ref().unwrap().ino)))
+            .filter_map(|w| w.shared.clone())
+            .next();
+        if let Some(k) = key_here {
+            let mut pids: Vec<u32> = report
+                .waits
+                .iter()
+                .filter(|w| w.shared.as_ref() == Some(&k))
+                .map(|w| w.pid)
+                .collect();
+            pids.sort();
+            pids.dedup();
+            if pids.len() > 1 {
+                println!(
+                    "  MUTUAL-WAIT pids={pids:?} (more than one process waits on this byte: each is the other's missing waker)"
+                );
+            }
+        }
+        let shared_here = report.waits.iter().any(|w| {
+            w.shared.is_some() && id.contains(&format!("ino={}", w.shared.as_ref().unwrap().ino))
+        });
+        if shared_here && !any_peer {
+            println!(
+                "  PEER-MAPS none (no other process in this bundle maps this byte, so nothing outside this process can complete the wait)"
+            );
+        }
+        if id.contains("OBJECT private") {
+            println!(
+                "  NOTE this wait is on memory only its own process has: no peer can be the missing waker, and the answer must be inside that process"
+            );
+        }
+    }
+    println!(
+        "WAKE-EVIDENCE none-in-bundle (a syscall snapshot records who is waiting at one instant; wakes need a host futex trace taken during the SAME run)"
+    );
+    let shared = report.waits.iter().filter(|w| w.shared.is_some()).count();
+    let private = report.waits
+        .iter()
+        .filter(|w| w.resolution.starts_with("private"))
+        .count();
+    let unmapped = report.waits.iter().filter(|w| w.resolution == "unmapped").count();
+    println!(
+        "FUTEX-VERDICT waits={} shared={shared} private={private} unmapped={unmapped}",
+        report.waits.len()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod futex_tests {
+    use super::*;
+
+    fn bundle_fixture(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("dwdiag-futex-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("capture-tree/pid-100")).unwrap();
+        fs::create_dir_all(dir.join("guarded-tree/pid-200")).unwrap();
+        // The same memfd seen at two different base addresses, which is the normal case and the reason virtual
+        // addresses cannot be compared.
+        fs::write(
+            dir.join("capture-tree/pid-100/proc-maps.txt"),
+            "1000-2000 rw-s 00000000 00:01 42 /memfd:dring (deleted)\n3000-4000 rw-p 00000000 00:00 0 \n",
+        )
+        .unwrap();
+        fs::write(dir.join("capture-tree/pid-100/proc-cmdline.txt"), "/usr/bin/ld -demangle\n").unwrap();
+        fs::write(
+            dir.join("capture-tree/pid-100/snapshot-1-tid-101-syscall.txt"),
+            "202 0x1080 0x0 0x1d 0x0 0x0 0x0 0x0 0x0\n",
+        )
+        .unwrap();
+        fs::write(dir.join("capture-tree/pid-100/snapshot-1-tid-101-wchan.txt"), "futex_wait_queue\n").unwrap();
+        fs::write(
+            dir.join("guarded-tree/pid-200/proc-maps.txt"),
+            "5000-6000 rw-s 00000000 00:01 42 /memfd:dring (deleted)\n7000-8000 rw-p 00000000 00:00 0 \n",
+        )
+        .unwrap();
+        fs::write(dir.join("guarded-tree/pid-200/proc-cmdline.txt"), "darlingserver 4 3 prefix\n").unwrap();
+        // One wait on the shared object from the OTHER side, and one on unmapped memory: the second must be
+        // reported as unresolved rather than dropped or attributed to the shared object.
+        fs::write(
+            dir.join("guarded-tree/pid-200/snapshot-1-tid-201-syscall.txt"),
+            "202 0x5080 0x0 0x1 0x0 0x0 0x0 0x0 0x0\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("guarded-tree/pid-200/snapshot-1-tid-202-syscall.txt"),
+            "202 0xdeadbeef 0x0 0x1 0x0 0x0 0x0 0x0 0x0\n",
+        )
+        .unwrap();
+        // A THIRD process that maps the same object and is NOT waiting: this is the only process that could be the
+        // waker, and a report that cannot name it cannot answer the question the command exists for.
+        fs::create_dir_all(dir.join("guarded-tree/pid-300")).unwrap();
+        fs::write(
+            dir.join("guarded-tree/pid-300/proc-maps.txt"),
+            "9000-9100 rw-s 00000000 00:01 42 /memfd:dring (deleted)\n",
+        )
+        .unwrap();
+        fs::write(dir.join("guarded-tree/pid-300/proc-cmdline.txt"), "darlingserver helper\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn joins_a_waiter_with_the_peer_mapping_by_shared_object_identity() {
+        let dir = bundle_fixture("join");
+        let r = pair_futex(&dir).unwrap();
+        assert_eq!(r.waits.len(), 3);
+        let ld = r.waits.iter().find(|w| w.pid == 100).unwrap();
+        let key = ld.shared.as_ref().expect("the loader wait resolves to a shared object");
+        assert_eq!(key.ino, 42);
+        assert_eq!(key.file_off, 0x80, "identity carries the file offset, not the virtual address");
+        assert_eq!(ld.val, 0x1d);
+        // The server's own wait on the SAME object at a different address must be joined to the loader's key.
+        let srv = r.waits.iter().find(|w| w.pid == 200 && w.resolution == "shared").unwrap();
+        assert_eq!(srv.shared.as_ref().unwrap().file_off, 0x80);
+        // And the peers of that key are the two mappings (each side sees the other).
+        let peers = r.peers.get(key).expect("a process maps the same object without waiting");
+        assert_eq!(
+            peers,
+            &vec![("300".to_string(), 0x9080)],
+            "only a process that is NOT waiting can be the waker: {peers:?}"
+        );
+        // Both waiting processes are joined to the same key, which is what makes the mutual wait visible.
+        assert_eq!(
+            r.waits.iter().filter(|w| w.shared.as_ref() == Some(key)).count(),
+            2
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reports_an_unmapped_wait_with_its_reason_instead_of_dropping_it() {
+        let dir = bundle_fixture("unmapped");
+        let r = pair_futex(&dir).unwrap();
+        let u = r.waits.iter().find(|w| w.tid == 202).unwrap();
+        assert_eq!(u.resolution, "unmapped");
+        assert!(u.shared.is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

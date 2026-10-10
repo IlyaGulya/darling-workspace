@@ -830,8 +830,7 @@ fn run_experiment(
             bundle.clone(),
         )
     });
-    // `mut`: the marker trigger assigns inside a loop over the two output streams.
-    let mut result;
+    let result;
     let marker_pattern = match &args.capture_on_line {
         Some(p) => Some(Regex::new(p).context("invalid --capture-on-line")?),
         None => None,
