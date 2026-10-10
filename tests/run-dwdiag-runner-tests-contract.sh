@@ -175,4 +175,41 @@ n=$(state_of "$("$BIN" diag evidence --state-dir "$MIRROR/foreign-only/state" --
 [ "$u" != "$n" ] || fail "unavailable and no-evidence are not distinguished (both $u)"
 [ "$p" != "$n" ] || fail "partial and no-evidence are not distinguished (both $p)"
 
+# The futex trace: the wake half cannot come from a snapshot, and a trace that cannot be shown to belong to the
+# bundle's run must be REFUSED with its reason -- a trace from another run reads exactly like this one, because a
+# recycled pid is still a pid, and the window is the only thing that separates them.
+FTRACE=$(mktemp -d "$MIRROR/futex-XXXXXX")
+mkdir -p "$FTRACE/capture-tree/pid-100" "$FTRACE/guarded-tree/pid-300"
+printf '1000-2000 rw-s 00000000 00:01 42 /memfd:x (deleted)\n' >"$FTRACE/capture-tree/pid-100/proc-maps.txt"
+printf '9000-a000 rw-s 00000000 00:01 42 /memfd:x (deleted)\n' >"$FTRACE/guarded-tree/pid-300/proc-maps.txt"
+printf 'version=1\nstart=%s\nend=%s\n' "$START" "$END" >"$FTRACE/evidence-manifest"
+T0=$((START * 1000000000))
+{
+	printf 'WAIT pid=100 tid=101 uaddr=0x1080 ts_ns=%s\n' "$((T0 + 10))"
+	printf 'WAKE pid=300 tid=301 uaddr=0x9080 woke=1 ts_ns=%s\n' "$((T0 + 20))"
+} >"$FTRACE/good.trace"
+# 0x1080 in pid-100 and 0x9080 in pid-300 are the same byte of the same memfd: the waker is in a different address
+# space, so a pairing that compared virtual addresses could not find it.
+out=$("$BIN" diag futex --bundle "$FTRACE" --futex-trace "$FTRACE/good.trace") \
+	|| fail "the pairing command failed on a trace inside the run window"
+grep -aq 'WAKER pid=300 tid=301 woke=1' <<<"$out" || fail "a same-object wake in another address space was not paired: $out"
+json=$("$BIN" diag futex --bundle "$FTRACE" --futex-trace "$FTRACE/good.trace" --json) \
+	|| fail "the pairing command failed in --json mode"
+grep -aq '"waker_pid":300' <<<"$json" || fail "the machine-readable pairing did not name the waker: $json"
+grep -aq '"window_open_ended":false' <<<"$json" || fail "a manifest with both ends must not report an open-ended window: $json"
+# The absence of a trace is a named absence, never a silent zero.
+grep -aq 'FUTEX-TRACE-ABSENT' <("$BIN" diag futex --bundle "$FTRACE") \
+	|| fail "no trace was given and the absence was not named"
+printf 'WAIT pid=999 tid=999 uaddr=0x1080 ts_ns=%s\n' "$((T0 + 30))" >"$FTRACE/foreign-pid.trace"
+if out=$("$BIN" diag futex --bundle "$FTRACE" --futex-trace "$FTRACE/foreign-pid.trace" 2>&1); then
+	fail "a trace naming a pid the bundle never saw was ACCEPTED: $out"
+fi
+grep -aq 'did not capture' <<<"$out" || fail "the refusal did not name the reason: $out"
+printf 'WAIT pid=100 tid=101 uaddr=0x1080 ts_ns=%s\n' "$((( END + 10) * 1000000000))" >"$FTRACE/foreign-window.trace"
+if out=$("$BIN" diag futex --bundle "$FTRACE" --futex-trace "$FTRACE/foreign-window.trace" 2>&1); then
+	fail "a trace from outside the run window was ACCEPTED: $out"
+fi
+grep -aq 'run end' <<<"$out" || fail "the window refusal did not name the reason: $out"
+printf 'FUTEX-TRACE-DISCIPLINE PASS\n'
+
 printf 'EVIDENCE-TRUTH-TABLE PASS cases=%s states=%s\n' "${#SEEN_NAMES[@]}" "$distinct"

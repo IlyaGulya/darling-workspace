@@ -3448,6 +3448,17 @@ pub struct FutexArgs {
     /// shared futex normally live in different processes.
     #[arg(long)]
     bundle: PathBuf,
+    /// An out-of-band futex trace recorded during the SAME run as the bundle, one event per line:
+    ///
+    ///   WAIT pid=<n> tid=<n> uaddr=<hex> ts_ns=<n>
+    ///   WAKE pid=<n> tid=<n> uaddr=<hex> woke=<n> ts_ns=<n>
+    ///
+    /// It is required for the wake half, and no snapshot can replace it: a syscall snapshot is a MOMENT, so it says
+    /// who is waiting now and never who woke whom. The trace is REFUSED when a pid is not one the bundle captured or
+    /// when an event falls outside the bundle's run window, because a trace from another run reads exactly like this
+    /// one and would silently answer a question about a run it never saw.
+    #[arg(long)]
+    futex_trace: Option<PathBuf>,
     #[arg(long)]
     json: bool,
 }
@@ -7881,6 +7892,28 @@ struct FutexReport {
     seen: std::collections::BTreeSet<(u32, u32, u64, String)>,
     /// For each shared object, every OTHER mapping of it (pid, address): the other half of the join.
     peers: BTreeMap<ObjectKey, Vec<(String, u64)>>,
+    /// Waits taken from the OUT-OF-BAND trace, with the wake that followed each one. Empty when no trace was given,
+    /// which is a named absence in the output rather than a silent zero.
+    trace_waits: Vec<FutexTraceWait>,
+    /// Whether an out-of-band trace was supplied and accepted.
+    trace_present: bool,
+    /// True when the run manifest recorded no end, so the window could only be checked from its start.
+    trace_window_open_ended: bool,
+}
+
+/// One WAIT from the out-of-band trace, joined to the first wake that followed it on the same object.
+#[derive(Clone, Debug)]
+struct FutexTraceWait {
+    pid: u32,
+    tid: u32,
+    addr: u64,
+    /// `shared`, `private-anon`, `private-file` or `unmapped`, in words, like the snapshot waits.
+    resolution: &'static str,
+    object: Option<ObjectKey>,
+    /// (pid, tid, woke) of the first wake on the same object after this wait, when there was one.
+    waker: Option<(u32, u32, u64)>,
+    /// How many wakes followed on the object: 0 is the finding this whole trace exists to state.
+    wakes_after: usize,
 }
 
 fn parse_hex_or_dec(s: &str) -> Option<u64> {
@@ -7926,7 +7959,213 @@ fn resolve_futex_addr(maps: &[MapRegion], addr: u64) -> (&'static str, Option<Ob
     ("unmapped", None)
 }
 
-fn pair_futex(bundle: &Path) -> Result<FutexReport> {
+// ---------------------------------------------------------------------------------------------------------------
+// The out-of-band futex trace: the wake half, plus the discipline that keeps an answer about THIS run.
+// ---------------------------------------------------------------------------------------------------------------
+
+/// One event of an out-of-band futex trace (`--futex-trace`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FutexTraceKind {
+    Wait,
+    Wake,
+}
+
+#[derive(Clone, Debug)]
+struct FutexTraceEvent {
+    kind: FutexTraceKind,
+    pid: u32,
+    tid: u32,
+    addr: u64,
+    /// `woke=`, present on wake events only.
+    woke: Option<u64>,
+    ts_ns: u128,
+}
+
+fn parse_futex_trace(text: &str) -> Result<Vec<FutexTraceEvent>, String> {
+    let mut out = Vec::new();
+    for (n, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut it = line.split_whitespace();
+        let kind = match it.next().unwrap_or("") {
+            "WAIT" | "FUTEX_WAIT" => FutexTraceKind::Wait,
+            "WAKE" | "FUTEX_WAKE" => FutexTraceKind::Wake,
+            other => {
+                return Err(format!(
+                    "futex trace line {}: unknown event {other:?} (expected WAIT or WAKE)",
+                    n + 1
+                ))
+            }
+        };
+        let (mut pid, mut tid, mut addr, mut woke, mut ts_ns) = (None, None, None, None, None);
+        for field in it {
+            let Some((k, v)) = field.split_once('=') else {
+                return Err(format!("futex trace line {}: {field:?} is not key=value", n + 1));
+            };
+            match k {
+                "pid" => pid = v.parse::<u32>().ok(),
+                "tid" => tid = v.parse::<u32>().ok(),
+                "uaddr" => addr = parse_hex_or_dec(v),
+                "woke" => woke = v.parse::<u64>().ok(),
+                "ts_ns" => ts_ns = v.parse::<u128>().ok(),
+                other => {
+                    return Err(format!("futex trace line {}: unknown field {other:?}", n + 1))
+                }
+            }
+        }
+        let (Some(pid), Some(tid), Some(addr)) = (pid, tid, addr) else {
+            return Err(format!("futex trace line {}: needs pid=, tid= and uaddr=", n + 1));
+        };
+        // Without a timestamp an event can only be placed in a run by guessing, and that guess is exactly the
+        // failure this check exists to prevent, so it is refused instead of defaulted.
+        let Some(ts_ns) = ts_ns else {
+            return Err(format!(
+                "futex trace line {}: needs ts_ns= -- a trace without timestamps cannot be attributed to a run",
+                n + 1
+            ));
+        };
+        out.push(FutexTraceEvent { kind, pid, tid, addr, woke, ts_ns });
+    }
+    if out.is_empty() {
+        return Err("the futex trace carries no event".to_string());
+    }
+    Ok(out)
+}
+
+/// The run window from the bundle's evidence manifest: the launcher records `start`, and `end` when a writer
+/// recorded one (the job's `rc` file is the other half this reader does not own).
+fn bundle_run_window(bundle: &Path) -> Option<(u64, Option<u64>)> {
+    let mut candidates = vec![
+        bundle.join("evidence-manifest"),
+        bundle.join("state").join("evidence-manifest"),
+    ];
+    if let Ok(entries) = fs::read_dir(bundle) {
+        for e in entries.flatten() {
+            candidates.push(e.path().join("evidence-manifest"));
+        }
+    }
+    for path in candidates {
+        let Ok(text) = fs::read_to_string(&path) else { continue };
+        let m = parse_evidence_manifest(&text);
+        if let Some(start) = m.start {
+            return Some((start, m.end));
+        }
+    }
+    None
+}
+
+/// Refuse a trace that cannot be shown to belong to the bundle's run.
+///
+/// Two facts are checked, and each one alone has produced a wrong answer: every pid must be one the bundle
+/// captured (a trace from another run names processes this bundle never saw), and every event must fall inside the
+/// run window the evidence manifest records (a trace from an EARLIER run can name the same pids, because they were
+/// recycled, and would otherwise read as a trace of this run).
+fn validate_futex_trace(
+    events: &[FutexTraceEvent],
+    bundle_pids: &std::collections::BTreeSet<u32>,
+    window: Option<(u64, Option<u64>)>,
+) -> Result<bool, String> {
+    for e in events {
+        if !bundle_pids.contains(&e.pid) {
+            return Err(format!(
+                "futex trace names pid {} which this bundle did not capture ({} pids in the bundle): the trace is from another run",
+                e.pid,
+                bundle_pids.len()
+            ));
+        }
+    }
+    let Some((start, end)) = window else {
+        return Err(
+            "the bundle declares no run window (no readable evidence-manifest with start=), so a trace cannot be \
+             attributed to this run; a trace from another run reads exactly like this one"
+                .to_string(),
+        );
+    };
+    let lo = start as u128 * 1_000_000_000;
+    if let Some(e) = events.iter().find(|e| e.ts_ns < lo) {
+        return Err(format!(
+            "futex trace event ts_ns={} precedes the run start ({}) : the trace is from another run",
+            e.ts_ns, start
+        ));
+    }
+    match end {
+        Some(end) => {
+            let hi = end as u128 * 1_000_000_000;
+            if let Some(e) = events.iter().find(|e| e.ts_ns > hi) {
+                return Err(format!(
+                    "futex trace event ts_ns={} follows the run end ({end}): the trace is from another run",
+                    e.ts_ns
+                ));
+            }
+            Ok(false)
+        }
+        // The window's end is not this reader's to invent, so an open-ended window is reported as such rather
+        // than presented as a full check.
+        None => Ok(true),
+    }
+}
+
+/// Resolve one traced event's address through the maps the bundle captured for its pid.
+fn resolve_traced_addr(
+    maps_by_pid: &[(String, Vec<MapRegion>)],
+    pid: u32,
+    addr: u64,
+) -> (&'static str, Option<ObjectKey>) {
+    for (p, maps) in maps_by_pid {
+        if p.parse::<u32>() == Ok(pid) {
+            return resolve_futex_addr(maps, addr);
+        }
+    }
+    ("unmapped-pid", None)
+}
+
+/// Join each traced WAIT to the FIRST wake on the same object after it, and keep the ones with no wake at all.
+///
+/// The object is what makes the join possible across processes: the two sides of a shared futex sit at different
+/// addresses in different address spaces, and only (dev, inode, file offset) is the same on both.
+fn pair_futex_trace(
+    events: &[FutexTraceEvent],
+    maps_by_pid: &[(String, Vec<MapRegion>)],
+) -> Vec<FutexTraceWait> {
+    let mut waits = Vec::new();
+    for e in events {
+        if e.kind != FutexTraceKind::Wait {
+            continue;
+        }
+        let (resolution, object) = resolve_traced_addr(maps_by_pid, e.pid, e.addr);
+        let mut waker = None;
+        let mut wakes_after = 0usize;
+        if let Some(key) = &object {
+            for w in events {
+                if w.kind != FutexTraceKind::Wake || w.ts_ns <= e.ts_ns {
+                    continue;
+                }
+                let (_, woke_object) = resolve_traced_addr(maps_by_pid, w.pid, w.addr);
+                if woke_object.as_ref() != Some(key) {
+                    continue;
+                }
+                wakes_after += 1;
+                if waker.is_none() {
+                    waker = Some((w.pid, w.tid, w.woke.unwrap_or(0)));
+                }
+            }
+        }
+        waits.push(FutexTraceWait {
+            pid: e.pid,
+            tid: e.tid,
+            addr: e.addr,
+            resolution,
+            object,
+            waker,
+            wakes_after,
+        });
+    }
+    waits
+}
+
+fn pair_futex(bundle: &Path, futex_trace: Option<&Path>) -> Result<FutexReport> {
     // Both trees: the workload's and the daemonized server's. The server is not a descendant of the workload, so
     // reading only one tree is exactly how the other half of a shared futex goes missing.
     let trees = [
@@ -8038,11 +8277,36 @@ fn pair_futex(bundle: &Path) -> Result<FutexReport> {
             }
         }
     }
+
+    // The wake half, and only from the out-of-band trace: a syscall snapshot is a moment and cannot show who woke
+    // whom, so this is not an alternative source for the same fact.
+    if let Some(path) = futex_trace {
+        let text = fs::read_to_string(path)
+            .with_context(|| format!("cannot read the futex trace {}", path.display()))?;
+        let events = match parse_futex_trace(&text) {
+            Ok(events) => events,
+            Err(e) => bail!("{e}"),
+        };
+        let bundle_pids: std::collections::BTreeSet<u32> = maps_by_pid
+            .iter()
+            .filter_map(|(p, _)| p.parse::<u32>().ok())
+            .collect();
+        report.trace_window_open_ended = match validate_futex_trace(
+            &events,
+            &bundle_pids,
+            bundle_run_window(bundle),
+        ) {
+            Ok(open_ended) => open_ended,
+            Err(e) => bail!("{e}"),
+        };
+        report.trace_waits = pair_futex_trace(&events, &maps_by_pid);
+        report.trace_present = true;
+    }
     Ok(report)
 }
 
 fn run_futex(args: FutexArgs) -> Result<ExitCode> {
-    let report = pair_futex(&args.bundle)?;
+    let report = pair_futex(&args.bundle, args.futex_trace.as_deref())?;
     if args.json {
         // Hand-written JSON, like every other output of this tool: it must be readable by a machine without
         // pulling in a serializer whose presence would be the only reason the type is shaped this way.
@@ -8089,6 +8353,32 @@ fn run_futex(args: FutexArgs) -> Result<ExitCode> {
                 .collect();
             out.push_str(&format!("\"{key}\":[{}]", addrs.join(",")));
         }
+        out.push_str(",\"trace\":{");
+        out.push_str(&format!("\"present\":{},", report.trace_present));
+        out.push_str(&format!(
+            "\"window_open_ended\":{},",
+            report.trace_window_open_ended
+        ));
+        out.push_str("\"waits\":[");
+        for (i, w) in report.trace_waits.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            let object = w
+                .object
+                .as_ref()
+                .map(|k| format!("{}:{}:{}", k.dev, k.ino, k.file_off))
+                .unwrap_or_default();
+            let (waker_pid, waker_tid, waker_woke) = match w.waker {
+                Some((p, t, n)) => (p.to_string(), t.to_string(), n.to_string()),
+                None => ("null".to_string(), "null".to_string(), "null".to_string()),
+            };
+            out.push_str(&format!(
+                "{{\"pid\":{},\"tid\":{},\"addr\":{},\"resolution\":\"{}\",\"object\":\"{}\",\"waker_pid\":{},\"waker_tid\":{},\"waker_woke\":{},\"wakes_after\":{}}}",
+                w.pid, w.tid, w.addr, w.resolution, object, waker_pid, waker_tid, waker_woke, w.wakes_after
+            ));
+        }
+        out.push_str("]}");
         out.push_str("}}");
         println!("FUTEX-JSON {out}");
         return Ok(ExitCode::SUCCESS);
@@ -8099,6 +8389,29 @@ fn run_futex(args: FutexArgs) -> Result<ExitCode> {
         report.processes,
         report.waits.len()
     );
+    if !report.trace_present {
+        println!(
+            "FUTEX-TRACE-ABSENT no --futex-trace was given: the wake half cannot come from a syscall snapshot, so nothing below says who woke whom"
+        );
+    } else {
+        println!(
+            "FUTEX-TRACE waits={} window_open_ended={}",
+            report.trace_waits.len(),
+            report.trace_window_open_ended
+        );
+        for w in &report.trace_waits {
+            match &w.waker {
+                Some((pid, tid, woke)) => println!(
+                    "  WAIT pid={} tid={} addr={:#x} resolution={} WAKER pid={pid} tid={tid} woke={woke} wakes_after={}",
+                    w.pid, w.tid, w.addr, w.resolution, w.wakes_after
+                ),
+                None => println!(
+                    "  WAIT pid={} tid={} addr={:#x} resolution={} NO-WAKE (nothing woke this object after the wait: the finding this trace exists to state)",
+                    w.pid, w.tid, w.addr, w.resolution
+                ),
+            }
+        }
+    }
     if report.waits.is_empty() {
         println!(
             "FUTEX-NONE no futex syscall snapshot resolved in this bundle: either nothing was waiting when it was taken, or the capture kept no per-thread syscall file (name them with --capture-snapshots and --capture-tree)"
@@ -8253,7 +8566,7 @@ mod futex_tests {
     #[test]
     fn joins_a_waiter_with_the_peer_mapping_by_shared_object_identity() {
         let dir = bundle_fixture("join");
-        let r = pair_futex(&dir).unwrap();
+        let r = pair_futex(&dir, None).unwrap();
         assert_eq!(r.waits.len(), 3);
         let ld = r.waits.iter().find(|w| w.pid == 100).unwrap();
         let key = ld.shared.as_ref().expect("the loader wait resolves to a shared object");
@@ -8281,11 +8594,146 @@ mod futex_tests {
     #[test]
     fn reports_an_unmapped_wait_with_its_reason_instead_of_dropping_it() {
         let dir = bundle_fixture("unmapped");
-        let r = pair_futex(&dir).unwrap();
+        let r = pair_futex(&dir, None).unwrap();
         let u = r.waits.iter().find(|w| w.tid == 202).unwrap();
         assert_eq!(u.resolution, "unmapped");
         assert!(u.shared.is_none());
+        assert!(!r.trace_present, "no trace was given, so the absence must be reported as one");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The fixture's run window sits in the year 2000, so a trace written "now" cannot fall inside it by accident.
+    const WINDOW_START: u64 = 946684800;
+    const WINDOW_END: u64 = 946771200;
+
+    fn write_manifest(dir: &Path) {
+        fs::write(
+            dir.join("evidence-manifest"),
+            format!("version=1\nstart={WINDOW_START}\nend={WINDOW_END}\n"),
+        )
+        .unwrap();
+    }
+
+    fn trace_fixture(tag: &str, lines: &[String]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "dwdiag-futex-trace-{tag}-{}.txt",
+            std::process::id()
+        ));
+        fs::write(&path, lines.join("\n")).unwrap();
+        path
+    }
+
+    fn at(seconds_into_run: u128) -> u128 {
+        WINDOW_START as u128 * 1_000_000_000 + seconds_into_run
+    }
+
+    #[test]
+    fn pairs_a_wait_with_the_wake_on_the_same_object_in_another_address_space() {
+        let dir = bundle_fixture("trace-pair");
+        write_manifest(&dir);
+        // 0x1080 in pid-100 and 0x9080 in pid-300 are the SAME byte of the shared memfd (file offset 0x80). The
+        // waker lives in a different address space, so only (dev, ino, offset) can join them -- which is exactly
+        // what a snapshot cannot do, because a snapshot has no wake in it at all.
+        let trace = trace_fixture(
+            "pair",
+            &[
+                format!("WAIT pid=100 tid=101 uaddr=0x1080 ts_ns={}", at(10)),
+                format!("WAKE pid=300 tid=301 uaddr=0x9080 woke=1 ts_ns={}", at(20)),
+            ],
+        );
+        let r = pair_futex(&dir, Some(&trace)).unwrap();
+        assert!(r.trace_present);
+        assert!(!r.trace_window_open_ended, "the manifest records both ends here");
+        let w = r.trace_waits.iter().find(|w| w.tid == 101).unwrap();
+        assert_eq!(w.waker, Some((300, 301, 1)));
+        assert_eq!(w.wakes_after, 1);
+        assert!(w.object.is_some(), "the wait resolved to the shared object");
+        let _ = fs::remove_file(&trace);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_wait_whose_object_is_never_woken_is_reported_as_the_finding() {
+        let dir = bundle_fixture("trace-nowake");
+        write_manifest(&dir);
+        let trace = trace_fixture(
+            "nowake",
+            &[
+                format!("WAIT pid=100 tid=101 uaddr=0x1080 ts_ns={}", at(10)),
+                // A wake on a DIFFERENT object (offset 0x90 in pid-300's mapping of the same memfd) must not be
+                // counted as this wait's waker: "some wake happened" is not "this wait was woken".
+                format!("WAKE pid=300 tid=301 uaddr=0x9090 woke=1 ts_ns={}", at(20)),
+            ],
+        );
+        let r = pair_futex(&dir, Some(&trace)).unwrap();
+        let w = r.trace_waits.iter().find(|w| w.tid == 101).unwrap();
+        assert_eq!(w.waker, None);
+        assert_eq!(w.wakes_after, 0);
+        let _ = fs::remove_file(&trace);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_trace_naming_a_pid_the_bundle_never_saw_is_refused() {
+        let dir = bundle_fixture("trace-otherpid");
+        write_manifest(&dir);
+        let trace = trace_fixture(
+            "otherpid",
+            &[format!("WAIT pid=999 tid=999 uaddr=0x1080 ts_ns={}", at(10))],
+        );
+        let err = pair_futex(&dir, Some(&trace)).unwrap_err().to_string();
+        assert!(err.contains("did not capture"), "{err}");
+        let _ = fs::remove_file(&trace);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_trace_from_outside_the_run_window_is_refused() {
+        let dir = bundle_fixture("trace-window");
+        write_manifest(&dir);
+        // The pids are right and the window says otherwise: an earlier run whose pids were recycled reads exactly
+        // like this run's trace, so the window is the check that separates them. Both ends are exercised.
+        let after = trace_fixture(
+            "window-after",
+            &[format!(
+                "WAIT pid=100 tid=101 uaddr=0x1080 ts_ns={}",
+                (WINDOW_END as u128 + 10) * 1_000_000_000
+            )],
+        );
+        let err = pair_futex(&dir, Some(&after)).unwrap_err().to_string();
+        assert!(err.contains("run end"), "{err}");
+        let _ = fs::remove_file(&after);
+
+        let before = trace_fixture(
+            "window-before",
+            &[format!(
+                "WAIT pid=100 tid=101 uaddr=0x1080 ts_ns={}",
+                (WINDOW_START as u128 - 10) * 1_000_000_000
+            )],
+        );
+        let err = pair_futex(&dir, Some(&before)).unwrap_err().to_string();
+        assert!(err.contains("precedes the run start"), "{err}");
+        let _ = fs::remove_file(&before);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_trace_without_timestamps_or_a_window_is_refused() {
+        let dir = bundle_fixture("trace-nots");
+        write_manifest(&dir);
+        let trace = trace_fixture("nots", &["WAIT pid=100 tid=101 uaddr=0x1080".to_string()]);
+        let err = pair_futex(&dir, Some(&trace)).unwrap_err().to_string();
+        assert!(err.contains("ts_ns"), "{err}");
+        let _ = fs::remove_file(&trace);
+
+        // And a bundle that declares no window at all: the trace is refused rather than attributed by guesswork.
+        let bare = bundle_fixture("trace-nowindow");
+        let good = trace_fixture("nowindow", &[format!("WAIT pid=100 tid=101 uaddr=0x1080 ts_ns={}", at(10))]);
+        let err = pair_futex(&bare, Some(&good)).unwrap_err().to_string();
+        assert!(err.contains("no run window"), "{err}");
+        let _ = fs::remove_file(&good);
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&bare);
     }
 }
 
