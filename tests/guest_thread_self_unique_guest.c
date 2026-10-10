@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dlfcn.h>
 #include <unistd.h>
 
 #include <dispatch/dispatch.h>
@@ -212,6 +213,16 @@ main(void)
 	pthread_t threads[NTHREADS];
 	int i;
 
+	{
+		/* Which image actually implements the lock is not a detail: the guest links several copies of this
+		 * library, and a probe against one of them says nothing about the other. */
+		Dl_info info;
+		if (dladdr((void *)(uintptr_t)&os_unfair_lock_lock, &info) && info.dli_fname != NULL) {
+			printf("TSSELF lock-image %s\n", info.dli_fname);
+		} else {
+			printf("TSSELF lock-image unknown\n");
+		}
+	}
 	main_direct = direct_slot3();
 	if (main_direct == 0) {
 		__atomic_fetch_add(&direct_zero, 1, __ATOMIC_SEQ_CST);
