@@ -45,6 +45,7 @@ def make_args(**overrides):
         "shutdown_before_deploy": False,
         "skip_post_doctor": True,
         "skip_boot_smoke": False,
+        "allow_dirty_components": False,
         "force": False,
         "skip_doctor": True,
     }
@@ -297,6 +298,49 @@ with tempfile.TemporaryDirectory() as temp:
         check=True,
     )
     assert command._dirty_components(tempdir) == [], command._dirty_components(tempdir)
+
+# A deploy refuses to run when a runtime component has uncommitted changes, and refuses
+# BEFORE the build: the build is what turns an uncommitted experiment into runtime bytes.
+with tempfile.TemporaryDirectory() as temp:
+    tempdir = Path(temp)
+    build_dir = tempdir / "build"
+    prefix = tempdir / "prefix"
+    build_dir.mkdir()
+    (build_dir / "CMakeCache.txt").write_text("configured\n")
+    xnu = tempdir / "darling" / "src" / "external" / "xnu"
+    xnu.mkdir(parents=True)
+    db.subprocess.run = original_run
+    original_run(["git", "init", "-q", str(xnu)], check=True)
+    (xnu / "probe.c").write_text("int main(void) { return 0; }\n")
+
+    command = make_command()
+    ninja_calls = []
+    deploy_calls = []
+    command._deploy = lambda *args, **kwargs: deploy_calls.append((args, kwargs))
+
+    def fake_run(args, **kwargs):
+        if args and args[0] == "git":
+            return original_run(args, **kwargs)
+        if args and args[0] == "ninja":
+            ninja_calls.append(args)
+        return Completed()
+
+    db.subprocess.run = fake_run
+    try:
+        try:
+            command._run_locked(make_args(), tempdir, build_dir, prefix)
+        except SystemExit as error:
+            assert error.code == 1, error.code
+        else:
+            raise AssertionError("a deploy with dirty components was not refused")
+        assert ninja_calls == [], ninja_calls
+        assert deploy_calls == [], deploy_calls
+
+        command._run_locked(make_args(allow_dirty_components=True), tempdir, build_dir, prefix)
+        assert len(ninja_calls) == 1, ninja_calls
+        assert len(deploy_calls) == 1, deploy_calls
+    finally:
+        db.subprocess.run = original_run
 
 print("PASS west-darling-build-contract")
 PY

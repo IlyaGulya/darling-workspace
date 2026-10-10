@@ -211,6 +211,9 @@ Rules:
   shipped that way and killed `shellspawn` with SIGSEGV at `0x0`, which the boot smoke can only report as a
   dead chain. The deploy prints `working-tree provenance: ... uncommitted changes: <components>` before it
   runs and repeats it when the post-deploy check fails; commit or stash those components before deploying.
+  It also refuses to deploy at all when a runtime component is dirty, before the build (a rebuilt-then-rolled
+  -back deploy still leaves the build dir holding artifacts built from those sources); pass
+  `--allow-dirty-components` to deploy them on purpose.
 - Check before trusting a measurement: `west darling-doctor --scope runtime --prefix P --build-dir B` reports
   "the prefix does not hold the current build" and names the artifact when the deployed bytes and the build
   tree have diverged, with the remedy. `--build-dir` must be passed: the default is not this workspace's build

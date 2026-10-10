@@ -130,6 +130,9 @@ class DarlingBuild(WestCommand):
                        help="with --deploy, do not copy dyld (useful for focused closure-dylib validation)")
         p.add_argument("--allow-stale-dyld-for-kernel", action="store_true",
                        help="allow --no-deploy-dyld with libsystem_kernel.dylib; validation will not cover dyld's static emulation_dyld path")
+        p.add_argument("--allow-dirty-components", action="store_true",
+                       help="deploy a runtime built from components whose working tree has uncommitted "
+                            "changes; the deployed bytes then match no committed revision")
         p.add_argument("--deploy-darlingserver", action="store_true",
                        help="with --deploy, also copy the freshly built darlingserver into prefix/bin")
         p.add_argument("--deploy-launcher", action="store_true",
@@ -191,6 +194,19 @@ class DarlingBuild(WestCommand):
             raise SystemExit(1)
         deploy_closure_names = self._deploy_closure_names(args)
         deploy_dyld = self._deploy_dyld(args, deploy_closure_names)
+        provenance = ""
+        if args.deploy:
+            # Refuse before the build, not after: the build is what turns an uncommitted
+            # experiment into runtime bytes, and MEASURED such a probe killed shellspawn.
+            provenance = self._deploy_provenance(topdir)
+            if provenance and not args.allow_dirty_components:
+                self.err(provenance)
+                self.err(
+                    "refusing to deploy a runtime built from uncommitted component changes: the "
+                    "deployed bytes would match no committed revision. Commit or stash them, or "
+                    "pass --allow-dirty-components to deploy them on purpose."
+                )
+                raise SystemExit(1)
         if args.targets:
             targets = list(args.targets)
         elif args.deploy_closure_names is not None:
@@ -251,7 +267,6 @@ class DarlingBuild(WestCommand):
             except DeploymentTransactionError as error:
                 self.die(str(error))
             self._warn_deploy_scope(args, deploy_closure_names, deploy_dyld)
-            provenance = self._deploy_provenance(topdir)
             if provenance:
                 self.wrn(provenance)
             try:
