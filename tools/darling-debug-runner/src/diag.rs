@@ -7054,7 +7054,13 @@ fn job_instrument_log(state_dir: &Path, job_log: &Path) -> PathBuf {
     for c in &candidates {
         if let Ok(text) = fs::read_to_string(c) {
             if text.lines().any(|l| {
-                l.starts_with("[ople") || l.starts_with("[ulk") || l.starts_with("[srv-") || l.starts_with("[pc-")
+                // Every shipped instrument tag, not a guess at one of them: the lock probes emit
+                // `[ulk ...]`, the server ulock probes `[ulock-...]`/`[park...]`, the plane `[ople ...]`
+                // and `[srv-...]`/`[pc-...]`. A tag left out here makes a log full of evidence read as
+                // "no instruments", which is the worst outcome this discovery can produce.
+                ["[ulk", "[ulock", "[park", "[ople", "[srv-", "[pc-", "[dthread", "[bsc", "[tc-tramp", "[dwdiag-env"]
+                    .iter()
+                    .any(|tag| l.starts_with(tag))
             }) {
                 return c.clone();
             }

@@ -30,7 +30,7 @@ triggers the identity-checked descendant and process-group fallback.
 
 A failed job explains itself. start records the effective core-size limit and
 core pattern (and raises the limit for the job and its children), and follow and
-wait run scripts/west-job-diagnose.sh when the job's rc is non-zero: witness,
+wait run `dwdiag job` when the job's rc is non-zero: witness,
 progress, waits, loops, then a core written by this job or, failing that, the
 kernel's report of the fault. Output is bounded to 24 lines per step and 60
 seconds per step; a step that cannot read something says so instead of printing

@@ -186,6 +186,12 @@ struct StallDetector {
 impl StallDetector {
     fn from_args(args: &CommonArgs) -> Result<Option<Self>> {
         let Some(log) = &args.stall_log else {
+            // Silence detection without a log to watch used to mean "no detector", so the flags were
+            // accepted and did nothing. Refusing is the honest answer: the caller asked for a capture
+            // on silence and would otherwise receive a run with no detector and no explanation.
+            if args.stall_pattern.is_some() || args.stall_seconds.is_some() {
+                bail!("--stall-pattern/--stall-seconds were given without --stall-log: silence can only be detected in a log, so name the log to watch (or drop the stall options)");
+            }
             return Ok(None);
         };
         let pattern = args
@@ -268,6 +274,27 @@ fn parse_key_value(value: &str) -> Result<(String, String), String> {
         .split_once('=')
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
         .ok_or_else(|| "expected KEY=VALUE".to_owned())
+}
+
+
+/// Read the bytes a file gained since `offset` and report whether the pattern matches them. Used by
+/// the marker trigger so both output streams are watched without duplicating the seek bookkeeping.
+fn marker_seen(path: &Path, pattern: &Regex, offset: &mut u64) -> Result<bool> {
+    let mut file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Ok(false),
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if len < *offset {
+        *offset = 0;
+    }
+    let _ = file.seek(SeekFrom::Start(*offset));
+    let mut text = String::new();
+    if file.read_to_string(&mut text).is_err() {
+        return Ok(false);
+    }
+    *offset = file.stream_position().unwrap_or(*offset);
+    Ok(pattern.is_match(&text))
 }
 
 fn expand_home(path: &Path) -> PathBuf {
@@ -769,6 +796,23 @@ fn run_experiment(
     if let Some(command) = &args.prepare_command {
         shell_hook(command, &bundle, 0);
     }
+    // Validate the observation plan before anything is spawned or prepared: an invalid plan that is
+    // discovered afterwards leaves a payload running with no way to explain what was asked for.
+    if args.capture_snapshots == 0 {
+        bail!("--capture-snapshots 0 asks for no snapshots, which silently skips all thread and debugger evidence; use at least 1");
+    }
+    if !args.capture_gdb
+        && (args.gdb_namespace
+            || args.gdb_executable.is_some()
+            || args.gdb_cwd.is_some()
+            || !args.gdb_ex.is_empty())
+    {
+        bail!("--gdb-namespace/--gdb-executable/--gdb-cwd/--gdb-ex were given without --capture-gdb, so they would be ignored; add --capture-gdb or drop them");
+    }
+    if args.capture_on_line.is_some() && args.stall_log.is_none() {
+        println!("NOTE --capture-on-line watches the workload's stdout and stderr (no --stall-log named)");
+    }
+    println!("BUNDLE={}", bundle.display());
     let mut detector = StallDetector::from_args(args)?;
     let mut child = spawn(args, &bundle, &command, &extra_env)?;
     fs::write(bundle.join("pid.txt"), format!("{}\n", child.id()))?;
@@ -786,7 +830,8 @@ fn run_experiment(
             bundle.clone(),
         )
     });
-    let result;
+    // `mut`: the marker trigger assigns inside a loop over the two output streams.
+    let mut result;
     let marker_pattern = match &args.capture_on_line {
         Some(p) => Some(Regex::new(p).context("invalid --capture-on-line")?),
         None => None,
@@ -858,21 +903,37 @@ fn run_experiment(
             }
         }
         if let Some(pattern) = &marker_pattern {
-            let watch = marker_log.as_ref().unwrap_or(&stdout);
-            if let Ok(mut file) = File::open(watch) {
-                let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-                if len < marker_offset {
-                    marker_offset = 0;
+            // Both streams matter: a marker a workload writes to stderr is as much a fact as one on
+            // stdout, and watching only stdout lost it. An explicitly named log still wins.
+            if let Some(watch) = marker_log.as_ref() {
+                if let Ok(mut file) = File::open(watch) {
+                    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+                    if len < marker_offset {
+                        marker_offset = 0;
+                    }
+                    let _ = file.seek(SeekFrom::Start(marker_offset));
+                    let mut text = String::new();
+                    if file.read_to_string(&mut text).is_ok() {
+                        marker_offset = file.stream_position().unwrap_or(marker_offset);
+                        if pattern.is_match(&text) {
+                            fs::write(bundle.join("marker.txt"), "capture requested by --capture-on-line\n")?;
+                            result = "marker";
+                            break;
+                        }
+                    }
                 }
-                let _ = file.seek(SeekFrom::Start(marker_offset));
-                let mut text = String::new();
-                if file.read_to_string(&mut text).is_ok() {
-                    marker_offset = file.stream_position().unwrap_or(marker_offset);
-                    if pattern.is_match(&text) {
-                        fs::write(bundle.join("marker.txt"), "capture requested by --capture-on-line\n")?;
-                        result = "marker";
+            } else {
+                let mut fired = false;
+                for watch in [&stdout, &stderr] {
+                    if marker_seen(watch, pattern, &mut marker_offset)? {
+                        fired = true;
                         break;
                     }
+                }
+                if fired {
+                    fs::write(bundle.join("marker.txt"), "capture requested by --capture-on-line\n")?;
+                    result = "marker";
+                    break;
                 }
             }
         }
@@ -1150,6 +1211,9 @@ fn main() -> Result<ExitCode> {
         }
         return Ok(code);
     }
+    // The run/capture path announces its bundle before the payload starts, so the announcement is
+    // available for a hang instead of only for a finished run; do not print a second, later copy.
+    let announced_early = matches!(cli.command, RunnerCommand::Run(_) | RunnerCommand::Capture(_));
     let (bundle, result) = match cli.command {
         RunnerCommand::Run(args) => {
             let command = args.common.command.clone();
@@ -1226,7 +1290,9 @@ fn main() -> Result<ExitCode> {
             (PathBuf::from("."), "signaled")
         }
     };
-    println!("BUNDLE={}", bundle.display());
+    if !announced_early {
+        println!("BUNDLE={}", bundle.display());
+    }
     println!("RESULT={result}");
     if matches!(result, "exited" | "captured" | "signaled") {
         Ok(ExitCode::SUCCESS)
@@ -1266,9 +1332,26 @@ impl StateTrigger {
             .split_once('=')
             .with_context(|| format!("expected KEY=VALUE in --capture-on-state, got {expr:?}"))?;
         let kind = match key {
-            "state" => StateTriggerKind::State(value.to_owned()),
-            "wchan" => StateTriggerKind::Wchan(value.to_owned()),
-            "syscall" => StateTriggerKind::Syscall(value.to_owned()),
+            "state" => {
+                // A state letter nobody can match is a predicate that silently never fires.
+                let valid = ["R", "S", "D", "T", "t", "Z", "X", "x", "I", "W"];
+                if !valid.contains(&value) {
+                    bail!("--capture-on-state state={value:?} is not a process state letter; use one of R S D T t Z X x I W");
+                }
+                StateTriggerKind::State(value.to_owned())
+            }
+            "wchan" => {
+                if value.is_empty() {
+                    bail!("--capture-on-state wchan= is empty, so it would match any wchan");
+                }
+                StateTriggerKind::Wchan(value.to_owned())
+            }
+            "syscall" => {
+                if value.parse::<i64>().is_err() {
+                    bail!("--capture-on-state syscall={value:?} is not a number");
+                }
+                StateTriggerKind::Syscall(value.to_owned())
+            }
             "all-waiting" => StateTriggerKind::AllWaiting(
                 value
                     .parse()
@@ -1313,6 +1396,10 @@ impl StateTrigger {
                 // pipe_read while the linker runs), so a target with one thread is never "stuck"; the
                 // hang this catches is a workload whose WORKERS are parked.
                 if threads.len() < 2 {
+                    // The condition cannot hold, so the interval that was being timed is broken and
+                    // must restart: leaving it intact let a later multi-threaded wait inherit elapsed
+                    // time from before, i.e. report a duration that was not continuous.
+                    *all_waiting_since(pid) = None;
                     return None;
                 }
                 let all = threads.iter().all(|t| is_waiting(&t.state, &t.wchan));
