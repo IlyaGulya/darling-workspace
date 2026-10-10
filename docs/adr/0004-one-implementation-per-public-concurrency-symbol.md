@@ -63,10 +63,12 @@ observed case, while the dispatched implementation was.
 
 ## Rejected alternatives
 
-### Remove the stubs outright
+### Remove the stubs outright, without migrating their callers
 
-The emulation code calls these functions for its own bookkeeping; removing the definitions breaks its
-link. The defect is the symbol's visibility, not its existence.
+The emulation calls the lock for its own bookkeeping, so deleting the definitions alone breaks its
+link. Deleting them *after* every caller has moved to a private primitive is the selected fix, and the
+two must not be confused: removal without migration is a link error, or worse, a silent fall back to
+whichever library happens to define the name.
 
 ### Keep the weak stubs and rely on link order
 
