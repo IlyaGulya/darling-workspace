@@ -41,7 +41,7 @@ from typing import Any
 from west.commands import WestCommand
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from deploy_receipt import read_receipt, receipt_path, verify_receipt
+from deploy_receipt import read_receipt, receipt_path, stale_source_problems, verify_receipt
 from prefix_repair import PrefixBootPhase, prefix_boot_phase, prefix_boot_prerequisite_problems
 
 _EXTRA_PREFIX_DYLIBS = [
@@ -665,6 +665,8 @@ class DarlingDoctor(WestCommand):
         for note in notes:
             self._ok(note)
         for problem in problems:
+            self._problem(f"{problem.label}: {problem.message}")
+        for problem in stale_source_problems(payload):
             self._problem(f"{problem.label}: {problem.message}")
 
     def _check_baseline_historical(self, args):

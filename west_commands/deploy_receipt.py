@@ -197,6 +197,40 @@ class ReceiptProblem:
         self.message = message
 
 
+def stale_source_problems(receipt: dict[str, Any]) -> list[ReceiptProblem]:
+    """Report deployed files whose build source no longer matches the receipt.
+
+    A deploy copies bytes out of the build tree, and the build tree keeps moving. When a recorded
+    source exists but its current digest differs from the recorded one, the deployed chain and the
+    build it came from have diverged. MEASURED: after a targeted build the deployed chain stopped
+    booting (shellspawn never became ready) and no check named the artifact that had gone stale,
+    which cost a prefix recreation; the cure is a deploy from the current build, or a re-bootstrap,
+    which deploys a consistent set.
+    """
+    problems: list[ReceiptProblem] = []
+    for row in receipt.get("artifacts") or []:
+        if not isinstance(row, dict):
+            continue
+        source = row.get("source")
+        recorded = row.get("source_sha256")
+        if not source or not recorded:
+            continue
+        src = Path(str(source))
+        if not src.is_file():
+            continue
+        actual = sha256_file(src)
+        if actual != recorded:
+            problems.append(
+                ReceiptProblem(
+                    f"build source {src.name}",
+                    f"the build tree moved after this deploy: {src} is {actual[:12]} but the "
+                    f"receipt recorded {str(recorded)[:12]}; redeploy (west darling-build "
+                    f"--deploy) or re-bootstrap the prefix so the whole chain comes from one build",
+                )
+            )
+    return problems
+
+
 def verify_receipt(receipt: dict[str, Any]) -> tuple[list[ReceiptProblem], list[str]]:
     """Verify deployed bytes against the receipt.
 
