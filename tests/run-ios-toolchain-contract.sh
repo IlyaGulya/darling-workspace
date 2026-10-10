@@ -95,9 +95,19 @@ chmod +x "$probe_host"
 fail=0
 say() { printf '%s\n' "$*"; }
 
+# Optional run-wide environment for the guest probe (and, through the launcher, the server): one
+# whitespace-separated KEY=VAL per --env, the same contract run-ios-unfair-lock-contract.sh uses. This is
+# how a diagnostic that has to cover a whole run is armed, e.g. the op-ledger for a stalled T4 link:
+#   IOS_TOOLCHAIN_GUEST_ENV='DARLING_OP_LEDGER=1' bash tests/run-ios-toolchain-contract.sh
+guest_env=()
+for kv in ${IOS_TOOLCHAIN_GUEST_ENV:-}; do
+	guest_env+=(--env "$kv")
+done
+
 harness="$(bash "$boot_run" --prefix "$prefix" --wait "${IOS_TOOLCHAIN_WAIT:-120}" \
 	--marker 'IOS-TOOLCHAIN-PROBE-DONE' \
 	--marker 'IOS-TOOLCHAIN-LINK-DONE' \
+	${guest_env[@]+"${guest_env[@]}"} \
 	--cmd "/bin/bash /private/var/tmp/$(basename "$probe_host")" 2>&1)"
 printf '%s\n' "$harness" | grep -q 'VERDICT: PASS' || {
 	say "ios-toolchain: harness verdict was not PASS"
