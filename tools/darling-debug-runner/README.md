@@ -135,6 +135,36 @@ sample line, and every entry must have one, because a pattern that has drifted f
 live instrument as silent -- which happened twice in one session (`SEM-SITE` gained a `tcb=` field; the ring dump was
 rewritten from `trace-record` to `dtape.ering seq=`).
 
+## `diag evidence` — which bytes of a run's logs are actually that run's
+
+```
+scripts/dwdiag evidence --state-dir STATE [--json]
+```
+
+A census over the wrong log is worse than no census: an in-path instrument writes to the SAME fd as the measured
+output, so an unreadable or other-run log yields zeros that cannot be told from an instrument standing silent. The job
+launcher therefore writes a RUN MANIFEST at job start (`evidence-manifest` in the job state dir, keyed `start=`,
+`prefix=`, `file=PATH SIZE` per log), and `diag evidence` reports what the selection can and cannot read. The end of
+the run's window is derived from the `rc` file the launcher writes when it stops (the launcher records `start=` only).
+
+Exactly one state is reported, and it is machine-readable in `--json` as `state` (the human line prints the same
+state in caps, e.g. `EVIDENCE-STATE NO-EVIDENCE`):
+
+| state | meaning | may print `0`? |
+|---|---|---|
+| `measured` | every registered window was readable and complete | yes — the only state where an empty census is a measurement |
+| `partial` | a registered log was rotated/truncated: its recorded pre-run offset is past its current size, so none of its bytes are this run's | no |
+| `unavailable` | a registered log is missing or unreadable | no |
+| `no-evidence` | instrument lines exist, but only another run's (outside the window) | no |
+| `unscoped` | no manifest: nothing is guessed and no log is read | no |
+
+Selection is the manifest's job, and nothing else's: a registered file contributes from its recorded pre-run offset; a
+file that is NOT registered contributes only when its own timestamp falls inside the run's window (the run's own boot
+log is created after the manifest); the job's own `log` is always read from zero. `diag job` (`dwdiag job`) uses the
+same selection, prints the state first, and runs the instrument census only for `measured`/`partial` — for the other
+states a census would print zeros that cannot be told from silence. `tests/run-dwdiag-runner-tests-contract.sh` drives
+all five states against a throwaway mirror and fails if any is reported as a measured zero.
+
 ## The verdict reports the workload's own exit status
 
 A missing result line is not a hang. The guest command is wrapped so the guest shell prints `__DWDIAG_RC=$?`, and

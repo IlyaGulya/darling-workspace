@@ -5889,6 +5889,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Job(a) => run_job(a),
         DiagCommand::Courier(a) => run_courier(a),
         DiagCommand::Witness(a) => run_witness(a),
+        DiagCommand::Evidence(a) => run_evidence(a),
         DiagCommand::Prefix(a) => run_prefix(a),
         DiagCommand::Denials(a) => run_denials(a),
         DiagCommand::Trace(a) => run_trace(a),
@@ -6232,6 +6233,11 @@ pub enum DiagCommand {
     /// the failure this exists to catch: a guard that silently does nothing cannot be told from no guard at all, and a
     /// hand-written grep over one log finds a line but cannot tell you which of the other instruments never spoke.
     Witness(WitnessArgs),
+    /// Say what a finished run's instrument evidence IS before anything censuses it: which registered windows belong
+    /// to this run, what was truncated, rotated or unreadable, and which state the census below is in. It is the read
+    /// half of the run manifest `west-job.sh` writes at start, and it exists so an unreadable log is reported as
+    /// `unavailable`/`partial` rather than as an instrument that stayed silent.
+    Evidence(EvidenceArgs),
     /// Diagnose one finished run as a whole: census the instruments, say where it stopped, join the wait/wake
     /// vocabulary, look for a loop, then read a core or the kernel's report -- and report what the processes are
     /// doing now, per thread, with the kernel stacks when root is available. This exists so a job owner never has
@@ -7084,10 +7090,50 @@ fn job_prefix(args: &JobArgs, state_dir: &Path) -> Option<PathBuf> {
         .find_map(|w| w.strip_prefix("DPREFIX=").map(PathBuf::from))
 }
 
-/// The run manifest `west-job.sh` writes at job start: the prefix and every log that existed with the size it had.
+/// Say what a finished run's instrument evidence IS, before any census reads it.
+///
+/// WHY THIS IS A COMMAND. Every census in this file answers a question about a run; this one answers the question
+/// UNDER them -- "do I actually hold this run's bytes?" -- and it was previously answered implicitly, by whichever
+/// file a discovery heuristic happened to pick. A silent instrument and an unreadable log both end in an empty
+/// census, and a census of zero reads as "the instrument was silent": this prints `unavailable`, `partial`,
+/// `no-evidence` or `unscoped` so the two can never be confused again.
+#[derive(clap::Args, Debug)]
+pub struct EvidenceArgs {
+    /// State directory of a run (`west-job.sh start|status|follow` print it).
+    #[arg(long)]
+    pub state_dir: PathBuf,
+    /// One JSON object instead of the human lines.
+    #[arg(long)]
+    pub json: bool,
+}
+
+fn run_evidence(args: EvidenceArgs) -> Result<ExitCode> {
+    if !args.state_dir.is_dir() {
+        bail!("no state directory: {}", args.state_dir.display());
+    }
+    let report = select_evidence(&args.state_dir);
+    if args.json {
+        println!("{}", evidence_report_json(&report));
+    } else {
+        print_evidence_report(&report);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The run manifest `west-job.sh` writes at job start: the prefix, the run's start time, and every log that existed
+/// with the size it had.
+///
+/// WHY THE START IS A FIELD AND THE END IS DERIVED. The launcher records `start=` before the command runs; it does not
+/// write an end field, so the end of the window comes from the `rc` file the job writes when it stops (`end=` is parsed
+/// when a writer does record it, so a later launcher can tighten this without a reader change). Nothing here invents a
+/// second copy of state the job already owns.
 #[derive(Debug, Default)]
 struct EvidenceManifest {
     prefix: Option<PathBuf>,
+    /// Unix seconds when the job started, as the launcher recorded it.
+    start: Option<u64>,
+    /// Unix seconds when the job finished, when the writer recorded one.
+    end: Option<u64>,
     /// (path, size at start): reading a file from that offset is what makes a slice belong to this run.
     files: Vec<(PathBuf, u64)>,
 }
@@ -7099,6 +7145,10 @@ fn parse_evidence_manifest(text: &str) -> EvidenceManifest {
             if !v.is_empty() {
                 out.prefix = Some(PathBuf::from(v));
             }
+        } else if let Some(v) = line.strip_prefix("start=") {
+            out.start = v.trim().parse::<u64>().ok();
+        } else if let Some(v) = line.strip_prefix("end=") {
+            out.end = v.trim().parse::<u64>().ok();
         } else if let Some(rest) = line.strip_prefix("file=") {
             let mut it = rest.rsplitn(2, ' ');
             let size = it.next().and_then(|s| s.parse::<u64>().ok());
@@ -7116,193 +7166,351 @@ fn evidence_manifest(state_dir: &Path) -> Option<EvidenceManifest> {
     Some(parse_evidence_manifest(&text))
 }
 
-/// Collect this run's bytes from every log the manifest registered, each from the offset it had at job start,
-/// into one file, and say what was read. `None` means there is no manifest, so the caller must fall back and
-/// LABEL the fallback: a census that cannot tell which run it measured is worse than one that admits it.
-fn evidence_slices(state_dir: &Path, manifest: &EvidenceManifest) -> Option<PathBuf> {
-    let out_path = state_dir.join("instruments-sliced.log");
-    let mut out = String::new();
-    let mut total = 0usize;
-    // A log created DURING the run cannot be in a manifest written at its start, and the old selection found it
-    // by modification time, which also found other runs' files. Presence is the sound test: a file that exists now
-    // and was not registered did not exist then, so it belongs to this run and is read from zero.
-    // The job's OWN log is this run's primary evidence and is created after the manifest, so it is always read
-    // from zero. Without it the manifest mode below would return a slice that excluded the very output being
-    // diagnosed, which is how this fix first regressed the census to zero.
-    let mut entries: Vec<(PathBuf, u64, bool)> =
-        vec![(state_dir.join("log"), 0, true)];
-    entries.extend(manifest.files.iter().map(|(p, o)| (p.clone(), *o, false)));
+/// The five states a run's instrument evidence can be in, exactly one of which the selection reports. They exist
+/// because "the instrument was silent" and "I could not read the log" are different facts, and an in-path instrument
+/// writes to the SAME fd as the measured output, so a census over an unreadable log prints zeros that cannot be told
+/// from a measurement. Only `Measured` may print a zero, and only because every window it read was whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EvidenceState {
+    /// Every registered window was readable and complete -- the ONLY state in which an empty census is a measurement.
+    Measured,
+    /// A registered log was rotated or truncated: its recorded pre-run offset is beyond its current size, so none of
+    /// its bytes can be attributed to this run and the census is incomplete even when rows survive elsewhere.
+    Partial,
+    /// A registered log is missing or unreadable, so its window cannot be read at all.
+    Unavailable,
+    /// Instrument lines exist, but every one of them is from another run: nothing may contribute rows.
+    NoEvidence,
+    /// No run manifest: the evidence cannot be attributed to any run, so nothing is guessed and no row is produced.
+    Unscoped,
+}
+
+impl EvidenceState {
+    fn as_str(self) -> &'static str {
+        match self {
+            EvidenceState::Measured => "measured",
+            EvidenceState::Partial => "partial",
+            EvidenceState::Unavailable => "unavailable",
+            EvidenceState::NoEvidence => "no-evidence",
+            EvidenceState::Unscoped => "unscoped",
+        }
+    }
+
+    /// The name the human block prints, in the tool's `UNMEASURED`/`NO-EVIDENCE` style. `--json` carries `as_str`.
+    fn label(self) -> &'static str {
+        match self {
+            EvidenceState::Measured => "MEASURED",
+            EvidenceState::Partial => "PARTIAL",
+            EvidenceState::Unavailable => "UNAVAILABLE",
+            EvidenceState::NoEvidence => "NO-EVIDENCE",
+            EvidenceState::Unscoped => "UNSCOPED",
+        }
+    }
+
+    /// Whether a census over this run's slice may be printed at all. `partial` may be printed, but never read as
+    /// complete; nothing else has rows to census.
+    fn has_census(self) -> bool {
+        matches!(self, EvidenceState::Measured | EvidenceState::Partial)
+    }
+
+    /// Whether an empty census in this state is a measurement rather than a gap.
+    fn zero_is_measured(self) -> bool {
+        matches!(self, EvidenceState::Measured)
+    }
+}
+
+/// One file the selection considered, and what happened to it.
+#[derive(Debug, Clone)]
+struct EvidenceSource {
+    path: PathBuf,
+    /// `registered` (a manifest line) or `created-during-run` (the job's own log, or a file whose timestamp is inside
+    /// the run's window).
+    kind: &'static str,
+    offset: u64,
+    /// Size now, when the file could be stated at all.
+    size: Option<u64>,
+    read: u64,
+    /// `ok`, `truncated`, `missing` or `unreadable`.
+    status: &'static str,
+    reason: Option<String>,
+}
+
+/// What a run's instrument evidence IS, decided before anything censuses it.
+#[derive(Debug)]
+struct EvidenceReport {
+    state: EvidenceState,
+    state_dir: PathBuf,
+    instruments_log: PathBuf,
+    rows_bytes: u64,
+    sources: Vec<EvidenceSource>,
+    reasons: Vec<String>,
+}
+
+/// The run's window, from the manifest's `start=` and the `rc` the job writes when it stops. A file that is not
+/// registered is this run's only when its own timestamp falls inside this window; that, not presence, is what keeps a
+/// later run's or another prefix's log out of the slice.
+fn run_window(
+    state_dir: &Path,
+    manifest: &EvidenceManifest,
+) -> (Option<std::time::SystemTime>, Option<std::time::SystemTime>) {
+    let at = |secs: u64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+    let start = manifest.start.map(at);
+    let end = manifest
+        .end
+        .map(at)
+        .or_else(|| fs::metadata(state_dir.join("rc")).and_then(|m| m.modified()).ok());
+    (start, end)
+}
+
+/// The files a run's launcher registers from: the harness boot logs and the prefix's own tmp. Only the second set is
+/// ever scanned for another run's evidence -- the `/tmp` boot logs are shared by every run, and the manifest already
+/// records each one that existed at start.
+fn discovery_candidates(prefix: Option<&Path>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
     if let Ok(dir) = fs::read_dir("/tmp") {
         for e in dir.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            if !name.starts_with("darling-boot-") || !name.ends_with(".log") {
-                continue;
+            if name.starts_with("darling-boot-") && name.ends_with(".log") {
+                out.push(e.path());
             }
-            let path = e.path();
-            if manifest.files.iter().any(|(p, _)| *p == path) {
-                continue;
-            }
-            entries.push((path, 0, true));
         }
     }
-    if let Some(prefix) = &manifest.prefix {
-        let tmp = prefix.join("private/var/tmp");
-        if let Ok(dir) = fs::read_dir(&tmp) {
+    if let Some(prefix) = prefix {
+        if let Ok(dir) = fs::read_dir(prefix.join("private/var/tmp")) {
             for e in dir.flatten() {
-                let path = e.path();
-                if !e.metadata().map(|m| m.is_file()).unwrap_or(false) {
-                    continue;
+                if e.metadata().map(|m| m.is_file()).unwrap_or(false) {
+                    out.push(e.path());
                 }
-                if manifest.files.iter().any(|(p, _)| *p == path) {
-                    continue;
-                }
-                entries.push((path, 0, true));
             }
         }
     }
-    for (path, offset, created_during_run) in &entries {
+    out
+}
+
+fn mtime_of(path: &Path) -> Option<std::time::SystemTime> {
+    fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// Whether a file's own timestamp places it inside the run's window. With no recorded start, time cannot scope a file
+/// from below; with no recorded end the window is still open.
+fn inside_window(
+    t: Option<std::time::SystemTime>,
+    start: Option<std::time::SystemTime>,
+    end: Option<std::time::SystemTime>,
+) -> bool {
+    let Some(t) = t else { return false };
+    start.map(|s| t >= s).unwrap_or(true) && end.map(|e| t <= e).unwrap_or(true)
+}
+
+/// Whether a file's bytes hold at least one registered instrument line. Used ONLY to say that evidence exists
+/// somewhere other than this run's window -- never to contribute rows.
+fn holds_instrument_lines(path: &Path) -> bool {
+    match fs::read(path) {
+        Ok(bytes) => {
+            let text = String::from_utf8_lossy(&bytes).replace('\u{0}', "\n");
+            witness_census(&text).iter().any(|(_, n, _)| *n > 0)
+        }
+        Err(_) => false,
+    }
+}
+
+/// Decide which of this run's logs may contribute rows, concatenate the windows that may, and report the state.
+///
+/// This replaces two discovery paths that attributed other runs' output to the current one: the job log's final mtime
+/// plus a hardcoded tag list, and a scan of unregistered files by presence alone. Selection is now the manifest's job:
+/// a registered file contributes from its recorded pre-run offset; a file that is not registered contributes only when
+/// its timestamp is inside the run's window; a registered file whose offset no longer fits is `partial` and contributes
+/// nothing rather than being read from zero.
+fn select_evidence(state_dir: &Path) -> EvidenceReport {
+    let out_path = state_dir.join("instruments-sliced.log");
+    let mut report = EvidenceReport {
+        state: EvidenceState::Measured,
+        state_dir: state_dir.to_path_buf(),
+        instruments_log: out_path.clone(),
+        rows_bytes: 0,
+        sources: Vec::new(),
+        reasons: Vec::new(),
+    };
+    let Some(manifest) = evidence_manifest(state_dir) else {
+        report.state = EvidenceState::Unscoped;
+        report.reasons.push(format!(
+            "no evidence-manifest in {}: a run's instrument evidence cannot be attributed by guessing, so no log is read and no row is produced",
+            state_dir.display()
+        ));
+        fs::write(&out_path, "").ok();
+        return report;
+    };
+    let (start, end) = run_window(state_dir, &manifest);
+    // The job's OWN log is known by construction (it lives in the state dir the run owns) and is created after the
+    // manifest, so it is always read from zero and never time-scoped.
+    let mut entries: Vec<(PathBuf, u64, &'static str)> =
+        vec![(state_dir.join("log"), 0, "created-during-run")];
+    entries.extend(manifest.files.iter().map(|(p, o)| (p.clone(), *o, "registered")));
+    let mut foreign: Vec<PathBuf> = Vec::new();
+    for path in discovery_candidates(manifest.prefix.as_deref()) {
+        if entries.iter().any(|(p, _, _)| *p == path) {
+            continue;
+        }
+        if inside_window(mtime_of(&path), start, end) {
+            entries.push((path, 0, "created-during-run"));
+        } else if manifest.prefix.as_deref().map(|p| path.starts_with(p)).unwrap_or(false)
+            && holds_instrument_lines(&path)
+        {
+            foreign.push(path);
+        }
+    }
+    let (mut missing, mut unreadable, mut truncated) = (false, false, false);
+    let mut out = String::new();
+    for (path, offset, kind) in &entries {
         let (path, offset) = (path, *offset);
-        let bytes = match fs::read(path) {
-            Ok(b) => b,
-            Err(e) => {
-                println!("EVIDENCE-SOURCE {} UNREADABLE ({e})", path.display());
-                continue;
-            }
-        };
-        let from = (offset as usize).min(bytes.len());
-        let slice = &bytes[from..];
-        let text = String::from_utf8_lossy(slice).replace('\u{0}', "\n");
-        println!(
-            "EVIDENCE-SOURCE {} from={from} bytes={} (of {} now){}",
-            path.display(),
-            slice.len(),
-            bytes.len(),
-            if *created_during_run {
-                " created-during-this-run"
-            } else {
-                ""
-            }
-        );
-        total += slice.len();
-        out.push_str(&text);
-    }
-    if total == 0 {
-        println!(
-            "EVIDENCE-NO-DATA no registered log gained a byte in this run: the census below is empty because nothing was written, not because the instruments are silent"
-        );
-    }
-    fs::write(&out_path, out).ok()?;
-    Some(out_path)
-}
-
-fn job_instrument_log(state_dir: &Path, job_log: &Path) -> PathBuf {
-    if let Some(manifest) = evidence_manifest(state_dir) {
-        println!("EVIDENCE-MODE manifest ({} registered files)", manifest.files.len());
-        if let Some(sliced) = evidence_slices(state_dir, &manifest) {
-            return sliced;
-        }
-    }
-    println!(
-        "EVIDENCE-MODE guessed-mtime (no evidence-manifest in this job state: the selection below may include another run's output)"
-    );
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(entries) = fs::read_dir(state_dir.join("activity-logs.d")) {
-        for e in entries.flatten() {
-            let path = e.path();
-            let text = fs::read_to_string(&path).unwrap_or_default();
-            let text = text.replace('\u{0}', "\n");
-            for line in text.lines() {
-                if !line.is_empty() {
-                    candidates.push(PathBuf::from(line));
-                }
-            }
-        }
-    }
-    let job_mtime = fs::metadata(job_log).and_then(|m| m.modified()).ok();
-    let mut boots: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
-    if let Ok(entries) = fs::read_dir("/tmp") {
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if !name.starts_with("darling-boot-") || !name.ends_with(".log") {
-                continue;
-            }
-            if let Ok(m) = e.metadata().and_then(|m| m.modified()) {
-                boots.push((m, e.path()));
-            }
-        }
-    }
-    boots.sort_by(|a, b| b.0.cmp(&a.0));
-    for (mtime, path) in boots {
-        if let Some(jm) = job_mtime {
-            if mtime < jm {
-                continue;
-            }
-        }
-        candidates.push(path);
-    }
-    if let Some(prefix) = job_prefix(
-        &JobArgs {
-            state_dir: state_dir.to_path_buf(),
-            prefix: None,
-            json: false,
-            lines: 0,
-            step_timeout_seconds: 0,
-            pids: Vec::new(),
-        },
-        state_dir,
-    ) {
-        candidates.push(prefix.join("private/var/log/dserver.log"));
-        // The prefix's own run artifacts are where several workloads keep their guest output (a
-        // contract that redirects `darling shell` writes there, not into the harness log), and
-        // reading only the harness log made the census report zero instruments -- which reads like
-        // "nothing happened" when it means "looked in the wrong place".
-        let tmp = prefix.join("private/var/tmp");
-        let mut artifacts: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
-        if let Ok(entries) = fs::read_dir(&tmp) {
-            for e in entries.flatten() {
-                let path = e.path();
-                let meta = match e.metadata() {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
-                if !meta.is_file() {
+        match fs::read(path) {
+            Ok(bytes) => {
+                if *kind == "registered" && offset as usize > bytes.len() {
+                    truncated = true;
+                    report.reasons.push(format!(
+                        "registered log {} is truncated or rotated: its recorded pre-run offset {offset} is beyond its current size {}",
+                        path.display(),
+                        bytes.len()
+                    ));
+                    report.sources.push(EvidenceSource {
+                        path: path.clone(),
+                        kind,
+                        offset,
+                        size: Some(bytes.len() as u64),
+                        read: 0,
+                        status: "truncated",
+                        reason: Some(format!("recorded pre-run offset {offset} > current size {}", bytes.len())),
+                    });
                     continue;
                 }
-                if let Ok(mtime) = meta.modified() {
-                    if let Some(jm) = job_mtime {
-                        if mtime < jm {
-                            continue;
-                        }
-                    }
-                    artifacts.push((mtime, path));
-                }
+                let from = (offset as usize).min(bytes.len());
+                let slice = &bytes[from..];
+                out.push_str(&String::from_utf8_lossy(slice).replace('\u{0}', "\n"));
+                report.rows_bytes += slice.len() as u64;
+                report.sources.push(EvidenceSource {
+                    path: path.clone(),
+                    kind,
+                    offset,
+                    size: Some(bytes.len() as u64),
+                    read: slice.len() as u64,
+                    status: "ok",
+                    reason: None,
+                });
+            }
+            Err(e) => {
+                let status = if e.kind() == std::io::ErrorKind::NotFound {
+                    missing = true;
+                    "missing"
+                } else {
+                    unreadable = true;
+                    "unreadable"
+                };
+                report.reasons.push(format!("{kind} log {} cannot be read: {e}", path.display()));
+                report.sources.push(EvidenceSource {
+                    path: path.clone(),
+                    kind,
+                    offset,
+                    size: None,
+                    read: 0,
+                    status,
+                    reason: Some(e.to_string()),
+                });
             }
         }
-        artifacts.sort_by(|a, b| b.0.cmp(&a.0));
-        for (_, path) in artifacts {
-            candidates.push(path);
-        }
     }
-    for c in &candidates {
-        if let Ok(text) = fs::read_to_string(c) {
-            if text.lines().any(|l| {
-                // Every shipped instrument tag, not a guess at one of them: the lock probes emit
-                // `[ulk ...]`, the server ulock probes `[ulock-...]`/`[park...]`, the plane `[ople ...]`
-                // and `[srv-...]`/`[pc-...]`. A tag left out here makes a log full of evidence read as
-                // "no instruments", which is the worst outcome this discovery can produce.
-                ["[ulk", "[ulock", "[park", "[ople", "[srv-", "[pc-", "[dthread", "[bsc", "[tc-tramp", "[dwdiag-env"]
-                    .iter()
-                    .any(|tag| l.starts_with(tag))
-            }) {
-                return c.clone();
-            }
-        }
+    for path in &foreign {
+        report.reasons.push(format!(
+            "instrument lines exist only in {}, which is outside this run's window: they belong to another run",
+            path.display()
+        ));
     }
-    job_log.to_path_buf()
+    report.state = if missing || unreadable {
+        EvidenceState::Unavailable
+    } else if truncated {
+        EvidenceState::Partial
+    } else if report.rows_bytes == 0 && !foreign.is_empty() {
+        EvidenceState::NoEvidence
+    } else {
+        EvidenceState::Measured
+    };
+    fs::write(&out_path, out).ok();
+    report
 }
 
-fn newest_core_since(dir: &Path, job_log: &Path) -> Option<PathBuf> {
-    let job_mtime = fs::metadata(job_log).and_then(|m| m.modified()).ok()?;
+/// The human block for one evidence selection: the state first, then one line per source with its reason.
+fn print_evidence_report(r: &EvidenceReport) {
+    let zero = if r.rows_bytes == 0 {
+        if r.state.zero_is_measured() {
+            " rows=0 measured-zero (the only state where an empty census is a measurement)"
+        } else {
+            " rows=0 NOT-A-MEASUREMENT (the census below must not be read as an instrument standing silent)"
+        }
+    } else {
+        ""
+    };
+    println!(
+        "EVIDENCE-STATE {} state_dir={} instruments_log={}{}",
+        r.state.label(),
+        r.state_dir.display(),
+        r.instruments_log.display(),
+        zero
+    );
+    for s in &r.sources {
+        println!(
+            "EVIDENCE-SOURCE {} kind={} offset={} size={} read={} status={}{}",
+            s.path.display(),
+            s.kind,
+            s.offset,
+            s.size.map(|v| v.to_string()).unwrap_or_else(|| "absent".to_string()),
+            s.read,
+            s.status,
+            s.reason.as_ref().map(|x| format!(" reason={x}")).unwrap_or_default()
+        );
+    }
+    for reason in &r.reasons {
+        println!("EVIDENCE-REASON {reason}");
+    }
+}
+
+fn evidence_report_json(r: &EvidenceReport) -> String {
+    let mut obj = String::from("{");
+    obj.push_str(&format!("\"state\":\"{}\",", r.state.as_str()));
+    obj.push_str(&format!("\"state_dir\":\"{}\",", jesc(&r.state_dir.display().to_string())));
+    obj.push_str(&format!("\"instruments_log\":\"{}\",", jesc(&r.instruments_log.display().to_string())));
+    obj.push_str(&format!("\"rows_bytes\":{},", r.rows_bytes));
+    obj.push_str(&format!("\"zero_is_measured\":{},", r.state.zero_is_measured()));
+    obj.push_str("\"sources\":[");
+    for (i, s) in r.sources.iter().enumerate() {
+        if i > 0 {
+            obj.push(',');
+        }
+        obj.push_str(&format!(
+            "{{\"path\":\"{}\",\"kind\":\"{}\",\"offset\":{},\"size\":{},\"read\":{},\"status\":\"{}\",\"reason\":{}}}",
+            jesc(&s.path.display().to_string()),
+            s.kind,
+            s.offset,
+            s.size.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string()),
+            s.read,
+            s.status,
+            s.reason.as_ref().map(|x| format!("\"{}\"", jesc(x))).unwrap_or_else(|| "null".to_string())
+        ));
+    }
+    obj.push_str("],\"reasons\":[");
+    for (i, reason) in r.reasons.iter().enumerate() {
+        if i > 0 {
+            obj.push(',');
+        }
+        obj.push_str(&format!("\"{}\"", jesc(reason)));
+    }
+    obj.push_str("]}");
+    obj
+}
+
+/// The newest core written inside the run's window. It is scoped by the window the manifest records, not by the job
+/// log's final mtime: an earlier run's core sits in the same directory and can be newer than a later job's log, which
+/// is how another run's core became this run's evidence.
+fn newest_core_since(dir: &Path, since: Option<std::time::SystemTime>) -> Option<PathBuf> {
+    let since = since?;
     let mut cores: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
     for e in fs::read_dir(dir).ok()?.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
@@ -7316,7 +7524,7 @@ fn newest_core_since(dir: &Path, job_log: &Path) -> Option<PathBuf> {
     cores.sort_by(|a, b| b.0.cmp(&a.0));
     cores
         .into_iter()
-        .find(|(m, _)| *m >= job_mtime)
+        .find(|(m, _)| *m >= since)
         .map(|(_, p)| p)
 }
 
@@ -7332,22 +7540,49 @@ fn run_job(args: JobArgs) -> Result<ExitCode> {
     let exe = std::env::current_exe().context("resolving this binary")?;
     let rc = fs::read_to_string(state_dir.join("rc")).ok().map(|s| s.trim().to_string());
     let prefix = job_prefix(&args, &state_dir);
-    let instr_log = job_instrument_log(&state_dir, &job_log);
+    let evidence = select_evidence(&state_dir);
+    let instr_log = evidence.instruments_log.clone();
+    let manifest = evidence_manifest(&state_dir);
+    let manifest_start = manifest.as_ref().and_then(|m| run_window(&state_dir, m).0);
+    let core_since = manifest_start.or_else(|| fs::metadata(&job_log).and_then(|m| m.modified()).ok());
+    let core_window_note = if manifest_start.is_none() {
+        Some("core window scoped by the job log's mtime: the manifest records no run start".to_string())
+    } else {
+        None
+    };
     let cores_dir = std::env::var("DWDIAG_CORES_DIR").unwrap_or_else(|_| "/tmp/t4cores".to_string());
     let cores_dir = PathBuf::from(cores_dir);
 
     let mut steps: Vec<JobStep> = Vec::new();
-    let mut step = |label: &str, argv: Vec<String>| {
+    let step = |label: &str, argv: Vec<String>| {
         job_step(&exe, label, &argv, args.lines, args.step_timeout_seconds)
     };
 
-    steps.push(step("witness", vec!["diag".into(), "witness".into(), "--log".into(), instr_log.display().to_string()]));
+    // A census over a log this run does not own prints zeros, and a zero cannot be told from an instrument standing
+    // silent. So the census runs only when the selection says the run's own window was readable: `partial` gets one
+    // that is labelled incomplete, and `unavailable`/`no-evidence`/`unscoped` get no census at all.
+    let mut evidence_note: Option<String> = None;
+    if evidence.state.has_census() {
+        steps.push(step("witness", vec!["diag".into(), "witness".into(), "--log".into(), instr_log.display().to_string()]));
+        steps.push(step("waits", vec!["diag".into(), "waits".into(), "--log".into(), instr_log.display().to_string()]));
+        if evidence.state == EvidenceState::Partial {
+            evidence_note = Some(format!(
+                "instrument census is PARTIAL and must not be read as complete: {}",
+                evidence.reasons.first().map(|s| s.as_str()).unwrap_or("a registered window is incomplete")
+            ));
+        }
+    } else {
+        evidence_note = Some(format!(
+            "instrument census NOT RUN: evidence state is {} -- {} (a census would print zeros that cannot be told from a measurement)",
+            evidence.state.as_str(),
+            evidence.reasons.first().map(|s| s.as_str()).unwrap_or("no reason recorded")
+        ));
+    }
     steps.push(step("progress", vec!["diag".into(), "progress".into(), "--log".into(), job_log.display().to_string()]));
-    steps.push(step("waits", vec!["diag".into(), "waits".into(), "--log".into(), instr_log.display().to_string()]));
     steps.push(step("loops", vec!["diag".into(), "loops".into(), "--log".into(), job_log.display().to_string()]));
 
     let mut core_note;
-    if let Some(core) = newest_core_since(&cores_dir, &job_log) {
+    if let Some(core) = newest_core_since(&cores_dir, core_since) {
         core_note = None;
         steps.push(step(
             "core",
@@ -7391,6 +7626,13 @@ fn run_job(args: JobArgs) -> Result<ExitCode> {
                     "DIAG-NOTE {dropped} kernel-log row(s) with pid < {job_pid} (the job's own command pid) were dropped: they are older runs, not this failure"
                 ));
             }
+        } else {
+            // Without this run's command pid, a kernel-log row cannot be attributed to it: the log spans the whole
+            // boot, so earlier runs' rows would be reported as this failure's. Refuse the rows rather than attribute
+            // them, exactly as the instrument census refuses an unowned log.
+            trap_step.output = vec![
+                "DIAG-NOTE kernel-log rows are NOT scoped: this job state records no command-pid, so a row's pid cannot be compared with this run's; no row is shown rather than another run's being attributed to this one".to_string(),
+            ];
         }
         steps.push(trap_step);
     }
@@ -7474,6 +7716,10 @@ fn run_job(args: JobArgs) -> Result<ExitCode> {
         obj.push_str(&format!("\"rc\":{},", rc.as_deref().unwrap_or("null")));
         obj.push_str(&format!("\"job_log\":\"{}\",", jesc(&job_log.display().to_string())));
         obj.push_str(&format!("\"instrument_log\":\"{}\",", jesc(&instr_log.display().to_string())));
+        obj.push_str(&format!("\"evidence_state\":\"{}\",", evidence.state.as_str()));
+        obj.push_str(&format!("\"evidence_note\":{},", evidence_note.as_ref().map(|n| format!("\"{}\"", jesc(n))).unwrap_or_else(|| "null".into())));
+        obj.push_str(&format!("\"evidence_report\":{},", evidence_report_json(&evidence)));
+        obj.push_str(&format!("\"core_window_note\":{},", core_window_note.as_ref().map(|n| format!("\"{}\"", jesc(n))).unwrap_or_else(|| "null".into())));
         match &prefix {
             Some(p) => obj.push_str(&format!("\"prefix\":\"{}\",", jesc(&p.display().to_string()))),
             None => obj.push_str("\"prefix\":null,"),
@@ -7514,6 +7760,13 @@ fn run_job(args: JobArgs) -> Result<ExitCode> {
         println!("DIAG-RC rc={rc}");
     }
     println!("DIAG-LOGS job={} instruments={}", job_log.display(), instr_log.display());
+    print_evidence_report(&evidence);
+    if let Some(note) = &evidence_note {
+        println!("DIAG-NOTE {note}");
+    }
+    if let Some(note) = &core_window_note {
+        println!("DIAG-NOTE {note}");
+    }
     if let Some(note) = core_note {
         println!("DIAG-NOTE {note}");
     }
@@ -8311,12 +8564,43 @@ mod core_lock_tests {
 mod evidence_manifest_tests {
     use super::*;
 
+    /// A line the first registered instrument matches, so "evidence exists" is decided by the census's own registry
+    /// and not by a second hand-written tag list.
+    const INSTRUMENT_LINE: &str = "[ulock-wait-park] obj=0x1000 op=wait owner_tid=2 waiter_tid=3\n";
+
+    /// A fixture state dir whose manifest window is fixed in the year 2000, so every real `/tmp/darling-boot-*.log`
+    /// on this host is outside the window and cannot silently enter the slice.
+    fn fixture(name: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("dwdiag-evidence-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let state = root.join("state");
+        let prefix = root.join("prefix");
+        fs::create_dir_all(&state).unwrap();
+        fs::create_dir_all(prefix.join("private/var/tmp")).unwrap();
+        (state, prefix)
+    }
+
+    fn manifest(state: &Path, prefix: &Path, entries: &[(&Path, u64)]) {
+        let mut text = String::from("version=1\nstart=946684800\nend=946771200\n");
+        text.push_str(&format!("prefix={}\n", prefix.display()));
+        for (p, off) in entries {
+            text.push_str(&format!("file={} {off}\n", p.display()));
+        }
+        fs::write(state.join("evidence-manifest"), text).unwrap();
+    }
+
+    fn job_log(state: &Path, text: &str) {
+        fs::write(state.join("log"), text).unwrap();
+    }
+
     #[test]
-    fn parses_the_prefix_and_every_registered_file_with_its_offset() {
+    fn parses_the_prefix_start_end_and_every_registered_file_with_its_offset() {
         let m = parse_evidence_manifest(
-            "version=1\nstart=1791645300\nprefix=/p/prefix-ios\nfile=/tmp/darling-boot-032645-2125225.log 192767\nfile=/p/prefix-ios/private/var/log/dserver.log 0\n",
+            "version=1\nstart=1791645300\nend=1791649999\nprefix=/p/prefix-ios\nfile=/tmp/darling-boot-032645-2125225.log 192767\nfile=/p/prefix-ios/private/var/log/dserver.log 0\n",
         );
         assert_eq!(m.prefix, Some(PathBuf::from("/p/prefix-ios")));
+        assert_eq!(m.start, Some(1791645300));
+        assert_eq!(m.end, Some(1791649999));
         assert_eq!(m.files.len(), 2);
         assert_eq!(m.files[0].1, 192767);
         assert_eq!(m.files[0].0, PathBuf::from("/tmp/darling-boot-032645-2125225.log"));
@@ -8340,5 +8624,150 @@ mod evidence_manifest_tests {
         fs::write(dir.join("evidence-manifest"), "version=1\n").unwrap();
         assert!(evidence_manifest(&dir).is_some());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn measured_is_the_only_state_where_an_empty_window_is_a_measurement() {
+        let (state, prefix) = fixture("measured-zero");
+        let reg = state.join("reg.log");
+        fs::write(&reg, "").unwrap();
+        manifest(&state, &prefix, &[(&reg, 0)]);
+        job_log(&state, "");
+        let r = select_evidence(&state);
+        assert_eq!(r.state, EvidenceState::Measured);
+        assert!(r.reasons.is_empty(), "a complete window needs no excuse: {:?}", r.reasons);
+        assert_eq!(r.rows_bytes, 0, "an empty window that WAS read is the only zero that may be printed");
+        assert!(r.state.zero_is_measured());
+    }
+
+    #[test]
+    fn a_window_with_rows_is_measured_and_contributes_them() {
+        let (state, prefix) = fixture("measured-rows");
+        let reg = state.join("reg.log");
+        fs::write(&reg, format!("old\n{INSTRUMENT_LINE}")).unwrap();
+        manifest(&state, &prefix, &[(&reg, 0)]);
+        job_log(&state, "");
+        let r = select_evidence(&state);
+        assert_eq!(r.state, EvidenceState::Measured);
+        assert!(r.rows_bytes > 0);
+        assert_eq!(r.state.as_str(), "measured");
+    }
+
+    #[test]
+    fn only_the_bytes_after_the_recorded_offset_are_this_runs() {
+        let (state, prefix) = fixture("offset-slice");
+        let reg = state.join("reg.log");
+        fs::write(&reg, format!("another run's line\n{INSTRUMENT_LINE}")).unwrap();
+        let offset = "another run's line\n".len() as u64;
+        manifest(&state, &prefix, &[(&reg, offset)]);
+        job_log(&state, "");
+        let slice = fs::read_to_string(select_evidence(&state).instruments_log).unwrap();
+        assert_eq!(slice, INSTRUMENT_LINE, "the pre-run bytes must not reach the census");
+    }
+
+    #[test]
+    fn a_truncated_registered_log_is_partial_and_contributes_nothing() {
+        let (state, prefix) = fixture("truncated");
+        let reg = state.join("reg.log");
+        fs::write(&reg, "short\n").unwrap();
+        manifest(&state, &prefix, &[(&reg, 500)]);
+        job_log(&state, "");
+        let r = select_evidence(&state);
+        assert_eq!(r.state, EvidenceState::Partial, "a rotation must not read from zero");
+        assert_eq!(r.rows_bytes, 0);
+        assert!(!r.state.zero_is_measured(), "a truncated window must never be a measured zero");
+        assert!(r.reasons.iter().any(|x| x.contains("truncated or rotated")), "{:?}", r.reasons);
+    }
+
+    #[test]
+    fn a_missing_registered_log_is_unavailable() {
+        let (state, prefix) = fixture("missing");
+        let gone = state.join("gone.log");
+        manifest(&state, &prefix, &[(&gone, 0)]);
+        job_log(&state, "");
+        let r = select_evidence(&state);
+        assert_eq!(r.state, EvidenceState::Unavailable);
+        assert_eq!(r.rows_bytes, 0);
+        assert!(!r.state.zero_is_measured());
+    }
+
+    #[test]
+    fn an_unreadable_registered_log_is_unavailable() {
+        let (state, prefix) = fixture("unreadable");
+        let dir = state.join("not-a-file.log");
+        fs::create_dir(&dir).unwrap();
+        manifest(&state, &prefix, &[(&dir, 0)]);
+        job_log(&state, "");
+        let r = select_evidence(&state);
+        assert_eq!(r.state, EvidenceState::Unavailable, "an unreadable log is not an empty one");
+        assert!(!r.state.zero_is_measured());
+    }
+
+    #[test]
+    fn evidence_only_from_another_run_is_no_evidence_not_a_zero() {
+        let (state, prefix) = fixture("foreign");
+        let reg = state.join("reg.log");
+        fs::write(&reg, "").unwrap();
+        manifest(&state, &prefix, &[(&reg, 0)]);
+        job_log(&state, "");
+        // The prefix's own tmp holds a log written outside this run's window (its mtime is now, the window is 2000).
+        let foreign = prefix.join("private/var/tmp/other-run.log");
+        fs::write(&foreign, INSTRUMENT_LINE).unwrap();
+        let r = select_evidence(&state);
+        assert_eq!(r.state, EvidenceState::NoEvidence);
+        assert_eq!(r.rows_bytes, 0, "the other run's rows must not contribute");
+        assert!(!r.state.zero_is_measured());
+        assert!(r.reasons.iter().any(|x| x.contains("another run")), "{:?}", r.reasons);
+    }
+
+    #[test]
+    fn a_log_created_inside_the_run_window_does_contribute() {
+        let (state, prefix) = fixture("in-window");
+        let reg = state.join("reg.log");
+        fs::write(&reg, "").unwrap();
+        manifest(&state, &prefix, &[(&reg, 0)]);
+        job_log(&state, "");
+        let fresh = prefix.join("private/var/tmp/fresh.log");
+        fs::write(&fresh, INSTRUMENT_LINE).unwrap();
+        let inside = std::time::UNIX_EPOCH + std::time::Duration::from_secs(946684800 + 60);
+        fs::File::options()
+            .write(true)
+            .open(&fresh)
+            .unwrap()
+            .set_modified(inside)
+            .unwrap();
+        let r = select_evidence(&state);
+        assert_eq!(r.state, EvidenceState::Measured);
+        assert!(r.rows_bytes > 0);
+        assert!(r.sources.iter().any(|s| s.kind == "created-during-run" && s.read > 0));
+    }
+
+    #[test]
+    fn no_manifest_is_unscoped_and_reads_nothing() {
+        let (state, _prefix) = fixture("unscoped");
+        job_log(&state, INSTRUMENT_LINE);
+        let r = select_evidence(&state);
+        assert_eq!(r.state, EvidenceState::Unscoped);
+        assert_eq!(r.rows_bytes, 0, "without a manifest nothing is guessed");
+        assert_eq!(fs::read_to_string(&r.instruments_log).unwrap(), "");
+    }
+
+    #[test]
+    fn the_five_states_are_pairwise_distinct() {
+        let all = [
+            EvidenceState::Measured,
+            EvidenceState::Partial,
+            EvidenceState::Unavailable,
+            EvidenceState::NoEvidence,
+            EvidenceState::Unscoped,
+        ];
+        let mut names: Vec<&str> = all.iter().map(|s| s.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), 5, "each evidence state must print its own name");
+        assert_ne!(EvidenceState::Partial.as_str(), EvidenceState::Unavailable.as_str());
+        assert_ne!(EvidenceState::Unavailable.as_str(), EvidenceState::NoEvidence.as_str());
+        assert!(EvidenceState::Partial.has_census(), "partial keeps a labelled census");
+        assert!(!EvidenceState::Unavailable.has_census());
     }
 }

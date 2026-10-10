@@ -1,11 +1,178 @@
 #!/usr/bin/env bash
-# The vendored diagnostics tool's own tests: the instrument-registry census (a registered instrument whose
-# emitter changed format must fail here, not silently empty a report) and the deploy-receipt verdict merge.
+# The vendored diagnostics tool's own tests, plus an EXECUTABLE TRUTH TABLE over the five states a run's instrument
+# evidence can be in: measured, partial, unavailable, no-evidence, unscoped.
 #
-# WHY A CONTRACT: these tests existed and NOTHING ran them, so one of them was red (fourteen registered
-# instruments had no sample line, and the census could not notice) -- a contract that nothing runs cannot fail.
+# WHY A CONTRACT: these tests existed and NOTHING ran them, so one of them was red (fourteen registered instruments
+# had no sample line, and the census could not notice) -- a contract that nothing runs cannot fail.
+#
+# WHY THE TRUTH TABLE: an in-path instrument writes to the SAME fd as the measured output, so a census over a log the
+# run does not own prints zeros that cannot be told from an instrument standing silent. The runner therefore selects a
+# run's evidence from the RUN MANIFEST the launcher writes at job start (prefix, start/end, every log with its pre-run
+# size) and reports which state it reached. This table drives the real CLI against a throwaway mirror: no real prefix,
+# no guest boot. It FAILS if a state is reported as a measured zero, and if a state is not distinguished from its
+# neighbour (partial vs unavailable vs no-evidence).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-exec env CARGO_NET_OFFLINE=true cargo test --offline --locked \
-  --manifest-path tools/darling-debug-runner/Cargo.toml
+ROOT=$PWD
+CRATE=tools/darling-debug-runner
+export CARGO_NET_OFFLINE=true
+
+# 1. The crate's own tests (the instrument-registry census and the deploy-receipt verdict merge).
+cargo test --offline --locked --manifest-path "$CRATE/Cargo.toml"
+
+# 2. The binary the truth table drives. It is the SAME crate the contract tests; the doc/CLI ship together.
+cargo build --offline --locked --manifest-path "$CRATE/Cargo.toml"
+BIN="$ROOT/$CRATE/target/debug/darling-debug-runner"
+[ -x "$BIN" ] || { echo "contract: no binary at $BIN" >&2; exit 3; }
+
+MIRROR=$(mktemp -d /tmp/dwdiag-evidence-contract-XXXXXX)
+trap 'rm -rf "$MIRROR"' EXIT
+
+# The fixture window is fixed in the year 2000 so every real /tmp/darling-boot-*.log on this host is OUTSIDE it: the
+# table must not depend on what other runs happen to have left behind.
+START=946684800
+END=946771200
+INSTRUMENT_LINE='[ulock-wait-park] obj=0x1000 op=wait owner_tid=2 waiter_tid=3'
+
+fixture() { # name -> $MIRROR/<name>/{state,prefix/private/var/tmp}
+	local d="$MIRROR/$1"
+	mkdir -p "$d/state" "$d/prefix/private/var/tmp"
+	: >"$d/state/log"
+	printf '%s' "$d"
+}
+
+manifest() { # dir, then "path offset" per registered log
+	local d=$1
+	shift
+	{
+		printf 'version=1\nstart=%s\nend=%s\nprefix=%s\n' "$START" "$END" "$d/prefix"
+		local entry
+		for entry in "$@"; do
+			printf 'file=%s\n' "$entry"
+		done
+	} >"$d/state/evidence-manifest"
+}
+
+state_of() { printf '%s' "$1" | grep -oE '"state":"[^"]+"' | head -1 | cut -d'"' -f4; }
+rows_of() { printf '%s' "$1" | grep -oE '"rows_bytes":[0-9]+' | head -1 | cut -d: -f2; }
+zero_measured() { printf '%s' "$1" | grep -oE '"zero_is_measured":(true|false)' | head -1 | cut -d: -f2; }
+
+declare -a SEEN_STATES=()
+declare -a SEEN_NAMES=()
+declare -a SEEN_ROWS=()
+declare -a SEEN_ZERO=()
+declare -a TESTED_NAMES=()
+declare -a TESTED_STATES=()
+
+fail() { printf 'TRUTH-TABLE FAIL: %s\n' "$*" >&2; exit 1; }
+
+run_case() { # fixture-dir-name expected-state expected-rows-mode(any|zero)
+	local name=$1 expected=$2 rows_mode=$3
+	local json got rows zm
+	json=$("$BIN" diag evidence --state-dir "$MIRROR/$name/state" --json)
+	got=$(state_of "$json")
+	rows=$(rows_of "$json")
+	zm=$(zero_measured "$json")
+	[ -n "$got" ] || fail "$name: no state in the JSON: $json"
+	[ -n "$rows" ] || fail "$name: no rows_bytes in the JSON: $json"
+	printf 'CASE %-22s state=%-12s rows_bytes=%-6s zero_is_measured=%s expected=%s\n' \
+		"$name" "$got" "$rows" "$zm" "$expected"
+	[ "$got" = "$expected" ] || fail "$name: reported state '$got', expected '$expected'"
+	if [ "$rows_mode" = zero ]; then
+		[ "$rows" = 0 ] || fail "$name: expected a measured zero (rows_bytes=0), got $rows"
+	fi
+	# The zero rule: `zero_is_measured` may be true ONLY in the measured state.
+	if [ "$zm" = true ] && [ "$got" != measured ]; then
+		fail "$name: state '$got' was reported as a measured zero"
+	fi
+	if [ "$rows" = 0 ] && [ "$got" != measured ] && [ "$zm" = true ]; then
+		fail "$name: an empty census in state '$got' was reported as a measured zero"
+	fi
+	SEEN_NAMES+=("$name"); SEEN_STATES+=("$got"); SEEN_ROWS+=("$rows"); SEEN_ZERO+=("$zm")
+	TESTED_NAMES+=("$name"); TESTED_STATES+=("$got")
+}
+
+# --- fixture 1: readable + scoped + complete, nothing written -> the ONLY state that may print 0 ---------------
+d=$(fixture measured-zero)
+: >"$d/state/reg.log"
+manifest "$d" "$d/state/reg.log 0"
+run_case measured-zero measured zero
+
+# --- fixture 2: readable + scoped + complete, rows present ------------------------------------------------------
+d=$(fixture measured-rows)
+printf 'pre-run noise\n%s\n' "$INSTRUMENT_LINE" >"$d/state/reg.log"
+manifest "$d" "$d/state/reg.log 0"
+run_case measured-rows measured any
+# The run's own bytes reach the slice (this is what the census then reads).
+grep -aq 'ulock-wait-park' "$MIRROR/measured-rows/state/instruments-sliced.log" \
+	|| fail "measured-rows: the run's own instrument line is missing from the slice"
+
+# --- fixture 3: recorded pre-run offset is past the current size -> truncated/rotated -> partial ----------------
+d=$(fixture truncated)
+printf 'short\n' >"$d/state/reg.log"
+manifest "$d" "$d/state/reg.log 500"
+run_case truncated partial zero
+grep -aq 'EVIDENCE-STATE PARTIAL' <("$BIN" diag evidence --state-dir "$d/state") \
+	|| fail "truncated: the human output does not name the partial state"
+if [ "$(rows_of "$( "$BIN" diag evidence --state-dir "$d/state" --json)")" != 0 ]; then
+	fail "truncated: a truncated window produced rows (it must contribute none)"
+fi
+
+# --- fixture 4: a registered log is missing -> unavailable ------------------------------------------------------
+d=$(fixture missing)
+manifest "$d" "$d/state/gone.log 0"
+run_case missing unavailable zero
+
+# --- fixture 5: a registered log is unreadable (a directory, so this is root-proof) -> unavailable --------------
+d=$(fixture unreadable)
+mkdir "$d/state/not-a-file.log"
+manifest "$d" "$d/state/not-a-file.log 0"
+run_case unreadable unavailable zero
+
+# --- fixture 6: instrument lines exist, but only another run's -> NO-EVIDENCE -----------------------------------
+d=$(fixture foreign-only)
+: >"$d/state/reg.log"
+manifest "$d" "$d/state/reg.log 0"
+printf '%s\n' "$INSTRUMENT_LINE" >"$d/prefix/private/var/tmp/other-run.log"
+run_case foreign-only no-evidence zero
+# The stale/other-run log must NOT contribute a single row to this run's slice.
+if grep -aq 'ulock-wait-park' "$MIRROR/foreign-only/state/instruments-sliced.log"; then
+	fail "foreign-only: another run's instrument line reached this run's slice"
+fi
+
+# --- fixture 7: no manifest at all -> unscoped, and nothing is guessed ------------------------------------------
+d=$(fixture unscoped)
+printf '%s\n' "$INSTRUMENT_LINE" >"$d/state/reg.log"
+run_case unscoped unscoped zero
+if [ -s "$MIRROR/unscoped/state/instruments-sliced.log" ]; then
+	fail "unscoped: without a manifest the slice must be empty, not a guessed log"
+fi
+
+# --- the states must be distinguishable, and every one of the five must be exercised ----------------------------
+distinct=$(printf '%s\n' "${SEEN_STATES[@]}" | sort -u | wc -l)
+printf 'STATES observed=%s distinct=%s\n' "${SEEN_STATES[*]}" "$distinct"
+[ "$distinct" -eq 5 ] || fail "the table did not distinguish five states (saw $distinct)"
+
+i=0
+for name in "${SEEN_NAMES[@]}"; do
+	got=${SEEN_STATES[$i]}
+	rows=${SEEN_ROWS[$i]}
+	# A zero census is a measurement in NO state but `measured`, whatever the cause.
+	if [ "$rows" = 0 ] && [ "$got" != measured ]; then
+		printf 'ZERO-RULE %-22s state=%-12s rows=0 -> NOT a measurement\n' "$name" "$got"
+	else
+		printf 'ZERO-RULE %-22s state=%-12s rows=%s\n' "$name" "$got" "$rows"
+	fi
+	i=$((i + 1))
+done
+
+# Neighbour distinction: partial vs unavailable vs no-evidence must be three different strings.
+p=$(state_of "$("$BIN" diag evidence --state-dir "$MIRROR/truncated/state" --json)")
+u=$(state_of "$("$BIN" diag evidence --state-dir "$MIRROR/missing/state" --json)")
+n=$(state_of "$("$BIN" diag evidence --state-dir "$MIRROR/foreign-only/state" --json)")
+[ "$p" != "$u" ] || fail "partial and unavailable are not distinguished (both $p)"
+[ "$u" != "$n" ] || fail "unavailable and no-evidence are not distinguished (both $u)"
+[ "$p" != "$n" ] || fail "partial and no-evidence are not distinguished (both $p)"
+
+printf 'EVIDENCE-TRUTH-TABLE PASS cases=%s states=%s\n' "${#SEEN_NAMES[@]}" "$distinct"
