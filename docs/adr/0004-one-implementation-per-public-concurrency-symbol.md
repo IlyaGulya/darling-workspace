@@ -57,6 +57,25 @@ The invariant from ADR 0002 survives and is unaffected: a nonzero owner token be
 execution still has to hold. What changes is the owner of the fix: publication was never broken in the
 observed case, while the dispatched implementation was.
 
+## A deliberate shim library is a third case
+
+A library whose whole purpose is to stand in for something Darling does not implement will hold **strong, silent
+no-ops under public names** (Darling's `libsystem_duct` is the worked example). That is neither "private" nor
+"fails loudly", and forcing it into either is wrong: making it private breaks its real consumers (CoreFoundation,
+OpenDirectory, configd, WTF), while making it loud puts a statement on a hot path -- `CRSetCrashLogMessage` is
+called from crash paths and `voucher_mach_msg_set` runs per message, which is exactly the in-path output this tree
+is removing.
+
+The rule for this case is: **record it**, and the record is checkable rather than a matter of interpretation. In the
+weak-binding registry that means a definition whose reviewed `body` is `silent`, whose `strong_side` is null
+(nothing else supplies the name, which is what makes it a stand-in rather than a link-order shim), and whose entry
+records -- in a field that is never empty -- what it degrades and who consumes it. The derived `fault_mode` then
+reads `void` (empty body) or `silent` (a neutral return). Where a diagnostic would not land on a hot path, `body`
+is `loud` instead. Deliberateness itself is not derived and must not be: it is not in the body text, and a derived
+proxy would be a guess wearing a measurement's clothes. Silence is acceptable only with that record, and the worked
+examples are the voucher trio in `emulation/src/other/mach/lkm.c` and the CrashReporterClient shims in
+`libsystem_duct`.
+
 ## Consequences
 
 - The failure mode "a lock that admits everyone" can no longer be produced by a placeholder, and its

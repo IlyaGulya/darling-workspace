@@ -104,6 +104,45 @@ WEAK_IMPORT_GRAMMAR = (
     '__attribute__((weak_import)) or with a macro the forest defines as exactly that attribute '
     "(the emulation's WEAK_IMPORT, weak_import on the Darwin targets and plain weak on the ELF side)."
 )
+# The header-emission door: a bare `inline` in C emits an EXTERNAL definition in
+# every translation unit that includes the header, so a convenience for callers
+# becomes a candidate for the guest's binding.  It was measured on 2026-10-10 in
+# src/duct/include/CrashReporterClient.h, whose three `inline` no-ops were
+# exported as weak definitions from libdyld.dylib and libc++abi.dylib while the
+# real owner is libsystem_duct; darling a3e706363 made them `static inline`.
+HEADER_EXTENSIONS = [".h", ".hh", ".hpp", ".hxx"]
+HEADER_EMISSION_RULE = (
+    "A non-static, non-hidden `inline` definition with a placeholder body in a header is a candidate "
+    "when the header's basename is named by an #include or #import directive in a C or Objective-C "
+    "translation unit of this forest, because that is the channel through which the definition is "
+    "emitted as a C symbol in images the header never named. ADR-0004's remedy is `static inline` (or "
+    "hidden), which keeps the definition local to its caller. A definition the C compiler does not see "
+    "because it sits in a __cplusplus-only region is not a candidate, and neither is a C++ declaration "
+    "(template, scoped, destructor or class member), because its symbol is mangled and is not the C "
+    "binding this registry audits. The artifact tier's weak-external sweep over built dylibs remains "
+    "the authority on what was actually emitted."
+)
+# Tokens that make a declaration C++ rather than C: a C++ definition's symbol is
+# mangled, so it is not the C binding this registry audits.
+CXX_ONLY_TOKENS = [
+    "template",
+    "typename",
+    "class",
+    "namespace",
+    "operator",
+    "std::",
+    "::",
+    "~",
+    "_LIBCPP",
+    "BZ_NAMESPACE",
+    "public:",
+    "protected:",
+    "private:",
+]
+# A sound prefilter for the header arm: every definition it accepts has a
+# placeholder body, so a header without one cannot hold a candidate.
+_HEADER_BODY_PREFILTER = re.compile(rb"\{\s*\}|return\s+(?:0|-ENOSYS|NULL)\s*;")
+_INCLUDE_DIRECTIVE = re.compile(rb"(?m)^[ \t]*#[ \t]*(?:include|import)[ \t]*[<\"]([^\">]+)[\">]")
 
 STATUSES = ["classified", "retired"]
 ORIGINS = ["darling", "upstream-apple", "third-party"]
@@ -120,7 +159,7 @@ FAULT_MODES = ["void", "silent", "loud", "none"]
 # supplied by another image (or by nobody, if the import was dropped).
 IMAGE_ROLES = ["defined", "imported", "absent"]
 
-DISCOVERY_ARMS = ["weak-linkage", "placeholder-body"]
+DISCOVERY_ARMS = ["weak-linkage", "placeholder-body", "header-emission"]
 
 ENTRY_FIELDS = [
     "name",
@@ -169,6 +208,8 @@ SCAN_FIELDS = [
     "placeholder_body_literals",
     "diagnostic_calls",
     "weak_import_grammar",
+    "header_extensions",
+    "header_emission_rule",
     "candidate_rule",
 ]
 VOCABULARY_FIELDS = [
@@ -494,15 +535,67 @@ def weak_import_names(source: str, macros: Iterable[str] = ()) -> set[str]:
     return names
 
 
-def discovery_arms(weak: bool, placeholder: bool) -> str:
+def discovery_arms(weak: bool, placeholder: bool, header_emission: bool = False) -> str:
     """Return the canonical discovery label for a candidate."""
 
     arms = []
+    if header_emission:
+        arms.append("header-emission")
     if placeholder:
         arms.append("placeholder-body")
     if weak:
         arms.append("weak-linkage")
     return "+".join(arms)
+
+
+_CONDITIONAL = re.compile(r"^[ \t]*#[ \t]*([a-z]+)[ \t]*(.*)$")
+
+
+def _mask_cxx_only_regions(text: str) -> str:
+    """Blank the regions a C compiler does not see because of a __cplusplus guard.
+
+    The header arm asks whether a C translation unit would emit the definition,
+    so a definition inside ``#ifdef __cplusplus`` is not a candidate.  Unknown
+    conditionals are left visible: masking too little over-includes a candidate
+    for review, masking too much would hide one.
+    """
+
+    lines = text.split("\n")
+    masked_lines: list[str] = []
+    stack: list[bool | None] = []
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            match = _CONDITIONAL.match(line)
+            directive = match.group(1) if match else ""
+            rest = match.group(2).strip() if match else ""
+            if directive in ("ifdef", "ifndef", "if"):
+                if directive == "ifdef" and rest == "__cplusplus":
+                    stack.append(True)
+                elif directive == "ifndef" and rest == "__cplusplus":
+                    stack.append(False)
+                elif directive == "if" and "__cplusplus" in rest:
+                    # #if defined(__cplusplus) is C++-only; #if !defined(...) is not.
+                    stack.append("defined" in rest and "!" not in rest.split("defined")[0])
+                else:
+                    stack.append(None)
+            elif directive == "else" and stack and stack[-1] is not None:
+                stack[-1] = not stack[-1]
+            elif directive == "elif" and stack and stack[-1] is not None:
+                stack[-1] = None
+            elif directive == "endif" and stack:
+                stack.pop()
+        if any(state is True for state in stack):
+            masked_lines.append(" " * len(line))
+        else:
+            masked_lines.append(line)
+    return "\n".join(masked_lines)
+
+
+def _is_cxx_declaration(declaration: str) -> bool:
+    """Whether a declaration is C++ rather than C."""
+
+    return any(token in declaration for token in CXX_ONLY_TOKENS)
 
 
 # The macro scan must also see headers, because that is where a weak-import
@@ -550,6 +643,84 @@ def weak_import_macros(root: Path | None = None) -> set[str]:
 _FOREST_CACHE: dict[str, dict[str, Any]] = {}
 
 
+def _record(
+    candidates: dict[tuple[str, str], dict[str, Any]],
+    key: tuple[str, str],
+    arms: str,
+    body: str,
+) -> None:
+    """Record a candidate, merging the arms when two of them meet on one name."""
+
+    existing = candidates.get(key)
+    labels = set(arms.split("+"))
+    if existing is not None:
+        labels |= set(existing["discovery"].split("+"))
+    candidates[key] = {
+        "discovery": "+".join(sorted(labels)),
+        "fault_mode": _fault_mode(body),
+    }
+
+
+def _discover_translation_unit(
+    path: Path,
+    data: bytes,
+    repository_root: Path,
+    candidates: dict[tuple[str, str], dict[str, Any]],
+) -> None:
+    """Record the weak-linkage and placeholder-body candidates of one TU."""
+
+    if not _marker_prefilter(data):
+        return
+    raw = data.decode("utf-8", errors="replace")
+    structural = _strip_source(raw, keep_strings=False)
+    literal = _strip_source(raw, keep_strings=True)
+    for site in _definition_sites(structural, literal):
+        declaration = site["declaration"]
+        if re.search(r"\bstatic\b", declaration):
+            continue
+        weak = bool(_WEAK_ATTRIBUTE.search(declaration))
+        placeholder = _placeholder_body(site["body"])
+        if not weak and not (_DEFAULT_VISIBILITY.search(declaration) and placeholder):
+            continue
+        key = (path.relative_to(repository_root).as_posix(), site["name"])
+        _record(candidates, key, discovery_arms(weak, placeholder), site["body"])
+
+
+def _discover_header_emission(
+    path: Path,
+    data: bytes,
+    c_includes: set[str],
+    repository_root: Path,
+    candidates: dict[tuple[str, str], dict[str, Any]],
+) -> None:
+    """Record the header-emission candidates of one header."""
+
+    if path.name not in c_includes:
+        return
+    if b"inline" not in data or not _HEADER_BODY_PREFILTER.search(data):
+        return
+    raw = data.decode("utf-8", errors="replace")
+    structural = _strip_source(raw, keep_strings=False)
+    literal = _strip_source(raw, keep_strings=True)
+    # A definition the C compiler does not see is not a candidate, so the
+    # __cplusplus-only regions are blanked before the scanner reads them.
+    visible = _mask_cxx_only_regions(structural)
+    for site in _definition_sites(visible, literal):
+        declaration = site["declaration"]
+        if "inline" not in declaration:
+            continue
+        if re.search(r"\bstatic\b", declaration):
+            continue
+        if _DEFAULT_VISIBILITY.search(declaration):
+            continue
+        if not _placeholder_body(site["body"]):
+            continue
+        if _is_cxx_declaration(declaration):
+            continue
+        key = (path.relative_to(repository_root).as_posix(), site["name"])
+        _record(candidates, key, discovery_arms(False, False, header_emission=True), site["body"])
+
+
 def _scan_forest(root: Path | None) -> dict[str, Any]:
     forest = (
         root
@@ -561,50 +732,56 @@ def _scan_forest(root: Path | None) -> dict[str, Any]:
             f"the reviewed source forest is missing: {forest}; the registry cannot be checked "
             "against a tree that is not there"
         )
-    candidates: dict[tuple[str, str], dict[str, Any]] = {}
-    macros: set[str] = set()
     repository_root = _repository_root(SOURCE_FOREST["repository"])
-    for directory, subdirectories, files in os.walk(forest):
+    paths: list[Path] = []
+    for directory, subdirectories, filenames in os.walk(forest):
         subdirectories[:] = sorted(
             name
             for name in subdirectories
             if not any(name.startswith(pruned) for pruned in PRUNED_PATH_COMPONENTS)
         )
-        for filename in sorted(files):
-            suffix = os.path.splitext(filename)[1]
-            if suffix not in MACRO_SCAN_EXTENSIONS:
-                continue
-            path = Path(directory) / filename
-            try:
-                data = path.read_bytes()
-            except OSError:
-                continue
-            if b"weak_import" in data and _WEAK_IMPORT_DEFINE_BYTES.search(data):
-                macros.update(
-                    _WEAK_IMPORT_DEFINE.findall(
-                        _strip_source(data.decode("utf-8", errors="replace"), keep_strings=False)
-                    )
+        paths.extend(Path(directory) / name for name in sorted(filenames))
+    candidates: dict[tuple[str, str], dict[str, Any]] = {}
+    macros: set[str] = set()
+    # Phase one: the include channel of the C and Objective-C translation units,
+    # which is what decides whether a header's definition reaches a C compiler.
+    c_includes: set[str] = set()
+    for path in paths:
+        if path.suffix not in (".c", ".m"):
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        for match in _INCLUDE_DIRECTIVE.finditer(data):
+            c_includes.add(os.path.basename(match.group(1).decode("utf-8", errors="replace")))
+        if b"weak_import" in data and _WEAK_IMPORT_DEFINE_BYTES.search(data):
+            macros.update(
+                _WEAK_IMPORT_DEFINE.findall(
+                    _strip_source(data.decode("utf-8", errors="replace"), keep_strings=False)
                 )
-            if suffix not in TRANSLATION_UNIT_EXTENSIONS:
-                continue
-            if not _marker_prefilter(data):
-                continue
-            raw = data.decode("utf-8", errors="replace")
-            structural = _strip_source(raw, keep_strings=False)
-            literal = _strip_source(raw, keep_strings=True)
-            for site in _definition_sites(structural, literal):
-                declaration = site["declaration"]
-                if re.search(r"\bstatic\b", declaration):
-                    continue
-                weak = bool(_WEAK_ATTRIBUTE.search(declaration))
-                placeholder = _placeholder_body(site["body"])
-                if not weak and not (_DEFAULT_VISIBILITY.search(declaration) and placeholder):
-                    continue
-                key = (path.relative_to(repository_root).as_posix(), site["name"])
-                candidates[key] = {
-                    "discovery": discovery_arms(weak, placeholder),
-                    "fault_mode": _fault_mode(site["body"]),
-                }
+            )
+        _discover_translation_unit(path, data, repository_root, candidates)
+    # Phase two: the remaining translation units, the weak-import macros they and
+    # the headers define, and the header-emission arm.
+    for path in paths:
+        suffix = path.suffix
+        if suffix in (".c", ".m") or suffix not in MACRO_SCAN_EXTENSIONS:
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        if b"weak_import" in data and _WEAK_IMPORT_DEFINE_BYTES.search(data):
+            macros.update(
+                _WEAK_IMPORT_DEFINE.findall(
+                    _strip_source(data.decode("utf-8", errors="replace"), keep_strings=False)
+                )
+            )
+        if suffix in HEADER_EXTENSIONS:
+            _discover_header_emission(path, data, c_includes, repository_root, candidates)
+        else:
+            _discover_translation_unit(path, data, repository_root, candidates)
     return {"candidates": candidates, "weak_import_macros": macros}
 
 
@@ -646,6 +823,24 @@ def entries_digest(entries: list[dict[str, Any]]) -> str:
 
 def _entry_label(entry: dict[str, Any]) -> str:
     return f"{entry.get('path', '<no path>')}:{entry.get('name', '<no name>')}"
+
+
+def _retired_declaration_present(declaration: str, text: str) -> bool:
+    """Whether the retired (non-static) form of a declaration is in the source.
+
+    ADR-0004's remedy for a header definition is the same declaration with a
+    storage class (``static inline``), so an occurrence that is preceded by
+    ``static`` is the remedy rather than a regression.
+    """
+
+    needle = " ".join(declaration.split())
+    haystack = " ".join(text.split())
+    start = haystack.find(needle)
+    while start >= 0:
+        if not haystack[:start].rstrip().endswith("static"):
+            return True
+        start = haystack.find(needle, start + 1)
+    return False
 
 
 def _expected_derived(
@@ -699,6 +894,8 @@ def classification_problems(registry: dict[str, Any]) -> list[str]:
         "placeholder_body_literals": PLACEHOLDER_BODY_LITERALS,
         "diagnostic_calls": DIAGNOSTIC_CALLS,
         "weak_import_grammar": WEAK_IMPORT_GRAMMAR,
+        "header_extensions": HEADER_EXTENSIONS,
+        "header_emission_rule": HEADER_EMISSION_RULE,
     }
     if not isinstance(scan, dict) or list(scan) != SCAN_FIELDS:
         problems.append(f"registry.scan: fields {list(scan) if isinstance(scan, dict) else scan} differ from {SCAN_FIELDS}")
@@ -799,7 +996,7 @@ def classification_problems(registry: dict[str, Any]) -> list[str]:
                     f"{label}: this definition was reviewed as RETIRED but the tree defines it "
                     "again; the ADR-0004 stub came back"
                 )
-            if declaration and " ".join(declaration.split()) in " ".join(source_text.split()):
+            if declaration and _retired_declaration_present(declaration, source_text):
                 problems.append(f"{label}: the retired declaration is present again in {entry['path']}")
             imports = weak_import_names(source_text, weak_import_macros())
             if entry["image_role"] == "defined":

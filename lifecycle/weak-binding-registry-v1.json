@@ -46,7 +46,14 @@
       "__builtin_trap"
     ],
     "weak_import_grammar": "A name counts as imported when the anchored source declares it with __attribute__((weak_import)) or with a macro the forest defines as exactly that attribute (the emulation's WEAK_IMPORT, weak_import on the Darwin targets and plain weak on the ELF side).",
-    "candidate_rule": "A candidate is a file-scope, non-static definition with a body that is (a) weak-attributed, whatever its visibility, or (b) explicitly default-visible and wholly a placeholder body. Visibility is not considered on the weak arm because the measured instance carried no visibility attribute and still won a guest binding; the placeholder arm requires explicit default visibility because these libraries compile with -fvisibility=hidden, so an unmarked placeholder cannot reach the export table. Preprocessor directives, comments, string contents and the C++ exception specifications that trail a parameter list are not part of the grammar: the scan reads structural source with comments blanked, keeps a string-preserving copy so visibility(\"default\") stays readable, and steps back over throw()/noexcept() before it names the declaration. A definition that is explicitly hidden is not a candidate: ADR-0004's remedy is exactly a private placeholder, and a hidden definition cannot be in the export table. That exclusion is not extended to the weak arm, which stays visibility-agnostic for the measured reason above."
+    "header_extensions": [
+      ".h",
+      ".hh",
+      ".hpp",
+      ".hxx"
+    ],
+    "header_emission_rule": "A non-static, non-hidden `inline` definition with a placeholder body in a header is a candidate when the header's basename is named by an #include or #import directive in a C or Objective-C translation unit of this forest, because that is the channel through which the definition is emitted as a C symbol in images the header never named. ADR-0004's remedy is `static inline` (or hidden), which keeps the definition local to its caller. A definition the C compiler does not see because it sits in a __cplusplus-only region is not a candidate, and neither is a C++ declaration (template, scoped, destructor or class member), because its symbol is mangled and is not the C binding this registry audits. The artifact tier's weak-external sweep over built dylibs remains the authority on what was actually emitted.",
+    "candidate_rule": "A candidate is a file-scope, non-static definition with a body that is (a) weak-attributed, whatever its visibility, or (b) explicitly default-visible and wholly a placeholder body. Visibility is not considered on the weak arm because the measured instance carried no visibility attribute and still won a guest binding; the placeholder arm requires explicit default visibility because these libraries compile with -fvisibility=hidden, so an unmarked placeholder cannot reach the export table. Preprocessor directives, comments, string contents and the C++ exception specifications that trail a parameter list are not part of the grammar: the scan reads structural source with comments blanked, keeps a string-preserving copy so visibility(\"default\") stays readable, and steps back over throw()/noexcept() before it names the declaration. A third door is the header: a non-static `inline` definition with a placeholder body in a header a C or Objective-C translation unit includes is emitted as an external definition in every image that includes it (measured 2026-10-10 in src/duct/include/CrashReporterClient.h), so it is a candidate too; ADR-0004's remedy is `static inline` or hidden. Definitions in a __cplusplus-only region, C++ declarations and headers no C or Objective-C translation unit includes are outside this census, and so is a placeholder in a component that does not mark visibility (it relies on the build's default), because this arm needs a marker to stay finite: the artifact tier's weak-external sweep over built dylibs is the authority on what was actually emitted. A definition that is explicitly hidden is not a candidate: ADR-0004's remedy is exactly a private placeholder, and a hidden definition cannot be in the export table. That exclusion is not extended to the weak arm, which stays visibility-agnostic for the measured reason above."
   },
   "vocabulary": {
     "status": [
@@ -82,7 +89,8 @@
     ],
     "discovery": [
       "weak-linkage",
-      "placeholder-body"
+      "placeholder-body",
+      "header-emission"
     ]
   },
   "counting": {
@@ -93,10 +101,94 @@
   "counts": {
     "candidate_count": 30,
     "classified_count": 30,
-    "retired_count": 11
+    "retired_count": 14
   },
-  "entries_digest": "63270b37843f61d1bca00b2002ce71d1d9c5c2ebb8736dddcb161f0859081f17",
+  "entries_digest": "c882ecab2ab5ac887b61dcc3038f84a2fc93c3c97b368d59c5d72a4ff5393c8e",
   "entries": [
+    {
+      "name": "CRGetCrashLogMessage",
+      "repository": "darling",
+      "path": "src/duct/include/CrashReporterClient.h",
+      "sha256": "90e6bfddb764c87cd66d39e9c844f325632857811e1bea7ee03cf319c85849c6",
+      "status": "retired",
+      "origin": "darling",
+      "kind": "public-api",
+      "body": "real-supplied-elsewhere",
+      "discovery": null,
+      "fault_mode": null,
+      "image_role": "absent",
+      "strong_side": {
+        "repository": "darling",
+        "path": "src/duct/src/CRGetCrashLogMessage.c",
+        "symbol": "CRGetCrashLogMessage",
+        "sha256": "2a3d1deea00e8ab2a956a587b43f180aef4b8e8204d388b7f384bc79d2b2807c"
+      },
+      "caller_dependency": "Callers that cannot link the real CrashReporterClient shim include this header for a convenience no-op. The header no longer defines the name: the C compiler sees only the declaration, and the strong definition lives in libsystem_duct (duct/src/CRGetCrashLogMessage.c). A bare `inline` here was the emission channel that let a guest image bind an unrelated no-op under this public name.",
+      "retirement": {
+        "repository": "darling",
+        "commit": "a3e706363d81afd91eb5f5e8566f8a572842e3c2",
+        "branch": "fix/rootless-default-retire-rootfull",
+        "date": "2026-10-10",
+        "removed_declaration": "inline const char* CRGetCrashLogMessage(void) { return 0; }",
+        "note": "duct: make the CrashReporterClient header definitions internal. A bare `inline` in C emits an EXTERNAL definition in every translation unit that includes the header, so these no-ops were exported as weak definitions from unrelated images (measured: libdyld.dylib and libc++abi.dylib) while the real owner is libsystem_duct. `static inline` keeps them local to their caller, so the strong definition in duct/src/CRGetCrashLogMessage.c is the only external one and behaviour is unchanged. Measured after deploy and reinstall: CRSetCrashLogMessage is `external` in libsystem_duct.dylib only, and a sweep of every built and deployed dylib finds zero defined weak external C symbols, down from eight."
+      }
+    },
+    {
+      "name": "CRSetCrashLogMessage",
+      "repository": "darling",
+      "path": "src/duct/include/CrashReporterClient.h",
+      "sha256": "90e6bfddb764c87cd66d39e9c844f325632857811e1bea7ee03cf319c85849c6",
+      "status": "retired",
+      "origin": "darling",
+      "kind": "public-api",
+      "body": "real-supplied-elsewhere",
+      "discovery": null,
+      "fault_mode": null,
+      "image_role": "absent",
+      "strong_side": {
+        "repository": "darling",
+        "path": "src/duct/src/CRGetCrashLogMessage.c",
+        "symbol": "CRSetCrashLogMessage",
+        "sha256": "2a3d1deea00e8ab2a956a587b43f180aef4b8e8204d388b7f384bc79d2b2807c"
+      },
+      "caller_dependency": "Callers that cannot link the real CrashReporterClient shim include this header for a convenience no-op. The header no longer defines the name: the C compiler sees only the declaration, and the strong definition lives in libsystem_duct (duct/src/CRGetCrashLogMessage.c). A bare `inline` here was the emission channel that let a guest image bind an unrelated no-op under this public name.",
+      "retirement": {
+        "repository": "darling",
+        "commit": "a3e706363d81afd91eb5f5e8566f8a572842e3c2",
+        "branch": "fix/rootless-default-retire-rootfull",
+        "date": "2026-10-10",
+        "removed_declaration": "inline void CRSetCrashLogMessage(const char* text) {}",
+        "note": "duct: make the CrashReporterClient header definitions internal. A bare `inline` in C emits an EXTERNAL definition in every translation unit that includes the header, so these no-ops were exported as weak definitions from unrelated images (measured: libdyld.dylib and libc++abi.dylib) while the real owner is libsystem_duct. `static inline` keeps them local to their caller, so the strong definition in duct/src/CRGetCrashLogMessage.c is the only external one and behaviour is unchanged. Measured after deploy and reinstall: CRSetCrashLogMessage is `external` in libsystem_duct.dylib only, and a sweep of every built and deployed dylib finds zero defined weak external C symbols, down from eight."
+      }
+    },
+    {
+      "name": "CRSetCrashLogMessage2",
+      "repository": "darling",
+      "path": "src/duct/include/CrashReporterClient.h",
+      "sha256": "90e6bfddb764c87cd66d39e9c844f325632857811e1bea7ee03cf319c85849c6",
+      "status": "retired",
+      "origin": "darling",
+      "kind": "public-api",
+      "body": "real-supplied-elsewhere",
+      "discovery": null,
+      "fault_mode": null,
+      "image_role": "absent",
+      "strong_side": {
+        "repository": "darling",
+        "path": "src/duct/src/CRGetCrashLogMessage.c",
+        "symbol": "CRSetCrashLogMessage2",
+        "sha256": "2a3d1deea00e8ab2a956a587b43f180aef4b8e8204d388b7f384bc79d2b2807c"
+      },
+      "caller_dependency": "Callers that cannot link the real CrashReporterClient shim include this header for a convenience no-op. The header no longer defines the name: the C compiler sees only the declaration, and the strong definition lives in libsystem_duct (duct/src/CRGetCrashLogMessage.c). A bare `inline` here was the emission channel that let a guest image bind an unrelated no-op under this public name.",
+      "retirement": {
+        "repository": "darling",
+        "commit": "a3e706363d81afd91eb5f5e8566f8a572842e3c2",
+        "branch": "fix/rootless-default-retire-rootfull",
+        "date": "2026-10-10",
+        "removed_declaration": "inline void CRSetCrashLogMessage2(const char* path) {}",
+        "note": "duct: make the CrashReporterClient header definitions internal. A bare `inline` in C emits an EXTERNAL definition in every translation unit that includes the header, so these no-ops were exported as weak definitions from unrelated images (measured: libdyld.dylib and libc++abi.dylib) while the real owner is libsystem_duct. `static inline` keeps them local to their caller, so the strong definition in duct/src/CRGetCrashLogMessage.c is the only external one and behaviour is unchanged. Measured after deploy and reinstall: CRSetCrashLogMessage is `external` in libsystem_duct.dylib only, and a sweep of every built and deployed dylib finds zero defined weak external C symbols, down from eight."
+      }
+    },
     {
       "name": "objc_enumerationMutation",
       "repository": "darling",
