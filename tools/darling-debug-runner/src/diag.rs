@@ -3463,6 +3463,15 @@ pub struct FutexArgs {
     json: bool,
 }
 
+#[derive(clap::Args, Debug)]
+pub struct RingArgs {
+    /// A run log, or the dump itself: the `dtape.ering …` lines are selected from it, wherever they appear.
+    #[arg(long)]
+    log: PathBuf,
+    #[arg(long)]
+    json: bool,
+}
+
 // THE REGISTRY. One entry per instrument this project ships, with the line it writes and why it exists. Adding an
 // instrument without adding it here stops the census from being a census, so the list is the point of the command:
 // `witness` answers "which of these spoke", and names the ones that did not.
@@ -5888,6 +5897,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Waits(a) => run_waits(a),
         DiagCommand::Futex(a) => run_futex(a),
         DiagCommand::CoreLock(a) => run_core_lock(a),
+        DiagCommand::Ring(a) => run_ring(a),
         DiagCommand::Unwind(a) => run_unwind(a),
         DiagCommand::Trap(a) => run_trap(a),
         DiagCommand::Loops(a) => run_loops(a),
@@ -6240,6 +6250,12 @@ pub enum DiagCommand {
     /// step was done by hand three times, twice wrongly, and because the only honest answer it can give about
     /// acquisition history is "a core is one instant".
     CoreLock(CoreLockArgs),
+    /// Decode the server's lock-free event ring: the fixed six-word records a dump prints, their schema, and what
+    /// the dump CANNOT show. The ring exists so a diagnostic event never prints or syscalls on the path it observes
+    /// (`dtape_test_ring_record` reserves one slot with a single atomic RMW and then stores, so a torn record is
+    /// possible by design and overwritten records are simply absent). A reader that skips those two facts reports
+    /// half-written events as measurements and silence as evidence, which is why this is a command and not a grep.
+    Ring(RingArgs),
     /// Report which INSTRUMENTS fired in a run log, and which stayed SILENT. A registered instrument with zero hits is
     /// the failure this exists to catch: a guard that silently does nothing cannot be told from no guard at all, and a
     /// hand-written grep over one log finds a line but cannot tell you which of the other instruments never spoke.
@@ -8305,6 +8321,230 @@ fn pair_futex(bundle: &Path, futex_trace: Option<&Path>) -> Result<FutexReport> 
     Ok(report)
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// The server's event ring: the fixed record schema, and the two things a dump cannot say by itself.
+// ---------------------------------------------------------------------------------------------------------------
+
+/// One decoded ring record.
+///
+/// The four payload words are printed and NOT interpreted: their meaning is per tag and belongs to the producer's
+/// own switch, so naming them here would be a second schema that silently drifts from the first one.
+#[derive(Clone, Debug)]
+struct RingRecord {
+    seq: u64,
+    tag: String,
+    fields: [u64; 4],
+}
+
+#[derive(Debug, Default)]
+struct RingDump {
+    /// `events=`: how many slots were RESERVED, which is not how many the dump shows.
+    events: Option<u64>,
+    /// `shown=`: how many the producer TRIED to print. It skips a slot whose `seq` no longer matches the index it
+    /// is reading, so the printed count can be smaller, and that difference is the measurement of overwriting --
+    /// the producer's own comment says a record "overwritten or partly written while we read" is "reported by
+    /// omission, never guessed".
+    shown: Option<u64>,
+    records: Vec<RingRecord>,
+    /// A record LINE that does not satisfy the schema: the producer printed the slot, so the event happened, but
+    /// the fields cannot be trusted. This is a TORN record, not a missing one.
+    malformed_records: Vec<String>,
+    /// Anything else that carried the prefix without being a header or a record.
+    malformed_other: Vec<String>,
+}
+
+fn parse_ring_dump(text: &str) -> RingDump {
+    let mut out = RingDump::default();
+    for raw in text.lines() {
+        let line = raw.trim();
+        let Some(rest) = line.strip_prefix("dtape.ering ") else {
+            continue;
+        };
+        if let Some(header) = rest.strip_prefix("dump ") {
+            for f in header.split_whitespace() {
+                let Some((k, v)) = f.split_once('=') else {
+                    out.malformed_other
+                        .push(format!("dump header field {f:?} is not key=value"));
+                    continue;
+                };
+                match k {
+                    "events" => out.events = v.parse::<u64>().ok(),
+                    "shown" => out.shown = v.parse::<u64>().ok(),
+                    other => out
+                        .malformed_other
+                        .push(format!("dump header has unknown field {other:?}")),
+                }
+            }
+            continue;
+        }
+        // A record. EVERY field is required and only these fields are accepted, because a missing one means the
+        // slot was read while it was being written: accepting the line anyway is exactly how a half-written
+        // record becomes a measurement.
+        let (mut seq, mut tag, mut fields) = (None, None, [None; 4]);
+        for f in rest.split_whitespace() {
+            let Some((k, v)) = f.split_once('=') else {
+                out.malformed_records
+                    .push(format!("record field {f:?} is not key=value"));
+                continue;
+            };
+            match k {
+                "seq" => seq = v.parse::<u64>().ok(),
+                "tag" => tag = Some(v.to_string()),
+                "a" | "b" | "c" | "d" => {
+                    let i = (k.as_bytes()[0] - b'a') as usize;
+                    fields[i] = parse_hex_or_dec(v);
+                }
+                other => out
+                    .malformed_records
+                    .push(format!("record has unknown field {other:?}")),
+            }
+        }
+        let (Some(seq), Some(tag), [Some(a), Some(b), Some(c), Some(d)]) = (seq, tag, fields) else {
+            out.malformed_records.push(format!(
+                "{line} is incomplete (a slot read while being written, or a field that is not a number)"
+            ));
+            continue;
+        };
+        out.records.push(RingRecord {
+            seq,
+            tag,
+            fields: [a, b, c, d],
+        });
+    }
+    out
+}
+
+fn run_ring(args: RingArgs) -> Result<ExitCode> {
+    let text = fs::read_to_string(&args.log)
+        .with_context(|| format!("cannot read {}", args.log.display()))?;
+    let dump = parse_ring_dump(&text);
+    if dump.records.is_empty() && dump.events.is_none() {
+        if args.json {
+            println!(
+                "{{\"present\":false,\"log\":\"{}\"}}",
+                jesc(&args.log.display().to_string())
+            );
+            return Ok(ExitCode::SUCCESS);
+        }
+        println!(
+            "RING-NO-DUMP {} carries no `dtape.ering` line: the ring is off (DSERVER_TRACE_RING) or its dump never ran -- a silent ring is not a ring with no event",
+            args.log.display()
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let parsed = dump.records.len() as u64;
+    let torn = dump.malformed_records.len() as u64;
+    // Two different facts, counted apart. A slot the producer PRINTED that came back incomplete is TORN: the event
+    // happened and its fields cannot be trusted. A slot it never printed was already overwritten when the dump ran,
+    // which the producer's own comment calls "reported by omission, never guessed". Collapsing them would make a
+    // torn record indistinguishable from a missing one.
+    let skipped = dump.shown.map(|s| s.saturating_sub(parsed + torn));
+    let first = dump.records.iter().map(|r| r.seq).min();
+    let last = dump.records.iter().map(|r| r.seq).max();
+    // The producer prints a slot only when its seq still matches the index it reads, so the printed sequences are
+    // contiguous except where a slot was overwritten or read torn. A gap is the same fact seen from the other side.
+    let gaps = match (first, last) {
+        (Some(f), Some(l)) => (l - f + 1).saturating_sub(parsed),
+        _ => 0,
+    };
+    let mut tallies: BTreeMap<&str, u64> = BTreeMap::new();
+    for r in &dump.records {
+        *tallies.entry(r.tag.as_str()).or_insert(0) += 1;
+    }
+    let unknown = tallies.get("?").copied().unwrap_or(0);
+
+    if args.json {
+        let mut out = String::from("{\"present\":true");
+        out.push_str(&format!(",\"log\":\"{}\"", jesc(&args.log.display().to_string())));
+        out.push_str(&format!(
+            ",\"events\":{},\"shown\":{},\"parsed\":{parsed}",
+            dump.events.map(|v| v.to_string()).unwrap_or("null".into()),
+            dump.shown.map(|v| v.to_string()).unwrap_or("null".into()),
+        ));
+        out.push_str(&format!(
+            ",\"torn\":{torn},\"skipped\":{},\"seq_gaps\":{gaps},\"unknown_tag\":{unknown}",
+            skipped.map(|v| v.to_string()).unwrap_or("null".into()),
+        ));
+        out.push_str(",\"tags\":{");
+        for (i, (tag, n)) in tallies.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!("\"{}\":{n}", jesc(tag)));
+        }
+        out.push_str("},\"malformed_records\":[");
+        for (i, m) in dump.malformed_records.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!("\"{}\"", jesc(m)));
+        }
+        out.push_str("],\"malformed_other\":[");
+        for (i, m) in dump.malformed_other.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!("\"{}\"", jesc(m)));
+        }
+        out.push_str("]}");
+        println!("RING-JSON {out}");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    println!(
+        "RING {} events={} shown={} parsed={parsed} seq={:?}..{:?}",
+        args.log.display(),
+        dump.events.map(|v| v.to_string()).unwrap_or("-".into()),
+        dump.shown.map(|v| v.to_string()).unwrap_or("-".into()),
+        first,
+        last
+    );
+    for (tag, n) in &tallies {
+        if *tag == "?" {
+            println!(
+                "  TAG ? n={n} UNKNOWN-TAG (the producer prints `?` for a tag its switch does not know, so the numeric tag is NOT recoverable from the dump)"
+            );
+        } else {
+            println!("  TAG {tag} n={n}");
+        }
+    }
+    if torn == 0 && skipped == Some(0) {
+        println!(
+            "RING-COMPLETE every slot the producer printed was read back intact (shown={:?}, seq_gaps={gaps})",
+            dump.shown
+        );
+    } else {
+        if torn > 0 {
+            println!(
+                "RING-TORN {torn} slot(s) were printed but are incomplete: the events happened and their fields cannot be trusted (seq_gaps={gaps})"
+            );
+        }
+        match skipped {
+            Some(n) if n > 0 => println!(
+                "RING-SKIPPED {n} slot(s) were already overwritten when the dump ran: those events happened and are NOT in this dump at all (seq_gaps={gaps})"
+            ),
+            Some(_) => {}
+            None => println!(
+                "RING-UNKNOWN-COMPLETENESS the dump header carries no shown=, so how many slots were attempted cannot be known (seq_gaps={gaps})"
+            ),
+        }
+    }
+    if !dump.malformed_other.is_empty() {
+        println!("RING-MALFORMED-DUMP {} header line(s) did not parse:", dump.malformed_other.len());
+        for m in dump.malformed_other.iter().take(3) {
+            println!("  {m}");
+        }
+    }
+    if !dump.malformed_records.is_empty() {
+        println!("RING-MALFORMED {} record line(s):", dump.malformed_records.len());
+        for m in dump.malformed_records.iter().take(5) {
+            println!("  {m}");
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn run_futex(args: FutexArgs) -> Result<ExitCode> {
     let report = pair_futex(&args.bundle, args.futex_trace.as_deref())?;
     if args.json {
@@ -8734,6 +8974,94 @@ mod futex_tests {
         let _ = fs::remove_file(&good);
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&bare);
+    }
+}
+
+#[cfg(test)]
+mod ring_tests {
+    use super::*;
+
+    const HEADER: &str = "dtape.ering dump events=4 shown=4";
+
+    fn record(seq: u64, tag: &str) -> String {
+        format!("dtape.ering seq={seq} tag={tag} a=0x1 b=0x2 c=0x3 d=0x4")
+    }
+
+    #[test]
+    fn parses_the_schema_and_counts_by_tag() {
+        let text = format!(
+            "{HEADER}\n{}\n{}\n{}\n",
+            record(0, "recv_park"),
+            record(1, "recv_done"),
+            record(2, "recv_park"),
+        );
+        let d = parse_ring_dump(&text);
+        assert_eq!(d.records.len(), 3);
+        assert_eq!(d.events, Some(4));
+        assert_eq!(d.shown, Some(4));
+        assert!(d.malformed_records.is_empty() && d.malformed_other.is_empty());
+        let r = &d.records[0];
+        assert_eq!((r.seq, r.tag.as_str(), r.fields), (0, "recv_park", [1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn a_record_missing_a_field_is_malformed_and_never_a_measurement() {
+        // Exactly what a slot read while being written looks like: the producer stores the fields with PLAIN
+        // stores after one atomic reservation, so a reader can see seq without d.
+        let text = format!(
+            "{HEADER}\ndtape.ering seq=0 tag=recv_park a=0x1 b=0x2 c=0x3\n{}",
+            record(1, "recv_done")
+        );
+        let d = parse_ring_dump(&text);
+        assert_eq!(d.records.len(), 1, "only the intact record may be measured");
+        assert_eq!(d.malformed_records.len(), 1);
+        assert!(
+            d.malformed_records[0].contains("incomplete"),
+            "{:?}",
+            d.malformed_records
+        );
+    }
+
+    #[test]
+    fn an_unknown_tag_is_counted_and_its_number_is_not_invented() {
+        // The producer prints `?` for a tag its switch does not know, so the numeric tag is not in the dump at all.
+        // Counting it as anything else would be inventing a value the dump does not carry.
+        let d = parse_ring_dump(&format!("{HEADER}\n{}\n", record(0, "?")));
+        assert_eq!(d.records.len(), 1);
+        assert_eq!(d.records[0].tag, "?");
+    }
+
+    #[test]
+    fn overwritten_slots_are_measured_as_omissions_and_as_sequence_gaps() {
+        // shown=10 while only 8 records came back: two slots no longer matched their index, which is the producer's
+        // own "reported by omission". The gap between seq 0..7 and the missing 8..9 is the same fact, seen from the
+        // sequence side.
+        let mut text = String::from("dtape.ering dump events=3000 shown=10\n");
+        for seq in 0..8 {
+            text.push_str(&record(seq, "recv_park"));
+            text.push('\n');
+        }
+        let d = parse_ring_dump(&text);
+        let parsed = d.records.len() as u64;
+        let torn = d.malformed_records.len() as u64;
+        // A slot the producer printed but that came back incomplete is TORN; a slot it never printed was already
+        // overwritten. This dump has no torn line, so every unprinted slot is a skip.
+        let skipped = d.shown.unwrap() - (parsed + torn);
+        let first = d.records.iter().map(|r| r.seq).min().unwrap();
+        let last = d.records.iter().map(|r| r.seq).max().unwrap();
+        assert_eq!(parsed, 8);
+        assert_eq!(torn, 0);
+        assert_eq!(skipped, 2);
+        assert_eq!((first, last), (0, 7));
+        assert_eq!((last - first + 1) - parsed, 0, "the printed range is contiguous here");
+    }
+
+    #[test]
+    fn a_log_with_no_dump_is_not_a_zero_census() {
+        let d = parse_ring_dump("some run log\nwith no ring dump in it\n");
+        assert!(d.records.is_empty());
+        assert!(d.events.is_none());
+        assert!(d.malformed_records.is_empty() && d.malformed_other.is_empty());
     }
 }
 

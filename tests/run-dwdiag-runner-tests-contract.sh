@@ -212,4 +212,50 @@ fi
 grep -aq 'run end' <<<"$out" || fail "the window refusal did not name the reason: $out"
 printf 'FUTEX-TRACE-DISCIPLINE PASS\n'
 
+# The ring decoder: the record schema is fixed at six words, a slot read while it is being written is NOT a
+# measurement, and a silent ring is not an empty one. The producer stores its fields with plain stores after a
+# single atomic reservation, so a torn record is a real thing to see -- and the dump's own `shown=` is how
+# overwritten slots can be measured instead of being passed off as absence.
+RDIR=$(mktemp -d "$MIRROR/ring-XXXXXX")
+{
+	printf 'dtape.ering dump events=4 shown=4\n'
+	printf 'dtape.ering seq=0 tag=recv_park a=0x1 b=0x2 c=0x3 d=0x4\n'
+	printf 'dtape.ering seq=1 tag=recv_done a=0x5 b=0x6 c=0x7 d=0x8\n'
+	printf 'dtape.ering seq=2 tag=recv_park a=0x9 b=0xa c=0xb\n'
+} >"$RDIR/torn.log"
+out=$("$BIN" diag ring --log "$RDIR/torn.log") || fail "the ring decoder failed on a dump with one torn record"
+grep -aq 'parsed=2' <<<"$out" || fail "a torn record was counted as a measurement: $out"
+grep -aq 'RING-MALFORMED 1' <<<"$out" || fail "the torn record was not reported as malformed: $out"
+# shown=4, parsed=2, torn=1: the producer PRINTED three of the four slots and skipped one, and a torn record is a
+# different fact from a skipped one -- collapsing them is how a half-written event becomes a missing event.
+grep -aq 'RING-TORN 1 slot' <<<"$out" || fail "a printed-but-incomplete record was not reported as torn: $out"
+grep -aq 'RING-SKIPPED 1 slot' <<<"$out" || fail "the one slot the producer skipped was not measured: $out"
+json=$("$BIN" diag ring --log "$RDIR/torn.log" --json) || fail "the ring decoder failed in --json mode"
+grep -aq '"parsed":2' <<<"$json" || fail "the json did not carry the parsed count: $json"
+grep -aq '"torn":1' <<<"$json" || fail "the json did not carry the torn count: $json"
+grep -aq '"skipped":1' <<<"$json" || fail "the json did not carry the skipped count: $json"
+{
+	printf 'dtape.ering dump events=3 shown=3\n'
+	printf 'dtape.ering seq=0 tag=recv_park a=0x1 b=0x2 c=0x3 d=0x4\n'
+	printf 'dtape.ering seq=1 tag=recv_done a=0x5 b=0x6 c=0x7 d=0x8\n'
+	printf 'dtape.ering seq=2 tag=? a=0x9 b=0xa c=0xb d=0xc\n'
+} >"$RDIR/complete.log"
+out=$("$BIN" diag ring --log "$RDIR/complete.log") || fail "the ring decoder failed on a complete dump"
+grep -aq 'RING-COMPLETE' <<<"$out" || fail "a complete dump was not reported complete: $out"
+grep -aq 'UNKNOWN-TAG' <<<"$out" || fail "an unknown tag was not named as unrecoverable: $out"
+{
+	printf 'dtape.ering dump events=3000 shown=10\n'
+	i=0
+	while [ "$i" -lt 8 ]; do
+		printf 'dtape.ering seq=%s tag=recv_park a=0x1 b=0x2 c=0x3 d=0x4\n' "$i"
+		i=$((i + 1))
+	done
+} >"$RDIR/omitting.log"
+out=$("$BIN" diag ring --log "$RDIR/omitting.log") || fail "the ring decoder failed on an omitting dump"
+grep -aq 'RING-SKIPPED 2 slot' <<<"$out" || fail "overwritten slots were not measured as skips: $out"
+printf 'no ring here\n' >"$RDIR/silent.log"
+grep -aq 'RING-NO-DUMP' <("$BIN" diag ring --log "$RDIR/silent.log") || fail "a log with no dump was not reported as absent"
+grep -aq '"present":false' <("$BIN" diag ring --log "$RDIR/silent.log" --json) || fail "the json absence was not reported"
+printf 'RING-DECODER PASS\n'
+
 printf 'EVIDENCE-TRUTH-TABLE PASS cases=%s states=%s\n' "${#SEEN_NAMES[@]}" "$distinct"
