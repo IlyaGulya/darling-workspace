@@ -32,5 +32,10 @@ int main(void)
 	int pass = (rc != 0) ? 1 : 0;   /* kAKSReturnSuccess is 0: reporting it would be a lie */
 	printf("AKS pass=%d image=%s rc=%d not-success=%d\n",
 	       pass, info.dli_fname ? info.dli_fname : "(unresolved)", rc, rc != 0);
+	/* A verdict line the runner can match exactly: its --ok-marker check is `grep -F -x`, a whole-line
+	 * match, so the informative line above (which carries a run-specific path) cannot serve as one. */
+	if (pass) {
+		printf("AKS_STATUS_OK\n");
+	}
 	return pass ? 0 : 1;
 }
