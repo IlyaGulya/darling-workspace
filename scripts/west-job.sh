@@ -51,6 +51,37 @@ write_command_record() {
 	printf '\n' >>"$target"
 }
 
+# A run's evidence belongs to the run, not to whatever file happens to be newest. This records, at job
+# start, the prefix and every log that exists with the size it had: a later reader slices each file from
+# that offset, so an instrument census cannot pick up another run's lines or miss this run's earlier
+# ones. An absent manifest means the reader must say it guessed.
+write_evidence_manifest() {
+	local target="$1" prefix f
+	{
+		printf 'version=1\n'
+		printf 'start=%s\n' "$(date +%s)"
+		prefix="${DPREFIX:-${DARLING_PREFIX:-}}"
+		if [[ -n "$prefix" ]]; then
+			printf 'prefix=%s\n' "$prefix"
+			printf 'file=%s %s\n' "$prefix/private/var/log/dserver.log" "$(stat -c %s -- "$prefix/private/var/log/dserver.log" 2>/dev/null || echo 0)"
+		fi
+		for f in /tmp/darling-boot-*.log; do
+			[[ -f "$f" ]] || continue
+			printf 'file=%s %s\n' "$f" "$(stat -c %s -- "$f" 2>/dev/null || echo 0)"
+		done
+		if [[ -d "$state_dir/activity-logs.d" ]]; then
+			local entry
+			for entry in "$state_dir"/activity-logs.d/*; do
+				[[ -f "$entry" ]] || continue
+				while IFS= read -r f; do
+					[[ -n "$f" ]] || continue
+					printf 'file=%s %s\n' "$f" "$(stat -c %s -- "$f" 2>/dev/null || echo 0)"
+				done <"$entry"
+			done
+		fi
+	} >"$target"
+}
+
 registry_dir_for_state_root() {
 	printf '%s/.west-job-registry\n' "$1"
 }
@@ -416,6 +447,7 @@ start_job() {
 	mkdir "$state_dir/activity-logs.d"
 	REGISTRY_STATE_CREATED=1
 	write_command_record "$state_dir/command"
+	write_evidence_manifest "$state_dir/evidence-manifest"
 	if ((${#activity_logs[@]})); then
 		printf '%s\0' "${activity_logs[@]}" >"$state_dir/activity-logs"
 	fi

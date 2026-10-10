@@ -7073,13 +7073,138 @@ fn job_prefix(args: &JobArgs, state_dir: &Path) -> Option<PathBuf> {
             }
         }
     }
+    // The run's own manifest names the prefix it used; that beats parsing the recorded command line, and it
+    // exists exactly so a diagnostic cannot decide a prefix by guessing.
+    if let Some(p) = evidence_manifest(state_dir).and_then(|m| m.prefix) {
+        return Some(p);
+    }
     let recorded = fs::read_to_string(state_dir.join("command")).ok()?;
     recorded
         .split_whitespace()
         .find_map(|w| w.strip_prefix("DPREFIX=").map(PathBuf::from))
 }
 
+/// The run manifest `west-job.sh` writes at job start: the prefix and every log that existed with the size it had.
+#[derive(Debug, Default)]
+struct EvidenceManifest {
+    prefix: Option<PathBuf>,
+    /// (path, size at start): reading a file from that offset is what makes a slice belong to this run.
+    files: Vec<(PathBuf, u64)>,
+}
+
+fn parse_evidence_manifest(text: &str) -> EvidenceManifest {
+    let mut out = EvidenceManifest::default();
+    for line in text.lines() {
+        if let Some(v) = line.strip_prefix("prefix=") {
+            if !v.is_empty() {
+                out.prefix = Some(PathBuf::from(v));
+            }
+        } else if let Some(rest) = line.strip_prefix("file=") {
+            let mut it = rest.rsplitn(2, ' ');
+            let size = it.next().and_then(|s| s.parse::<u64>().ok());
+            let path = it.next();
+            if let (Some(p), Some(sz)) = (path, size) {
+                out.files.push((PathBuf::from(p), sz));
+            }
+        }
+    }
+    out
+}
+
+fn evidence_manifest(state_dir: &Path) -> Option<EvidenceManifest> {
+    let text = fs::read_to_string(state_dir.join("evidence-manifest")).ok()?;
+    Some(parse_evidence_manifest(&text))
+}
+
+/// Collect this run's bytes from every log the manifest registered, each from the offset it had at job start,
+/// into one file, and say what was read. `None` means there is no manifest, so the caller must fall back and
+/// LABEL the fallback: a census that cannot tell which run it measured is worse than one that admits it.
+fn evidence_slices(state_dir: &Path, manifest: &EvidenceManifest) -> Option<PathBuf> {
+    let out_path = state_dir.join("instruments-sliced.log");
+    let mut out = String::new();
+    let mut total = 0usize;
+    // A log created DURING the run cannot be in a manifest written at its start, and the old selection found it
+    // by modification time, which also found other runs' files. Presence is the sound test: a file that exists now
+    // and was not registered did not exist then, so it belongs to this run and is read from zero.
+    // The job's OWN log is this run's primary evidence and is created after the manifest, so it is always read
+    // from zero. Without it the manifest mode below would return a slice that excluded the very output being
+    // diagnosed, which is how this fix first regressed the census to zero.
+    let mut entries: Vec<(PathBuf, u64, bool)> =
+        vec![(state_dir.join("log"), 0, true)];
+    entries.extend(manifest.files.iter().map(|(p, o)| (p.clone(), *o, false)));
+    if let Ok(dir) = fs::read_dir("/tmp") {
+        for e in dir.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("darling-boot-") || !name.ends_with(".log") {
+                continue;
+            }
+            let path = e.path();
+            if manifest.files.iter().any(|(p, _)| *p == path) {
+                continue;
+            }
+            entries.push((path, 0, true));
+        }
+    }
+    if let Some(prefix) = &manifest.prefix {
+        let tmp = prefix.join("private/var/tmp");
+        if let Ok(dir) = fs::read_dir(&tmp) {
+            for e in dir.flatten() {
+                let path = e.path();
+                if !e.metadata().map(|m| m.is_file()).unwrap_or(false) {
+                    continue;
+                }
+                if manifest.files.iter().any(|(p, _)| *p == path) {
+                    continue;
+                }
+                entries.push((path, 0, true));
+            }
+        }
+    }
+    for (path, offset, created_during_run) in &entries {
+        let (path, offset) = (path, *offset);
+        let bytes = match fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                println!("EVIDENCE-SOURCE {} UNREADABLE ({e})", path.display());
+                continue;
+            }
+        };
+        let from = (offset as usize).min(bytes.len());
+        let slice = &bytes[from..];
+        let text = String::from_utf8_lossy(slice).replace('\u{0}', "\n");
+        println!(
+            "EVIDENCE-SOURCE {} from={from} bytes={} (of {} now){}",
+            path.display(),
+            slice.len(),
+            bytes.len(),
+            if *created_during_run {
+                " created-during-this-run"
+            } else {
+                ""
+            }
+        );
+        total += slice.len();
+        out.push_str(&text);
+    }
+    if total == 0 {
+        println!(
+            "EVIDENCE-NO-DATA no registered log gained a byte in this run: the census below is empty because nothing was written, not because the instruments are silent"
+        );
+    }
+    fs::write(&out_path, out).ok()?;
+    Some(out_path)
+}
+
 fn job_instrument_log(state_dir: &Path, job_log: &Path) -> PathBuf {
+    if let Some(manifest) = evidence_manifest(state_dir) {
+        println!("EVIDENCE-MODE manifest ({} registered files)", manifest.files.len());
+        if let Some(sliced) = evidence_slices(state_dir, &manifest) {
+            return sliced;
+        }
+    }
+    println!(
+        "EVIDENCE-MODE guessed-mtime (no evidence-manifest in this job state: the selection below may include another run's output)"
+    );
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(entries) = fs::read_dir(state_dir.join("activity-logs.d")) {
         for e in entries.flatten() {
@@ -8169,5 +8294,41 @@ mod core_lock_tests {
         assert_eq!(duplicate_tokens(&with_duplicate), vec![0xa03]);
         let with_zeros = vec![("1".to_string(), 0), ("2".to_string(), 0)];
         assert!(duplicate_tokens(&with_zeros).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod evidence_manifest_tests {
+    use super::*;
+
+    #[test]
+    fn parses_the_prefix_and_every_registered_file_with_its_offset() {
+        let m = parse_evidence_manifest(
+            "version=1\nstart=1791645300\nprefix=/p/prefix-ios\nfile=/tmp/darling-boot-032645-2125225.log 192767\nfile=/p/prefix-ios/private/var/log/dserver.log 0\n",
+        );
+        assert_eq!(m.prefix, Some(PathBuf::from("/p/prefix-ios")));
+        assert_eq!(m.files.len(), 2);
+        assert_eq!(m.files[0].1, 192767);
+        assert_eq!(m.files[0].0, PathBuf::from("/tmp/darling-boot-032645-2125225.log"));
+        assert_eq!(m.files[1].1, 0, "a file that did not exist yet is registered at offset 0");
+    }
+
+    #[test]
+    fn a_path_with_spaces_survives_because_the_offset_is_the_last_field() {
+        let m = parse_evidence_manifest("file=/tmp/a b/c.log 12\n");
+        assert_eq!(m.files.len(), 1);
+        assert_eq!(m.files[0].0, PathBuf::from("/tmp/a b/c.log"));
+        assert_eq!(m.files[0].1, 12);
+    }
+
+    #[test]
+    fn a_missing_manifest_is_none_rather_than_an_empty_one() {
+        let dir = std::env::temp_dir().join(format!("dwdiag-manifest-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert!(evidence_manifest(&dir).is_none());
+        fs::write(dir.join("evidence-manifest"), "version=1\n").unwrap();
+        assert!(evidence_manifest(&dir).is_some());
+        let _ = fs::remove_dir_all(&dir);
     }
 }
