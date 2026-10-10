@@ -293,6 +293,15 @@ def check_g_the_user_namespace_precondition_is_named() -> None:
         sysctl_path=Path(permissive.name),
     )
     assert problem is not None and "unavailable" in problem, problem
+    # The regression this pins, measured on this host: with the AppArmor
+    # restriction set, EVERY uid_map write is refused (even mapping the caller's
+    # own uid) while the namespaces the runtime needs are created and guest
+    # commands run. So the real call must follow the probe, and its refusal must
+    # never be the uid-map class -- that class is a different capability and
+    # demanding it refuses a host where Darling works.
+    this_host = darling_bootstrap.unprivileged_userns_problem(sysctl_path=Path(handle.name))
+    if this_host is not None:
+        assert "uid_map" not in this_host, this_host
     print("G ok: an unusable-namespace host is named up front instead of timing out")
 
 

@@ -101,13 +101,33 @@ def unprivileged_userns_problem(probe=None, sysctl_path: Path = _APPARMOR_USERNS
     shellspawn readiness timeout: measured, one such host turned every bootstrap -- including a prefix that
     had booted earlier the same day -- into `Rootless shellspawn did not become ready`, with the reason
     (an AppArmor denial of `userns_create`) visible only in the kernel log.
+
+    The probe asks for exactly that capability, and this matters: the obvious form,
+    `unshare --user --map-root-user true`, additionally demands a uid-0 mapping, which is a DIFFERENT
+    capability. Measured on a host with kernel.apparmor_restrict_unprivileged_userns=1: creating the
+    namespaces succeeds (`unshare --user --propagation unchanged --mount --pid --fork true` returns 0 and
+    guest commands run), while EVERY uid_map write is refused -- even mapping the caller's own uid -- and
+    `--map-root-user` fails with `write failed /proc/self/uid_map: Operation not permitted`. A probe built
+    on the mapping therefore refuses a host where Darling demonstrably works, and the refusal arrives before
+    anything is built or deployed, so it reads as a host restriction rather than as a wrong question.
+    `--propagation unchanged` is pinned for the same reason: unshare(1) would otherwise fail on
+    `cannot change root filesystem propagation`, a step of its own that the runtime does not depend on.
     """
 
     if probe is None:
         def probe() -> tuple[int, str]:
             try:
                 result = subprocess.run(
-                    ["unshare", "--user", "--map-root-user", "true"],
+                    [
+                        "unshare",
+                        "--user",
+                        "--propagation",
+                        "unchanged",
+                        "--mount",
+                        "--pid",
+                        "--fork",
+                        "true",
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=30,
@@ -131,7 +151,7 @@ def unprivileged_userns_problem(probe=None, sysctl_path: Path = _APPARMOR_USERNS
         f"unprivileged user namespaces are unavailable{setting}: {reason}. "
         "Darling's rootless runtime needs them to create mount and PID namespaces; "
         "relax the restriction (for example: sysctl -w kernel.apparmor_restrict_unprivileged_userns=0) "
-        "and verify with `unshare --user --map-root-user true`."
+        "and verify with `unshare --user --propagation unchanged --mount --pid --fork true`."
     )
 
 
