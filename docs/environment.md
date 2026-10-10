@@ -201,6 +201,16 @@ Rules:
 - A deploy that names only some targets can leave a chain that does not boot (`shellspawn` never becomes
   ready, `Rootless shellspawn did not become ready within 30000ms`). Deploy the set the prefix expects
   (dyld + closure + darlingserver + mldr/mldr32), or re-bootstrap, which deploys a consistent set.
+- A deploy is transactional by default: every replaced file and the receipt are restored when the post-deploy
+  check (including the boot smoke) fails, so a failed deploy leaves the prefix as it was found. The manifest
+  and its backups live under `<prefix>/.darling-deploy-txn/`, and `west darling-build --restore-deploy
+  <manifest>` restores one by hand. Before this, a failed deploy kept the new files and restored only the
+  receipt, so the next doctor check reported `deployed sha256 != receipt` for every replaced artifact.
+- A deploy compiles the working tree as it is, so an uncommitted change becomes deployed bytes that match no
+  committed revision. MEASURED 2026-10-10: dirty diagnostic probes in `xnu`, `darlingserver` and `libplatform`
+  shipped that way and killed `shellspawn` with SIGSEGV at `0x0`, which the boot smoke can only report as a
+  dead chain. The deploy prints `working-tree provenance: ... uncommitted changes: <components>` before it
+  runs and repeats it when the post-deploy check fails; commit or stash those components before deploying.
 - Check before trusting a measurement: `west darling-doctor --scope runtime --prefix P --build-dir B` reports
   "the prefix does not hold the current build" and names the artifact when the deployed bytes and the build
   tree have diverged, with the remedy. `--build-dir` must be passed: the default is not this workspace's build
