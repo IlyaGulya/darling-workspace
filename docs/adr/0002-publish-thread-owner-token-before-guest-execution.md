@@ -1,6 +1,9 @@
 # ADR: publish a nonzero, unique thread owner token before guest execution
 
-Status: proposed (2026-10-10).
+Status: superseded by 0004-one-implementation-per-public-concurrency-symbol.md. Its premise -- that the
+guest thread's owner token was never published -- was refuted by measurement: the token is present and
+stable, and the lock the guest actually dispatched to was a weak no-op stub. The invariant it states
+(a nonzero owner token before lock-capable execution) remains valid and is carried forward.
 
 ## Context
 
