@@ -42,6 +42,11 @@ static os_unfair_lock shared_lock = OS_UNFAIR_LOCK_INIT;
 static int occupancy;
 static int violations;
 static int direct_zero;
+/* What the direct reader saw at the moment the lock was taken, and how often it saw zero there. A token that
+ * is present when sampled but absent when the lock reads it is a different defect from no token at all. */
+static int slot_zero_at_lock;
+static unsigned first_slot_at_lock;
+static unsigned last_slot_at_lock;
 static pthread_mutex_t rec_lock = PTHREAD_MUTEX_INITIALIZER;
 
 struct rec {
@@ -152,6 +157,14 @@ static void
 mutex_round(void)
 {
 	unsigned before = __atomic_load_n((unsigned *)&shared_lock, __ATOMIC_SEQ_CST);
+	unsigned slot_before_lock = direct_slot3();
+	if (slot_before_lock == 0) {
+		__atomic_fetch_add(&slot_zero_at_lock, 1, __ATOMIC_SEQ_CST);
+	}
+	if (first_slot_at_lock == 0) {
+		first_slot_at_lock = slot_before_lock;
+	}
+	last_slot_at_lock = slot_before_lock;
 	os_unfair_lock_lock(&shared_lock);
 	int was_occupied = __atomic_fetch_add(&occupancy, 1, __ATOMIC_SEQ_CST);
 	unsigned after = __atomic_load_n((unsigned *)&shared_lock, __ATOMIC_SEQ_CST);
@@ -263,6 +276,8 @@ main(void)
 	    nrecs, zeros, unstable, duplicate_live, NDISPATCH);
 	printf("TSSELF main-self-slot-zero probes=%d zero=%d\n", 8, slot3_zero);
 	printf("TSSELF direct-slot3 main=0x%x participants-zero=%d\n", main_direct, direct_zero);
+	printf("TSSELF slot-at-lock first=0x%x last=0x%x zero-observations=%d\n", first_slot_at_lock,
+	    last_slot_at_lock, slot_zero_at_lock);
 	unsigned long first_id = 0;
 	int distinct_threads = 0;
 	for (i = 0; i < nrecs; ++i) {
