@@ -910,7 +910,11 @@ fn run_experiment(
             1,
             Duration::from_secs(0),
         );
-        if args.capture_gdb {
+        // --capture-tree used to do NOTHING unless --capture-gdb was also given: a capture that was
+        // asked for produced no directory and said nothing about why. The /proc tree is exactly what
+        // a hang needs (per-thread wchan/syscall/stack at the moment it stops), and it does not need
+        // the debugger, so the tree is captured whenever it is asked for, with gdb only when asked.
+        if args.capture_tree || args.capture_gdb {
             let capture_pid = args
                 .capture_pattern
                 .as_deref()
@@ -920,7 +924,7 @@ fn run_experiment(
                 capture_process_tree(
                     capture_pid,
                     &bundle.join("capture-tree"),
-                    true,
+                    args.capture_gdb,
                     args.gdb_namespace,
                     args.gdb_executable.as_deref(),
                     args.gdb_cwd.as_deref(),
