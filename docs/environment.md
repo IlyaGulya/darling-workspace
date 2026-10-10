@@ -168,3 +168,18 @@ commits (a384108, f3e71f3) while the branches kept every commit made the same pr
 (rc=0, launcher present). `west status` showed the drift as "new commits, modified content" on the two
 submodules. Keep the fix work on branches, but return the checkouts to their pins before bootstrapping, and
 re-checkout the branches (or redeploy) when the fixed runtime is wanted again.
+
+## A direct launcher invocation needs DPREFIX
+
+Measured 2026-10-10, after a prefix had been recreated and its state file was verified consistent with the
+directory (schema, runtime mode, generation, device, inode and owner all matching): `prefix/bin/darling
+--rootless shell ...` answered `Cannot prepare Darling prefix lifecycle: runtime prefix has no recognized
+stable state: recreation required` for a perfectly healthy prefix, and `west darling-prefix-repair` could not
+clear it. The launcher's own help states the cause: `DPREFIX - specifies the location of Darling prefix,
+defaults to ~/.darling`. Without `DPREFIX` the launcher resolves `~/.darling`, finds no state file there, and
+the message describes a missing prefix rather than the one named on the command line. The same invocations run
+through `scripts/dwdiag run --env DPREFIX=...` and through `darling-boot-run.sh` always worked, which is why
+this looked like prefix corruption and cost a recreation.
+
+Pass `DPREFIX` (or `DARLING_PREFIX`, which the harness also exports) on every direct launcher invocation.
+Before concluding that a prefix needs recreation, re-run the same command with `DPREFIX` set.
