@@ -177,7 +177,6 @@ main(void)
 		}
 	}
 	for (i = 0; i < nrecs; ++i) {
-	for (i = 0; i < nrecs; ++i) {
 		if (recs[i].token == 0) {
 			zeros++;
 		}
