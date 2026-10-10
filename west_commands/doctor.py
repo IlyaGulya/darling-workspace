@@ -483,6 +483,19 @@ class DarlingDoctor(WestCommand):
             head = _run(["git", "rev-parse", "HEAD"], cwd=abspath).stdout.strip()
             if not head:
                 continue
+            branch = _run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=abspath
+            ).stdout.strip()
+            if branch.startswith("diag/"):
+                # MEASURED 2026-10-10: a diagnostic branch carries probe output (pc-, tc-, dring-,
+                # mldr-seed) that interleaves with the guest's own verdict lines on fd 2, so a fixture
+                # can look broken and a run log can look like a hang. It is a warning, not a problem:
+                # measuring on such a branch is possible, it is just noisy and easy to misread.
+                self._warn(
+                    f"{project.name} is on diagnostic branch {branch}: its probe output interleaves "
+                    "with the guest's verdict lines, so a measurement here is noisy; prefer a clean "
+                    "fix/* branch when you need a verdict you can trust"
+                )
             # resolve the pinned revision (may be a branch/tag/sha) to a sha within the project
             pinned_sha = (
                 _run(["git", "rev-parse", pinned], cwd=abspath).stdout.strip()
