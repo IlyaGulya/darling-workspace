@@ -8,6 +8,7 @@ ready within 30000ms"), and that failure was mistaken for a fixture problem for 
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -21,6 +22,21 @@ MARKER = "SELFCHECK-BOOT-OK"
 # A fast path is therefore worth having, but a second "darling shell" issued immediately after
 # another one HUNG (no output, killed at 400s), so the fast path must check shellspawn readiness (or
 # reuse the harness's own state) instead of simply issuing another shell.
+
+
+def keep_boot_smoke_log(prefix, log_path):
+    """Copy a failed smoke's run log out of its throwaway directory.
+
+    The harness console carries only an ownership census; the run log is where the cause is
+    written, and MEASURED that log was deleted with the caller's temporary directory while the
+    operator saw nothing but "Rootless shellspawn did not become ready".
+    """
+    try:
+        destination = Path(prefix) / ".darling-boot-smoke.log"
+        shutil.copyfile(log_path, destination)
+        return destination
+    except OSError:
+        return None
 
 
 def run_boot_smoke(topdir, prefix, wait_seconds: int = 45) -> tuple[bool, str]:
@@ -95,9 +111,24 @@ def run_boot_smoke(topdir, prefix, wait_seconds: int = 45) -> tuple[bool, str]:
                 )
             except OSError:
                 pass
+        # Name the CAUSE, not just the symptom. MEASURED: this filter reported only "Rootless
+        # shellspawn did not become ready" while the same run log carried
+        # "[sigexc-fatal sig=11 code=1 addr=0x0]" -- a guest loader that trapped. That difference
+        # is "the chain is not bootable" versus "here is what trapped", and only the second one is
+        # actionable.
         interesting = [
             line
             for line in lines
-            if "shellspawn" in line or "VERDICT" in line or "Rootless" in line
+            if any(
+                token in line
+                for token in (
+                    "shellspawn", "VERDICT", "Rootless",
+                    "sigexc", "sigexit", "sig=", "SIG", "trap", "panic", "abort", "Assertion",
+                )
+            )
         ]
-        return False, "\n".join((interesting or lines)[-4:])
+        detail = "\n".join((interesting or lines)[-6:])
+        kept = keep_boot_smoke_log(prefix, log_path)
+        if kept is not None:
+            detail += f"\nfull log: {kept}"
+        return False, detail
