@@ -128,7 +128,9 @@ if [ "$left" -gt 0 ]; then
 fi
 
 final=$(count_owned)
-mounts=$(mount 2>/dev/null | grep -c "$PREFIX")
+# Mountpoint under the prefix, not a substring anywhere in the mount line: an overlay instance that
+# names this prefix in its lowerdir is not a mount under the prefix (MEASURED, see dar-c4ff).
+mounts=$(mount 2>/dev/null | awk -v p="$PREFIX" '$3 == p || index($3, p "/") == 1' | wc -l)
 echo "prefix-owned processes after: $final"
 echo "mounts under prefix: $mounts"
 

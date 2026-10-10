@@ -19,7 +19,7 @@
 #   5. cleanup afterwards, and a non-zero exit if the prefix is not clean.
 #
 # Usage:
-#   darling-boot-run.sh --prefix PATH --wait SECONDS [--marker NAME]... [--hatch] [--cmd 'shell command']
+#   darling-boot-run.sh --prefix PATH --wait SECONDS [--marker NAME]... [--poll REGEX] [--hatch] [--cmd 'shell command']
 # Exit: 0 if every --marker appeared in the log, 1 otherwise (or if cleanup failed).
 
 set -u
@@ -34,6 +34,7 @@ VERIFY_PROBES=""
 EXTRA_ENV=""
 ASSERT_MAPS=0
 LIST_OWNED=0
+POLL=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -43,6 +44,10 @@ while [ $# -gt 0 ]; do
 		--cmd) CMD="$2"; shift 2 ;;
 		--hatch) HATCH=1; shift ;;
 		--env) EXTRA_ENV="$EXTRA_ENV $2"; shift 2 ;;
+		# The workload's own result line, as a regex: the harness stops as soon as it appears in the
+		# log instead of sleeping out --wait. Default is the original fixture's line, so every
+		# existing caller keeps the exact behaviour it had (see the poll loop below).
+		--poll) POLL="$2"; shift 2 ;;
 		# DIAGNOSTIC ONLY (default off): when the marker verdict fails, leave the prefix and its
 		# processes ALIVE so an external observer (darling-debug, LLDB, host wchan) can inspect the
 		# failing incarnation. Acceptance never sets this; it exists because a watchdog stop followed
@@ -60,6 +65,8 @@ done
 
 [ -n "$PREFIX" ] || { echo "usage: $0 --prefix PATH --wait SECONDS [--marker NAME]..." >&2; exit 2; }
 [ -n "$WAIT" ] || [ "$LIST_OWNED" = 1 ] || { echo "usage: $0 --prefix PATH --wait SECONDS [--marker NAME]..." >&2; exit 2; }
+# Same default the poll loop always used, so an unspecified --poll cannot change any existing run.
+[ -n "$POLL" ] || POLL='RING_MACH_TEST mode=.*pass='
 
 # A run can be served by another prefix's runtime, and then every conclusion drawn from it is about the wrong
 # artifacts -- silently, because the log looks normal. MEASURED: a stale shellspawn from a second prefix was
@@ -326,12 +333,13 @@ env DPREFIX="$PREFIX" DARLING_PREFIX="$PREFIX" DARLING_ROOTLESS=1 DARLING_NOOVER
 # watchdog -- the acceptance suite ran 9 rows at --wait-base 400 and needed about an hour, which is the difference
 # between a measurement you take and one you avoid. The workload prints one machine-readable result line and then
 # exits, so the harness polls for a line that carries `pass=` and stops as soon as it sees it, still bounded by WAIT.
+# Which line that is comes from `--poll` (default: the first fixture's own, unchanged for existing callers).
 # The marker list is deliberately NOT used here: the tool's markers open the window a probe is read in, and exiting on
 # one of them would cut a run short (the value of the run is what happens after the marker).
-STAGE=workload-wait; echo "waiting up to ${WAIT}s for the workload's own result line (diagnostic lines before it are not verdicts)"
+STAGE=workload-wait; echo "waiting up to ${WAIT}s for the workload's own result line (poll='$POLL'; diagnostic lines before it are not verdicts)"
 _waited=0
 while [ "$_waited" -lt "$WAIT" ]; do
-	if grep -aq "RING_MACH_TEST mode=.*pass=" "$LOG" 2>/dev/null; then
+	if grep -aq "$POLL" "$LOG" 2>/dev/null; then
 		break
 	fi
 	sleep 1
@@ -396,7 +404,11 @@ while [ "$i" -lt 10 ]; do
 done
 	i=$((i + 1))
 done
-mounts=$(mount 2>/dev/null | grep -c "$PREFIX")
+# Count mounts whose MOUNTPOINT lies under the prefix. A substring match was MEASURED to fail here:
+# another lane's overlay instance names this prefix in its lowerdir
+# (.west-prefix-instances/probe1/merged lowerdir=<prefix>), which is not a mount under the prefix, yet
+# it made every run print "mounts: 1" and clean up as VERDICT: FAIL while the guest verdict was PASS.
+mounts=$(mount 2>/dev/null | awk -v p="$PREFIX" '$3 == p || index($3, p "/") == 1' | wc -l)
 # Same rule after the run: leave the prefix as a *bootable* clean state, not merely a process-free one.
 clear_stale_runtime_files
 echo "prefix processes after: $final, mounts: $mounts"
