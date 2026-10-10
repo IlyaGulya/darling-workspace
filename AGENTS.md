@@ -433,6 +433,10 @@ refs, and agent handoff.
   transport, in-guest compilation, execution, or verdict matching. Source is
   sent by an explicit guest command into persistent `/private/var/tmp`, not by
   relying on `shell -c` stdin or a `/tmp` namespace surviving between stages.
+  Extra link inputs are declared with repeated `--link-file PATH` (host paths,
+  copied host-side into the same persistent directory and appended to the guest
+  compile line after the source; the prefix tree is host-visible, so no guest
+  transfer and no decoder are involved).
 - `tests/run-west-test-runtime-build-contract.sh` covers runtime source/build
   timeout forwarding; use `--runtime-build-timeout-seconds` to bound a
   diagnostic rebuild without changing normal profile deadlines.

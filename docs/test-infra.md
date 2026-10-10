@@ -1359,7 +1359,15 @@ guest binary through `DARLING_LAUNCHER shell`; it must not run a Linux host
 binary under Darling. Upload is an explicit guest `printf` command rather than
 an assumption that `shell -c` preserves host stdin; staged files live under
 prefix-owned `/private/var/tmp` because guest `/tmp` may be recreated for each
-launcher invocation. `env=macos` is the native differential oracle.
+launcher invocation. A fixture may also declare extra object files or static
+archives to link into its in-guest compile with a repeated `--link-file PATH`:
+each host path must exist (a missing one fails before any guest command and
+names the path), is copied host-side into the same prefix-owned directory as the
+source -- the prefix tree is host-visible, and the real guest has no decoder, so
+no transfer through the guest is involved -- and is appended to the guest
+compile line after the source, so an unresolved symbol fails at the compile stage
+rather than at run time. `env=macos`
+is the native differential oracle.
 
 Every `env=darling` registration receives the framework-owned
 `runtime-profile:homebrew` label by default. Product tests therefore do not

@@ -12,6 +12,7 @@ guest_cflags="${DARLING_GUEST_CFLAGS:--isysroot /Library/Developer/CommandLineTo
 launcher="${DARLING_LAUNCHER:-}"
 ok_marker=
 ok_marker_file=
+link_files=()
 args=()
 
 while (($#)); do
@@ -22,6 +23,10 @@ while (($#)); do
 			;;
 		--source)
 			source="$2"
+			shift 2
+			;;
+		--link-file)
+			link_files+=("$2")
 			shift 2
 			;;
 		--launcher)
@@ -57,7 +62,7 @@ while (($#)); do
 done
 
 if [[ -z "$name" || -z "$source" ]]; then
-	echo "usage: run-darling-c-test.sh --name NAME --source PATH [--launcher PATH] [--ok-marker TEXT|--ok-marker-file PATH] [-- ARGS...]" >&2
+	echo "usage: run-darling-c-test.sh --name NAME --source PATH [--launcher PATH] [--link-file PATH]... [--ok-marker TEXT|--ok-marker-file PATH] [-- ARGS...]" >&2
 	exit 2
 fi
 if [[ -z "$launcher" ]]; then
@@ -73,6 +78,19 @@ if [[ ! -f "$source" ]]; then
 	echo "$name: source not found: $source" >&2
 	exit 2
 fi
+# An extra link input must exist on the host before any guest work starts: a
+# silently-missing archive would produce a fixture that links nothing and can
+# still report a false PASS.
+for link_file in "${link_files[@]}"; do
+	if [[ ! -e "$link_file" ]]; then
+		echo "$name: link file not found: $link_file" >&2
+		exit 2
+	fi
+	if [[ ! -f "$link_file" ]]; then
+		echo "$name: link file is not a regular file: $link_file" >&2
+		exit 2
+	fi
+done
 if [[ -n "$ok_marker" && -n "$ok_marker_file" ]]; then
 	echo "$name: --ok-marker and --ok-marker-file are mutually exclusive" >&2
 	exit 2
@@ -93,6 +111,14 @@ run_id="${WEST_GUEST_C_FIXTURE_ID:-$$.$RANDOM}"
 guest_tmpdir="/private/var/tmp"
 guest_src="${guest_tmpdir}/${safe_name}.${run_id}.c"
 guest_bin="${guest_tmpdir}/${safe_name}.${run_id}"
+# Extra link inputs are staged beside the source under the same run id. A
+# sibling index keeps two inputs with the same basename distinct.
+guest_link_files=()
+for link_index in "${!link_files[@]}"; do
+	link_base="${link_files[$link_index]##*/}"
+	link_base="${link_base//[^A-Za-z0-9_.-]/_}"
+	guest_link_files+=("${guest_tmpdir}/${safe_name}.${run_id}.${link_index}.${link_base}")
+done
 output="$(mktemp "${TMPDIR:-/tmp}/west-ctest-guest-c.${safe_name}.XXXXXX")"
 # darling shell does not guarantee that stdin reaches the guest command. Keep
 # the fixture transport explicit so real and fake launchers have identical
@@ -103,6 +129,14 @@ guest_src_literal="$(printf '%q' "$guest_src")"
 quoted_args=()
 for arg in "${args[@]}"; do
 	quoted_args+=("$(printf '%q' "$arg")")
+done
+
+# Extra link inputs are appended to the guest compile line after the source, in
+# declaration order, so an unresolved symbol fails at the compile stage rather
+# than at run time.
+guest_link_args=""
+for guest_link in "${guest_link_files[@]}"; do
+	guest_link_args+=" '$guest_link'"
 done
 
 dump_file_sha() {
@@ -118,6 +152,10 @@ dump_file_sha() {
 dump_runtime_file_state() {
 	dump_file_sha launcher "$launcher"
 	dump_file_sha fixture "$source"
+	local link_index
+	for link_index in "${!link_files[@]}"; do
+		dump_file_sha "link_file_${link_index}" "${link_files[$link_index]}"
+	done
 	dump_file_sha prefix_dyld "$prefix/usr/lib/dyld"
 	dump_file_sha prefix_nested_dyld "$prefix/libexec/darling/usr/lib/dyld"
 	dump_file_sha prefix_libsystem_kernel "$prefix/usr/lib/system/libsystem_kernel.dylib"
@@ -152,8 +190,13 @@ dump_boot_trace() {
 timeout_seconds="${DARLING_GUEST_TIMEOUT_SECONDS:-60}"
 
 cleanup_guest_artifacts() {
+	local guest_paths="'$guest_src' '$guest_bin'"
+	local guest_link
+	for guest_link in "${guest_link_files[@]}"; do
+		guest_paths+=" '$guest_link'"
+	done
 	darling_guest_shell "$launcher" "$prefix" 10 \
-		"rm -f '$guest_src' '$guest_bin'" >/dev/null 2>&1 || true
+		"rm -f $guest_paths" >/dev/null 2>&1 || true
 }
 
 cleanup() {
@@ -171,14 +214,40 @@ run_guest_stage() {
 		>>"$output" 2>&1
 }
 
+# Extra link inputs are staged by copying them from the host straight into the prefix-owned persistent
+# directory. There is no transfer to speak of: the prefix tree IS host-visible, which is the same property
+# that makes a workload's result readable from outside. The previous base64 transfer assumed the guest would
+# have a decoder, and the real guest does not -- measured: WEST_GUEST_NO_BASE64_DECODER, with no base64 and no
+# uudecode anywhere in the prefix's usr/bin -- which a fake-launcher contract could not reveal, because the
+# fake host had one. A copy also sidesteps the kernel's single-argument limit that motivated chunking.
+upload_guest_link_files() {
+	local link_index
+	for link_index in "${!link_files[@]}"; do
+		local guest_link="${guest_link_files[$link_index]}"
+		local host_target="${prefix}${guest_link#/}"
+		mkdir -p "$(dirname "$host_target")" 2>/dev/null || true
+		if ! cp -f "${link_files[$link_index]}" "$host_target"; then
+			echo "$name: cannot stage link file into the prefix: ${link_files[$link_index]} -> $host_target" >&2
+			return 1
+		fi
+	done
+	return 0
+}
+
 dump_runtime_file_state
 set +e
 run_guest_stage upload "umask 077; printf '%s' $source_literal > $guest_src_literal"
 rc=$?
 set -e
+if [ "$rc" -eq 0 ] && [[ "${#link_files[@]}" -gt 0 ]]; then
+	set +e
+	upload_guest_link_files
+	rc=$?
+	set -e
+fi
 if [ "$rc" -eq 0 ]; then
 	set +e
-	run_guest_stage compile "set +e; $guest_cc $guest_cflags -o '$guest_bin' '$guest_src'; rc=\$?; printf 'ORACLE_RC=%s\\n' \"\$rc\"; exit \"\$rc\""
+	run_guest_stage compile "set +e; $guest_cc $guest_cflags -o '$guest_bin' '$guest_src'$guest_link_args; rc=\$?; printf 'ORACLE_RC=%s\\n' \"\$rc\"; exit \"\$rc\""
 	rc=$?
 	set -e
 fi
