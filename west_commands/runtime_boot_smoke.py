@@ -14,6 +14,14 @@ from pathlib import Path
 
 MARKER = "SELFCHECK-BOOT-OK"
 
+# MEASURED 2026-10-10 on a minimal bootstrap prefix:
+#   * this function, healthy chain: 13.2s (harness boot, the guest command, then its process census
+#     and shutdown);
+#   * the same guest command on a prefix that is ALREADY up: 0.34s.
+# A fast path is therefore worth having, but a second "darling shell" issued immediately after
+# another one HUNG (no output, killed at 400s), so the fast path must check shellspawn readiness (or
+# reuse the harness's own state) instead of simply issuing another shell.
+
 
 def run_boot_smoke(topdir, prefix, wait_seconds: int = 45) -> tuple[bool, str]:
     """Run the boot harness with one trivial guest command.
