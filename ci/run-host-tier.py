@@ -241,6 +241,19 @@ EXPLICIT_CONTRACTS = (
     ),
     ("eunion-boot", "tests/west_test_contracts/eunion_boot_contract.py", True),
     ("eunion-prereq", "tests/west_test_contracts/eunion_prereq_contract.py", True),
+    # Uncached on purpose: every input this contract reads lives in the darling
+    # source forest rather than in this workspace, so the tier's cache key does
+    # not identify the bytes it judged. A cached PASS here would be exactly the
+    # failure it exists to catch - a binding nothing re-measured. It checks that
+    # every weak or placeholder definition that can satisfy a guest binding has a
+    # reviewed classification in lifecycle/weak-binding-registry-v1.json, that an
+    # unclassified candidate fails by name, and that a classification anchored to
+    # source bytes that moved fails until it is reviewed again (ADR-0004).
+    (
+        "weak-binding-registry",
+        "tests/west_test_contracts/weak_binding_registry_contract.py",
+        False,
+    ),
 )
 
 # Contracts deliberately kept out of the tier. Each entry states the reason,
