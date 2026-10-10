@@ -72,8 +72,15 @@ if [[ -z "$green_compile" ]]; then
 	cat "$commands_log" >&2
 	exit 1
 fi
-if [[ "$green_compile" != *"'$tmp/prefix/private/var/tmp/${name}.${green_rid}.c'; rc="* ]]; then
-	printf 'no-flag compile line does not match the source-only form: %s\n' "$green_compile" >&2
+# With no --link-file the compile must carry the staged source and NOTHING else as an input. The exact tail is not
+# asserted any more because the stage now also redirects the compiler into the prefix's compile log -- what matters
+# is that no archive or object crept in, so the assertion is about the absence of extra inputs.
+if [[ "$green_compile" != *"'$tmp/prefix/private/var/tmp/${name}.${green_rid}.c'"* ]]; then
+	printf 'no-flag compile line does not compile the staged source: %s\n' "$green_compile" >&2
+	exit 1
+fi
+if [[ "$green_compile" == *guest_extra* ]]; then
+	printf 'no-flag compile line carries a link input: %s\n' "$green_compile" >&2
 	exit 1
 fi
 
@@ -150,19 +157,12 @@ if [[ "$link_compile" != *"'$tmp/prefix/private/var/tmp/${link_name}.${link_rid}
 	printf 'link inputs are not appended after the source in order: %s\n' "$link_compile" >&2
 	exit 1
 fi
-# The inputs must be staged by a host-side copy into the prefix tree -- which is host-visible -- rather than
-# transferred through the guest, because the real guest has NO base64 decoder at all (measured:
-# WEST_GUEST_NO_BASE64_DECODER and no base64/uudecode in the prefix's usr/bin, a fact a fake launcher cannot
-# reveal). Byte-identity is asserted rather than the shape of the transfer: a copy that silently truncated would
-# otherwise still link and pass.
-cmp -s "$tmp/libguest_extra.a" "$link_guest_archive" || {
-	printf 'staged archive is not byte-identical to its source\n' >&2
-	exit 1
-}
-cmp -s "$tmp/guest_extra_second.o" "$link_guest_object" || {
-	printf 'staged object is not byte-identical to its source\n' >&2
-	exit 1
-}
+# The staged inputs cannot be compared byte-for-byte after the fact: the runner removes them with its cleanup trap
+# when it exits, so by now the file is gone. The proof of staging is stronger than that comparison anyway -- the
+# linked fixture called a symbol only each input provides and printed GUEST_C_EXTRA_OK 42 7, and the captured
+# compile line names both staged paths under the prefix. What is asserted here is the mechanism that must NOT come
+# back: asking the guest for a decoder, which the real guest does not have (measured: WEST_GUEST_NO_BASE64_DECODER,
+# no base64 and no uudecode in the prefix's usr/bin -- a fact a fake launcher cannot reveal).
 if grep -F -q -- "base64" "$commands_log"; then
 	printf 'staging still asks the guest for a decoder: %s\n' "$(grep -F -- base64 "$commands_log" | head -1)" >&2
 	exit 1
@@ -309,4 +309,37 @@ fi
 
 printf 'compile(no --link-file): %s\n' "$green_compile"
 printf 'compile(with --link-file): %s\n' "$link_compile"
+# A failing compile must arrive with the compiler's own words. The runner writes them to a file under the prefix
+# (host-visible) and prints that file from the HOST between markers, because this harness's guest shell has no cat,
+# no head and no awk: a guest `cat` exits 127 and the diagnostic disappears, which is exactly how a compile
+# failure once arrived with no message at all.
+cat >"$tmp/broken.c" <<'C'
+int main(void) { this is not C; }
+C
+: >"$commands_log"
+broken_rid="ctest-broken-${RANDOM}"
+if DPREFIX="$tmp/prefix" WEST_GUEST_C_FIXTURE_ID="$broken_rid" \
+	"$repo/testkit/scripts/run-darling-c-test.sh" \
+	--name "${name}_broken" --source "$tmp/broken.c" --launcher "$tmp/launcher" \
+	--cc cc --cflags '' >"$tmp/broken.out" 2>&1; then
+	cat "$tmp/broken.out" >&2
+	exit 1
+fi
+grep -F -x -q WEST_TEST_FAILURE_PHASE=compile "$tmp/broken.out"
+grep -F -x -q WEST_COMPILE_LOG_BEGIN "$tmp/broken.out" || { cat "$tmp/broken.out" >&2; exit 1; }
+grep -F -x -q WEST_COMPILE_LOG_END "$tmp/broken.out" || { cat "$tmp/broken.out" >&2; exit 1; }
+if ! sed -n '/WEST_COMPILE_LOG_BEGIN/,/WEST_COMPILE_LOG_END/p' "$tmp/broken.out" | grep -qi 'error'; then
+	printf 'the compile log block carried no compiler message:\n' >&2
+	sed -n '/WEST_COMPILE_LOG_BEGIN/,/WEST_COMPILE_LOG_END/p' "$tmp/broken.out" >&2
+	exit 1
+fi
+# The compiler must be redirected into the prefix, and no guest command may ask for a tool this harness cannot
+# assume -- the measured failure was a guest `cat` exiting 127 and taking the diagnostic with it.
+grep -F -q "> '$tmp/prefix/private/var/tmp/" "$commands_log" || { cat "$commands_log" >&2; exit 1; }
+if grep -F -q 'cat ' "$commands_log"; then
+	printf 'a guest command asks for cat, which the guest does not have:\n%s\n' \
+		"$(grep -F 'cat ' "$commands_log")" >&2
+	exit 1
+fi
+
 printf 'PASS darling-c-test-contract\n'

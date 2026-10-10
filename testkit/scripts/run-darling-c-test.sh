@@ -228,7 +228,10 @@ upload_guest_link_files() {
 	local link_index
 	for link_index in "${!link_files[@]}"; do
 		local guest_link="${guest_link_files[$link_index]}"
-		local host_target="${prefix}${guest_link#/}"
+		# guest_link is an absolute guest path, and the prefix has no trailing slash: concatenating the two
+		# directly is the join (stripping the leading slash produced a SIBLING directory, prefixprivate/, which
+		# is how the staged input went missing while the copy still "succeeded").
+		local host_target="${prefix}${guest_link}"
 		mkdir -p "$(dirname "$host_target")" 2>/dev/null || true
 		if ! cp -f "${link_files[$link_index]}" "$host_target"; then
 			echo "$name: cannot stage link file into the prefix: ${link_files[$link_index]} -> $host_target" >&2
