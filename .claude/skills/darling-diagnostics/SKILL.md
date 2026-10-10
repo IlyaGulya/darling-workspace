@@ -123,6 +123,35 @@ Canonical sources live in the selected manifest repository:
   `Undefined symbols`; find the function's end by brace counting, assert the
   symbols that must survive, and write only after those assertions pass.
 
+## A measured run is read by stream, never by line pattern
+
+In-path instruments that print run in the measured process's own address space, so
+they write to the SAME fd as the thing being measured. Three effects then compound:
+the volume pushes the few useful lines out of any tail or window; the filters in
+front of a log (`grep -v` on an instrument prefix, a colour- or bracket-shaped
+pattern) are written for one shape of noise and silently drop a line that mixes
+noise with a real message; and because `grep` matches whole lines, a line that
+holds both cannot be classified by its text at all. Measured cases: a guest
+compiler's diagnostic survived only as the fragment `` generated.``, and an earlier
+stage failure lost its message entirely.
+
+Therefore:
+
+* Split by STREAM. Give the guest's output its own fd or file and keep the host
+  tools' diagnostics in the job log, so neither can consume the other. Until the
+  launcher does that for you, have the workload write its result to a file under
+  the prefix -- the prefix tree is host-visible, so the file is readable from
+  outside without depending on transport fd separation.
+* Ask the census, do not grep. `dwdiag witness` reports which registered
+  instruments spoke, with counts and samples, and names the ones that stayed
+  silent; a hand-written pattern can only find the line it was written for.
+* Prefer not printing at all in a measured path: record to an out-of-band ring and
+  decode after the run (the `dar-e1b3` direction), or gate the instrument behind an
+  explicit switch that is read once at startup and defaults to off.
+* When you do filter, filter only whole-line instrument shapes you have confirmed,
+  and print what you removed -- a filter that reports nothing about its own
+  discards is how a real diagnostic gets read as "the run said nothing".
+
 ## Tooling work is not done when the tool runs once
 
 Each tool in this list was written, used, and then corrected at least once,

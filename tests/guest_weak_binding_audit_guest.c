@@ -20,6 +20,7 @@
  * Any ENOSYS/errno in those four fields makes the run informative but not passing.
  */
 #include <sys/event.h>
+#include <sys/socket.h>
 #include <sys/time.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -49,8 +50,19 @@ static void report_hook(const char *name)
 		printf("WEAKBIND hook  %-28s %s\n", name, image_of(p));
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+	/* In-path probes in the deployed runtime print to the guest's fd 2 thousands of times per second, on the
+	 * SAME stream as this program's output, and interleave mid-line with it. A result that shares that stream
+	 * is unreadable, so when an output path is given the audit writes there instead: the prefix tree is
+	 * host-visible, so the file can be read from outside without depending on transport fd separation. */
+	if (argc > 1 && argv[1][0] != '\0') {
+		if (freopen(argv[1], "w", stdout) == NULL) {
+			perror("freopen");
+			return 2;
+		}
+	}
+	setvbuf(stdout, NULL, _IOLBF, 0);
 	report_image("kqueue", (void *)&kqueue);
 	report_image("kevent", (void *)&kevent);
 	report_image("kevent64", (void *)&kevent64);
