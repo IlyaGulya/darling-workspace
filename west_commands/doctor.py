@@ -35,7 +35,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +43,7 @@ from west.commands import WestCommand
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from deploy_receipt import read_receipt, receipt_path, stale_source_problems, verify_receipt
 from prefix_repair import PrefixBootPhase, prefix_boot_phase, prefix_boot_prerequisite_problems
+from runtime_boot_smoke import run_boot_smoke
 
 _EXTRA_PREFIX_DYLIBS = [
     "libsystem_kernel.dylib",
@@ -699,69 +699,13 @@ class DarlingDoctor(WestCommand):
             )
             return
         self._section("5. runtime boot smoke")
-        script = Path(self.manifest.repo_abspath) / "scripts" / "darling-boot-run.sh"
-        if not script.is_file():
-            self._warn(f"no {script} (skip)")
+        ok, detail = run_boot_smoke(Path(self.topdir), Path(args.prefix))
+        if ok:
+            self._ok(detail)
             return
-        try:
-            log_dir = tempfile.mkdtemp(prefix="doctor-boot-smoke-")
-            log_path = Path(log_dir) / "run.log"
-            result = subprocess.run(
-                [
-                    str(script),
-                    "--prefix",
-                    str(args.prefix),
-                    "--wait",
-                    "45",
-                    "--marker",
-                    "SELFCHECK-BOOT-OK",
-                    "--cmd",
-                    "/bin/sh -c 'echo SELFCHECK-BOOT-OK'",
-                    "--log",
-                    str(log_path),
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=300,
-                # Its own session: the harness signals its own process group when a guest run fails
-                # (MEASURED: this doctor died with SIGTERM and lost its report while the harness
-                # reported shellspawn never becoming ready, and the same kill took the strand
-                # contract's driver), so the check must not share that group.
-                start_new_session=True,
-            )
-        except subprocess.TimeoutExpired:
-            self._problem(
-                "the runtime boot smoke timed out: the prefix did not reach a shell in 300s; "
-                "re-bootstrap it (west test --prefix P --bootstrap-runtime-profile ...) or deploy "
-                "the whole chain (dyld + closure + darlingserver + mldr/mldr32)"
-            )
-            return
-        output = (result.stdout or "") + (result.stderr or "")
-        if result.returncode == 0 and "VERDICT: PASS" in output and "SELFCHECK-BOOT-OK" in output:
-            self._ok("the prefix reached a guest shell")
-            return
-        lines = [line for line in output.strip().splitlines() if line.strip()]
-        # The harness prints an ownership census to its console and the reason it stopped to its own
-        # run log, so read both before quoting: MEASURED, the console alone named only sshd sessions.
-        if log_path.is_file():
-            try:
-                lines.extend(
-                    line
-                    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                    if line.strip()
-                )
-            except OSError:
-                pass
-        interesting = [
-            line
-            for line in lines
-            if "shellspawn" in line or "VERDICT" in line or "Rootless" in line
-        ]
-        tail = "\n".join((interesting or lines)[-4:])
         self._problem(
             "the prefix did not reach a guest shell: "
-            + tail
+            + detail
             + " -- the deployed chain is not bootable; re-bootstrap the prefix (west test --prefix "
             "P --bootstrap-runtime-profile ...) or deploy the whole chain (dyld + closure + "
             "darlingserver + mldr/mldr32)"

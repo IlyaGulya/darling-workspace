@@ -128,6 +128,11 @@ class DarlingBuild(WestCommand):
                        help="with --deploy, shut down affected prefixes before overwriting live runtime binaries")
         p.add_argument("--skip-post-doctor", action="store_true",
                        help="with --deploy, skip the post-deploy doctor (use only for intentional local dirty deploys)")
+        p.add_argument("--skip-boot-smoke", action="store_true",
+                       help="with --deploy, skip the automatic boot smoke inside the post-deploy "
+                       "doctor. The smoke starts the prefix and requires a guest shell, and a "
+                       "failure rolls the deploy back; skip it only when the prefix is deliberately "
+                       "not bootable at this point")
         p.add_argument("--force", action="store_true",
                        help="build even if the doctor pre-gate fails (records the override loudly)")
         p.add_argument("--skip-doctor", action="store_true", help="skip the doctor pre-gate entirely (discouraged)")
@@ -254,7 +259,13 @@ class DarlingBuild(WestCommand):
                     self.wrn("skipping post-deploy doctor (--skip-post-doctor)")
                 else:
                     self.inf("== post-deploy doctor ==")
-                    rc = self._doctor(topdir, build_dir=build_dir, prefix=prefix, extra_prefixes=extra_prefixes)
+                    rc = self._doctor(
+                        topdir,
+                        build_dir=build_dir,
+                        prefix=prefix,
+                        extra_prefixes=extra_prefixes,
+                        boot_smoke=not args.skip_boot_smoke,
+                    )
                     if rc != 0:
                         self.err("post-deploy doctor FAILED — rolling back the transaction.")
                         raise SystemExit(1)
@@ -286,12 +297,18 @@ class DarlingBuild(WestCommand):
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
-    def _doctor(self, topdir, build_dir=None, prefix=None, extra_prefixes=None):
+    def _doctor(self, topdir, build_dir=None, prefix=None, extra_prefixes=None, boot_smoke=False):
         cmd = ["west", "darling-doctor"]
         if build_dir is not None:
             cmd.extend(["--build-dir", str(build_dir)])
         if prefix is not None:
             cmd.extend(["--prefix", str(prefix)])
+        if boot_smoke:
+            # Only the post-deploy gate asks for this: it starts the prefix and requires a guest
+            # shell, which is the one property the artifact comparisons cannot see. It costs the
+            # failure path's 30s shellspawn deadline plus cleanup when the chain is broken, and a
+            # few seconds when it is healthy.
+            cmd.append("--boot-smoke")
         for extra in extra_prefixes or []:
             cmd.extend(["--extra-prefix", str(extra)])
         return subprocess.run(cmd, cwd=topdir).returncode
