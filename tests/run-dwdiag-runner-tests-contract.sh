@@ -204,12 +204,29 @@ printf 'WAIT pid=999 tid=999 uaddr=0x1080 ts_ns=%s\n' "$((T0 + 30))" >"$FTRACE/f
 if out=$("$BIN" diag futex --bundle "$FTRACE" --futex-trace "$FTRACE/foreign-pid.trace" 2>&1); then
 	fail "a trace naming a pid the bundle never saw was ACCEPTED: $out"
 fi
-grep -aq 'did not capture' <<<"$out" || fail "the refusal did not name the reason: $out"
+grep -aq 'all foreign' <<<"$out" || fail "the refusal did not name the reason: $out"
 printf 'WAIT pid=100 tid=101 uaddr=0x1080 ts_ns=%s\n' "$((( END + 10) * 1000000000))" >"$FTRACE/foreign-window.trace"
 if out=$("$BIN" diag futex --bundle "$FTRACE" --futex-trace "$FTRACE/foreign-window.trace" 2>&1); then
 	fail "a trace from outside the run window was ACCEPTED: $out"
 fi
 grep -aq 'run end' <<<"$out" || fail "the window refusal did not name the reason: $out"
+
+# A kernel probe is SYSTEM-WIDE: the first real trace taken with probes/futex.bt carried 29198 events, most of
+# them from unrelated processes. Refusing on the first foreign pid would reject every honest trace, so the run's
+# events are SELECTED and the rest counted -- and a private futex has no shared object, so it must pair by
+# (pid, address), or every ordinary mutex would read as "nothing ever woke it".
+printf '3000-4000 rw-p 00000000 00:00 0 \n' >"$FTRACE/capture-tree/pid-100/proc-maps.txt"
+{
+	printf 'WAIT pid=100 tid=101 uaddr=0x3080 ts_ns=%s\n' "$((T0 + 10))"
+	printf 'WAKE pid=999 tid=999 uaddr=0x3080 ts_ns=%s\n' "$((T0 + 15))"
+	printf 'WAKE pid=100 tid=102 uaddr=0x3080 woke=1 ts_ns=%s\n' "$((T0 + 20))"
+} >"$FTRACE/private.trace"
+out=$("$BIN" diag futex --bundle "$FTRACE" --futex-trace "$FTRACE/private.trace") \
+	|| fail "a private futex trace was refused"
+grep -aq 'WAKER pid=100 tid=102' <<<"$out" || fail "a private wait was not paired with the wake at its own address: $out"
+json=$("$BIN" diag futex --bundle "$FTRACE" --futex-trace "$FTRACE/private.trace" --json) \
+	|| fail "the private trace failed in --json mode"
+grep -aq '"foreign_events":1' <<<"$json" || fail "the foreign event was not counted: $json"
 printf 'FUTEX-TRACE-DISCIPLINE PASS\n'
 
 # The ring decoder: the record schema is fixed at six words, a slot read while it is being written is NOT a

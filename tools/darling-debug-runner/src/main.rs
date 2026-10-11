@@ -77,6 +77,11 @@ struct CommonArgs {
     gdb_ex: Vec<String>,
     #[arg(long)]
     capture_pattern: Option<String>,
+    /// Record the out-of-band futex trace for THIS run into this file, with the probe the reader expects
+    /// (`probes/futex.bt`, embedded in the binary). It needs root: `sudo -n bpftrace` must work without a password.
+    /// The trace is what makes "who woke whom" answerable at all -- a /proc syscall snapshot is one instant.
+    #[arg(long)]
+    futex_trace_out: Option<PathBuf>,
     /// Capture as soon as this REGEX appears in the watch log (or in the workload's own output when
     /// no --stall-log is given), instead of waiting for silence. A workload that fails by its own
     /// timeout prints a last line and then tears itself down, and a stall detector armed after that
@@ -661,6 +666,69 @@ fn terminate_group(child: &mut Child) -> Result<String> {
     Ok(lines.join("\n") + "\n")
 }
 
+/// The probe program, embedded so the binary always carries the one its own reader expects. The file is
+/// `probes/futex.bt`; keeping it as `include_str!` means a run cannot use a stale copy from somewhere else.
+const FUTEX_PROBE_TEXT: &str = include_str!("../probes/futex.bt");
+
+/// The out-of-band futex probe, running for the duration of the workload.
+///
+/// WHY A PROBE AND NOT A SNAPSHOT: a /proc syscall snapshot is one instant, so it can never show who woke whom.
+/// The program is `probes/futex.bt` embedded in the binary, so the tool always carries the probe its own reader
+/// expects, and its output is exactly the schema `dwdiag futex --futex-trace` parses.
+struct FutexProbe {
+    child: Option<Child>,
+    path: PathBuf,
+}
+
+impl FutexProbe {
+    fn spawn(path: &Path) -> Result<Self> {
+        let path = expand_home(path);
+        let file = File::create(&path).with_context(|| format!("cannot create {}", path.display()))?;
+        // bpftrace diagnostics go to their own file rather than a pipe: a pipe nobody reads fills up and blocks the
+        // probe, which would look exactly like a run with no futex activity.
+        let err_path = path.with_extension("stderr");
+        let err = File::create(&err_path).ok();
+        let mut command = Command::new("sudo");
+        command.args(["-n", "bpftrace", "-q", "-e", FUTEX_PROBE_TEXT]);
+        command.stdout(Stdio::from(file));
+        command.stderr(match err {
+            Some(handle) => Stdio::from(handle),
+            None => Stdio::null(),
+        });
+        let child = command
+            .spawn()
+            .context("cannot start bpftrace: --futex-trace-out needs `sudo -n bpftrace` to work")?;
+        Ok(Self {
+            child: Some(child),
+            path,
+        })
+    }
+
+    /// Stop the probe so it flushes, and say how much it recorded.
+    ///
+    /// SIGINT, not SIGKILL: bpftrace flushes its output on a normal signal, and a trace that silently ends early is
+    /// the very failure this path exists to remove. The same reason it runs on Drop -- a run that fails early must
+    /// not leave a root-owned probe behind.
+    fn stop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let _ = nix::sys::signal::kill(Pid::from_raw(child.id() as i32), Signal::SIGINT);
+        let _ = child.wait();
+        let lines = fs::read_to_string(&self.path)
+            .map(|text| text.lines().count())
+            .unwrap_or(0);
+        println!("FUTEX-TRACE-OUT {} lines={lines}", self.path.display());
+    }
+}
+
+#[cfg(unix)]
+impl Drop for FutexProbe {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 struct StraceAttacher {
     stop: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
@@ -814,8 +882,23 @@ fn run_experiment(
     }
     println!("BUNDLE={}", bundle.display());
     let mut detector = StallDetector::from_args(args)?;
+    let mut futex_probe = match args.futex_trace_out.as_ref() {
+        Some(path) => Some(FutexProbe::spawn(path)?),
+        None => None,
+    };
     let mut child = spawn(args, &bundle, &command, &extra_env)?;
     fs::write(bundle.join("pid.txt"), format!("{}\n", child.id()))?;
+    // The run window, in the SAME format the job owner writes and the readers already parse. Without it a trace
+    // cannot be attributed to this run at all: `dwdiag futex --futex-trace` refuses an unattributable trace on
+    // purpose, because a trace from another run reads exactly like this one.
+    let run_start = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    fs::write(
+        bundle.join("evidence-manifest"),
+        format!("version=1\nstart={run_start}\n"),
+    )?;
     let stdout = bundle.join("stdout.log");
     let stderr = bundle.join("stderr.log");
     let deadline = Instant::now() + Duration::from_secs(args.timeout_seconds);
@@ -946,6 +1029,24 @@ fn run_experiment(
             break;
         }
         thread::sleep(Duration::from_secs(args.poll_seconds));
+    }
+
+    // The workload is over, so the probe is stopped first: it flushes on SIGINT and reports how much it recorded.
+    if let Some(probe) = futex_probe.as_mut() {
+        probe.stop();
+    }
+    // Close the run window. It is written here rather than at startup because the end is only known now, and a
+    // window without an end can only be checked from its start.
+    let run_end = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let manifest_path = bundle.join("evidence-manifest");
+    if let Ok(text) = fs::read_to_string(&manifest_path) {
+        let _ = fs::write(
+            &manifest_path,
+            format!("{text}end={run_end}\n"),
+        );
     }
 
     // Detach strace (flushing rpctrace.log) before any gdb capture: a process

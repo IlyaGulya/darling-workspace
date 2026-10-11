@@ -7913,6 +7913,9 @@ struct FutexReport {
     trace_waits: Vec<FutexTraceWait>,
     /// Whether an out-of-band trace was supplied and accepted.
     trace_present: bool,
+    /// Events in that trace that belong to OTHER processes: a kernel probe is system-wide, so this is normally
+    /// large, and reporting it is what keeps the selection visible instead of silent.
+    trace_foreign_events: u64,
     /// True when the run manifest recorded no end, so the window could only be checked from its start.
     trace_window_open_ended: bool,
 }
@@ -7999,9 +8002,38 @@ struct FutexTraceEvent {
 
 fn parse_futex_trace(text: &str) -> Result<Vec<FutexTraceEvent>, String> {
     let mut out = Vec::new();
+    // A trace from a kernel probe carries MONOTONIC timestamps (`nsecs`), while a run window is recorded as wall
+    // clock. The probe therefore prints one base line with both clocks, and every event is converted here. Without
+    // it the reader would have to guess, and a guess is what the window check exists to prevent -- it would refuse
+    // the honest probe's own trace.
+    let mut base: Option<(u128, u128)> = None;
     for (n, raw) in text.lines().enumerate() {
         let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.trim_start_matches('#').trim().strip_prefix("BASE ") {
+            let mut wall_s = None;
+            let mut mono_ns = None;
+            for field in rest.split_whitespace() {
+                match field.split_once('=') {
+                    Some(("wall_s", v)) => wall_s = v.parse::<u128>().ok(),
+                    Some(("mono_ns", v)) => mono_ns = v.parse::<u128>().ok(),
+                    _ => {}
+                }
+            }
+            match (wall_s, mono_ns) {
+                (Some(w), Some(m)) => base = Some((w * 1_000_000_000, m)),
+                _ => {
+                    return Err(format!(
+                        "futex trace line {}: BASE needs wall_s= and mono_ns=",
+                        n + 1
+                    ))
+                }
+            }
+            continue;
+        }
+        if line.starts_with('#') {
             continue;
         }
         let mut it = line.split_whitespace();
@@ -8042,6 +8074,10 @@ fn parse_futex_trace(text: &str) -> Result<Vec<FutexTraceEvent>, String> {
                 n + 1
             ));
         };
+        let ts_ns = match base {
+            Some((wall_base, mono_base)) => wall_base + ts_ns.saturating_sub(mono_base),
+            None => ts_ns,
+        };
         out.push(FutexTraceEvent { kind, pid, tid, addr, woke, ts_ns });
     }
     if out.is_empty() {
@@ -8072,25 +8108,30 @@ fn bundle_run_window(bundle: &Path) -> Option<(u64, Option<u64>)> {
     None
 }
 
-/// Refuse a trace that cannot be shown to belong to the bundle's run.
+/// Keep the events that belong to this bundle's run, and refuse a trace that is about another run entirely.
 ///
-/// Two facts are checked, and each one alone has produced a wrong answer: every pid must be one the bundle
-/// captured (a trace from another run names processes this bundle never saw), and every event must fall inside the
-/// run window the evidence manifest records (a trace from an EARLIER run can name the same pids, because they were
-/// recycled, and would otherwise read as a trace of this run).
-fn validate_futex_trace(
-    events: &[FutexTraceEvent],
+/// MEASURED, and the reason this selects rather than refuses: a kernel probe is SYSTEM-WIDE. The first real trace
+/// taken with `probes/futex.bt` carried 29198 events, including processes that have nothing to do with the run
+/// (`date`, other shells). Refusing on the first foreign pid would therefore reject every honest trace, so the
+/// events are selected by the pids the bundle captured and the rest are COUNTED; what is refused is a trace with
+/// no event of this run at all, which is a trace of some other run. The window is then checked on the selected
+/// events only, because a system-wide trace legitimately contains events from outside it.
+fn select_futex_trace(
+    events: Vec<FutexTraceEvent>,
     bundle_pids: &std::collections::BTreeSet<u32>,
     window: Option<(u64, Option<u64>)>,
-) -> Result<bool, String> {
-    for e in events {
-        if !bundle_pids.contains(&e.pid) {
-            return Err(format!(
-                "futex trace names pid {} which this bundle did not capture ({} pids in the bundle): the trace is from another run",
-                e.pid,
-                bundle_pids.len()
-            ));
-        }
+) -> Result<(Vec<FutexTraceEvent>, u64), String> {
+    let total = events.len() as u64;
+    let selected: Vec<FutexTraceEvent> = events
+        .into_iter()
+        .filter(|e| bundle_pids.contains(&e.pid))
+        .collect();
+    let foreign = total - selected.len() as u64;
+    if selected.is_empty() {
+        return Err(format!(
+            "futex trace has no event from any of the {} pids this bundle captured ({total} events, all foreign): the trace is about another run",
+            bundle_pids.len()
+        ));
     }
     let Some((start, end)) = window else {
         return Err(
@@ -8100,7 +8141,7 @@ fn validate_futex_trace(
         );
     };
     let lo = start as u128 * 1_000_000_000;
-    if let Some(e) = events.iter().find(|e| e.ts_ns < lo) {
+    if let Some(e) = selected.iter().find(|e| e.ts_ns < lo) {
         return Err(format!(
             "futex trace event ts_ns={} precedes the run start ({}) : the trace is from another run",
             e.ts_ns, start
@@ -8109,17 +8150,17 @@ fn validate_futex_trace(
     match end {
         Some(end) => {
             let hi = end as u128 * 1_000_000_000;
-            if let Some(e) = events.iter().find(|e| e.ts_ns > hi) {
+            if let Some(e) = selected.iter().find(|e| e.ts_ns > hi) {
                 return Err(format!(
                     "futex trace event ts_ns={} follows the run end ({end}): the trace is from another run",
                     e.ts_ns
                 ));
             }
-            Ok(false)
+            Ok((selected, foreign))
         }
         // The window's end is not this reader's to invent, so an open-ended window is reported as such rather
         // than presented as a full check.
-        None => Ok(true),
+        None => Ok((selected, foreign)),
     }
 }
 
@@ -8153,19 +8194,24 @@ fn pair_futex_trace(
         let (resolution, object) = resolve_traced_addr(maps_by_pid, e.pid, e.addr);
         let mut waker = None;
         let mut wakes_after = 0usize;
-        if let Some(key) = &object {
-            for w in events {
-                if w.kind != FutexTraceKind::Wake || w.ts_ns <= e.ts_ns {
-                    continue;
-                }
-                let (_, woke_object) = resolve_traced_addr(maps_by_pid, w.pid, w.addr);
-                if woke_object.as_ref() != Some(key) {
-                    continue;
-                }
-                wakes_after += 1;
-                if waker.is_none() {
-                    waker = Some((w.pid, w.tid, w.woke.unwrap_or(0)));
-                }
+        for w in events {
+            if w.kind != FutexTraceKind::Wake || w.ts_ns <= e.ts_ns {
+                continue;
+            }
+            let (_, woke_object) = resolve_traced_addr(maps_by_pid, w.pid, w.addr);
+            // Two ways for a wake to be the one that released this wait, and both are needed. A SHARED object is
+            // joined by identity, because the two sides sit at different addresses in different address spaces. A
+            // PRIVATE futex (the common case: a mutex in a heap allocation) has no shared object at all, so it is
+            // joined by the same process and the same address -- and requiring an object there would report every
+            // private wait as never woken.
+            let same_object = object.is_some() && woke_object.as_ref() == object.as_ref();
+            let same_private_site = object.is_none() && w.pid == e.pid && w.addr == e.addr;
+            if !same_object && !same_private_site {
+                continue;
+            }
+            wakes_after += 1;
+            if waker.is_none() {
+                waker = Some((w.pid, w.tid, w.woke.unwrap_or(0)));
             }
         }
         waits.push(FutexTraceWait {
@@ -8307,15 +8353,15 @@ fn pair_futex(bundle: &Path, futex_trace: Option<&Path>) -> Result<FutexReport> 
             .iter()
             .filter_map(|(p, _)| p.parse::<u32>().ok())
             .collect();
-        report.trace_window_open_ended = match validate_futex_trace(
-            &events,
-            &bundle_pids,
-            bundle_run_window(bundle),
-        ) {
-            Ok(open_ended) => open_ended,
+        let window = bundle_run_window(bundle);
+        let open_ended = window.map(|(_, end)| end.is_none()).unwrap_or(false);
+        let (selected, foreign) = match select_futex_trace(events, &bundle_pids, window) {
+            Ok(v) => v,
             Err(e) => bail!("{e}"),
         };
-        report.trace_waits = pair_futex_trace(&events, &maps_by_pid);
+        report.trace_window_open_ended = open_ended;
+        report.trace_foreign_events = foreign;
+        report.trace_waits = pair_futex_trace(&selected, &maps_by_pid);
         report.trace_present = true;
     }
     Ok(report)
@@ -8487,7 +8533,28 @@ fn run_ring(args: RingArgs) -> Result<ExitCode> {
             }
             out.push_str(&format!("\"{}\"", jesc(m)));
         }
-        out.push_str("]}");
+        out.push_str("],\"records\":[");
+        // A cap, stated rather than silent: a dump can hold thousands of records, and a machine-readable answer of
+        // 40 MB is not composable. `records_truncated` says whether anything was left out.
+        const RECORD_CAP: usize = 64;
+        for (i, r) in dump.records.iter().take(RECORD_CAP).enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!(
+                "{{\"seq\":{},\"tag\":\"{}\",\"a\":{},\"b\":{},\"c\":{},\"d\":{}}}",
+                r.seq,
+                jesc(&r.tag),
+                r.fields[0],
+                r.fields[1],
+                r.fields[2],
+                r.fields[3]
+            ));
+        }
+        out.push_str(&format!(
+            "],\"records_truncated\":{}}}",
+            dump.records.len() > RECORD_CAP
+        ));
         println!("RING-JSON {out}");
         return Ok(ExitCode::SUCCESS);
     }
@@ -8501,12 +8568,21 @@ fn run_ring(args: RingArgs) -> Result<ExitCode> {
         last
     );
     for (tag, n) in &tallies {
+        // One sample per tag, with its payload: a count alone would decode the schema and then say nothing with it.
+        let sample = dump.records.iter().find(|r| r.tag == *tag);
+        let sample_text = match sample {
+            Some(r) => format!(
+                " sample: seq={} a={:#x} b={:#x} c={:#x} d={:#x}",
+                r.seq, r.fields[0], r.fields[1], r.fields[2], r.fields[3]
+            ),
+            None => String::new(),
+        };
         if *tag == "?" {
             println!(
-                "  TAG ? n={n} UNKNOWN-TAG (the producer prints `?` for a tag its switch does not know, so the numeric tag is NOT recoverable from the dump)"
+                "  TAG ? n={n} UNKNOWN-TAG (the producer prints `?` for a tag its switch does not know, so the numeric tag is NOT recoverable from the dump){sample_text}"
             );
         } else {
-            println!("  TAG {tag} n={n}");
+            println!("  TAG {tag} n={n}{sample_text}");
         }
     }
     if torn == 0 && skipped == Some(0) {
@@ -8599,6 +8675,10 @@ fn run_futex(args: FutexArgs) -> Result<ExitCode> {
             "\"window_open_ended\":{},",
             report.trace_window_open_ended
         ));
+        out.push_str(&format!(
+            "\"foreign_events\":{},",
+            report.trace_foreign_events
+        ));
         out.push_str("\"waits\":[");
         for (i, w) in report.trace_waits.iter().enumerate() {
             if i > 0 {
@@ -8635,9 +8715,10 @@ fn run_futex(args: FutexArgs) -> Result<ExitCode> {
         );
     } else {
         println!(
-            "FUTEX-TRACE waits={} window_open_ended={}",
+            "FUTEX-TRACE waits={} window_open_ended={} foreign_events={} (a kernel probe is system-wide, so events from pids this bundle did not capture are counted and dropped)",
             report.trace_waits.len(),
-            report.trace_window_open_ended
+            report.trace_window_open_ended,
+            report.trace_foreign_events
         );
         for w in &report.trace_waits {
             match &w.waker {
@@ -8922,8 +9003,91 @@ mod futex_tests {
             &[format!("WAIT pid=999 tid=999 uaddr=0x1080 ts_ns={}", at(10))],
         );
         let err = pair_futex(&dir, Some(&trace)).unwrap_err().to_string();
-        assert!(err.contains("did not capture"), "{err}");
+        assert!(err.contains("all foreign"), "{err}");
         let _ = fs::remove_file(&trace);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_private_futex_is_paired_by_process_and_address() {
+        // The common case: a mutex inside a heap allocation. There is no shared object to join on, so requiring one
+        // would report every private wait as never woken -- a wrong answer about the most ordinary lock there is.
+        let dir = bundle_fixture("trace-private");
+        write_manifest(&dir);
+        // 0x3080 lies in pid-100's PRIVATE mapping (3000-4000 rw-p), not in the shared memfd.
+        let trace = trace_fixture(
+            "private",
+            &[
+                format!("WAIT pid=100 tid=101 uaddr=0x3080 ts_ns={}", at(10)),
+                format!("WAKE pid=100 tid=102 uaddr=0x3080 woke=1 ts_ns={}", at(20)),
+            ],
+        );
+        let r = pair_futex(&dir, Some(&trace)).unwrap();
+        let w = r.trace_waits.iter().find(|w| w.tid == 101).unwrap();
+        assert!(w.resolution.starts_with("private"), "{}", w.resolution);
+        assert!(w.object.is_none());
+        assert_eq!(w.waker, Some((100, 102, 1)));
+        let _ = fs::remove_file(&trace);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_system_wide_trace_is_selected_by_pid_and_the_dropped_events_are_counted() {
+        // MEASURED on this host: `probes/futex.bt` produced 29198 events across the whole system, including
+        // processes with nothing to do with the run. A reader that refused on the first foreign pid would reject
+        // every honest trace, so the events are selected and the rest reported.
+        let dir = bundle_fixture("trace-systemwide");
+        write_manifest(&dir);
+        let trace = trace_fixture(
+            "systemwide",
+            &[
+                format!("WAIT pid=100 tid=101 uaddr=0x1080 ts_ns={}", at(10)),
+                format!("WAKE pid=999 tid=999 uaddr=0x1080 ts_ns={}", at(15)),
+                format!("WAKE pid=300 tid=301 uaddr=0x9080 woke=1 ts_ns={}", at(20)),
+            ],
+        );
+        let r = pair_futex(&dir, Some(&trace)).unwrap();
+        assert_eq!(r.trace_foreign_events, 1, "the foreign event must be counted, not silently dropped");
+        // The pairing must not be confused by the foreign event: the only wake on this object after the wait is
+        // the one from pid 300.
+        let w = r.trace_waits.iter().find(|w| w.tid == 101).unwrap();
+        assert_eq!(w.waker, Some((300, 301, 1)));
+        let _ = fs::remove_file(&trace);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_probe_base_line_converts_monotonic_timestamps_into_the_run_window() {
+        // A kernel probe reports MONOTONIC time; a run window is wall clock. The probe prints both once, and the
+        // reader converts -- otherwise it would have to guess, and a guess is what the window check exists to stop.
+        let dir = bundle_fixture("trace-base");
+        write_manifest(&dir);
+        let mono_base = 1_000_000_000u128;
+        let trace = trace_fixture(
+            "base",
+            &[
+                format!("# BASE wall_s={} mono_ns={mono_base}", WINDOW_START),
+                format!("WAIT pid=100 tid=101 uaddr=0x1080 ts_ns={}", mono_base + 10),
+            ],
+        );
+        let r = pair_futex(&dir, Some(&trace)).unwrap();
+        assert_eq!(r.trace_waits.len(), 1);
+        // Converted, the event lands inside the window (it would be refused if the raw monotonic value were used,
+        // because a monotonic nanosecond count is far below the wall-clock window).
+        let _ = fs::remove_file(&trace);
+
+        // A base line whose wall clock is before the run window proves the conversion is applied to the EVENTS and
+        // not only parsed: the same monotonic offsets now land outside it.
+        let old = trace_fixture(
+            "base-old",
+            &[
+                format!("# BASE wall_s={} mono_ns={mono_base}", WINDOW_START - 100_000),
+                format!("WAIT pid=100 tid=101 uaddr=0x1080 ts_ns={}", mono_base + 10),
+            ],
+        );
+        let err = pair_futex(&dir, Some(&old)).unwrap_err().to_string();
+        assert!(err.contains("precedes the run start"), "{err}");
+        let _ = fs::remove_file(&old);
         let _ = fs::remove_dir_all(&dir);
     }
 
