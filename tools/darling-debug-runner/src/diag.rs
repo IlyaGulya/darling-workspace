@@ -8392,6 +8392,8 @@ struct RingDump {
     /// omission, never guessed".
     shown: Option<u64>,
     records: Vec<RingRecord>,
+    /// `guest=`: whether this dump came from a GUEST ring rather than the server's.
+    guest: Option<bool>,
     /// A record LINE that does not satisfy the schema: the producer printed the slot, so the event happened, but
     /// the fields cannot be trusted. This is a TORN record, not a missing one.
     malformed_records: Vec<String>,
@@ -8416,6 +8418,10 @@ fn parse_ring_dump(text: &str) -> RingDump {
                 match k {
                     "events" => out.events = v.parse::<u64>().ok(),
                     "shown" => out.shown = v.parse::<u64>().ok(),
+                    // A GUEST dump says so, because the two rings have different owners: the server's lives in the
+                    // server process, the guest's in the guest's own address space. Same schema, same reader --
+                    // but a reader must be able to say which one it read.
+                    "guest" => out.guest = v.parse::<u64>().ok().map(|n| n != 0),
                     other => out
                         .malformed_other
                         .push(format!("dump header has unknown field {other:?}")),
@@ -8504,6 +8510,14 @@ fn run_ring(args: RingArgs) -> Result<ExitCode> {
         let mut out = String::from("{\"present\":true");
         out.push_str(&format!(",\"log\":\"{}\"", jesc(&args.log.display().to_string())));
         out.push_str(&format!(
+            ",\"guest\":{}",
+            match dump.guest {
+                Some(true) => "true",
+                Some(false) => "false",
+                None => "null",
+            }
+        ));
+        out.push_str(&format!(
             ",\"events\":{},\"shown\":{},\"parsed\":{parsed}",
             dump.events.map(|v| v.to_string()).unwrap_or("null".into()),
             dump.shown.map(|v| v.to_string()).unwrap_or("null".into()),
@@ -8560,8 +8574,13 @@ fn run_ring(args: RingArgs) -> Result<ExitCode> {
     }
 
     println!(
-        "RING {} events={} shown={} parsed={parsed} seq={:?}..{:?}",
+        "RING {} guest={} events={} shown={} parsed={parsed} seq={:?}..{:?}",
         args.log.display(),
+        match dump.guest {
+            Some(true) => "yes",
+            Some(false) => "no",
+            None => "unspecified",
+        },
         dump.events.map(|v| v.to_string()).unwrap_or("-".into()),
         dump.shown.map(|v| v.to_string()).unwrap_or("-".into()),
         first,
@@ -9218,6 +9237,21 @@ mod ring_tests {
         assert_eq!(skipped, 2);
         assert_eq!((first, last), (0, 7));
         assert_eq!((last - first + 1) - parsed, 0, "the printed range is contiguous here");
+    }
+
+    #[test]
+    fn a_guest_dump_is_the_same_schema_and_says_it_came_from_the_guest() {
+        // The guest ring is the guest's own memory (the shared transport's ABI block is separately versioned and
+        // validated, so extending it is not something to slip in beside this), but the SLOT SCHEMA is the server's
+        // word for word -- which is what lets one reader and one set of arithmetic cover both dumps.
+        let text = "dtape.ering dump events=2 shown=2 guest=1\n\
+                    dtape.ering seq=0 tag=[pc-entry a=0xffffffff b=0x55d0 c=0x0 d=0x0\n";
+        let d = parse_ring_dump(text);
+        assert_eq!(d.guest, Some(true));
+        assert_eq!(d.records.len(), 1);
+        assert_eq!(d.records[0].tag, "[pc-entry");
+        assert_eq!(d.records[0].fields[0], 0xffffffff, "the digit is a FIELD, not a formatted string");
+        assert!(d.malformed_records.is_empty() && d.malformed_other.is_empty());
     }
 
     #[test]
