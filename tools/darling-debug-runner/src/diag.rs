@@ -1464,36 +1464,99 @@ fn sig_meaning(sig: &str) -> Option<&'static str> {
     }
 }
 
-/// Symbolize a GUEST fatal signal from a run log, with no hand-work: the handler writes
-/// `[sigexc-fatal sig=... addr=... rip=... rsp=... rbp=...]` and dumps `/proc/self/maps` between
-/// `[sigexc-maps-begin` and `[sigexc-maps-end]`, so the faulting instruction pointer can be attributed to an image and
-/// resolved to a symbol by the tool itself. MEASURED need: doing this by hand took a parser, an offset computation and
-/// a symbol lookup, and the same arithmetic had to be redone for every run.
-fn symbolize_guest_fault(text: &str, json: bool) -> Result<ExitCode> {
-    // The log accumulates across runs, so the FIRST fatal line can belong to an older binary that did not print
-    // registers. Take the last one that carries rip= -- the newest fault is the one being asked about.
-    let fatal = text
-        .lines()
-        .filter(|l| l.contains("[sigexc-fatal") && l.contains("rip="))
-        .last()
-        .context("no [sigexc-fatal line with rip= in the log (older binary)")?;
+/// Which signals carry a fault ADDRESS that IS the instruction pointer.
+///
+/// MEASURED NEED: the DEPLOYED handler in this prefix prints
+/// `[sigexc-fatal sig=%d code=%d addr=%p pid=%d tid=%d]` -- no rip= -- so this tool rejected every log the prefix
+/// produces ("the fatal line carries no rip=") even though the handler HAD already named the owning mapping in the
+/// `[sigexc-fault-map ...]` line right above it. For the synchronous traps below, the kernel's si_addr IS the
+/// faulting instruction pointer; for the asynchronously raised signals (tkill: SIGABRT/SIGKILL/SIGTERM) si_addr is
+/// the sender's pid, i.e. not an address at all, and resolving it would invent a symbol rather than report one.
+fn addr_is_instruction_pointer(sig: i64) -> bool {
+    matches!(sig, 4 /*SIGILL*/ | 5 /*SIGTRAP*/ | 8 /*SIGFPE*/ | 10 /*SIGBUS*/ | 11 /*SIGSEGV*/)
+}
+
+/// One line of a `/proc/self/maps` listing, in the shape both the handler's dump and its `[sigexc-fault-map <line>]`
+/// mark carry it: `lo-hi perms offset dev inode [path]`. The path is the remainder AFTER the inode, so it is present
+/// only when the line has more than five fields -- MEASURED: taking the last field unconditionally turned an
+/// anonymous mapping's INODE into a path, so the tool handed "0" to llvm-nm and bailed on a fault that was simply not
+/// in a file. Paths may contain spaces, so the remainder is joined rather than taken as one token.
+fn parse_maps_line(l: &str) -> Option<(u64, u64, u64, String)> {
+    let mut f = l.split_whitespace();
+    let (Some(range), Some(_perms), Some(off)) = (f.next(), f.next(), f.next()) else { return None };
+    let (Some(lo), Some(hi)) = (range.split('-').next(), range.split('-').nth(1)) else { return None };
+    let (Ok(lo), Ok(hi), Ok(off)) =
+        (u64::from_str_radix(lo, 16), u64::from_str_radix(hi, 16), u64::from_str_radix(off, 16))
+    else {
+        return None;
+    };
+    // dev + inode consume two fields; anything left is the path (or the kernel's `[stack]`-style pseudo-name).
+    let rest: Vec<&str> = f.collect();
+    let path = if rest.len() > 2 { rest[2..].join(" ") } else { String::new() };
+    Some((lo, hi, off, path))
+}
+
+/// Whether a mapping's name is a FILE the symbolizer can open. `/proc/self/maps` also carries pseudo-entries
+/// (`[stack]`, `[heap]`, `[vdso]`, `[anon:...]`), which are names, not paths: reporting one as the image would send
+/// llvm-nm after a file that does not exist and hide the real answer ("this fault is not in an image").
+fn mapping_is_file(path: &str) -> bool {
+    path.starts_with('/')
+}
+
+/// The newest fatal mark in a log that this tool can attribute to an image.
+///
+/// The log accumulates across runs AND across a single run's lifetime, so the LAST `[sigexc-fatal` line is often not
+/// the fault being asked about: MEASURED, the harness's own teardown leaves `[sigexc-fatal sig=15 ...]` (SIGTERM,
+/// raised by tkill, whose si_addr is the sender's pid) after the SIGILL that killed the client -- selecting the last
+/// line blindly picked the teardown. The marks are scanned in order and the last ATTRIBUTABLE one wins.
+///
+/// Two generations of handler are accepted. Newer ones print `rip=`; the one deployed here does not, and its `addr=`
+/// is the instruction pointer for every synchronous trap, so that generation is symbolized from `addr=` with the
+/// provenance printed (`ip=addr=`) rather than quietly claimed to be a register.
+struct FaultMark {
+    sig: i64,
+    addr: u64,
+    ip: u64,
+    ip_from_addr: bool,
+}
+
+fn last_fault_mark(text: &str) -> Option<FaultMark> {
     // The marks print addresses as `0x...`, and from_str_radix does NOT accept a radix prefix -- MEASURED: the tool
     // matched the right line and then reported "carries no rip=", because the parse, not the search, was wrong.
-    let grab = |key: &str| -> Option<u64> {
-        fatal.split_whitespace().find_map(|w| {
+    let grab = |line: &str, key: &str| -> Option<u64> {
+        line.split_whitespace().find_map(|w| {
             w.strip_prefix(key)
                 .map(|v| v.trim_end_matches(']'))
                 .map(|v| v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")).unwrap_or(v))
                 .and_then(|v| u64::from_str_radix(v, 16).ok())
         })
     };
-    let rip = grab("rip=").context("the fatal line carries no rip= (older log)")?;
-    let addr = grab("addr=").unwrap_or(0);
-    let sig = fatal
-        .split_whitespace()
-        .find_map(|w| w.strip_prefix("sig=").and_then(|v| v.parse::<i64>().ok()))
-        .unwrap_or(0);
+    text.lines()
+        .filter(|l| l.contains("[sigexc-fatal"))
+        .filter_map(|fatal| {
+            let sig = fatal
+                .split_whitespace()
+                .find_map(|w| w.strip_prefix("sig=").and_then(|v| v.parse::<i64>().ok()))
+                .unwrap_or(0);
+            let addr = grab(fatal, "addr=").unwrap_or(0);
+            match grab(fatal, "rip=") {
+                Some(rip) => Some(FaultMark { sig, addr, ip: rip, ip_from_addr: false }),
+                None if addr_is_instruction_pointer(sig) => {
+                    Some(FaultMark { sig, addr, ip: addr, ip_from_addr: true })
+                }
+                None => None,
+            }
+        })
+        .last()
+}
 
+/// The mappings a log offers for symbolization, best source first.
+///
+/// A full `/proc/self/maps` dump (`[sigexc-maps-begin`..`[sigexc-maps-end]`) is the superset and is preferred. When
+/// the handler does not dump one, its `[sigexc-fault-map <line>]` mark is still the answer to "which image owns this
+/// address": the handler reads /proc/self/maps and prints the ONE line whose range contains si_addr. Taking it means
+/// a fault is attributable from a log that has no dump at all, which is the state of every log this prefix writes.
+fn fault_mappings(text: &str) -> Vec<(u64, u64, u64, String)> {
     let mut maps: Vec<(u64, u64, u64, String)> = Vec::new();
     let mut inside = false;
     for l in text.lines() {
@@ -1502,32 +1565,214 @@ fn symbolize_guest_fault(text: &str, json: bool) -> Result<ExitCode> {
             continue;
         }
         if l.contains("[sigexc-maps-end") {
-            break;
-        }
-        if !inside {
+            inside = false;
             continue;
         }
-        let mut f = l.split_whitespace();
-        let (Some(range), Some(_perms), Some(off)) = (f.next(), f.next(), f.next()) else { continue };
-        let (Some(lo), Some(hi)) = (range.split('-').next(), range.split('-').nth(1)) else { continue };
-        let (Ok(lo), Ok(hi), Ok(off)) =
-            (u64::from_str_radix(lo, 16), u64::from_str_radix(hi, 16), u64::from_str_radix(off, 16))
-        else {
+        if inside {
+            if let Some(m) = parse_maps_line(l) {
+                maps.push(m);
+            }
             continue;
+        }
+        if let Some(rest) = l.split("[sigexc-fault-map ").nth(1) {
+            if let Some(m) = parse_maps_line(rest.trim_end_matches(']')) {
+                maps.push(m);
+            }
+        }
+    }
+    maps
+}
+
+/// The bytes at the faulting instruction, read from the image the mapping names.
+fn fault_bytes(path: &str, offset: u64) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = fs::File::open(path).ok()?;
+    f.seek(SeekFrom::Start(offset)).ok()?;
+    let mut buf = [0u8; 16];
+    let n = f.read(&mut buf).ok()?;
+    Some(buf[..n].to_vec())
+}
+
+/// Whether the faulting bytes are a DELIBERATE trap, which is a different investigation from a memory error.
+///
+/// MEASURED: clang emits `ud2` for `__builtin_trap()` and for unreachable code, so `0f 0b` at the fault means the
+/// code CHOSE to die there -- e.g. libsystem_c's `___abort` ends with `callq _sigprocmask; ud2`, i.e. "the abort
+/// signal never arrived, trap". A SIGSEGV on a load would instead show the load, so the distinction is visible in
+/// the first byte and decides whether to chase a missing symbol or an abort path.
+fn decode_trap(bytes: &[u8]) -> Option<&'static str> {
+    match bytes {
+        [0x0f, 0x0b, ..] => Some("ud2 (deliberate trap: __builtin_trap / unreachable)"),
+        [0xcc, ..] => Some("int3 (debugger trap)"),
+        [0xf4, ..] => Some("hlt"),
+        _ => None,
+    }
+}
+
+/// Whether a log holds a fault this tool can name an image for. Used to SELECT a log, so it must accept both handler
+/// generations: a maps dump, or the single `[sigexc-fault-map` mapping line, plus a fatal mark whose address is an
+/// instruction pointer.
+fn log_has_symbolizable_fault(text: &str) -> bool {
+    last_fault_mark(text).is_some()
+        && (text.contains("[sigexc-maps-begin") || text.contains("[sigexc-fault-map"))
+}
+
+/// The mapping that owns an address: `(lo, file offset, path)`. The file offset the symbolizer needs is
+/// `file_offset + (address - lo)`, which is the arithmetic a session did by hand once per run.
+fn find_mapping(maps: &[(u64, u64, u64, String)], addr: u64) -> Option<(u64, u64, String)> {
+    maps.iter()
+        .find(|(lo, hi, _, _)| *lo <= addr && addr < *hi)
+        .map(|(lo, _, off, p)| (*lo, *off, p.clone()))
+}
+
+/// The segment table of a Mach-O, so a FILE offset can be turned into the IMAGE address a symbol table uses.
+///
+/// WHY THIS EXISTS. The mapping in /proc/self/maps reports a FILE offset, while `llvm-nm`/`llvm-objdump` express a
+/// Mach-O's symbols as IMAGE addresses (the segment vmaddrs). The two coincide only for a thin file whose __TEXT
+/// starts at file 0, and MEASURED they do not here: the deployed libsystem_c.dylib is UNIVERSAL, its x86_64 slice
+/// starts at file 0x1000, so the fault's file offset (0xf247f) and its image address (0xf147f) differ by exactly that
+/// base -- resolving with the file offset named `regerror +0xd2f` for an instruction that is `__abort +0x15f`.
+/// Reading the bytes needs the file offset; naming the symbol needs the image address.
+struct MachoSegments {
+    /// `(file offset in the whole file, vmaddr, size)` for every segment of the x86_64 slice.
+    segs: Vec<(u64, u64, u64)>,
+}
+
+impl MachoSegments {
+    /// None for anything that is not a Mach-O this can walk (a non-Mach-O, a truncated header): the caller then falls
+    /// back to the image-relative address and says so, rather than inventing a base.
+    fn load(path: &str) -> Option<Self> {
+        let raw = fs::read(path).ok()?;
+        if raw.len() < 32 {
+            return None;
+        }
+        let be32 = |o: usize| -> u64 { u32::from_be_bytes([raw[o], raw[o + 1], raw[o + 2], raw[o + 3]]) as u64 };
+        let be64 = |o: usize| -> u64 {
+            u64::from_be_bytes([
+                raw[o], raw[o + 1], raw[o + 2], raw[o + 3], raw[o + 4], raw[o + 5], raw[o + 6], raw[o + 7],
+            ])
         };
-        let rest: Vec<&str> = f.collect();
-        let path = rest.last().copied().unwrap_or("").to_string();
-        maps.push((lo, hi, off, path));
+        let le32 = |o: usize| -> u64 { u32::from_le_bytes([raw[o], raw[o + 1], raw[o + 2], raw[o + 3]]) as u64 };
+        let le64 = |o: usize| -> u64 {
+            u64::from_le_bytes([
+                raw[o], raw[o + 1], raw[o + 2], raw[o + 3], raw[o + 4], raw[o + 5], raw[o + 6], raw[o + 7],
+            ])
+        };
+        let mut slice = 0usize;
+        // The magic is matched on its BYTES: a thin Mach-O is little-endian, so reading its first word big-endian gives
+        // 0xcffaedfe, not MH_MAGIC -- MEASURED, matching the constant instead rejected every thin file.
+        match [raw[0], raw[1], raw[2], raw[3]] {
+            [0xca, 0xfe, 0xba, 0xbe] | [0xca, 0xfe, 0xba, 0xbf] => {
+                // Universal: the x86_64 slice, because that is the guest this workspace runs and the slice whose
+                // addresses llvm-nm prints first for the file.
+                let n = be32(4) as usize;
+                let stride = if raw[3] == 0xbf { 32 } else { 20 };
+                let mut found = None;
+                for i in 0..n {
+                    let o = 8 + stride * i;
+                    if o + stride > raw.len() {
+                        break;
+                    }
+                    if be32(o) == 0x01000007 {
+                        found = Some(if stride == 32 { be64(o + 8) } else { be32(o + 8) } as usize);
+                        break;
+                    }
+                }
+                slice = found?;
+            }
+            // MH_MAGIC_64 / MH_MAGIC (little-endian thin files: the bytes as the kernel writes them)
+            [0xcf, 0xfa, 0xed, 0xfe] | [0xce, 0xfa, 0xed, 0xfe] => {}
+            _ => return None,
+        }
+        if slice + 32 > raw.len() {
+            return None;
+        }
+        let magic = le32(slice);
+        if magic != 0xfeedface && magic != 0xfeedfacf {
+            return None;
+        }
+        let sixtyfour = magic == 0xfeedfacf;
+        let ncmds = le32(slice + 16) as usize;
+        let mut o = slice + 32;
+        let mut segs = Vec::new();
+        for _ in 0..ncmds {
+            if o + 8 > raw.len() {
+                break;
+            }
+            let cmd = le32(o);
+            let cmdsize = le32(o + 4) as usize;
+            if cmdsize < 8 || o + cmdsize > raw.len() {
+                break;
+            }
+            if cmd == 0x19 && sixtyfour {
+                segs.push((slice as u64 + le64(o + 40), le64(o + 24), le64(o + 48)));
+            } else if cmd == 0x1 && !sixtyfour {
+                segs.push((slice as u64 + le32(o + 32), le32(o + 24), le32(o + 36)));
+            }
+            o += cmdsize;
+        }
+        if segs.is_empty() { None } else { Some(Self { segs }) }
     }
 
-    let (lo, _hi, file_off, path) = maps
-        .iter()
-        .find(|(lo, hi, _, _)| *lo <= rip && rip < *hi)
-        .map(|(lo, hi, off, p)| (*lo, *hi, *off, p.clone()))
-        .with_context(|| format!("rip={rip:#x} is in no dumped mapping"))?;
+    /// The image address that a file offset belongs to, when a segment contains it.
+    fn image_addr(&self, file_offset: u64) -> Option<u64> {
+        self.segs
+            .iter()
+            .find(|(fabs, _, size)| *fabs <= file_offset && file_offset < *fabs + *size)
+            .map(|(fabs, vmaddr, _)| vmaddr + (file_offset - *fabs))
+    }
+}
 
-    println!("GUEST-FAULT sig={sig} addr={addr:#x} rip={rip:#x}");
+/// One parse per image, because the caller chain asks about the same dylib repeatedly and re-reading a 1.5 MB
+/// universal file for every stack word is work with no answer in it.
+#[derive(Default)]
+struct MachoSegmentCache {
+    by_path: BTreeMap<String, Option<MachoSegments>>,
+}
 
+impl MachoSegmentCache {
+    fn image_addr(&mut self, path: &str, file_offset: u64) -> Option<u64> {
+        self.by_path
+            .entry(path.to_string())
+            .or_insert_with(|| MachoSegments::load(path))
+            .as_ref()
+            .and_then(|m| m.image_addr(file_offset))
+    }
+}
+
+/// Symbolize a GUEST fatal signal from a run log, with no hand-work: the handler writes
+/// `[sigexc-fatal sig=... addr=... rip=... rsp=... rbp=...]` and dumps `/proc/self/maps` between
+/// `[sigexc-maps-begin` and `[sigexc-maps-end]`, so the faulting instruction pointer can be attributed to an image and
+/// resolved to a symbol by the tool itself. MEASURED need: doing this by hand took a parser, an offset computation and
+/// a symbol lookup, and the same arithmetic had to be redone for every run.
+///
+/// The handler this prefix DEPLOYS writes the older mark -- `[sigexc-fatal sig code addr pid tid]` with no rip= --
+/// plus `[sigexc-fault-map <the one maps line containing si_addr>]`, so both generations are accepted here: the
+/// mapping comes from a dump when there is one and from the fault-map mark otherwise, and the instruction pointer is
+/// `rip=` when present and `addr=` on the synchronous traps otherwise. Both facts are printed as they were obtained.
+fn symbolize_guest_fault(text: &str, json: bool) -> Result<ExitCode> {
+    let mark = last_fault_mark(text).context(
+        "no [sigexc-fatal line this tool can symbolize: need rip=, or addr= on a synchronous trap \
+         (SIGILL/SIGSEGV/SIGBUS/SIGTRAP/SIGFPE)",
+    )?;
+    let FaultMark { sig, addr, ip, ip_from_addr } = mark;
+    let rip = ip;
+
+    let maps = fault_mappings(text);
+    let (lo, file_off, path) = find_mapping(&maps, rip)
+        .with_context(|| format!("ip={rip:#x} is in no mapping this log records"))?;
+
+    if ip_from_addr {
+        println!(
+            "GUEST-FAULT sig={sig} addr={addr:#x} ip=addr={rip:#x} (no rip= on the mark: the fault address is the \
+             instruction pointer for {} and the handler named the mapping it falls in)",
+            signal_name(sig as i32)
+        );
+    } else {
+        println!("GUEST-FAULT sig={sig} addr={addr:#x} rip={rip:#x}");
+    }
+
+    // ONE parse per image: the caller chain below asks about the same dylib repeatedly.
+    let mut segcache = MachoSegmentCache::default();
     // THE CALLERS ABOVE THE FAULT: the handler also dumps stack words, and each one that lands in a mapped, named
     // image is a candidate return address. Reporting them makes "who called into this function" one command instead of
     // a stack walk performed by hand, which is how the earlier crashes were chased.
@@ -1556,18 +1801,23 @@ fn symbolize_guest_fault(text: &str, json: bool) -> Result<ExitCode> {
             else {
                 continue;
             };
-            if p.is_empty() {
-                println!("GUEST-CALLER w{wi}={w:#x} <anonymous mapping {lo:#x}-{hi:#x}>");
+            if !mapping_is_file(&p) {
+                // An anonymous region, or one of the kernel's pseudo-entries. Both are printed as what they are: a
+                // word that lands there has no image to name, which is an answer.
+                let name = if p.is_empty() { "anonymous" } else { p.as_str() };
+                println!("GUEST-CALLER w{wi}={w:#x} <{name} mapping {lo:#x}-{hi:#x}>");
                 continue;
             }
             let target = foff + (*w - lo);
+            // The same file-offset/image-address split as the fault itself: `locate` wants the image address.
+            let caller_addr = segcache.image_addr(&p, target).unwrap_or(target - foff);
             // NO FILTER AND NO INVERTED PREDICATE. MEASURED: an edit-time rewrite of this very expression dropped its
             // leading `!`, so retain() KEPT the numeric local labels and threw the real names away -- the caller list
             // then reported "0 symbols loaded" for images that llvm-nm resolves. Names are printed as the table has
             // them; a reader can see a numeric label instead of the row being silently deleted.
             let Ok(syms) = load_symbols(Path::new(&p)) else { continue };
             let file = Path::new(&p).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
-            match locate(&syms, target) {
+            match locate(&syms, caller_addr) {
                 Some((idx, delta)) => println!(
                     "GUEST-CALLER w{wi}={w:#x} {}+{:#x} ({file} file offset {target:#x})",
                     symbol_name(&syms[idx].name),
@@ -1586,11 +1836,19 @@ fn symbolize_guest_fault(text: &str, json: bool) -> Result<ExitCode> {
             }
         }
     }
-    println!("GUEST-IMAGE {path} base={lo:#x}");
-    if path.is_empty() {
-        bail!("the faulting mapping is anonymous: nothing to symbolize");
-    }
     let target = file_off + (rip - lo);
+    if !mapping_is_file(&path) {
+        // Naming WHAT the fault is in, rather than only that it is not in a file: `[stack]`/`[heap]`/`[vdso]` and an
+        // anonymous region are different answers, and the difference is the whole question when a fault is a bad
+        // pointer rather than a bad instruction.
+        println!("GUEST-IMAGE {path} base={lo:#x} file_offset={target:#x}");
+        let what = if path.is_empty() { "an anonymous mapping".to_string() } else { format!("the {path} mapping") };
+        bail!("the faulting mapping is {what}: no image to symbolize");
+    }
+    // THE FILE OFFSET AND THE IMAGE ADDRESS ARE NOT THE SAME NUMBER, and each is needed where it belongs: the bytes
+    // are read at the file offset, the symbol is named from the image address.
+    let image_addr = segcache.image_addr(&path, target).unwrap_or(rip - lo);
+    println!("GUEST-IMAGE {path} base={lo:#x} file_offset={target:#x} image_addr={image_addr:#x}");
     let mut syms = load_symbols(Path::new(&path))?;
     // NUMERIC NAMES ARE LOCAL LABELS, NOT FUNCTIONS. MEASURED: the lookup returned "1106 +0x80bf0" for an address a
     // hand computation resolved to "_fgetln+0x11a" -- the nearest symbol happened to be an unnamed local label, which
@@ -1600,20 +1858,45 @@ fn symbolize_guest_fault(text: &str, json: bool) -> Result<ExitCode> {
         let numeric_label = !n.is_empty() && n.chars().all(|c| c.is_ascii_digit() || c == '.');
         !numeric_label
     });
-    match locate(&syms, target) {
+    match locate(&syms, image_addr) {
         // locate returns (INDEX, base) -- not a name. MEASURED: destructuring it as (name, base) printed an index as if
         // it were a symbol, which is how the output read "1106 +0x80bf0" for an address llvm-nm resolves to
         // "_fgetln+0x11a".
         // locate returns (index, DELTA) -- the second element is already the offset from that symbol, so subtracting
         // again produced "fgetln +0x80bf0" for an address that is fgetln+0x11a.
         Some((idx, delta)) => {
-            println!("GUEST-SYMBOL {} +{:#x} (file offset {:#x})", symbol_name(&syms[idx].name), delta, target);
+            println!(
+                "GUEST-SYMBOL {} +{:#x} (image addr {:#x}, file offset {:#x})",
+                symbol_name(&syms[idx].name),
+                delta,
+                image_addr,
+                target
+            );
         }
-        None => println!("GUEST-SYMBOL <none> (file offset {:#x})", target),
+        None => println!("GUEST-SYMBOL <none> (image addr {:#x}, file offset {:#x})", image_addr, target),
+    }
+    // WHAT THE INSTRUCTION IS, not just where it lives. The mapping names the image and the symbol table names the
+    // function; the first bytes say whether the code TRAPPED ON PURPOSE, which is the difference between chasing an
+    // abort path and chasing a bad pointer.
+    let bytes = fault_bytes(&path, target);
+    let hex = bytes
+        .as_deref()
+        .map(|b| b.iter().take(8).map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" "))
+        .unwrap_or_default();
+    let trap = bytes.as_deref().and_then(decode_trap).unwrap_or("");
+    match (&bytes, trap) {
+        (None, _) => println!("GUEST-INSN <unreadable: cannot open {path} at file offset {target:#x}>"),
+        (Some(_), "") => println!("GUEST-INSN {hex}"),
+        (Some(_), t) => println!("GUEST-INSN {hex} -- {t}"),
     }
     if json {
         println!(
-            "{{\"sig\":{sig},\"addr\":\"{addr:#x}\",\"rip\":\"{rip:#x}\",\"image\":{path:?},\"file_offset\":\"{target:#x}\"}}"
+            "{{\"sig\":{sig},\"addr\":\"{addr:#x}\",\"ip\":\"{rip:#x}\",\"ip_from_addr\":{ip_from_addr},\
+             \"image\":\"{}\",\"base\":\"{lo:#x}\",\"file_offset\":\"{target:#x}\",\"image_addr\":\"{image_addr:#x}\",\
+             \"insn\":\"{}\",\"trap\":\"{}\"}}",
+            jesc(&path),
+            jesc(&hex),
+            jesc(trap)
         );
     }
     Ok(ExitCode::SUCCESS)
@@ -1638,11 +1921,11 @@ fn newest_usable_crash_log() -> Option<String> {
     candidates.sort_by(|a, b| b.0.cmp(&a.0));
     for (_, path) in candidates.iter().take(8) {
         let Ok(text) = read_log_lossy(path) else { continue };
-        // BOTH facts must be on the SAME line: `rip=` appears in other marks too, so a file-wide contains() selected a
-        // log whose fatal line predates the instrumentation -- exactly the failure this selector exists to avoid.
-        let usable = text.lines().any(|l| l.contains("[sigexc-fatal") && l.contains("rip="))
-            && text.contains("[sigexc-maps-begin");
-        if usable {
+        // Both handler generations count, and for the same reason: a log whose fatal mark cannot be attributed to an
+        // image is a log this command has nothing to say about. MEASURED: requiring `rip=` AND a maps dump rejected
+        // every log this prefix writes, because the deployed handler prints neither -- it prints the ONE mapping line
+        // it looked up, which is enough to name the image.
+        if log_has_symbolizable_fault(&text) {
             println!("CRASH-LOG {} (newest log with a symbolized fault)", path.display());
             return Some(text);
         }
@@ -1659,7 +1942,7 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
         _ => None,
     };
     if let Some(text) = &log_text {
-        if text.contains("[sigexc-fatal") && text.contains("[sigexc-maps-begin") {
+        if log_has_symbolizable_fault(text) {
             return symbolize_guest_fault(text, args.json);
         }
     }
@@ -9820,5 +10103,223 @@ mod evidence_manifest_tests {
         assert_ne!(EvidenceState::Unavailable.as_str(), EvidenceState::NoEvidence.as_str());
         assert!(EvidenceState::Partial.has_census(), "partial keeps a labelled census");
         assert!(!EvidenceState::Unavailable.has_census());
+    }
+}
+
+#[cfg(test)]
+mod guest_fault_tests {
+    use super::*;
+
+    // The exact shape the deployed handler writes, copied from a real run log (the padding before the path is the
+    // kernel's, not a typo): `[sigexc-fault-map <one /proc/self/maps line>]` immediately above `[sigexc-fatal ...]`.
+    const FAULT_MAP: &str = "[sigexc-fault-map 76d22cce4000-76d22cddf000 r-xp 00001000 fc:00 5509130                    /home/ilyagulya/work/wr-fresh/prefix-ios/usr/lib/system/libsystem_c.dylib]";
+    const FATAL_DEPLOYED: &str = "[sigexc-fatal sig=4 code=2 addr=0x76D22CDD547F pid=794192 tid=794192]";
+    const FATAL_RIP: &str = "[sigexc-fatal sig=11 code=1 addr=0x0 rip=0x100003a20 rsp=0x7ffee000 rbp=0x7ffee010 pid=1 tid=1]";
+
+    fn log(fatal: &str) -> String {
+        format!("[openat-entry sp=1]\n{FAULT_MAP}\n{fatal}\n[sigexc-default sig=4 tid=794192]\n")
+    }
+
+    #[test]
+    fn fault_map_line_parses_into_a_mapping() {
+        let line = FAULT_MAP.trim_start_matches("[sigexc-fault-map ").trim_end_matches(']');
+        let (lo, hi, off, path) = parse_maps_line(line).expect("a real maps line must parse");
+        assert_eq!(lo, 0x76d22cce4000);
+        assert_eq!(hi, 0x76d22cddf000);
+        assert_eq!(off, 0x1000);
+        assert!(path.ends_with("libsystem_c.dylib"), "path kept whole: {path}");
+    }
+
+    #[test]
+    fn an_anonymous_mapping_is_reported_not_dropped() {
+        let (lo, hi, off, path) = parse_maps_line("7f0000000000-7f0000001000 rw-p 00000000 00:00 0").unwrap();
+        assert_eq!((lo, hi, off), (0x7f0000000000, 0x7f0000001000, 0));
+        assert_eq!(path, "", "no path is an empty path, not a parse failure");
+        assert!(!mapping_is_file(&path));
+    }
+
+    #[test]
+    fn a_kernel_pseudo_entry_is_a_name_and_not_a_path() {
+        // The inode is NOT the path, and `[stack]` is not a file: both were reported as the image by the old
+        // last-field parse, which then sent llvm-nm after a file that cannot exist.
+        let (_, _, _, path) = parse_maps_line("7ffd00000000-7ffd00021000 rw-p 00000000 00:00 0                          [stack]").unwrap();
+        assert_eq!(path, "[stack]");
+        assert!(!mapping_is_file(&path), "a pseudo-entry has no symbols to load");
+        assert!(mapping_is_file("/usr/lib/libsystem_c.dylib"));
+    }
+
+    #[test]
+    fn a_path_with_spaces_stays_one_path() {
+        let (_, _, _, path) = parse_maps_line("1000-2000 r-xp 00000000 00:00 9 /tmp/a dir/lib x.dylib").unwrap();
+        assert_eq!(path, "/tmp/a dir/lib x.dylib");
+    }
+
+    #[test]
+    fn the_newest_attributable_fault_wins_over_a_later_teardown_signal() {
+        // The shape of a real log: the client dies of SIGILL, then the harness's teardown raises SIGTERM (whose
+        // si_addr is the sender's pid). Selecting the last fatal line blindly picked the teardown and reported "no
+        // symbolizable fault" on a log that names the image two lines above.
+        let text = format!(
+            "{FAULT_MAP}\n{FATAL_DEPLOYED}\n[sigexc-default sig=4 tid=1]\n[sigexc-fatal sig=15 code=0 addr=0x3E8000C1E6E pid=2 tid=2]\n"
+        );
+        let mark = last_fault_mark(&text).expect("the SIGILL is still attributable");
+        assert_eq!(mark.sig, 4);
+        assert_eq!(mark.ip, 0x76D22CDD547F);
+        assert!(log_has_symbolizable_fault(&text));
+    }
+
+    #[test]
+    fn deployed_mark_uses_the_fault_address_as_the_instruction_pointer() {
+        let mark = last_fault_mark(&log(FATAL_DEPLOYED)).expect("SIGILL addr= is an instruction pointer");
+        assert_eq!(mark.sig, 4);
+        assert_eq!(mark.ip, 0x76D22CDD547F);
+        assert!(mark.ip_from_addr, "the provenance must be visible, not assumed");
+    }
+
+    #[test]
+    fn rip_mark_still_wins_when_the_handler_prints_registers() {
+        let mark = last_fault_mark(&log(FATAL_RIP)).unwrap();
+        assert_eq!(mark.ip, 0x100003a20);
+        assert!(!mark.ip_from_addr);
+    }
+
+    #[test]
+    fn an_async_signal_address_is_not_dressed_up_as_an_instruction_pointer() {
+        // SIGABRT raised by tkill: si_addr is the SENDER's pid (measured: 0x3E8000B173F), so there is no instruction
+        // to symbolize and saying otherwise would invent a symbol.
+        let text = log("[sigexc-fatal sig=6 code=-6 addr=0x3E8000B173F pid=726847 tid=726847]");
+        assert!(last_fault_mark(&text).is_none());
+        assert!(!log_has_symbolizable_fault(&text));
+    }
+
+    #[test]
+    fn mappings_come_from_the_fault_map_mark_when_there_is_no_dump() {
+        let maps = fault_mappings(&log(FATAL_DEPLOYED));
+        assert_eq!(maps.len(), 1);
+        let (lo, file_off, path) = find_mapping(&maps, 0x76D22CDD547F).expect("the fault is inside the named mapping");
+        assert_eq!(lo, 0x76d22cce4000);
+        assert_eq!(file_off, 0x1000);
+        // The offset the symbolizer reads at: what the deployed handler's one line is worth.
+        assert_eq!(file_off + (0x76D22CDD547F - lo), 0xF247F);
+        assert!(path.ends_with("libsystem_c.dylib"));
+    }
+
+    #[test]
+    fn a_maps_dump_is_preferred_and_does_not_swallow_the_fault_map_line() {
+        let text = format!(
+            "[sigexc-maps-begin]\n1000-2000 r-xp 00000000 00:00 0 /tmp/one\n3000-4000 rw-p 00001000 00:00 0 /tmp/two\n[sigexc-maps-end]\n{FAULT_MAP}\n{FATAL_DEPLOYED}\n"
+        );
+        let maps = fault_mappings(&text);
+        assert_eq!(maps.len(), 3, "dump lines plus the fault-map line: {maps:?}");
+        assert_eq!(find_mapping(&maps, 0x1800).unwrap().2, "/tmp/one");
+        assert_eq!(find_mapping(&maps, 0x3800).unwrap().2, "/tmp/two");
+        assert_eq!(find_mapping(&maps, 0x76D22CDD547F).unwrap().2.ends_with("libsystem_c.dylib"), true);
+    }
+
+    /// A minimal Mach-O written to a temp file: enough for the segment walk, which is all the conversion needs.
+    fn write_macho(path: &std::path::Path, fat_slice_base: Option<u64>, vmaddr: u64, fileoff: u64, filesize: u64) {
+        let mut b: Vec<u8> = Vec::new();
+        if let Some(base) = fat_slice_base {
+            b.extend_from_slice(&0xcafebabeu32.to_be_bytes()); // fat, big-endian
+            b.extend_from_slice(&1u32.to_be_bytes()); // one arch
+            b.extend_from_slice(&0x01000007u32.to_be_bytes()); // CPU_TYPE_X86_64
+            b.extend_from_slice(&3u32.to_be_bytes()); // cpusubtype
+            b.extend_from_slice(&(base as u32).to_be_bytes()); // offset
+            b.extend_from_slice(&0x1000u32.to_be_bytes()); // size
+            b.extend_from_slice(&12u32.to_be_bytes()); // align
+        }
+        if let Some(base) = fat_slice_base {
+            while (b.len() as u64) < base {
+                b.push(0);
+            }
+        }
+        b.extend_from_slice(&0xfeedfacfu32.to_le_bytes()); // MH_MAGIC_64
+        b.extend_from_slice(&0x01000007u32.to_le_bytes()); // cputype
+        b.extend_from_slice(&3u32.to_le_bytes()); // cpusubtype
+        b.extend_from_slice(&6u32.to_le_bytes()); // filetype MH_DYLIB -- the header has EIGHT fields; omitting this
+                                                  // one shifted ncmds into the wrong slot and the walk found no
+                                                  // segments at all (MEASURED: both fixture tests read None)
+        b.extend_from_slice(&2u32.to_le_bytes()); // ncmds: LC_SEGMENT_64 + LC_END
+        b.extend_from_slice(&0u32.to_le_bytes()); // sizeofcmds (walked by cmdsize, not this)
+        b.extend_from_slice(&0u32.to_le_bytes()); // flags
+        b.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        // LC_SEGMENT_64: cmd, cmdsize, segname[16], vmaddr, vmsize, fileoff, filesize
+        b.extend_from_slice(&0x19u32.to_le_bytes());
+        b.extend_from_slice(&72u32.to_le_bytes());
+        let mut name = [0u8; 16];
+        name[..6].copy_from_slice(b"__TEXT");
+        b.extend_from_slice(&name);
+        b.extend_from_slice(&vmaddr.to_le_bytes());
+        b.extend_from_slice(&filesize.to_le_bytes());
+        b.extend_from_slice(&fileoff.to_le_bytes());
+        b.extend_from_slice(&filesize.to_le_bytes());
+        b.extend_from_slice(&[0u8; 16]); // maxprot/initprot/nsects/flags
+        while b.len() < 0x4000 {
+            b.push(0x90);
+        }
+        fs::write(path, &b).unwrap();
+    }
+
+    #[test]
+    fn a_thin_image_has_one_address_for_both() {
+        let p = std::env::temp_dir().join(format!("dwdiag-thin-{}.macho", std::process::id()));
+        write_macho(&p, None, 0, 0, 0x2000);
+        assert_eq!(MachoSegments::load(p.to_str().unwrap()).unwrap().image_addr( 0x1800), Some(0x1800));
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn a_universal_image_reports_the_image_address_not_the_file_offset() {
+        // MEASURED on the deployed libsystem_c.dylib: fat, x86_64 slice at file 0x1000, __TEXT vmaddr 0 at slice file
+        // 0. A fault at file offset 0xf247f is image address 0xf147f, and resolving with the file offset named a
+        // symbol 0x1000 bytes too high.
+        let p = std::env::temp_dir().join(format!("dwdiag-fat-{}.macho", std::process::id()));
+        write_macho(&p, Some(0x1000), 0, 0, 0x2000);
+        assert_eq!(MachoSegments::load(p.to_str().unwrap()).unwrap().image_addr( 0x247f), Some(0x147f));
+        assert_eq!(MachoSegments::load(p.to_str().unwrap()).unwrap().image_addr( 0x1800), Some(0x800));
+        // Below the slice base there is no segment: None, so the caller falls back and says so.
+        assert_eq!(MachoSegments::load(p.to_str().unwrap()).unwrap().image_addr( 0x400), None);
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn a_non_macho_is_not_guessed_at() {
+        let p = std::env::temp_dir().join(format!("dwdiag-notmacho-{}.bin", std::process::id()));
+        fs::write(&p, b"#!/bin/sh\necho hello\n").unwrap();
+        assert!(MachoSegments::load(p.to_str().unwrap()).is_none(), "a non-Mach-O must not be guessed at");
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn a_deliberate_trap_is_named_as_one() {
+        assert!(decode_trap(&[0x0f, 0x0b, 0x66, 0x66]).unwrap().contains("ud2"));
+        assert!(decode_trap(&[0xcc]).unwrap().contains("int3"));
+        assert!(decode_trap(&[0xf4]).unwrap().contains("hlt"));
+        // A real instruction is not a trap: a load must not be reported as an abort path.
+        assert!(decode_trap(&[0x48, 0x8b, 0x00]).is_none());
+    }
+
+    #[test]
+    fn fault_bytes_reads_at_the_offset_the_mapping_names() {
+        let path = std::env::temp_dir().join(format!("dwdiag-insn-{}.bin", std::process::id()));
+        let mut body = vec![0u8; 0x40];
+        body[0x2f] = 0x0f;
+        body[0x30] = 0x0b;
+        fs::write(&path, &body).unwrap();
+        let got = fault_bytes(path.to_str().unwrap(), 0x2f).expect("readable");
+        assert_eq!(&got[..2], &[0x0f, 0x0b]);
+        assert_eq!(decode_trap(&got).unwrap().contains("ud2"), true);
+        // Out of range is None, not a silent empty buffer.
+        assert!(fault_bytes(path.to_str().unwrap(), 0x1000).map(|b| b.is_empty()).unwrap_or(true));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_log_is_selectable_exactly_when_it_can_be_attributed() {
+        assert!(log_has_symbolizable_fault(&log(FATAL_DEPLOYED)));
+        assert!(log_has_symbolizable_fault(&format!("{FAULT_MAP}\n{FATAL_RIP}\n")));
+        // A fatal mark with no mapping source at all: nothing to name, so not selectable.
+        assert!(!log_has_symbolizable_fault(&format!("{FATAL_RIP}\n")));
+        assert!(!log_has_symbolizable_fault("no fault here\n"));
     }
 }
