@@ -8384,16 +8384,11 @@ struct RingRecord {
 
 #[derive(Debug, Default)]
 struct RingDump {
-    /// `events=`: how many slots were RESERVED, which is not how many the dump shows.
-    events: Option<u64>,
-    /// `shown=`: how many the producer TRIED to print. It skips a slot whose `seq` no longer matches the index it
-    /// is reading, so the printed count can be smaller, and that difference is the measurement of overwriting --
-    /// the producer's own comment says a record "overwritten or partly written while we read" is "reported by
-    /// omission, never guessed".
-    shown: Option<u64>,
     records: Vec<RingRecord>,
-    /// `guest=`: whether this dump came from a GUEST ring rather than the server's.
-    guest: Option<bool>,
+    /// ONE ENTRY PER DUMP in the log, because a log holds several: every guest process dumps its own ring at
+    /// exit, and a reader that applied one header's counts to all the records would report a number that belongs
+    /// to no ring at all. MEASURED: the first real guest log carried 8 dumps and 342 records.
+    per_dump: Vec<RingDumpPart>,
     /// A record LINE that does not satisfy the schema: the producer printed the slot, so the event happened, but
     /// the fields cannot be trusted. This is a TORN record, not a missing one.
     malformed_records: Vec<String>,
@@ -8401,14 +8396,34 @@ struct RingDump {
     malformed_other: Vec<String>,
 }
 
+/// One dump's own header, and what was read back inside its section.
+#[derive(Debug, Default, Clone)]
+struct RingDumpPart {
+    /// `events=`: how many slots were RESERVED, which is not how many the dump shows.
+    events: Option<u64>,
+    /// `shown=`: how many the producer TRIED to print. It skips a slot whose `seq` no longer matches the index it
+    /// is reading, so the printed count can be smaller, and that difference is the measurement of overwriting --
+    /// the producer's own comment says a record "overwritten or partly written while we read" is "reported by
+    /// omission, never guessed".
+    shown: Option<u64>,
+    /// `guest=`: whether this dump came from a GUEST ring rather than the server's.
+    guest: Option<bool>,
+    records: u64,
+    torn: u64,
+}
+
 fn parse_ring_dump(text: &str) -> RingDump {
     let mut out = RingDump::default();
+    let mut current: Option<usize> = None;
     for raw in text.lines() {
         let line = raw.trim();
         let Some(rest) = line.strip_prefix("dtape.ering ") else {
             continue;
         };
         if let Some(header) = rest.strip_prefix("dump ") {
+            let mut events = None;
+            let mut shown = None;
+            let mut guest = None;
             for f in header.split_whitespace() {
                 let Some((k, v)) = f.split_once('=') else {
                     out.malformed_other
@@ -8416,17 +8431,25 @@ fn parse_ring_dump(text: &str) -> RingDump {
                     continue;
                 };
                 match k {
-                    "events" => out.events = v.parse::<u64>().ok(),
-                    "shown" => out.shown = v.parse::<u64>().ok(),
-                    // A GUEST dump says so, because the two rings have different owners: the server's lives in the
-                    // server process, the guest's in the guest's own address space. Same schema, same reader --
-                    // but a reader must be able to say which one it read.
-                    "guest" => out.guest = v.parse::<u64>().ok().map(|n| n != 0),
+                    "events" => events = v.parse::<u64>().ok(),
+                    "shown" => shown = v.parse::<u64>().ok(),
+                    // A GUEST dump says so, because the two rings have different owners: the server's lives in
+                    // the server process, the guest's in the guest's own address space. Same schema, same
+                    // reader -- but a reader must be able to say which one it read.
+                    "guest" => guest = v.parse::<u64>().ok().map(|n| n != 0),
                     other => out
                         .malformed_other
                         .push(format!("dump header has unknown field {other:?}")),
                 }
             }
+            current = Some(out.per_dump.len());
+            out.per_dump.push(RingDumpPart {
+                events,
+                shown,
+                guest,
+                records: 0,
+                torn: 0,
+            });
             continue;
         }
         // A record. EVERY field is required and only these fields are accepted, because a missing one means the
@@ -8455,6 +8478,11 @@ fn parse_ring_dump(text: &str) -> RingDump {
             out.malformed_records.push(format!(
                 "{line} is incomplete (a slot read while being written, or a field that is not a number)"
             ));
+            if let Some(section) = current {
+                if let Some(part) = out.per_dump.get_mut(section) {
+                    part.torn += 1;
+                }
+            }
             continue;
         };
         out.records.push(RingRecord {
@@ -8462,6 +8490,11 @@ fn parse_ring_dump(text: &str) -> RingDump {
             tag,
             fields: [a, b, c, d],
         });
+        if let Some(section) = current {
+            if let Some(part) = out.per_dump.get_mut(section) {
+                part.records += 1;
+            }
+        }
     }
     out
 }
@@ -8470,7 +8503,7 @@ fn run_ring(args: RingArgs) -> Result<ExitCode> {
     let text = fs::read_to_string(&args.log)
         .with_context(|| format!("cannot read {}", args.log.display()))?;
     let dump = parse_ring_dump(&text);
-    if dump.records.is_empty() && dump.events.is_none() {
+    if dump.records.is_empty() && dump.per_dump.is_empty() {
         if args.json {
             println!(
                 "{{\"present\":false,\"log\":\"{}\"}}",
@@ -8487,17 +8520,36 @@ fn run_ring(args: RingArgs) -> Result<ExitCode> {
 
     let parsed = dump.records.len() as u64;
     let torn = dump.malformed_records.len() as u64;
+    // Every count below is per DUMP, because a log holds several: one per guest process. Summing them is honest as
+    // a total, and applying ONE header's counts to all the records -- which is what a single-header reader did --
+    // is not: it reports a number that belongs to no ring at all. MEASURED: the first real guest log carried 8
+    // dumps and 342 records.
+    let dumps = dump.per_dump.len() as u64;
+    let sum_events: u64 = dump.per_dump.iter().filter_map(|p| p.events).sum();
+    let sum_shown: u64 = dump.per_dump.iter().filter_map(|p| p.shown).sum();
+    let any_events = dump.per_dump.iter().any(|p| p.events.is_some());
+    let any_shown = dump.per_dump.iter().any(|p| p.shown.is_some());
+    let guest_dumps = dump
+        .per_dump
+        .iter()
+        .filter(|p| p.guest == Some(true))
+        .count();
     // Two different facts, counted apart. A slot the producer PRINTED that came back incomplete is TORN: the event
     // happened and its fields cannot be trusted. A slot it never printed was already overwritten when the dump ran,
     // which the producer's own comment calls "reported by omission, never guessed". Collapsing them would make a
     // torn record indistinguishable from a missing one.
-    let skipped = dump.shown.map(|s| s.saturating_sub(parsed + torn));
+    let skipped = if any_shown {
+        Some(sum_shown.saturating_sub(parsed + torn))
+    } else {
+        None
+    };
     let first = dump.records.iter().map(|r| r.seq).min();
     let last = dump.records.iter().map(|r| r.seq).max();
-    // The producer prints a slot only when its seq still matches the index it reads, so the printed sequences are
-    // contiguous except where a slot was overwritten or read torn. A gap is the same fact seen from the other side.
+    // The producer prints a slot only when its seq still matches the index it reads, so within ONE dump the printed
+    // sequences are contiguous except where a slot was overwritten or read torn. Across several dumps they are not,
+    // so a gap is only computed when the log holds exactly one.
     let gaps = match (first, last) {
-        (Some(f), Some(l)) => (l - f + 1).saturating_sub(parsed),
+        (Some(f), Some(l)) if dumps <= 1 => (l - f + 1).saturating_sub(parsed),
         _ => 0,
     };
     let mut tallies: BTreeMap<&str, u64> = BTreeMap::new();
@@ -8509,18 +8561,11 @@ fn run_ring(args: RingArgs) -> Result<ExitCode> {
     if args.json {
         let mut out = String::from("{\"present\":true");
         out.push_str(&format!(",\"log\":\"{}\"", jesc(&args.log.display().to_string())));
-        out.push_str(&format!(
-            ",\"guest\":{}",
-            match dump.guest {
-                Some(true) => "true",
-                Some(false) => "false",
-                None => "null",
-            }
-        ));
+        out.push_str(&format!(",\"dumps\":{dumps},\"guest_dumps\":{guest_dumps}"));
         out.push_str(&format!(
             ",\"events\":{},\"shown\":{},\"parsed\":{parsed}",
-            dump.events.map(|v| v.to_string()).unwrap_or("null".into()),
-            dump.shown.map(|v| v.to_string()).unwrap_or("null".into()),
+            if any_events { sum_events.to_string() } else { "null".into() },
+            if any_shown { sum_shown.to_string() } else { "null".into() },
         ));
         out.push_str(&format!(
             ",\"torn\":{torn},\"skipped\":{},\"seq_gaps\":{gaps},\"unknown_tag\":{unknown}",
@@ -8574,18 +8619,31 @@ fn run_ring(args: RingArgs) -> Result<ExitCode> {
     }
 
     println!(
-        "RING {} guest={} events={} shown={} parsed={parsed} seq={:?}..{:?}",
+        "RING {} dumps={} guest_dumps={} parsed={parsed} seq={:?}..{:?}",
         args.log.display(),
-        match dump.guest {
-            Some(true) => "yes",
-            Some(false) => "no",
-            None => "unspecified",
-        },
-        dump.events.map(|v| v.to_string()).unwrap_or("-".into()),
-        dump.shown.map(|v| v.to_string()).unwrap_or("-".into()),
+        dumps,
+        guest_dumps,
         first,
         last
     );
+    // One line per dump, because a log holds one per guest process: the counts BELONG to a ring, and a total that
+    // is not attached to any of them is how a reader reports a number no ring ever had.
+    for (i, part) in dump.per_dump.iter().enumerate() {
+        let skipped_here = part.shown.map(|s| s.saturating_sub(part.records + part.torn));
+        println!(
+            "  DUMP {i} guest={} events={} shown={} parsed={} torn={} skipped={}",
+            match part.guest {
+                Some(true) => "yes",
+                Some(false) => "no",
+                None => "unspecified",
+            },
+            part.events.map(|v| v.to_string()).unwrap_or("-".into()),
+            part.shown.map(|v| v.to_string()).unwrap_or("-".into()),
+            part.records,
+            part.torn,
+            skipped_here.map(|v| v.to_string()).unwrap_or("-".into())
+        );
+    }
     for (tag, n) in &tallies {
         // One sample per tag, with its payload: a count alone would decode the schema and then say nothing with it.
         let sample = dump.records.iter().find(|r| r.tag == *tag);
@@ -8606,8 +8664,7 @@ fn run_ring(args: RingArgs) -> Result<ExitCode> {
     }
     if torn == 0 && skipped == Some(0) {
         println!(
-            "RING-COMPLETE every slot the producer printed was read back intact (shown={:?}, seq_gaps={gaps})",
-            dump.shown
+            "RING-COMPLETE every slot the producer printed was read back intact (shown={sum_shown}, seq_gaps={gaps})"
         );
     } else {
         if torn > 0 {
@@ -9180,8 +9237,10 @@ mod ring_tests {
         );
         let d = parse_ring_dump(&text);
         assert_eq!(d.records.len(), 3);
-        assert_eq!(d.events, Some(4));
-        assert_eq!(d.shown, Some(4));
+        assert_eq!(d.per_dump.len(), 1);
+        assert_eq!(d.per_dump[0].events, Some(4));
+        assert_eq!(d.per_dump[0].shown, Some(4));
+        assert_eq!(d.per_dump[0].records, 3);
         assert!(d.malformed_records.is_empty() && d.malformed_other.is_empty());
         let r = &d.records[0];
         assert_eq!((r.seq, r.tag.as_str(), r.fields), (0, "recv_park", [1, 2, 3, 4]));
@@ -9229,7 +9288,7 @@ mod ring_tests {
         let torn = d.malformed_records.len() as u64;
         // A slot the producer printed but that came back incomplete is TORN; a slot it never printed was already
         // overwritten. This dump has no torn line, so every unprinted slot is a skip.
-        let skipped = d.shown.unwrap() - (parsed + torn);
+        let skipped = d.per_dump[0].shown.unwrap() - (parsed + torn);
         let first = d.records.iter().map(|r| r.seq).min().unwrap();
         let last = d.records.iter().map(|r| r.seq).max().unwrap();
         assert_eq!(parsed, 8);
@@ -9247,7 +9306,8 @@ mod ring_tests {
         let text = "dtape.ering dump events=2 shown=2 guest=1\n\
                     dtape.ering seq=0 tag=[pc-entry a=0xffffffff b=0x55d0 c=0x0 d=0x0\n";
         let d = parse_ring_dump(text);
-        assert_eq!(d.guest, Some(true));
+        assert_eq!(d.per_dump.len(), 1);
+        assert_eq!(d.per_dump[0].guest, Some(true));
         assert_eq!(d.records.len(), 1);
         assert_eq!(d.records[0].tag, "[pc-entry");
         assert_eq!(d.records[0].fields[0], 0xffffffff, "the digit is a FIELD, not a formatted string");
@@ -9255,10 +9315,27 @@ mod ring_tests {
     }
 
     #[test]
+    fn several_dumps_in_one_log_are_counted_per_dump_not_by_the_last_header() {
+        // MEASURED on the first real guest log: one dump per guest process, 8 of them and 342 records. A reader
+        // that kept the last header's counts and applied them to every record reported a number belonging to no
+        // ring at all, which is worse than no number.
+        let text = "dtape.ering dump events=2 shown=2 guest=1\n\
+                    dtape.ering seq=0 tag=[pc-entry a=0x1 b=0x2 c=0x0 d=0x0\n\
+                    dtape.ering seq=1 tag=[pc-entry a=0x3 b=0x4 c=0x0 d=0x0\n\
+                    dtape.ering dump events=5 shown=5 guest=1\n\
+                    dtape.ering seq=0 tag=[pc-postplane a=0x5 b=0x6 c=0x0 d=0x0\n";
+        let d = parse_ring_dump(text);
+        assert_eq!(d.per_dump.len(), 2);
+        assert_eq!((d.per_dump[0].records, d.per_dump[0].shown), (2, Some(2)));
+        assert_eq!((d.per_dump[1].records, d.per_dump[1].shown), (1, Some(5)));
+        assert_eq!(d.records.len(), 3, "the records of both dumps are all read");
+    }
+
+    #[test]
     fn a_log_with_no_dump_is_not_a_zero_census() {
         let d = parse_ring_dump("some run log\nwith no ring dump in it\n");
         assert!(d.records.is_empty());
-        assert!(d.events.is_none());
+        assert!(d.per_dump.is_empty());
         assert!(d.malformed_records.is_empty() && d.malformed_other.is_empty());
     }
 }
