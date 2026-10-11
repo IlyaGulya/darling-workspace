@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from shlex import quote
-from typing import Any
+from typing import Any, NamedTuple, Sequence
 
 import yaml
 
@@ -289,28 +289,61 @@ def parse_macho_dylib_id(output: str) -> str | None:
     return None
 
 
+class MachoDependency(NamedTuple):
+    """One dependency of a guest Mach-O, and whether dyld is allowed to find it missing.
+
+    The weak flag is not decoration: `llvm-objdump --macho --dylibs-used` prints `(weak)` for a dependency the
+    binary tolerates being absent, and MEASURED, a real case depends on it -- `libswiftFoundation.dylib` declares
+    `Combine.framework` weak, the framework exists nowhere in this tree, and treating it as required made a
+    perfectly satisfiable library unsatisfiable, which stopped the whole rootless deploy. A resolver that ignores
+    the flag refuses deployments that dyld would load.
+    """
+
+    name: str
+    weak: bool
+
+
+def parse_macho_dylib_dependency_records(output: str) -> list[MachoDependency]:
+    """Extract ordered install names WITH their weak flag from ``llvm-objdump --macho --dylibs-used``."""
+
+    records: list[MachoDependency] = []
+    for line in output.splitlines():
+        candidate = line.strip()
+        name, separator, details = candidate.partition(" (")
+        if separator and name:
+            records.append(MachoDependency(name=name, weak="weak" in details))
+    return records
+
+
 def parse_macho_dylib_dependencies(output: str) -> list[str]:
     """Extract ordered install names from ``llvm-objdump --macho --dylibs-used``."""
 
-    dependencies: list[str] = []
-    for line in output.splitlines():
-        candidate = line.strip()
-        name, separator, _details = candidate.partition(" (")
-        if separator and name:
-            dependencies.append(name)
-    return dependencies
+    return [record.name for record in parse_macho_dylib_dependency_records(output)]
 
 
 def resolve_macho_runtime_closure(
     roots: Mapping[str, Path],
     providers: Mapping[str, Path],
-    dependencies_for: Callable[[Path], list[str]],
+    dependencies_for: Callable[[Path], list[MachoDependency]],
+    warn: Callable[[str], None] | None = None,
+    rpaths: Sequence[str] = ("/usr/lib/swift",),
 ) -> dict[str, Path]:
     """Resolve guest-Mach-O dependencies from explicit roots to built providers.
 
     Rootless startup has no host shared cache to hide an omitted dylib. The
     manifest therefore declares a closure resource, while this function derives
     its concrete members from the product binaries actually built for the run.
+
+    A WEAK dependency with no built provider is skipped, and said so through `warn`: dyld is allowed to find it
+    missing, so refusing would reject a deployment that would run. A strong one is still fatal -- that distinction
+    is the whole point of the flag, and collapsing it in either direction is wrong: skipping a strong dependency
+    hides a real omission, and failing on a weak one refuses an honest image.
+
+    `@rpath/NAME` is resolved against `rpaths`, which defaults to `/usr/lib/swift`. MEASURED: a Swift overlay
+    names its siblings that way (`libswiftFoundation.dylib` requires `@rpath/libswiftXPC.dylib`) and carries no
+    LC_RPATH of its own -- Apple resolves those against the LOADER's rpaths plus the system layout, and a
+    rootless prefix places the same files at the same guest path, so the deployment knows the answer and must not
+    refuse a dependency it can place.
     """
 
     closure = dict(roots)
@@ -319,22 +352,40 @@ def resolve_macho_runtime_closure(
         required_by = pending.pop(0)
         source = closure[required_by]
         for dependency in dependencies_for(source):
-            if dependency == required_by:
+            if dependency.name == required_by:
                 continue
-            if not dependency.startswith("/"):
+            name = dependency.name
+            if name.startswith("@rpath/"):
+                tail = name[len("@rpath/") :]
+                candidates = [f"{root.rstrip('/')}/{tail}" for root in rpaths]
+            elif name.startswith("/"):
+                candidates = [name]
+            else:
                 raise ValueError(
                     "rootless bootstrap closure cannot resolve non-absolute Mach-O "
-                    f"dependency {dependency!r} required by {required_by}"
+                    f"dependency {dependency.name!r} required by {required_by}"
                 )
-            provider = providers.get(dependency)
-            if provider is None:
+            resolved = None
+            for candidate in candidates:
+                if candidate in providers:
+                    resolved = candidate
+                    break
+            if resolved is None:
+                if dependency.weak:
+                    if warn is not None:
+                        warn(
+                            f"rootless bootstrap closure: weak dependency {dependency.name} of "
+                            f"{required_by} has no built provider and is skipped -- dyld may find it missing"
+                        )
+                    continue
                 raise ValueError(
                     "rootless bootstrap closure has no built provider for Mach-O "
-                    f"dependency {dependency} required by {required_by}"
+                    f"dependency {dependency.name} required by {required_by}"
+                    f" (looked for {', '.join(candidates)})"
                 )
-            if dependency not in closure:
-                closure[dependency] = provider
-                pending.append(dependency)
+            if resolved not in closure:
+                closure[resolved] = providers[resolved]
+                pending.append(resolved)
     return closure
 
 

@@ -22,8 +22,8 @@ from test_runtime import (
     is_fat_macho_binary,
     is_macho_binary,
     load_runtime_component_manifest,
-    parse_macho_dylib_dependencies,
     parse_macho_dylib_id,
+    parse_macho_dylib_dependency_records,
     resolve_macho_runtime_closure,
     runtime_artifact_deploy_paths,
     runtime_deploy_targets,
@@ -135,10 +135,12 @@ class RuntimeDeploymentService:
             )
         return result.stdout
 
-    def macho_dependencies(self, path: Path) -> list[str]:
+    def macho_dependencies(self, path: Path) -> list[MachoDependency]:
         if not is_macho_binary(path):
             return []
-        return parse_macho_dylib_dependencies(self.macho_inspect(path, "--dylibs-used"))
+        return parse_macho_dylib_dependency_records(
+            self.macho_inspect(path, "--dylibs-used")
+        )
 
     def macho_dylib_providers(
         self, build_root: Path, explicit: dict[str, Path]
@@ -198,6 +200,7 @@ class RuntimeDeploymentService:
                 roots,
                 self.macho_dylib_providers(build_root, roots),
                 self.macho_dependencies,
+                warn=lambda message: self._host.wrn(f"guest-runtime-deploy {message}"),
             )
         except ValueError as error:
             self._host.die(f"guest-runtime-deploy {error}")

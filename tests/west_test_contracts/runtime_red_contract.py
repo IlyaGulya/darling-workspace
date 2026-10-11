@@ -33,6 +33,7 @@ import test_runtime_source as runtime_source_module
 from west_commands.test import DarlingTest, RuntimeBuildFailure, RuntimeRedProven
 from west_commands.test_execution import ProcessResult, process_output_text
 from west_commands.test_runtime import (
+    MachoDependency,
     compose_ctest_runtime_profiles,
     describe_runtime_deploy_plan,
     is_macho_binary,
@@ -41,6 +42,7 @@ from west_commands.test_runtime import (
     load_ctest_runtime_profiles,
     merge_runtime_cmake_define_overrides,
     parse_macho_dylib_dependencies,
+    parse_macho_dylib_dependency_records,
     parse_macho_dylib_id,
     parse_runtime_cmake_define_overrides,
     partition_ctest_runtime_profiles,
@@ -490,10 +492,21 @@ with tempfile.TemporaryDirectory() as temp:
     assert parse_macho_dylib_dependencies(
         "fixture:\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n"
     ) == ["/usr/lib/libSystem.B.dylib"]
+    # The weak flag survives parsing: it is the difference between a dependency dyld may find missing and one it
+    # may not, and MEASURED, a real deployment turned on it (libswiftFoundation declares Combine.framework weak,
+    # and Combine exists nowhere in this tree).
+    assert parse_macho_dylib_dependency_records(
+        "fixture:\n"
+        "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n"
+        "\t/System/Library/Frameworks/Combine.framework/Versions/A/Combine (compatibility version 0.0.0, weak)\n"
+    ) == [
+        MachoDependency("/usr/lib/libSystem.B.dylib", False),
+        MachoDependency("/System/Library/Frameworks/Combine.framework/Versions/A/Combine", True),
+    ]
     dependencies = {
-        launchd: ["/usr/lib/libSystem.B.dylib"],
-        libsystem: ["/usr/lib/libobjc.A.dylib"],
-        libobjc: ["/usr/lib/libobjc.A.dylib"],
+        launchd: [MachoDependency("/usr/lib/libSystem.B.dylib", False)],
+        libsystem: [MachoDependency("/usr/lib/libobjc.A.dylib", False)],
+        libobjc: [MachoDependency("/usr/lib/libobjc.A.dylib", False)],
     }
     closure = resolve_macho_runtime_closure(
         {"/usr/libexec/darling/launchd": launchd},
@@ -508,27 +521,67 @@ with tempfile.TemporaryDirectory() as temp:
         "/usr/lib/libSystem.B.dylib": libsystem,
         "/usr/lib/libobjc.A.dylib": libobjc,
     }
+    # A WEAK dependency with no provider is skipped and reported, not fatal: refusing it would reject an image dyld
+    # loads. A STRONG one with no provider stays fatal, because skipping it would hide a real omission.
+    warned: list[str] = []
+    weak_closure = resolve_macho_runtime_closure(
+        {"/usr/libexec/darling/launchd": launchd},
+        {"/usr/lib/libSystem.B.dylib": libsystem},
+        lambda path: (
+            [
+                MachoDependency("/usr/lib/libSystem.B.dylib", False),
+                MachoDependency("/System/Library/Frameworks/Combine.framework/Versions/A/Combine", True),
+            ]
+            if path == launchd
+            else []
+        ),
+        warn=warned.append,
+    )
+    assert set(weak_closure) == {"/usr/libexec/darling/launchd", "/usr/lib/libSystem.B.dylib"}
+    assert len(warned) == 1 and "weak dependency" in warned[0] and "Combine" in warned[0], warned
     try:
         resolve_macho_runtime_closure(
             {"/usr/libexec/darling/launchd": launchd},
             {"/usr/lib/libSystem.B.dylib": libsystem},
-            dependencies.__getitem__,
+            lambda path: (
+                [MachoDependency("/usr/lib/libobjc.A.dylib", False)] if path == launchd else []
+            ),
         )
     except ValueError as exc:
         assert "no built provider" in str(exc), exc
         assert "libobjc.A.dylib" in str(exc), exc
     else:
-        raise AssertionError("closure accepted an unresolved guest dylib")
+        raise AssertionError("a STRONG unresolved guest dylib was accepted")
     try:
         resolve_macho_runtime_closure(
             {"/usr/libexec/darling/launchd": launchd},
             {},
-            lambda _path: ["@rpath/libmissing.dylib"],
+            lambda _path: [MachoDependency("@rpath/libmissing.dylib", False)],
         )
     except ValueError as exc:
-        assert "non-absolute Mach-O dependency" in str(exc), exc
+        # @rpath is ALREADY placed: it resolves against the deployment's own layout (/usr/lib/swift), so the
+        # refusal is about the missing provider, not about the spelling -- and it names where it looked.
+        assert "no built provider" in str(exc), exc
+        assert "/usr/lib/swift/libmissing.dylib" in str(exc), exc
     else:
         raise AssertionError("closure accepted an unresolvable rpath dependency")
+    # When the layout DOES hold it, an @rpath dependency resolves and joins the closure. This is the whole point:
+    # a Swift overlay names its siblings that way and carries no LC_RPATH of its own (MEASURED on
+    # libswiftFoundation.dylib), so a resolver that only understood absolute install names refused an image the
+    # loader would place.
+    swift_sibling = launchd.parent / "libswiftXPC.dylib"
+    swift_sibling.write_bytes(b"\xcf\xfa\xed\xfe")
+    rpath_closure = resolve_macho_runtime_closure(
+        {"/usr/libexec/darling/launchd": launchd},
+        {"/usr/lib/swift/libswiftXPC.dylib": swift_sibling},
+        lambda path: (
+            [MachoDependency("@rpath/libswiftXPC.dylib", False)] if path == launchd else []
+        ),
+    )
+    assert rpath_closure == {
+        "/usr/libexec/darling/launchd": launchd,
+        "/usr/lib/swift/libswiftXPC.dylib": swift_sibling,
+    }
 
 with tempfile.TemporaryDirectory() as temp:
     build_root = Path(temp)
@@ -580,7 +633,7 @@ with tempfile.TemporaryDirectory() as temp:
     closure = resolve_macho_runtime_closure(
         {"/usr/libexec/darling/launchd": executable},
         providers,
-        lambda path: [install_name] if path == executable else [],
+        lambda path: [MachoDependency(install_name, False)] if path == executable else [],
     )
     assert closure[install_name] == staged_framework
 
