@@ -919,7 +919,7 @@ manifest:
     repo-path: darling-libtrace
     path: darling/src/external/libtrace
     remote: darling
-    revision: 8cf07f02b15f7dca6436882a03678fff0392eaf6
+    revision: 4f7c7f10a2b0006d9eaf09642be4c2a594d5aa37
     userdata:
       kind: darling-source
       upstream-repository: darling-libtrace
