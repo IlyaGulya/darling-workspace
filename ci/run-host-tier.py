@@ -254,6 +254,16 @@ EXPLICIT_CONTRACTS = (
         "tests/west_test_contracts/weak_binding_registry_contract.py",
         False,
     ),
+    # Uncached on purpose, for the same reason as weak-binding-registry: every
+    # input it reads (tools/generate-sdk-modulemap.py, tools/sdk-module-maps/ and
+    # the SDK's usr/include) lives in the darling source forest rather than in
+    # this workspace, so the tier's cache key does not identify the bytes it
+    # judged. It generates the SDK module maps into a scratch directory and
+    # proves they name only headers that exist, that no module survives without
+    # a header, umbrella or child, that a module whose headers are all absent is
+    # not emitted, that a missing SDK tree fails by path, and that the maps
+    # committed in the SDK are exactly what the generator produces now.
+    ("sdk-module-maps", "tests/run-sdk-module-maps-contract.sh", False),
 )
 
 # Contracts deliberately kept out of the tier. Each entry states the reason,
