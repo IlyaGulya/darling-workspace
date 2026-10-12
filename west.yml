@@ -355,7 +355,7 @@ manifest:
     repo-path: darling-cocotron
     path: darling/src/external/cocotron
     remote: darling
-    revision: bbcac5d12df7c9cbdae5f76d8986496e13872c7f
+    revision: 8269af2b2798a73b4a6685b13998e95ce9a77565
     userdata:
       kind: darling-source
       upstream-repository: darling-cocotron
