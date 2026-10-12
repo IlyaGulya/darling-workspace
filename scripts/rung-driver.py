@@ -10,7 +10,8 @@ per dependency field by hand, decide the route, and then verify a supplied artif
           demand per dependency field with demangled shapes and weak/strong, and print the route the
           missing name takes with the evidence behind it (`closure_analyze.py --sweep` classifies the
           whole closure the same way; this is the same classifier for the current stop).
-  verify  For a supplied rung: the deployed export trie carries every demanded name, the analyzer
+  verify  For a supplied rung: the deployed image satisfies every strong demand (its own export
+          trie, an image it re-exports, or a demand only weak/upward referrers make), the analyzer
           reports MISS 0, and the sha chain payload == staged resource == deployed prefix copy.
 
 Nothing here writes: it reads the log, the tree, the manifest, the payload and the prefix.
@@ -110,15 +111,13 @@ def refs_for(install_name, edges):
 
 
 def print_demand(install_name, refs, indent="  "):
-    """The demand per dependency field: bind kind, demangled shape, weak/strong per referrer."""
+    """The demand per dependency field: bind kind, demangled shape, weak/strong per referrer.
+
+    Returns the field's own tables ({symbol: kind}, {referrer image: {symbol: kind}}), taken from
+    closure_analyze so the driver and the analyzer read the same bind tables (dar-m3s0).
+    """
     column = ca.column_key(install_name)
-    demanded = {}
-    per_referrer = {}
-    for ref in refs:
-        syms = ca.binds_by_dependency(ref["image"]).get(column, {})
-        per_referrer[ref["image"]] = syms
-        for sym, kind in syms.items():
-            demanded.setdefault(sym, kind)
+    demanded, per_referrer = ca.demand_tables(install_name, refs)
     shapes = demangle(demanded)
     swift_shaped = {s: t for s, t in shapes.items() if t != s}
     print(f"{indent}dependency field (bind-table column): {column}")
@@ -132,7 +131,7 @@ def print_demand(install_name, refs, indent="  "):
             print(f"{indent}    {sym}  ({per_referrer[ref['image']][sym]})")
             if sym in swift_shaped:
                 print(f"{indent}        -> {swift_shaped[sym]}")
-    return demanded
+    return demanded, per_referrer
 
 
 def print_declaration(sources, install_name):
@@ -203,7 +202,7 @@ def cmd_stop(args):
           f"{ca.deployed_state(args.prefix, install_name, None)[0]}")
     print_declaration(sources, install_name)
     print()
-    demanded = print_demand(install_name, refs)
+    demanded, _per_referrer = print_demand(install_name, refs)
 
     print()
     print("== the route ==")
@@ -253,38 +252,49 @@ def cmd_verify(args):
 
     failures = []
     print("== demand (from the referrers' own bind tables) ==")
-    demanded = print_demand(install_name, refs)
+    demanded, demanded_by_referrer = print_demand(install_name, refs)
     print()
-    route, evidence = ca.classify_route(install_name, refs, ctx)
+    route, evidence = ca.classify_route(install_name, refs, ctx, demanded)
     print("== route this rung took ==")
     print(f"  {route.upper()}: {ca.ROUTE_HEADLINE[route]}")
     print(f"  evidence: {evidence}")
     print()
 
-    # 1. the deployed export trie carries every demanded name.
-    print("== 1. deployed export trie carries every demanded name ==")
-    deployed_path = None
-    for base in (args.prefix, os.path.join(args.prefix, "libexec/darling")):
-        cand = os.path.join(base, install_name.lstrip("/"))
-        if os.path.isfile(cand):
-            deployed_path = cand
-            break
+    # 1. the deployed image satisfies every demand of this field.  It supplies a name from its own
+    # export trie or from a dylib it re-exports, and an absent name is a failure only when a STRONG
+    # referrer binds it (dar-m3s0): this is the analyzer's own classification, never a second one
+    # derived here from a raw count of demanded names.
+    print("== 1. the deployed image satisfies every demand ==")
+    deployed_path = ca.deployed_path(args.prefix, install_name)
     if not deployed_path:
         print(f"  FAIL: the prefix carries no {install_name}")
         failures.append("deployed copy absent")
-        exported = set()
     else:
         print(f"  deployed copy: {deployed_path}")
-        exported = ca.exports(deployed_path)
-        missing = sorted(s for s in demanded if s not in exported)
-        print(f"  exported names: {len(exported)}; demanded: {len(demanded)}; "
-              f"demanded-not-exported: {len(missing)}")
-        if missing:
-            failures.append(f"{len(missing)} demanded name(s) not exported")
-            for sym in missing[:20]:
-                print(f"    MISSING {sym}")
+        own = ca.exports(deployed_path)
+        reexported, providers = ca.reexported_exports(deployed_path, args.prefix)
+        split = ca.demand_split(demanded, refs, demanded_by_referrer, own, reexported)
+        print(f"  own export trie: {len(own)} name(s); re-exported: {len(reexported)} name(s) from "
+              f"{len(providers)} image(s)"
+              + (f" (e.g. {', '.join(os.path.basename(p) for p in sorted(providers)[:3])})"
+                 if providers else ""))
+        print(f"  demanded: {len(demanded)}; satisfied: {len(split['satisfied_own'])} own trie + "
+              f"{len(split['satisfied_reexport'])} through a re-export; absent: "
+              f"{len(split['missing'])}")
+        for sym in split["fatal"]:
+            print(f"    MISSING (strong, non-lazy) {sym}")
+        for sym in split["lazy"]:
+            print(f"    MISSING (strong, lazy)     {sym}")
+        for sym in split["tolerated"][:20]:
+            print(f"    ABSENT-OK  {sym}  [no strong referrer demands it: weak/upward only]")
+        strong_missing = split["fatal"] + split["lazy"]
+        if strong_missing:
+            failures.append(f"{len(strong_missing)} strong demand(s) not satisfied by the deployed "
+                            f"image or its re-exports")
         else:
-            print("  OK: every demanded name is in the deployed export trie")
+            print(f"  OK: every strong demand is satisfied"
+                  + (f"; {len(split['tolerated'])} absent name(s) are tolerated"
+                     if split["tolerated"] else ""))
     print()
 
     # 2. the analyzer reports MISS 0 for this component.
@@ -301,7 +311,7 @@ def cmd_verify(args):
               f"lazy {len(result.get('missing_lazy', []))}, "
               f"tolerated {len(result.get('missing_tolerated', []))}]")
         for sym in result.get("missing_fatal", [])[:10]:
-            print(f"    MISSING (strong, non-weak bind) {sym}")
+            print(f"    MISSING (strong, non-lazy bind) {sym}")
         for sym in result.get("missing_lazy", [])[:10]:
             print(f"    MISSING (strong, lazy bind)     {sym}")
         if miss:
@@ -364,8 +374,8 @@ def cmd_verify(args):
             print(f"  FAIL: {reason}")
         print("  RESULT: FAIL")
         return 1
-    print("  RESULT: PASS -- every demanded name is deployed and exported, the analyzer reports "
-          "MISS 0, and the sha chain is intact")
+    print("  RESULT: PASS -- every strong demand is satisfied by the deployed image or its "
+          "re-exports, the analyzer reports MISS 0, and the sha chain is intact")
     return 0
 
 
@@ -398,10 +408,11 @@ def main():
     add_common(stop)
     stop.set_defaults(func=cmd_stop)
     verify = sub.add_parser("verify", help="verify a supplied rung",
-                            description="Verify a supplied rung three ways: the deployed export trie "
-                                        "carries every demanded name, the analyzer reports MISS 0, "
-                                        "and the sha chain payload == staged resource == deployed "
-                                        "prefix copy.")
+                            description="Verify a supplied rung three ways: the deployed image "
+                                        "satisfies every strong demand (own export trie, a "
+                                        "re-exported image, or a weak/upward-only referrer), the "
+                                        "analyzer reports MISS 0, and the sha chain payload == "
+                                        "staged resource == deployed prefix copy.")
     verify.add_argument("--component", default=None,
                         help="declared target or install-name stem (e.g. "
                              "swift_libswiftUniformTypeIdentifiers_dylib)")

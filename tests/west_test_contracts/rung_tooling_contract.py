@@ -9,7 +9,10 @@ wrong by hand at least once:
     both directions, so a payload-only declaration is not invisible and a CMake declaration the
     manifest does not carry is reported instead of trusted;
   * the wave sweep's route for a missing install name (weak-only, declaration, payload, source,
-    substitute) and the two non-gap routes (Xcode-provided, no-referrer), each with its evidence;
+    substitute) and the two non-gap routes (Xcode-provided, no-referrer), each with its evidence --
+    where a source rung must hold an implementation of a demanded name and not merely a matching
+    directory (dar-xovc), and where a demand satisfied through a re-export or made only by a
+    weak/upward referrer is not a failure while a strong absence still is (dar-m3s0);
   * the loader stop parse, including a log with only dyld's first line;
   * pin sync's rewrite: only a revision value changes, a forward pin moves, an ahead pin is refused
     unless told otherwise, and a manifest with nothing to change is reported as no change.
@@ -158,7 +161,15 @@ def classify_fixture(tmp):
     write(payload / "overlays" / "OverlayOnly" / "build.sh", "#!/bin/sh\n")
     # A CMake build target the manifest does not declare, and a source tree with no target at all.
     write(darling / "src" / "frameworks" / "OnlyBuilt" / "CMakeLists.txt", "add_framework(OnlyBuilt FAT)\n")
-    write(darling / "src" / "frameworks" / "SourceOnly" / "src" / "SourceOnly.m", "// source only\n")
+    # dar-xovc: a SOURCE row is a promise to build, so only the first of these three may take it --
+    # a tree whose implementation file defines the demanded name, a header-only tree that merely
+    # declares it, and a same-named C umbrella for a different (here Swift overlay) image.
+    write(darling / "src" / "frameworks" / "SourceOnly" / "src" / "SourceOnly.m",
+          "void SourceOnlyWidget(void) { }\n")
+    write(darling / "src" / "frameworks" / "HeaderOnly" / "include" / "HeaderOnly" / "HeaderOnly.h",
+          "void SourceOnlyWidget(void);\nvoid HeaderOnlyThing(void);\n")
+    write(darling / "src" / "frameworks" / "UmbrellaSwift" / "src" / "UmbrellaSwift.c",
+          "void UmbrellaSwift_C_entry(void) { }\n")
     ctx = ca.classify_context(str(darling), sources["manifest"], str(tmp / "no-xcode"),
                               payload=str(payload))
     ctx["xcode_provides"] = lambda name: (name.startswith("@rpath/"), "stub Xcode")
@@ -195,11 +206,41 @@ def test_routes(tmp):
     check(route == ca.ROUTE_PAYLOAD and "overlays/OverlayOnly" in why,
           f"an overlay recipe is a payload rung: {route} ({why})")
 
-    # A source tree nothing builds or declares, and a name with nothing at all.
-    route, why = ca.classify_route("/System/Library/Frameworks/SourceOnly.framework/Versions/A/SourceOnly",
+    # A source tree is a source rung only when it holds an implementation of a demanded name
+    # (dar-xovc).  The same demanded name is declared in the header-only tree and absent from the
+    # umbrella tree, and neither of those is a build; with no demanded name to find at all (the
+    # referrers' tables unreadable), a matching directory cannot be promoted to a build here either.
+    route, why = ca.classify_route("/System/Library/Frameworks/HeaderOnly.framework/Versions/A/HeaderOnly",
                                    refs(False), ctx)
-    check(route == ca.ROUTE_SOURCE and "src/frameworks/SourceOnly" in why,
-          f"a source tree alone is a source rung: {route} ({why})")
+    check(route == ca.ROUTE_SUBSTITUTE and "src/frameworks/HeaderOnly" in why,
+          f"a header-only tree is not a source rung: {route} ({why})")
+    route, why = ca.classify_route("/usr/lib/swift/libswiftUmbrellaSwift.dylib", refs(False), ctx)
+    check(route == ca.ROUTE_SUBSTITUTE and "src/frameworks/UmbrellaSwift" in why,
+          f"a same-named C umbrella is not a source rung: {route} ({why})")
+
+    demanded = {"_SourceOnlyWidget": "bind"}
+    route, why = ca.classify_route("/System/Library/Frameworks/SourceOnly.framework/Versions/A/SourceOnly",
+                                   refs(False), ctx, demanded)
+    check(route == ca.ROUTE_SOURCE and "src/frameworks/SourceOnly" in why
+          and "SourceOnlyWidget" in why and "SourceOnly.m" in why,
+          f"a source tree implementing a demanded name is a source rung: {route} ({why})")
+    route, why = ca.classify_route("/System/Library/Frameworks/HeaderOnly.framework/Versions/A/HeaderOnly",
+                                   refs(False), ctx, demanded)
+    check(route == ca.ROUTE_SUBSTITUTE and "src/frameworks/HeaderOnly" in why
+          and "no implementation source" in why,
+          f"a header-only tree that declares the name is NOT a source rung: {route} ({why})")
+    route, why = ca.classify_route("/usr/lib/swift/libswiftUmbrellaSwift.dylib", refs(False), ctx,
+                                   {"_$s10UmbrellaSwift4BNNSO5ShapeOMa": "bind"})
+    check(route == ca.ROUTE_SUBSTITUTE and "src/frameworks/UmbrellaSwift" in why,
+          f"a same-named C umbrella under a Swift overlay name is NOT a source rung: {route} ({why})")
+    # The same tree asked about a name it does implement still takes the source route, so the guard
+    # is the implemented name and not the directory.
+    route, why = ca.classify_route("/System/Library/Frameworks/SourceOnly.framework/Versions/A/SourceOnly",
+                                   refs(False), ctx, {"_UmbrellaSwift_C_entry": "bind"})
+    check(route == ca.ROUTE_SUBSTITUTE,
+          f"a demanded name the tree does not define is not a source rung either: {route} ({why})")
+
+    # A name with nothing at all.
     route, why = ca.classify_route("/System/Library/PrivateFrameworks/NothingAnywhere.framework/Versions/A/NothingAnywhere",
                                    refs(False), ctx)
     check(route == ca.ROUTE_SUBSTITUTE and "no manifest declaration" in why,
@@ -267,6 +308,85 @@ def test_sweep(tmp):
     check("/usr/lib/libGadget.dylib" not in rows,
           "a name the prefix carries is not part of the wave")
     print("PASS sweep: the whole missing set groups by route in one pass")
+
+
+# --------------------------------------------------------------------------- verifier demand
+
+def test_demand_split(tmp):
+    """The driver's step-1 classification (dar-m3s0): a re-export and a weak/upward referrer are not
+    failures, while a strong referrer's absent, non-lazily bound demand still is.
+
+    This is the classification the analyzer and the driver now share, so a tolerant absence can no
+    longer be re-derived as fatal from a raw count of demanded names against one export trie.
+    """
+    strong = [{"image": "/x/StrongClient.dylib", "weak": False, "upward": False}]
+    weak = [{"image": "/x/WeakClient.dylib", "weak": True, "upward": False}]
+    upward = [{"image": "/x/UpwardClient.dylib", "weak": False, "upward": True}]
+    demanded = {"_own": "bind", "_reexported": "bind", "_weak_only": "bind", "_fully_absent": "bind"}
+    per_referrer = {
+        "/x/StrongClient.dylib": {"_own": "bind", "_reexported": "bind", "_fully_absent": "bind"},
+        "/x/WeakClient.dylib": {"_weak_only": "bind"},
+    }
+
+    # (a) a demand satisfied only through a re-export: the image's own trie does not carry it.
+    split = ca.demand_split({"_own": "bind", "_reexported": "bind"}, strong,
+                            {"/x/StrongClient.dylib": {"_reexported": "bind"}},
+                            own={"_own"}, reexported={"_reexported"})
+    check(split["satisfied_own"] == ["_own"] and split["satisfied_reexport"] == ["_reexported"],
+          f"own and re-exported names are satisfied, not absent: {split}")
+    check(split["fatal"] == [] and split["lazy"] == [] and split["missing"] == [],
+          f"a re-export satisfies a strong demand: {split}")
+
+    # (b) a demand only a weak referrer makes, absent everywhere: tolerated, not a failure, while
+    # the strong referrer's own absent, non-lazily bound demand is still fatal.
+    split = ca.demand_split(demanded, strong + weak, per_referrer, own={"_own"},
+                            reexported={"_reexported"})
+    check(split["tolerated"] == ["_weak_only"],
+          f"a weak-only demand is tolerated: {split}")
+    check(split["fatal"] == ["_fully_absent"],
+          f"the strong, non-lazy absence is still fatal: {split}")
+    # The rung fails only because of the strong absence: drop it and nothing fails.
+    split = ca.demand_split({"_own": "bind", "_reexported": "bind", "_weak_only": "bind"},
+                            strong + weak, per_referrer, own={"_own"}, reexported={"_reexported"})
+    check(split["fatal"] == [] and split["lazy"] == [] and split["tolerated"] == ["_weak_only"],
+          f"a re-export plus a weak-only demand is not a failure: {split}")
+
+    # An upward referrer's demand is tolerated like a weak one (dar-m3s0).
+    split = ca.demand_split({"_up": "bind"}, upward,
+                            {"/x/UpwardClient.dylib": {"_up": "bind"}})
+    check(split["fatal"] == [] and split["tolerated"] == ["_up"],
+          f"an upward-only demand is tolerated: {split}")
+
+    # A strong referrer's LAZY bind is deferred past load: reported, but not the load-time failure.
+    split = ca.demand_split({"_lazy": "lazy_bind"}, strong,
+                            {"/x/StrongClient.dylib": {"_lazy": "lazy_bind"}})
+    check(split["fatal"] == [] and split["lazy"] == ["_lazy"],
+          f"a strong lazy bind is not a fatal absence: {split}")
+
+    # A strong demand absent from the image and its re-exports is the case the rung exists for.
+    split = ca.demand_split({"_gone": "bind"}, strong, {"/x/StrongClient.dylib": {"_gone": "bind"}})
+    check(split["fatal"] == ["_gone"] and split["missing"] == ["_gone"],
+          f"a strong, non-lazy absence must stay fatal: {split}")
+
+    # The driver carries the shared tables out of one bind-table read.
+    demanded_table, per_referrer_table = ca.demand_tables(
+        "/System/Library/Frameworks/Widget.framework/Versions/A/Widget", strong)
+    check(demanded_table == {} and per_referrer_table == {"/x/StrongClient.dylib": {}},
+          f"an unreadable referrer demands nothing rather than a wrong name: {per_referrer_table}")
+
+    # The deployed copy is resolved the way the deploy fills the prefix: both roots.
+    prefix = tmp / "prefix"
+    write(prefix / "usr/lib/libDeployed.dylib", "d")
+    write(prefix / "libexec/darling/System/Library/Frameworks/Widget.framework/Versions/A/Widget", "w")
+    check(ca.deployed_path(str(prefix), "/usr/lib/libDeployed.dylib") is not None,
+          "a prefix copy under the root is found")
+    check(ca.deployed_path(str(prefix),
+                           "/System/Library/Frameworks/Widget.framework/Versions/A/Widget") is not None,
+          "a prefix copy under libexec/darling is found")
+    check(ca.deployed_path(str(prefix), "/usr/lib/libAbsent.dylib") is None,
+          "an install name the prefix does not carry has no deployed copy")
+    print("PASS verifier demand: a re-export and a weak/upward referrer are tolerated, a strong "
+          "absence still fails")
 
 
 # --------------------------------------------------------------------------- loader stop
@@ -457,6 +577,7 @@ def main():
         test_declarations(tmp / "declarations")
         test_routes(tmp / "routes")
         test_sweep(tmp / "sweep")
+        test_demand_split(tmp / "verifiedemand")
         test_loader_stop(tmp / "stop")
         test_pin_sync(tmp / "pin")
         test_cli(tmp / "cli")

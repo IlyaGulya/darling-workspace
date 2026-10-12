@@ -74,7 +74,8 @@ analyzer already knows the whole load-command closure and every install name it 
   weak-only        not a blocker: every referrer links it weakly
   declaration      the tree already builds it; declare and deploy (no new source)
   payload          the payload carries it, or an overlay recipe in the overlay checkout builds it
-  source           an open-source tree exists here and nothing builds or declares it
+  source           an open-source tree exists here, holds an implementation of a demanded name,
+                   and nothing builds or declares it
   substitute       no source anywhere -- a truthful substitute is the only honest answer
 
 Supplying a wave and re-running the ladder once replaces several rung-by-rung turns.  Every row prints
@@ -257,22 +258,30 @@ def read_manifest(build):
     return (by_target, by_install), path
 
 
-def deployed_state(prefix, install_name, artifact):
-    """Whether the prefix carries this install name, and whether that copy is the built artifact."""
+def deployed_path(prefix, install_name):
+    """The prefix's own copy of an install name, or None: both roots the deploy fills are searched."""
     if not prefix or not install_name:
-        return "-", None
+        return None
     for base in (prefix, os.path.join(prefix, "libexec/darling")):
         p = os.path.join(base, install_name.lstrip("/"))
         if os.path.isfile(p):
-            if not artifact:
-                return "present", p
-            try:
-                a = hashlib.sha256(open(p, "rb").read()).hexdigest()
-                b = hashlib.sha256(open(artifact, "rb").read()).hexdigest()
-            except OSError:
-                return "present", p
-            return ("same" if a == b else "differs"), p
-    return "-", None
+            return p
+    return None
+
+
+def deployed_state(prefix, install_name, artifact):
+    """Whether the prefix carries this install name, and whether that copy is the built artifact."""
+    p = deployed_path(prefix, install_name)
+    if not p:
+        return "-", None
+    if not artifact:
+        return "present", p
+    try:
+        a = hashlib.sha256(open(p, "rb").read()).hexdigest()
+        b = hashlib.sha256(open(artifact, "rb").read()).hexdigest()
+    except OSError:
+        return "present", p
+    return ("same" if a == b else "differs"), p
 
 
 def resolve_decl(name, decls):
@@ -539,6 +548,46 @@ def source_index(darling, max_depth=3):
     return index
 
 
+def symbol_source_name(sym):
+    """The text a definition of `sym` carries in source: the linker name minus its prefixes."""
+    name = sym[1:] if sym.startswith("_") else sym
+    if name.startswith("OBJC_CLASS_$_"):
+        name = name[len("OBJC_CLASS_$_"):]
+    return name
+
+
+def source_implementation_for(path, demanded):
+    """(file, symbol) -- an implementation source file under `path` that names a demanded symbol.
+
+    A matched DIRECTORY is not an implementation (dar-xovc).  `src/softlinking/include/SoftLinking`
+    holds two macro headers, and `src/frameworks/Accelerate` is the C umbrella under a Swift overlay
+    name, so the search that finds a real definition must reject both.  A header is excluded on
+    purpose -- a declaration is exactly the promise this route must not make -- and the scan stops
+    at the first implementation file (a compiler input) that carries a demanded name.
+    """
+    if not os.path.isdir(path):
+        return None, None
+    named = sorted((sym, symbol_source_name(sym)) for sym in demanded)
+    named = [(sym, name) for sym, name in named if name]
+    if not named:
+        return None, None
+    for dirpath, dirnames, filenames in os.walk(path):
+        dirnames.sort()
+        for fn in sorted(filenames):
+            if not fn.endswith(SOURCE_IMPL_SUFFIXES):
+                continue
+            full = os.path.join(dirpath, fn)
+            try:
+                with open(full, encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            for sym, name in named:
+                if name in text:
+                    return full, sym
+    return None, None
+
+
 # --------------------------------------------------------------------------- wave sweep routes
 
 ROUTE_XCODE = "xcode-provided"
@@ -556,7 +605,7 @@ ROUTE_HEADLINE = {
     ROUTE_WEAK: "NOT A BLOCKER -- every referrer links it weakly; excluded from the wave",
     ROUTE_DECL: "DECLARATION -- the tree already builds it; declare/deploy (no new source)",
     ROUTE_PAYLOAD: "PAYLOAD DEPLOY -- the payload carries it or an overlay recipe builds it",
-    ROUTE_SOURCE: "BUILD FROM SOURCE -- an open-source tree here builds no target for it yet",
+    ROUTE_SOURCE: "BUILD FROM SOURCE -- an open-source tree here implements it; nothing builds it yet",
     ROUTE_SUBSTITUTE: "TRUTHFUL SUBSTITUTE ONLY -- no source for it anywhere in this workspace",
 }
 
@@ -628,6 +677,7 @@ def classify_context(darling, manifest, xcode, payload=None, overlay=None):
     provider_cache = {}
     return {
         "manifest": manifest,
+        "darling": darling,
         "cmake_targets": read_cmake_build_targets(darling),
         "payload": payload_index(payload, overlay),
         "sources": source_index(darling),
@@ -637,13 +687,18 @@ def classify_context(darling, manifest, xcode, payload=None, overlay=None):
     }
 
 
-def classify_route(install_name, refs, ctx):
+def classify_route(install_name, refs, ctx, demanded=None):
     """(route, evidence) for one install name nothing in the prefix carries.
 
     Order: weak-only first (a missing name behind only weak links cannot stop the loader), then the
     manifest's own declaration, then the tree's build targets, then the payload's artifacts and
-    overlay recipes, then a source tree that nothing builds, and finally the honest answer when
-    none of those exist.
+    overlay recipes, then a source tree that nothing builds but that DOES hold an implementation of
+    a demanded name, and finally the honest answer when none of those exist.
+
+    The source step requires an implementation artefact (dar-xovc): a directory whose name matches a
+    candidate is not a build.  A header-only tree (SoftLinking) and a same-named umbrella for
+    another image (the C Accelerate tree under the Swift overlay's name) have nothing to build, so
+    they are SUBSTITUTE with that fact recorded rather than SOURCE.
     """
     if not refs:
         return ROUTE_ORPHAN, ("no image in the closure demands it: the only load command naming it "
@@ -673,11 +728,29 @@ def classify_route(install_name, refs, ctx):
         if c in overlays:
             return ROUTE_PAYLOAD, (f"overlay recipe {overlays[c]} (matched candidate '{c}') "
                                    "-- in the overlay checkout, not deployed")
+    darling = ctx.get("darling", "")
     sources = ctx.get("sources", {})
+    if demanded is None:
+        demanded = demand_tables(install_name, refs)[0]
+    same_named = []
     for c in candidates:
-        if c in sources:
-            return ROUTE_SOURCE, (f"source tree {sources[c]} exists (matched candidate '{c}'), and "
-                                  "no declaration or build target names it")
+        rel = sources.get(c)
+        if not rel:
+            continue
+        found, sym = source_implementation_for(os.path.join(darling, rel), demanded)
+        if found:
+            return ROUTE_SOURCE, (
+                f"source tree {rel} exists (matched candidate '{c}') and "
+                f"{os.path.relpath(found, darling)} defines demanded symbol {sym}; no declaration "
+                "or build target names it")
+        same_named.append((c, rel))
+    if same_named:
+        c, rel = same_named[0]
+        return ROUTE_SUBSTITUTE, (
+            "no manifest declaration, no CMake build target, no payload artifact or overlay "
+            f"recipe; the same-named directory {rel} (matched candidate '{c}') holds no "
+            "implementation source defining a demanded name (headers only, or another image's "
+            "umbrella)")
     return ROUTE_SUBSTITUTE, ("no manifest declaration, no CMake build target, no payload artifact "
                               "or overlay recipe, no source directory for "
                               + "/".join(candidates[:3]))
@@ -693,20 +766,17 @@ def sweep_missing(edges, prefix, ctx):
             continue
         refs = [{"image": img, "weak": weak, "upward": upward}
                 for img, weak, upward in referrers_for(install_name, edges)]
-        column = column_key(install_name)
-        demanded = set()
-        per_referrer = {}
-        for ref in refs:
-            syms = binds_by_dependency(ref["image"]).get(column, {})
-            per_referrer[ref["image"]] = syms
-            demanded |= set(syms)
+        demanded_kinds, per_referrer = demand_tables(install_name, refs)
+        # the sweep's JSON keeps `demanded` a symbol list (a caller reads it): the bind kind is a
+        # detail of the driver's rung view, not of the wave row.
+        demanded = set(demanded_kinds)
         provided, evidence = ctx["xcode_provides"](install_name)
         if provided:
             rows.append({"install_name": install_name, "route": ROUTE_XCODE, "evidence": evidence,
                          "referrers": refs, "demanded": demanded,
                          "demanded_by_referrer": per_referrer})
             continue
-        route, evidence = classify_route(install_name, refs, ctx)
+        route, evidence = classify_route(install_name, refs, ctx, demanded)
         rows.append({"install_name": install_name, "route": route, "evidence": evidence,
                      "referrers": refs, "demanded": demanded,
                      "demanded_by_referrer": per_referrer})
@@ -833,6 +903,50 @@ def exports(artifact):
         if len(f) == 3:
             names.add(f[2])
     return names
+
+
+def reexports_of(image):
+    """Install names this image re-exports (LC_REEXPORT_DYLIB), in load-command order.
+
+    dyld resolves a client's binding through the image's re-export list, so these install names are
+    part of what the image supplies (dar-m3s0).
+    """
+    out = run([swift("llvm-objdump"), "--macho", "--dylibs-used", image])
+    names = []
+    for line in out.splitlines():
+        m = USED_RE.match(line)
+        if m and "reexport" in m.group(4):
+            names.append(m.group(1))
+    return names
+
+
+def reexported_exports(image, prefix, max_depth=8):
+    """(names, providers) what a deployed image satisfies through the dylibs it re-exports.
+
+    Each re-exported install name is resolved inside the prefix the way the deploy resolves it (both
+    prefix roots), the walk is depth-bounded and cycle-safe, and `providers` maps each re-exported
+    install name to its own export trie so the caller can say WHERE a name came from.
+    """
+    names, providers = set(), {}
+    seen = {os.path.realpath(image)}
+    queue = [(image, 0)]
+    while queue:
+        current, depth = queue.pop(0)
+        if depth >= max_depth:
+            continue
+        for install_name in reexports_of(current):
+            path = deployed_path(prefix, install_name)
+            if not path:
+                continue
+            real = os.path.realpath(path)
+            if real in seen:
+                continue
+            seen.add(real)
+            got = exports(path)
+            providers[install_name] = got
+            names |= got
+            queue.append((path, depth + 1))
+    return names, providers
 
 
 def symbol_types(artifact):
@@ -990,6 +1104,9 @@ def repo_and_relpath(path):
 
 
 SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".m", ".mm", ".h", ".hpp", ".swift")
+# A SOURCE route promises a build, so only a compiler input counts as the implementation: a header
+# DECLARES, it does not define (dar-xovc).
+SOURCE_IMPL_SUFFIXES = (".c", ".cc", ".cpp", ".m", ".mm", ".swift")
 
 
 def walk_source_changes(darling, base, source_dir):
@@ -1101,6 +1218,77 @@ def tree_referrers_for(install_name, xcode):
     return sorted(found)
 
 
+# --------------------------------------------------------------------------- demand classification
+
+def referrer_dicts(refs):
+    """[{image, weak, upward}] from either shape: the analyzer's tuples or the driver's dicts."""
+    if refs and isinstance(refs[0], dict):
+        return [{"image": r["image"], "weak": r["weak"], "upward": r["upward"]} for r in refs]
+    return [{"image": r[0], "weak": r[1], "upward": r[2]} for r in refs]
+
+
+def demand_tables(install_name, refs):
+    """({symbol: bind kind}, {referrer image: {symbol: bind kind}}) for one dependency field.
+
+    The field is dyld's own: a referrer demands a symbol from this image only when the bind row's
+    dylib column equals this image's column name (see column_key), never when the symbol text merely
+    resembles it.  `demanded` collapses the referrers' tables with the first bind kind seen.
+    """
+    column = column_key(install_name)
+    demanded, per_referrer = {}, {}
+    for ref in referrer_dicts(refs):
+        syms = binds_by_dependency(ref["image"]).get(column, {})
+        per_referrer[ref["image"]] = syms
+        for sym, kind in syms.items():
+            demanded.setdefault(sym, kind)
+    return demanded, per_referrer
+
+
+def demand_split(demanded, referrers, demanded_by_referrer, own=frozenset(),
+                 reexported=frozenset()):
+    """One demand classification (dar-m3s0), shared by the analyzer and the rung driver.
+
+    `own` is the image's own export trie and `reexported` the export tries of the images it
+    re-exports; dyld resolves a client's binding through both, so a name in either is SATISFIED and
+    not an absence.  An absent name is FATAL only when a referrer that links this image neither
+    weakly nor upwardly binds it non-lazily; a lazily bound absence is LAZY (dyld defers it past
+    load), and a name demanded only by weak or upward referrers is TOLERATED -- their references are
+    resolved weakly by dyld, so the absence cannot stop the load.
+
+    `referrers` is [{image, weak, upward}] (or the analyzer's tuples); `demanded_by_referrer` maps a
+    referrer image to its own {symbol: bind kind} table.  Returns the four buckets plus `missing`
+    (absent names) and the satisfied names split by where they came from, so a caller can report the
+    reason rather than re-derive it.
+    """
+    own = set(own)
+    reexported = set(reexported)
+    referrers = referrer_dicts(referrers)
+    satisfied_own, satisfied_reexport, missing, fatal, lazy, tolerated = [], [], [], [], [], []
+    for sym in sorted(demanded):
+        if sym in own:
+            satisfied_own.append(sym)
+            continue
+        if sym in reexported:
+            satisfied_reexport.append(sym)
+            continue
+        missing.append(sym)
+        kinds = []
+        for ref in referrers:
+            kind = demanded_by_referrer.get(ref["image"], {}).get(sym)
+            if kind is not None:
+                kinds.append((ref["weak"] or ref["upward"], kind))
+        if any((not link_tolerant) and kind == "bind" for link_tolerant, kind in kinds):
+            fatal.append(sym)
+        elif any((not link_tolerant) and kind != "weak_bind"
+                 for link_tolerant, kind in kinds):
+            lazy.append(sym)
+        else:
+            tolerated.append(sym)
+    return {"demanded": sorted(demanded), "satisfied_own": satisfied_own,
+            "satisfied_reexport": satisfied_reexport, "missing": missing,
+            "fatal": fatal, "lazy": lazy, "tolerated": tolerated}
+
+
 # --------------------------------------------------------------------------- analysis
 
 def analyze_component(target, decl, manifest, darling, base, referrers):
@@ -1127,14 +1315,13 @@ def analyze_component(target, decl, manifest, darling, base, referrers):
         "walk_source_changes": [],
         "column": column_key(install_name),
     }
-    for img, weak, upward in referrers:
-        table = binds_by_dependency(img)
-        syms = table.get(result["column"], {})
-        result["referrers"].append({"image": img, "weak": weak, "upward": upward,
-                                    "dependent_symbol_count": len(syms)})
-        result["demanded_by_referrer"][img] = syms
-        for sym, kind in syms.items():
-            result["demanded"].setdefault(sym, kind)
+    norm_refs = referrer_dicts(referrers)
+    demanded, demanded_by_referrer = demand_tables(install_name, norm_refs)
+    result["demanded"] = demanded
+    result["demanded_by_referrer"] = demanded_by_referrer
+    for ref in norm_refs:
+        result["referrers"].append({**ref, "dependent_symbol_count":
+                                    len(demanded_by_referrer[ref["image"]])})
 
     if not artifact:
         result["class_notes"].append("no built artifact resolved from the manifest")
@@ -1149,28 +1336,14 @@ def analyze_component(target, decl, manifest, darling, base, referrers):
     types = symbol_types(artifact)
     result["objc_class_count"] = len(classes)
 
-    demanded = result["demanded"]
-    result["missing"] = sorted(s for s in demanded if s not in exported)
-
-    # A demanded symbol that is absent is only an incompleteness when a referrer that links the
-    # component STRONGLY demands it with a non-weak bind: a weak-linked image (LC_LOAD_WEAK_DYLIB)
-    # has its references resolved weakly by dyld, and a lazy bind is not resolved at load at all.
-    fatal, lazy, tolerated = [], [], []
-    for sym in result["missing"]:
-        kinds = []
-        for ref in result["referrers"]:
-            kind = result["demanded_by_referrer"].get(ref["image"], {}).get(sym)
-            if kind is not None:
-                kinds.append((ref["weak"], kind))
-        if any((not weak) and kind == "bind" for weak, kind in kinds):
-            fatal.append(sym)
-        elif any((not weak) and kind != "weak_bind" for weak, kind in kinds):
-            lazy.append(sym)
-        else:
-            tolerated.append(sym)
-    result["missing_fatal"] = fatal
-    result["missing_lazy"] = lazy
-    result["missing_tolerated"] = tolerated
+    # One classification for both this analyzer and the rung driver (dar-m3s0): an absent name is
+    # fatal only when a referrer that links the component neither weakly nor upwardly binds it
+    # non-lazily.
+    split = demand_split(demanded, result["referrers"], demanded_by_referrer, exported)
+    result["missing"] = split["missing"]
+    result["missing_fatal"] = split["fatal"]
+    result["missing_lazy"] = split["lazy"]
+    result["missing_tolerated"] = split["tolerated"]
 
     for sym in sorted(demanded):
         if sym in result["missing"]:
@@ -1232,9 +1405,7 @@ def analyze_component(target, decl, manifest, darling, base, referrers):
             walk_text[f] = ""
 
     def walk_attributed(sym):
-        name = sym[1:] if sym.startswith("_") else sym
-        if name.startswith("OBJC_CLASS_$_"):
-            name = name[len("OBJC_CLASS_$_"):]
+        name = symbol_source_name(sym)
         return any(name in text for text in walk_text.values())
 
     truthful_syms = {s for s, _ in result["truthful"]}
@@ -1245,9 +1416,9 @@ def analyze_component(target, decl, manifest, darling, base, referrers):
     result["walk_behavioural"] = walk_behavioural
 
     empty_surface = len(exported) == 0
-    if fatal or lazy:
+    if result["missing_fatal"] or result["missing_lazy"]:
         result["klass"] = "STUB"
-        detail = fatal + lazy
+        detail = result["missing_fatal"] + result["missing_lazy"]
         result["class_notes"].append(
             "incomplete: demanded symbol(s) not exported: " + ", ".join(detail[:4])
             + (f" (+{len(detail) - 4} more)" if len(detail) > 4 else ""))
