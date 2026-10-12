@@ -1,0 +1,1398 @@
+[dtape-lock-diag] acquire-fallback mutex=0x57b43bbef420 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b43bbef420 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b43bbef4f8 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b43bbef4f8 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b3fd5a1e40 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b3fd5a1e40 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b3fd5a2648 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b3fd5a2648 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b3fd5a2648 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b3fd5a2648 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b3fd5a2648 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b3fd5a2648 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b43bbeede8 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] acquire-fallback mutex=0x57b43bbef4f8 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b43bbef4f8 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b43bbef5d8 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b43bbef5d8 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] release-fallback mutex=0x57b43bbeede8 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b3fd5a2710 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b3fd5a2710 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b3fd5a1e40 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b3fd5a1e40 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b3fd5a1e40 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b3fd5a1e40 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b3fd5a1e40 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b3fd5a1e40 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b43bbf2d68 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b43bbf2d68 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b43bbf2e48 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b43bbf2e48 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b43bbf2f28 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b43bbf2f28 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b43bbf30e8 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b43bbf30e8 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b43bbf31c8 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b43bbf31c8 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b43bbf32a8 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b43bbf32a8 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b43bbf3388 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b43bbf3388 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b43bbf3468 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b43bbf3468 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b43bbf3548 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b43bbf3548 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b43bbf3628 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b43bbf3628 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[dtape-lock-diag] acquire-fallback mutex=0x57b43bbf3708 owner=0x0 current=0x0 caller=0x57b3fd3cc5a5
+[dtape-lock-diag] release-fallback mutex=0x57b43bbf3708 owner=0x0 current=0x0 caller=0x57b3fd3cc625
+[srv-kthread-create #0 id=-1 nsid=4194305 pid=-1]
+[srv-kthread-create #1 id=-1 nsid=4194306 pid=-1]
+[fd-courier-conn] sock=7 ino=20845220
+[courier-send] n=1 scm=1 fdcnt=1 payload=24 direction=guest->server
+[plane-doorbell] adopted=1048574 fd=8 stored_dup=9 token=147666214615568815
+[plane-doorbell] drain attempts=2 adopted=1
+[srv-process-register #0 pid=1987225 callnum=1 nsid=1]
+[srv-checkin pid=0 tid=1987225 present_before=1987225]
+[srv-checkin #0 pid=1987225 tid=1987225 fork=0 page=1 ready=1]
+[release-drops-pending] site=mldr.c:1347
+[mldr-seed] attach pid=1987225 memfd=3 size=2816
+[courier-send] n=2 scm=1 fdcnt=1 payload=24 direction=guest->server
+[plane-wake] n=1 via=doorbell scm=0 fdcnt=0 payload=0 db=1048574
+[srv-attach-dispatch] pid=1987225 seq=1 fd=18 token=15418978521187198655
+[srv-lane-attach #0 pid=1987225 tid=1987225 slots=8 slot_size=128]
+[plane-doorbell] adopted=1048574 fd=8 stored_dup=10 token=4104526871606418340
+[mldr-seed] attach-rc pid=1987225 rc=0 reject=0 wake=10
+[mldr-seed] doorbell-in pid=1987225 wake=10 mode=close
+[mldr-seed] doorbell-out pid=1987225 fd=1048574
+[mldr-seed] seeded pid=1987225 map=0x7cb5aab8a000
+[dring-adopt] pid=1987225 tid=1987225 registry=0x630D191B34D0 slots=1024 found=1 gate=1 doorbell=1048574 regelfc=0x630D191B34D0 slotelfc=1024
+[dring-adopt] liveness pid=1987225 tid=1987225 map=0x7CB5AAB8A000 server_state=0 gen=1 creator_image=0x102 mode=2
+[dring-adopt] pre-claim pid=1987225 pages=0x0 (a claim may mmap: an EMULATED syscall)
+[dring-adopt] post-claim pid=1987225 ok
+[sigexc-setup pid=1987225 tid=1987225 seq=1 libpage=0x7CB5AA583000]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[dring-adopt] pid=1987225 tid=1987225 registry=0x630D191B34D0 slots=1024 found=1 gate=1 doorbell=1048574 regelfc=0x630D191B34D0 slotelfc=1024
+[dring-adopt] liveness pid=1987225 tid=1987225 map=0x7CB5AAB8A000 server_state=0 gen=1 creator_image=0x102 mode=2
+[dring-adopt] pre-claim pid=1987225 pages=0x0 (a claim may mmap: an EMULATED syscall)
+[dring-adopt] post-claim pid=1987225 ok
+[sigexc-setup pid=1987225 tid=1987225 seq=1 libpage=0x7CB5A9FDD000]
+[reg pid=1987225 tsd_offset=224 pthsize=8192 dispatch=160 rtk=40 mts=24]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-nocancel-entry sp=91880]
+[open-nocancel-postwd sp=91880]
+[openat-entry sp=91880]
+[open-entry sp=91880]
+[open-postcancel sp=91880]
+[open-postwd sp=91880]
+[open-path /proc/self/fd/4]
+[openat-entry sp=91880]
+[open-entry sp=91880]
+[open-postcancel sp=91880]
+[open-postwd sp=91880]
+[open-path /sbin/launchd]
+[openat-entry sp=91880]
+[fd-courier-conn] sock=7 ino=20845229
+[courier-send] n=1 scm=1 fdcnt=1 payload=24 direction=guest->server
+[plane-doorbell] adopted=1048574 fd=8 stored_dup=10 token=3119971473366716184
+[plane-doorbell] drain attempts=2 adopted=1
+[srv-checkin pid=1 tid=1987225 present_before=1987225]
+[srv-checkin #1 pid=1987225 tid=1987225 fork=0 page=1 ready=1]
+[mldr-seed] attach pid=1987225 memfd=3 size=2816
+[courier-send] n=2 scm=1 fdcnt=1 payload=24 direction=guest->server
+[plane-wake] n=1 via=doorbell scm=0 fdcnt=0 payload=0 db=1048574
+[srv-attach-dispatch] pid=1987225 seq=1 fd=14 token=11525413104373920428
+[srv-lane-attach #1 pid=1987225 tid=1987225 slots=8 slot_size=128]
+[plane-doorbell] adopted=1048574 fd=8 stored_dup=11 token=3537283203005646103
+[plane-doorbell] adopted=1048574 fd=8 stored_dup=12 token=576299032269488942
+[mldr-seed] attach-rc pid=1987225 rc=0 reject=0 wake=12
+[mldr-seed] doorbell-in pid=1987225 wake=12 mode=close
+[mldr-seed] doorbell-out pid=1987225 fd=1048574
+[mldr-seed] seeded pid=1987225 map=0x79d88cd04000
+[dring-adopt] pid=1987225 tid=1987225 registry=0x5830EEB384D0 slots=1024 found=1 gate=1 doorbell=1048574 regelfc=0x5830EEB384D0 slotelfc=1024
+[dring-adopt] liveness pid=1987225 tid=1987225 map=0x79D88CD04000 server_state=0 gen=1 creator_image=0x102 mode=2
+[dring-adopt] pre-claim pid=1987225 pages=0x0 (a claim may mmap: an EMULATED syscall)
+[dring-adopt] post-claim pid=1987225 ok
+[sigexc-setup pid=1987225 tid=1987225 seq=1 libpage=0x79D88C583000]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[dring-adopt] pid=1987225 tid=1987225 registry=0x5830EEB384D0 slots=1024 found=1 gate=1 doorbell=1048574 regelfc=0x5830EEB384D0 slotelfc=1024
+[dring-adopt] liveness pid=1987225 tid=1987225 map=0x79D88CD04000 server_state=0 gen=1 creator_image=0x102 mode=2
+[dring-adopt] pre-claim pid=1987225 pages=0x0 (a claim may mmap: an EMULATED syscall)
+[dring-adopt] post-claim pid=1987225 ok
+[sigexc-setup pid=1987225 tid=1987225 seq=1 libpage=0x79D88C096000]
+[reg pid=1987225 tsd_offset=224 pthsize=8192 dispatch=160 rtk=40 mts=24]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=b880]
+[open-nocancel-postwd sp=b880]
+[openat-entry sp=b880]
+[launchd-MAIN sp=b880]
+[launchd-PREFLIGHT_OK sp=b880]
+[launchd-ROOTLESS_PREPARE_OK sp=b880]
+[launchd-STDIO_FDS_OK sp=b880]
+[launchd-MALLOC_BRANCH_DONE sp=b880]
+[launchd-GETOPT_DONE sp=b880]
+[launchd-PID_GUARD_DONE sp=b880]
+[machport-open] before-rpc
+[srv-kthread-create #2 id=-1 nsid=4194307 pid=-1]
+[kqchan-plane] status=0 token=17170260256547846437 fd=8 out=8
+[machport-open] after-rpc
+[machport-open] after-fcntl
+[pcreate alloc-enter] pid=1987225
+[pcreate alloc-done] pid=1987225
+[pcreate add-enter] pid=1987225
+[add lock-enter] pid=1987225
+[add lock-done] pid=1987225
+[add unlock-done] pid=1987225
+[add intro-enter] pid=1987225
+[add intro-done] pid=1987225
+[pcreate add-done] pid=1987225
+[pcreate trap-enter] pid=1987225
+[tc-tramp pid=1987225 entry=0x79D88C022FE0 dthread=0x79D88B78E000]
+[mldr-dthread pre seq=0 tid=1987225 stack_addr=0x79d88b78e000 pth=0x79d88b78e000]
+[mldr-dthread post seq=0 tid=1987225 rc=0 errno=11 th=0x79d88b5ff6c0]
+[dthread-entry-tid=1987227@/home/ilyagulya/work/wr-fresh/prefi]
+[mldr-dthread-entry begin tid=1987227 pth=0x7fffffdff630]
+[dthread-mask q=0 segv_blocked=0 tid=1987227]
+[mldr-dthread-entry tsd-set tid=1987227]
+[plane-wake] n=1 via=doorbell scm=0 fdcnt=0 payload=0 db=1048574
+[srv-checkin pid=2 tid=1987225 present_before=1987227]
+[srv-checkin #2 pid=1987225 tid=1987227 fork=0 page=1 ready=1]
+[mldr-dthread-entry checked-in=1 tid=1987227]
+[dring-attach] RING_ATTACH_BEGIN pid=1987225 tid=1987227 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[dring-attach] slots pid=1987225 tid=1987227 b0_active=1 b0_owner=1987225 b0_borrowed=1 pages=0x0
+[dring-attach] RING_ATTACH_RPC_SENT pid=1987225 tid=1987227 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[srv-attach-dispatch] pid=1987225 seq=1 fd=18 token=6251136323913919324
+[srv-lane-attach #2 pid=1987225 tid=1987227 slots=8 slot_size=128]
+[dring-plane-attach] ok tid=1987227 rc=0 reject=0 wake=-1
+[dring-attach] RING_ATTACH_END pid=1987225 tid=1987227 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[dring-attach] no-wake-fd pid=1987225 tid=1987227 rc=0 reject=0 owned=1048574
+[dring-doorbell] pid=1987225 tid=1987227 image=kernel fd=1048574
+[mldr-dthread-entry port=2563 tid=1987227]
+[mldr-dthread-entry handshake-done tid=1987227 stack_addr=0x79d88b78e000 entry=0x79d88c022fe0]
+[bsc wrap post rv=0x79D88B78E000]
+[launchd-RUNTIME_INIT_DONE sp=b880]
+[launchd-PID1_MAGIC_ENTER sp=b880]
+[launchd-PID1_MAGIC_INIT_DONE sp=b880]
+[sigact pid=1987225 tid=1987225 bsd=11 linux=11 req=0x100028010 flags=0x400 ra=0x79D88C01B98E]
+[setrestart sig=11 ret=0 host_tid=1987225 libpage=0x79D88C0A4000]
+[launchd-CONSOLE_OPEN_BEGIN sp=b880]
+[open-entry sp=b880]
+[open-postcancel sp=b880]
+[open-postwd sp=b880]
+[open-path /dev/console]
+[openat-entry sp=b880]
+[console-rpc-begin sp=b880]
+[console-path] plane-status=0 reply0=0 reply1=-633194692
+[console-plane-fd2 sp=b880]
+[launchd-CONSOLE_OPENED sp=b880]
+[launchd-CONSOLE_FDOPEN_OK sp=b880]
+[launchd-SYSLOG_BEFORE sp=b880]
+[launchd-SYSLOG_AFTER sp=b880]
+[sigact pid=1987225 tid=1987225 bsd=11 linux=11 req=0x100028770 flags=0x440 ra=0x79D88C01B98E]
+[setrestart sig=11 ret=0 host_tid=1987225 libpage=0x79D88C0A4000]
+[pcreate alloc-enter] pid=1987225
+[pcreate alloc-done] pid=1987225
+[pcreate add-enter] pid=1987225
+[add lock-enter] pid=1987225
+[add lock-done] pid=1987225
+[add unlock-done] pid=1987225
+[add intro-enter] pid=1987225
+[add intro-done] pid=1987225
+[pcreate add-done] pid=1987225
+[pcreate trap-enter] pid=1987225
+[tc-tramp pid=1987225 entry=0x79D88C022FE0 dthread=0x79D88B570000]
+[mldr-dthread pre seq=1 tid=1987225 stack_addr=0x79d88b570000 pth=0x79d88b570000]
+[mldr-dthread post seq=1 tid=1987225 rc=0 errno=11 th=0x79d88b4ee6c0]
+[dthread-entry-tid=1987228@/home/ilyagulya/work/wr-fresh/prefi]
+[mldr-dthread-entry begin tid=1987228 pth=0x7fffffdff6e0]
+[dthread-mask q=0 segv_blocked=0 tid=1987228]
+[mldr-dthread-entry tsd-set tid=1987228]
+[plane-wake] n=2 via=doorbell scm=0 fdcnt=0 payload=0 db=1048574
+[srv-checkin pid=3 tid=1987225 present_before=1987228]
+[srv-checkin #3 pid=1987225 tid=1987228 fork=0 page=1 ready=1]
+[checkin-reply-unseen tid=1987228 pub=2 seen=6 seenstate=0x2 -- published, reply overtaken]
+[mldr-dthread-entry checked-in=1 tid=1987228]
+[dring-attach] RING_ATTACH_BEGIN pid=1987225 tid=1987228 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[dring-attach] slots pid=1987225 tid=1987228 b0_active=1 b0_owner=1987225 b0_borrowed=1 pages=0x79D88B70A000
+[dring-attach] RING_ATTACH_RPC_SENT pid=1987225 tid=1987228 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[srv-attach-dispatch] pid=1987225 seq=2 fd=25 token=6251136323913919327
+[srv-lane-attach #3 pid=1987225 tid=1987228 slots=8 slot_size=128]
+[dring-plane-attach] ok tid=1987228 rc=0 reject=0 wake=-1
+[dring-attach] RING_ATTACH_END pid=1987225 tid=1987228 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[dring-attach] no-wake-fd pid=1987225 tid=1987228 rc=0 reject=0 owned=1048574
+[mldr-dthread-entry port=4611 tid=1987228]
+[mldr-dthread-entry handshake-done tid=1987228 stack_addr=0x79d88b570000 entry=0x79d88c022fe0]
+[bsc wrap post rv=0x79D88B570000]
+[launchd-PID1_BLOCK_END sp=b880]
+[launchd-NETWORKING_DONE sp=b880]
+[launchd-NETWORKING_END sp=b880]
+[release-drops-pending] site=dserver-ring.c:2752
+[release-drops-pending] site=dserver-ring.c:2752
+[open-entry sp=b880]
+[open-postcancel sp=b880]
+[open-postwd sp=b880]
+[open-path /proc/mounts]
+[openat-entry sp=b880]
+[open-entry sp=b880]
+[open-postcancel sp=b880]
+[open-postwd sp=b880]
+[open-path /dev/autofs_nowait]
+[openat-entry sp=b880]
+[launchd-JOBMGR_INIT_DONE sp=b880]
+[launchd-RUNTIME_INIT2_DONE sp=b880]
+[launchd-BOOTSTRAPPER_SCHEDULED sp=b880]
+[launchd-RUNTIME_ENTER sp=b880]
+[fd-courier-conn] sock=21 ino=20843274
+[courier-send] n=3 scm=1 fdcnt=1 payload=24 direction=guest->server
+[plane-doorbell] adopted=1048575 fd=23 stored_dup=24 token=6746882625986075991
+[plane-doorbell] drain attempts=2 adopted=1
+[srv-process-register #1 pid=1987229 callnum=1 nsid=1987229]
+[srv-checkin pid=4 tid=1987229 present_before=1987229]
+[srv-checkin #4 pid=1987229 tid=1987229 fork=1 page=1 ready=1]
+[dring-attach] RING_ATTACH_BEGIN pid=1987229 tid=1987229 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[dring-attach] slots pid=1987229 tid=1987229 b0_active=1 b0_owner=1987225 b0_borrowed=1 pages=0x0
+[dring-attach] RING_ATTACH_RPC_SENT pid=1987229 tid=1987229 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[open-entry sp=b880]
+[srv-attach-dispatch] pid=1987229 seq=3 fd=28 token=6596372850192041498
+[srv-lane-attach #4 pid=1987229 tid=1987229 slots=8 slot_size=128]
+[dring-plane-attach] ok tid=1987229 rc=0 reject=0 wake=25
+[dring-attach] RING_ATTACH_END pid=1987229 tid=1987229 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[open-postcancel sp=b880]
+[open-postwd sp=b880]
+[open-path /proc/1987229/stat]
+[openat-entry sp=b880]
+[reg pid=1987229 tsd_offset=224 pthsize=8192 dispatch=160 rtk=40 mts=24]
+[open-entry sp=b880]
+[open-postcancel sp=b880]
+[open-postwd sp=b880]
+[open-path /dev/console]
+[openat-entry sp=b880]
+[console-rpc-begin sp=b880]
+[console-path] plane-status=0 reply0=0 reply1=1258188588
+[console-plane-fd8 sp=b880]
+[open-entry sp=b880]
+[open-postcancel sp=b880]
+[open-postwd sp=b880]
+[open-path /dev/console]
+[openat-entry sp=b880]
+[console-rpc-begin sp=b880]
+[console-path] plane-status=0 reply0=0 reply1=-335157965
+[console-plane-fd8 sp=b880]
+[srv-checkin pid=5 tid=1987229 present_before=1987229]
+[srv-checkin #5 pid=1987229 tid=1987229 fork=0 page=1 ready=1]
+[srv-attach-dispatch] pid=1987229 seq=1 fd=26 token=8661361444456223745
+[srv-lane-attach #5 pid=1987229 tid=1987229 slots=8 slot_size=128]
+[release-drops-pending] site=dserver-ring.c:2752
+[fd-courier-conn] sock=27 ino=20848141
+[courier-send] n=3 scm=1 fdcnt=1 payload=24 direction=guest->server
+[plane-doorbell] adopted=1048575 fd=28 stored_dup=29 token=3764007817621819672
+[plane-doorbell] drain attempts=2 adopted=1
+[srv-process-register #2 pid=1987230 callnum=1 nsid=1987230]
+[srv-checkin pid=6 tid=1987230 present_before=1987230]
+[srv-checkin #6 pid=1987230 tid=1987230 fork=1 page=1 ready=1]
+[dring-attach] RING_ATTACH_BEGIN pid=1987230 tid=1987230 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[dring-attach] slots pid=1987230 tid=1987230 b0_active=1 b0_owner=1987225 b0_borrowed=1 pages=0x0
+[dring-attach] RING_ATTACH_RPC_SENT pid=1987230 tid=1987230 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[srv-attach-dispatch] pid=1987230 seq=3 fd=38 token=9531253344740660139
+[srv-lane-attach #6 pid=1987230 tid=1987230 slots=8 slot_size=128]
+[dring-plane-attach] ok tid=1987230 rc=0 reject=0 wake=30
+[dring-attach] RING_ATTACH_END pid=1987230 tid=1987230 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[open-entry sp=b880]
+[open-postcancel sp=b880]
+[open-postwd sp=b880]
+[open-path /proc/1987230/stat]
+[openat-entry sp=b880]
+[reg pid=1987230 tsd_offset=224 pthsize=8192 dispatch=160 rtk=40 mts=24]
+[release-drops-pending] site=dserver-ring.c:2752
+[open-entry sp=b880]
+[open-postcancel sp=b880]
+[open-postwd sp=b880]
+[open-path /usr/libexec/shellspawn]
+[openat-entry sp=b880]
+[fd-courier-conn] sock=8 ino=20848145
+[courier-send] n=1 scm=1 fdcnt=1 payload=24 direction=guest->server
+[plane-doorbell] adopted=1048574 fd=12 stored_dup=13 token=7425803293221853571
+[plane-doorbell] drain attempts=2 adopted=1
+[srv-checkin pid=7 tid=1987230 present_before=1987230]
+[srv-checkin #7 pid=1987230 tid=1987230 fork=0 page=1 ready=1]
+[release-drops-pending] site=mldr.c:1347
+[mldr-seed] attach pid=1987230 memfd=6 size=2816
+[courier-send] n=2 scm=1 fdcnt=1 payload=24 direction=guest->server
+[plane-wake] n=1 via=doorbell scm=0 fdcnt=0 payload=0 db=1048574
+[srv-attach-dispatch] pid=1987230 seq=1 fd=36 token=17519158012122234985
+[srv-lane-attach #7 pid=1987230 tid=1987230 slots=8 slot_size=128]
+[plane-doorbell] adopted=1048574 fd=12 stored_dup=14 token=8188787732657574796
+[plane-doorbell] adopted=1048574 fd=12 stored_dup=15 token=1905853319872058773
+[mldr-seed] attach-rc pid=1987230 rc=0 reject=0 wake=15
+[mldr-seed] doorbell-in pid=1987230 wake=15 mode=close
+[mldr-seed] doorbell-out pid=1987230 fd=1048574
+[mldr-seed] seeded pid=1987230 map=0x7353aac73000
+[dring-adopt] pid=1987230 tid=1987230 registry=0x6006F46C54D0 slots=1024 found=1 gate=1 doorbell=1048574 regelfc=0x6006F46C54D0 slotelfc=1024
+[dring-adopt] liveness pid=1987230 tid=1987230 map=0x7353AAC73000 server_state=0 gen=1 creator_image=0x102 mode=2
+[dring-adopt] pre-claim pid=1987230 pages=0x0 (a claim may mmap: an EMULATED syscall)
+[dring-adopt] post-claim pid=1987230 ok
+[sigexc-setup pid=1987230 tid=1987230 seq=1 libpage=0x7353AA583000]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[dring-adopt] pid=1987230 tid=1987230 registry=0x6006F46C54D0 slots=1024 found=1 gate=1 doorbell=1048574 regelfc=0x6006F46C54D0 slotelfc=1024
+[dring-adopt] liveness pid=1987230 tid=1987230 map=0x7353AAC73000 server_state=0 gen=1 creator_image=0x102 mode=2
+[dring-adopt] pre-claim pid=1987230 pages=0x0 (a claim may mmap: an EMULATED syscall)
+[dring-adopt] post-claim pid=1987230 ok
+[sigexc-setup pid=1987230 tid=1987230 seq=1 libpage=0x7353AA096000]
+[reg pid=1987230 tsd_offset=224 pthsize=8192 dispatch=160 rtk=40 mts=24]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[open-nocancel-entry sp=7a880]
+[open-nocancel-postwd sp=7a880]
+[openat-entry sp=7a880]
+[shellspawn-step] main-entry
+[shellspawn-step] runtime-mode-ok
+[shellspawn-step] before-setupSigchild
+[shellspawn-step] after-setupSigchild
+[shellspawn-step] before-test-socket-ready
+[shellspawn-step] before-setup-socket
+[shellspawn-step] after-setup-socket (bind+listen done)
+[fd-courier-conn] sock=15 ino=20850359
+[courier-send] n=3 scm=1 fdcnt=1 payload=24 direction=guest->server
+[plane-doorbell] adopted=1048575 fd=16 stored_dup=17 token=14398291578783984227
+[plane-doorbell] drain attempts=2 adopted=1
+[srv-process-register #3 pid=1987231 callnum=1 nsid=1987231]
+[srv-checkin pid=8 tid=1987231 present_before=1987231]
+[srv-checkin #8 pid=1987231 tid=1987231 fork=1 page=1 ready=1]
+[dring-attach] RING_ATTACH_BEGIN pid=1987231 tid=1987231 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[dring-attach] slots pid=1987231 tid=1987231 b0_active=1 b0_owner=1987230 b0_borrowed=1 pages=0x0
+[dring-attach] RING_ATTACH_RPC_SENT pid=1987231 tid=1987231 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[srv-attach-dispatch] pid=1987231 seq=1 fd=46 token=4734120128622900554
+[srv-lane-attach #8 pid=1987231 tid=1987231 slots=8 slot_size=128]
+[dring-plane-attach] ok tid=1987231 rc=0 reject=0 wake=18
+[dring-attach] RING_ATTACH_END pid=1987231 tid=1987231 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[dring-doorbell] pid=1987231 tid=1987231 image=kernel fd=1048575
+[reg pid=1987231 tsd_offset=224 pthsize=8192 dispatch=160 rtk=40 mts=24]
+[open-entry sp=b880]
+[open-postcancel sp=b880]
+[open-postwd sp=b880]
+[open-path /proc/sys/kernel/pid_max]
+[openat-entry sp=b880]
+[fd-courier-conn] sock=24 ino=20847091
+[courier-send] n=4 scm=1 fdcnt=1 payload=24 direction=guest->server
+[plane-doorbell] adopted=1048575 fd=25 stored_dup=26 token=10587073060155191926
+[plane-doorbell] drain attempts=2 adopted=1
+[srv-process-register #4 pid=1987232 callnum=1 nsid=1987232]
+[srv-checkin pid=9 tid=1987232 present_before=1987232]
+[srv-checkin #9 pid=1987232 tid=1987232 fork=1 page=1 ready=1]
+[dring-attach] RING_ATTACH_BEGIN pid=1987232 tid=1987232 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[dring-attach] slots pid=1987232 tid=1987232 b0_active=1 b0_owner=1987230 b0_borrowed=1 pages=0x0
+[dring-attach] RING_ATTACH_RPC_SENT pid=1987232 tid=1987232 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[srv-attach-dispatch] pid=1987232 seq=2 fd=53 token=9575118397393542712
+[srv-lane-attach #9 pid=1987232 tid=1987232 slots=8 slot_size=128]
+[dring-plane-attach] ok tid=1987232 rc=0 reject=0 wake=27
+[dring-attach] RING_ATTACH_END pid=1987232 tid=1987232 image=2 adopted_view=0 registry_found=0 registry_state=0 registry_gen=0 rc=0 reject=0
+[reg pid=1987232 tsd_offset=224 pthsize=8192 dispatch=160 rtk=40 mts=24]
+[open-entry sp=7a880]
+[open-postcancel sp=7a880]
+[open-postwd sp=7a880]
+[open-path /bin/bash]
+[openat-entry sp=7a880]
+[fd-courier-conn] sock=8 ino=20848151
+[courier-send] n=1 scm=1 fdcnt=1 payload=24 direction=guest->server
+[plane-doorbell] adopted=1048574 fd=12 stored_dup=15 token=7775076374617811156
+[plane-doorbell] drain attempts=2 adopted=1
+[srv-checkin pid=10 tid=1987232 present_before=1987232]
+[srv-checkin #10 pid=1987232 tid=1987232 fork=0 page=1 ready=1]
+[release-drops-pending] site=mldr.c:1347
+[mldr-seed] attach pid=1987232 memfd=6 size=2816
+[courier-send] n=2 scm=1 fdcnt=1 payload=24 direction=guest->server
+[plane-wake] n=1 via=doorbell scm=0 fdcnt=0 payload=0 db=1048574
+[srv-attach-dispatch] pid=1987232 seq=1 fd=51 token=5635867094867071675
+[srv-lane-attach #10 pid=1987232 tid=1987232 slots=8 slot_size=128]
+[plane-doorbell] adopted=1048574 fd=12 stored_dup=23 token=8375843690003551965
+[plane-doorbell] adopted=1048574 fd=12 stored_dup=24 token=6796848433602976930
+[mldr-seed] attach-rc pid=1987232 rc=0 reject=0 wake=24
+[mldr-seed] doorbell-in pid=1987232 wake=24 mode=close
+[mldr-seed] doorbell-out pid=1987232 fd=1048574
+[mldr-seed] seeded pid=1987232 map=0x7fa79fd03000
+[dring-adopt] pid=1987232 tid=1987232 registry=0x5F02DF5B24D0 slots=1024 found=1 gate=1 doorbell=1048574 regelfc=0x5F02DF5B24D0 slotelfc=1024
+[dring-adopt] liveness pid=1987232 tid=1987232 map=0x7FA79FD03000 server_state=0 gen=1 creator_image=0x102 mode=2
+[dring-adopt] pre-claim pid=1987232 pages=0x0 (a claim may mmap: an EMULATED syscall)
+[dring-adopt] post-claim pid=1987232 ok
+[sigexc-setup pid=1987232 tid=1987232 seq=1 libpage=0x7FA79F583000]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[dring-adopt] pid=1987232 tid=1987232 registry=0x5F02DF5B24D0 slots=1024 found=1 gate=1 doorbell=1048574 regelfc=0x5F02DF5B24D0 slotelfc=1024
+[dring-adopt] liveness pid=1987232 tid=1987232 map=0x7FA79FD03000 server_state=0 gen=1 creator_image=0x102 mode=2
+[dring-adopt] pre-claim pid=1987232 pages=0x0 (a claim may mmap: an EMULATED syscall)
+[dring-adopt] post-claim pid=1987232 ok
+[sigexc-setup pid=1987232 tid=1987232 seq=1 libpage=0x7FA79F096000]
+[reg pid=1987232 tsd_offset=224 pthsize=8192 dispatch=160 rtk=40 mts=24]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-entry sp=a880]
+[open-postcancel sp=a880]
+[open-postwd sp=a880]
+[open-path /dev/tty]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-entry sp=b880]
+[open-postcancel sp=b880]
+[open-postwd sp=b880]
+[open-path /proc/1987232/stat]
+[openat-entry sp=b880]
+[open-entry sp=b880]
+[open-postcancel sp=b880]
+[open-postwd sp=b880]
+[open-path /proc/1987232/stat]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-nocancel-entry sp=a880]
+[open-nocancel-postwd sp=a880]
+[openat-entry sp=a880]
+[open-entry sp=a880]
+[open-postcancel sp=a880]
+[open-postwd sp=a880]
+[open-path /etc/profile]
+[openat-entry sp=a880]
+[open-entry sp=a880]
+[open-postcancel sp=a880]
+[open-postwd sp=a880]
+[open-path /Users/ilyagulya/.bash_profile]
+[openat-entry sp=a880]
+[open-entry sp=a880]
+[open-postcancel sp=a880]
+[open-postwd sp=a880]
+[open-path /Users/ilyagulya/.bash_login]
+[openat-entry sp=a880]
+[open-entry sp=a880]
+[open-postcancel sp=a880]
+[open-postwd sp=a880]
+[open-path /Users/ilyagulya/.profile]
+[openat-entry sp=a880]
+[open-entry sp=a880]
+[open-postcancel sp=a880]
+[open-postwd sp=a880]
+[open-path /bin/bash]
+[openat-entry sp=a880]
+[fd-courier-conn] sock=8 ino=20848160
+[courier-send] n=1 scm=1 fdcnt=1 payload=24 direction=guest->server
+[plane-doorbell] adopted=1048574 fd=12 stored_dup=24 token=7943089554565114435
+[plane-doorbell] drain attempts=2 adopted=1
+[srv-checkin pid=11 tid=1987232 present_before=1987232]
+[srv-checkin #11 pid=1987232 tid=1987232 fork=0 page=1 ready=1]
+[release-drops-pending] site=mldr.c:1347
+[release-drops-pending] site=mldr.c:1347
+[mldr-seed] attach pid=1987232 memfd=6 size=2816
+[courier-send] n=2 scm=1 fdcnt=1 payload=24 direction=guest->server
+[plane-wake] n=1 via=doorbell scm=0 fdcnt=0 payload=0 db=1048574
+[srv-attach-dispatch] pid=1987232 seq=1 fd=53 token=15402347336238808995
+[srv-lane-attach #11 pid=1987232 tid=1987232 slots=8 slot_size=128]
+[plane-doorbell] adopted=1048574 fd=12 stored_dup=25 token=8633994307582341208
+[plane-doorbell] adopted=1048574 fd=12 stored_dup=27 token=6738709135095184977
+[mldr-seed] attach-rc pid=1987232 rc=0 reject=0 wake=27
+[mldr-seed] doorbell-in pid=1987232 wake=27 mode=close
+[mldr-seed] doorbell-out pid=1987232 fd=1048574
+[mldr-seed] seeded pid=1987232 map=0x7dff794e1000
+[dring-adopt] pid=1987232 tid=1987232 registry=0x5CFC1FA744D0 slots=1024 found=1 gate=1 doorbell=1048574 regelfc=0x5CFC1FA744D0 slotelfc=1024
+[dring-adopt] liveness pid=1987232 tid=1987232 map=0x7DFF794E1000 server_state=0 gen=1 creator_image=0x102 mode=2
+[dring-adopt] pre-claim pid=1987232 pages=0x0 (a claim may mmap: an EMULATED syscall)
+[dring-adopt] post-claim pid=1987232 ok
+[sigexc-setup pid=1987232 tid=1987232 seq=1 libpage=0x7DFF78D83000]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[dring-adopt] pid=1987232 tid=1987232 registry=0x5CFC1FA744D0 slots=1024 found=1 gate=1 doorbell=1048574 regelfc=0x5CFC1FA744D0 slotelfc=1024
+[dring-adopt] liveness pid=1987232 tid=1987232 map=0x7DFF794E1000 server_state=0 gen=1 creator_image=0x102 mode=2
+[dring-adopt] pre-claim pid=1987232 pages=0x0 (a claim may mmap: an EMULATED syscall)
+[dring-adopt] post-claim pid=1987232 ok
+[sigexc-setup pid=1987232 tid=1987232 seq=1 libpage=0x7DFF78896000]
+[reg pid=1987232 tsd_offset=224 pthsize=8192 dispatch=160 rtk=40 mts=24]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-entry sp=e8880]
+[open-postcancel sp=e8880]
+[open-postwd sp=e8880]
+[open-path /dev/tty]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-entry sp=b880]
+[open-postcancel sp=b880]
+[open-postwd sp=b880]
+[open-path /proc/1987232/stat]
+[openat-entry sp=b880]
+[open-entry sp=b880]
+[open-postcancel sp=b880]
+[open-postwd sp=b880]
+[open-path /proc/1987232/stat]
+[openat-entry sp=b880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-nocancel-entry sp=e8880]
+[open-nocancel-postwd sp=e8880]
+[openat-entry sp=e8880]
+[open-entry sp=e8880]
+[open-postcancel sp=e8880]
+[open-postwd sp=e8880]
+[open-path /private/var/tmp/lateinit_probe]
+[openat-entry sp=e8880]
+[fd-courier-conn] sock=8 ino=20847094
+[courier-send] n=1 scm=1 fdcnt=1 payload=24 direction=guest->server
+[plane-doorbell] adopted=1048574 fd=12 stored_dup=27 token=18233779000078545670
+[plane-doorbell] drain attempts=2 adopted=1
+[srv-checkin pid=12 tid=1987232 present_before=1987232]
+[srv-checkin #12 pid=1987232 tid=1987232 fork=0 page=1 ready=1]
+[mldr-seed] attach pid=1987232 memfd=6 size=2816
+[courier-send] n=2 scm=1 fdcnt=1 payload=24 direction=guest->server
+[plane-wake] n=1 via=doorbell scm=0 fdcnt=0 payload=0 db=1048574
+[srv-attach-dispatch] pid=1987232 seq=1 fd=51 token=8351619096534824467
+[srv-lane-attach #12 pid=1987232 tid=1987232 slots=8 slot_size=128]
+[plane-doorbell] adopted=1048574 fd=12 stored_dup=28 token=15484728684708967743
+[plane-doorbell] adopted=1048574 fd=12 stored_dup=30 token=13888633683777797940
+[mldr-seed] attach-rc pid=1987232 rc=0 reject=0 wake=30
+[mldr-seed] doorbell-in pid=1987232 wake=30 mode=close
+[mldr-seed] doorbell-out pid=1987232 fd=1048574
+[mldr-seed] seeded pid=1987232 map=0x738c5eaef000
+[dring-adopt] pid=1987232 tid=1987232 registry=0x6114C9FF94D0 slots=1024 found=1 gate=1 doorbell=1048574 regelfc=0x6114C9FF94D0 slotelfc=1024
+[dring-adopt] liveness pid=1987232 tid=1987232 map=0x738C5EAEF000 server_state=0 gen=1 creator_image=0x102 mode=2
+[dring-adopt] pre-claim pid=1987232 pages=0x0 (a claim may mmap: an EMULATED syscall)
+[dring-adopt] post-claim pid=1987232 ok
+[sigexc-setup pid=1987232 tid=1987232 seq=1 libpage=0x738C5E383000]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+dyld: calling initializer function 0x738c5e9e60b0 in /usr/lib/libSystem.B.dylib
+[dring-adopt] pid=1987232 tid=1987232 registry=0x6114C9FF94D0 slots=1024 found=1 gate=1 doorbell=1048574 regelfc=0x6114C9FF94D0 slotelfc=1024
+[dring-adopt] liveness pid=1987232 tid=1987232 map=0x738C5EAEF000 server_state=0 gen=1 creator_image=0x102 mode=2
+[dring-adopt] pre-claim pid=1987232 pages=0x0 (a claim may mmap: an EMULATED syscall)
+[dring-adopt] post-claim pid=1987232 ok
+[sigexc-setup pid=1987232 tid=1987232 seq=1 libpage=0x738C5DE96000]
+[reg pid=1987232 tsd_offset=224 pthsize=8192 dispatch=160 rtk=40 mts=24]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+[open-entry sp=b880]
+[release-drops-pending] site=dserver-ring.c:2752
+[open-postcancel sp=b880]
+[open-postwd sp=b880]
+[open-path /proc/1987232/stat]
+[openat-entry sp=b880]
+dyld: calling initializer function 0x738c5d7048f0 in /usr/lib/libc++.1.dylib
+dyld: calling initializer function 0x738c5d704900 in /usr/lib/libc++.1.dylib
+dyld: calling initializer function 0x738c5d8d8550 in /usr/lib/libobjc.A.dylib
+dyld: calling initializer function 0x738c5d8dc1e0 in /usr/lib/libobjc.A.dylib
+dyld: calling initializer function 0x738c5d8dc330 in /usr/lib/libobjc.A.dylib
+dyld: calling initializer function 0x738c5d8dda00 in /usr/lib/libobjc.A.dylib
+dyld: calling initializer function 0x738c5d8e0480 in /usr/lib/libobjc.A.dylib
+dyld: calling initializer function 0x738c5d8e6090 in /usr/lib/libobjc.A.dylib
+dyld: calling initializer function 0x738c5d8e80d0 in /usr/lib/libobjc.A.dylib
+dyld: calling initializer function 0x738c5d8ea780 in /usr/lib/libobjc.A.dylib
+dyld: calling initializer function 0x738c5d907d90 in /usr/lib/libobjc.A.dylib
+dyld: calling initializer function 0x738c5d908880 in /usr/lib/libobjc.A.dylib
+LATEINIT-BEFORE
+[open-nocancel-entry sp=f6880]
+[open-nocancel-postwd sp=f6880]
+[openat-entry sp=f6880]
+dyld: calling initializer function 0x738c5d5a5eb0 in /usr/lib/libAppleArchive.dylib
+Darling: libAppleArchive is not implemented; this image only satisfies a load-time dependency (DebugSymbolsDT links it and calls nothing in it). Any bind of an Apple Archive symbol will fail.
+LATEINIT-DLOPEN path=/usr/lib/libAppleArchive.dylib handle=OK
+LATEINIT-AFTER
+[native-exit status=0 ra=0x738C5DE33DB2]
+[wait4 pid=1987232 raw=0x0]
+[native-exit status=0 ra=0x7353AA033DB2]
+waited 1s of at most 150s
+[sigexc-fatal sig=15 code=0 addr=0x3E8001E52BF pid=1987230 tid=1987230]
+[sigexc-default sig=15 tid=1987230]
+[open-entry sp=b880]
+[open-postcancel sp=b880]
+[open-postwd sp=b880]
+[open-path /proc/sys/kernel/pid_max]
+[openat-entry sp=b880]
+[wait4 pid=1987230 raw=0xF]
+[open-entry sp=b880]
+[open-postcancel sp=b880]
+[open-postwd sp=b880]
+[open-path /proc/sys/kernel/pid_max]
+[openat-entry sp=b880]
+[wait4 pid=1987229 raw=0x0]
