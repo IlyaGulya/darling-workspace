@@ -546,7 +546,7 @@ manifest:
     repo-path: darling-dyld
     path: darling/src/external/dyld
     remote: darling-next
-    revision: fbc3e162727211830f83b86cf0643ae636cf78d6
+    revision: 39981c3e51b23a960ddea76dc9e5d1e68cad9deb
     userdata:
       kind: darling-source
       upstream-repository: darling-dyld
@@ -602,7 +602,7 @@ manifest:
     repo-path: darling-foundation
     path: darling/src/external/foundation
     remote: darling
-    revision: 6e6db44d0fb566458452656f7d2bceb301a34974
+    revision: 3f49bd2bdf955792ff0b2b0ef6956fb46a34813b
     userdata:
       kind: darling-source
       upstream-repository: darling-foundation
@@ -951,7 +951,7 @@ manifest:
     repo-path: darling-libxpc
     path: darling/src/external/libxpc
     remote: darling
-    revision: 394e033333d3c253a12f08a99090c113b0917d00
+    revision: c9555ba1f0d150f52211e91e9bd04f75daa60e9b
     userdata:
       kind: darling-source
       upstream-repository: darling-libxpc
