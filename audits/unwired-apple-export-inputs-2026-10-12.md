@@ -60,7 +60,29 @@ input is the only thing that creates the name.
 - Kernel/kext export lists (`xnu/config/*.exports`, IOKit family `.exports`) and
   upstream test-harness `.exp` files: not inputs to any Darling userspace dylib.
 
-## How to re-check
+## Gap this sweep did not cover: inputs that name a missing IMAGE
+
+The sweep classified inputs that change a **symbol surface**. A rung then found a related
+input class it had missed, and the distinction matters: Apple's
+`src/external/libsystem/optionallibs` names `system_featureflags` (line 5), i.e. the
+sub-library `/usr/lib/system/libsystem_featureflags.dylib`, which Apple's own
+`libSystem.B.tbd` carries as a nested sub-library exporting
+`__os_feature_enabled_impl` and `__os_feature_enabled_simple_impl`. Darling never
+consumes that file, has no source tree for the library, no install name and no
+re-export entry -- so the family had **no owner at all** in this tree, which is why the
+ladder stopped on a name no component implemented.
+
+Symbol surfaces and image lists are different questions, and only the first was swept
+here. A follow-up sweep of the same shape should classify every input that names an
+IMAGE (`optionallibs` and its relatives) against what Darling builds and re-exports,
+together with the graph's `field-image-absent` rows and the weak dylib loads the ladder
+reports (e.g. `libswiftIOKit`, `libswiftOSLog`, which dyld binds to NULL and which
+therefore never stop a load). The observed consequence of the gap was benign -- the
+family's home before Apple split it out, `libplatform`, is inside libSystem.B's
+re-export closure and took the function with no new install name, re-export line,
+manifest entry or SDK change -- but the gap is real and this record should not be read
+as covering image names.
+
 
 Re-run the sweep after adding a component or changing a link: for each vendored input,
 compare the Apple setting that consumes it against the CMake path. The load-time
