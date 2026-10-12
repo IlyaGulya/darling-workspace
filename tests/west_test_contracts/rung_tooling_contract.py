@@ -554,31 +554,37 @@ def test_cover(tmp):
     detail_of = lambda p: details[p]                                     # noqa: E731
     chains = {"/p/hub": ({"_deep", "_aliased"}, {"/p/hub2": hub2})}
     chain_of = lambda p: chains.get(p, (set(), {}))                      # noqa: E731
-    union = {"_own", "_deep", "_aliased", "_flatname"}
+    loaded = ["/p/leaf"]          # the images bound at or before the demanding one, in order
 
-    def imp(field, name, weak=False, special=""):
-        return {"name": name, "field": field, "special": special, "weak": weak, "eager": True,
+    def imp(field, name, weak=False, special="", eager=True):
+        return {"name": name, "field": field, "special": special, "weak": weak, "eager": eager,
                 "lib_ordinal": 1}
 
     # own trie, including an alias in it
-    check(ca._cover_label(imp("Leaf", "_own"), "/p/leaf", detail_of, chain_of, union)
+    check(ca._cover_label(imp("Leaf", "_own"), "/p/leaf", detail_of, chain_of, loaded)
           == (ca.COVER_OWN, "/p/leaf (definition)"), "a definition is OWN")
-    check(ca._cover_label(imp("Hub2", "_aliased"), "/p/hub2", detail_of, chain_of, union)
+    check(ca._cover_label(imp("Hub2", "_aliased"), "/p/hub2", detail_of, chain_of, loaded)
           == (ca.COVER_OWN, "/p/hub2 (alias)"), "an alias in the field image is OWN too")
     # the nested re-export graph, with the provider named
-    label, where = ca._cover_label(imp("Hub", "_deep"), "/p/hub", detail_of, chain_of, union)
+    label, where = ca._cover_label(imp("Hub", "_deep"), "/p/hub", detail_of, chain_of, loaded)
     check(label == ca.COVER_REEXPORT, f"a name only the re-export graph carries is REEXPORT: {label}")
     check(where in ("/p/hub2", "re-exported"), f"and it can name the provider: {where}")
-    # flat lookup: no field, satisfied by the closure's own union
-    check(ca._cover_label(imp(None, "_flatname", special="flat-lookup"), None, detail_of, chain_of,
-                          union) == (ca.COVER_FLAT, "the closure's own tries (flat lookup)"),
-          "a flat-lookup name is satisfied by the closure's union")
-    # weak vs eager absence
-    check(ca._cover_label(imp("Leaf", "_gone", weak=True), "/p/leaf", detail_of, chain_of, union)[0]
+    # flat lookup: no field, satisfied by an image the process has loaded (its own trie or chain)
+    check(ca._cover_label(imp(None, "_own", special="flat-lookup"), None, detail_of, chain_of, loaded)
+          == (ca.COVER_FLAT, "/p/leaf (loaded, flat lookup)"),
+          "a flat-lookup name is satisfied by a loaded image")
+    # no field image carries it, but a LOADED one does: the flat/weak path could satisfy it
+    check(ca._cover_label(imp("Hub", "_deep"), "/p/hub", detail_of, chain_of, ["/p/leaf"])[0]
+          in (ca.COVER_REEXPORT, ca.COVER_LOAD_ORDER),
+          "a loaded image's chain counts as satisfiable")
+    # weak / lazy / eager absence
+    check(ca._cover_label(imp("Leaf", "_gone", weak=True), "/p/leaf", detail_of, chain_of, loaded)[0]
           == ca.COVER_ABSENT_WEAK, "an absent WEAK import is tolerated")
-    check(ca._cover_label(imp("Leaf", "_gone"), "/p/leaf", detail_of, chain_of, union)[0]
+    check(ca._cover_label(imp("Leaf", "_gone", eager=False), "/p/leaf", detail_of, chain_of, loaded)[0]
+          == ca.COVER_ABSENT_LAZY, "an absent LAZY import is tolerated (not a stop)")
+    check(ca._cover_label(imp("Leaf", "_gone"), "/p/leaf", detail_of, chain_of, loaded)[0]
           == ca.COVER_MISSING, "an absent EAGER import is MISSING")
-    check(ca._cover_label(imp("Leaf", "_gone"), None, detail_of, chain_of, union)[0]
+    check(ca._cover_label(imp("Leaf", "_gone"), None, detail_of, chain_of, loaded)[0]
           == ca.COVER_IMAGE_ABSENT, "a field image that resolves nowhere is its own label")
 
     # The predicted sequence: an absent image and an absent eager symbol are stops, in traversal
@@ -599,13 +605,13 @@ def test_cover(tmp):
                           "label": ca.COVER_MISSING, "weak": False},
                          {"image": "/p/early", "symbol": "_weakly", "field": "Foundation",
                           "label": ca.COVER_ABSENT_WEAK, "weak": True}]}
-    check(ca._cover_traversal(graph) == ["/p/entry", "/p/early", "/p/late"],
-          f"traversal follows the load commands: {ca._cover_traversal(graph)}")
+    check(ca._cover_traversal(graph) == ["/p/early", "/p/late", "/p/entry"],
+          f"the traversal is dyld's binding order: dependencies first: {ca._cover_traversal(graph)}")
     events = ca.cover_events(graph)
-    check([e["kind"] for e in events] == ["image", "symbol"],
-          f"the weak IMAGE and the weak SYMBOL are not stops: {events}")
-    check(events[0]["install_name"] == "/p/absent" and events[1]["symbol"] == "_gone",
-          f"the eager image comes before the eager symbol: {events}")
+    check([e["kind"] for e in events] == ["symbol", "image"],
+          f"the weak IMAGE and the weak SYMBOL are not stops, and the deeper image binds first: {events}")
+    check(events[0]["symbol"] == "_gone" and events[1]["install_name"] == "/p/absent",
+          f"the eager symbol of the dependency precedes the entry's eager image: {events}")
 
     # The resolver reads BOTH prefix roots and says None for a name that is nowhere.
     prefix = tmp / "pfx"

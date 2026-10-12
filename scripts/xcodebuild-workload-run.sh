@@ -197,11 +197,15 @@ PROBE
 
 	# The loader stop, when the workload stopped in dyld rather than in the build system. The
 	# workload's own stdout/stderr is in its .out file (host-visible); the harness log carries the
-	# launcher trace and the probe's status lines.
+	# launcher trace and the probe's status lines.  TWO forms reach the log, and matching only one
+	# reported "loader stop: absent" for a run that died in dyld (measured 2026-10-12): a missing
+	# IMAGE prints "Library not loaded: <path>", while a missing SYMBOL inside a dlopened image prints
+	# "Error loading required libraries ... (dlopen(@rpath/libxcodebuildLoader.dylib, 1): Symbol not
+	# found: <symbol> ... Expected in: <image>)".
 	stop=""
 	stop_src=""
 	for candidate in "$host_out" "$log"; do
-		stop=$(grep -a -m1 -A3 'Library not loaded' "$candidate" 2>/dev/null || true)
+		stop=$(grep -a -m1 -A3 -e 'Library not loaded' -e 'Symbol not found' "$candidate" 2>/dev/null || true)
 		if [ -n "$stop" ]; then
 			stop_src="$candidate"
 			break
