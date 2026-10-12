@@ -546,7 +546,7 @@ manifest:
     repo-path: darling-dyld
     path: darling/src/external/dyld
     remote: darling-next
-    revision: c1b438761e0d215c2131e27c7aa08f400c24a3bf
+    revision: fbc3e162727211830f83b86cf0643ae636cf78d6
     userdata:
       kind: darling-source
       upstream-repository: darling-dyld
