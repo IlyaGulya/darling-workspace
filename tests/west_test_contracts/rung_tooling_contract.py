@@ -638,6 +638,34 @@ def test_cover(tmp):
     print("PASS cover: own/reexport/flat/weak labels, and only an eager absence is a stop")
 
 
+def test_bind_crosscheck(tmp):
+    """No tool here takes a name, a field or a kind from `llvm-objdump --macho --dyld-info`.
+
+    Measured 2026-10-12: that command MISLABELS neighbouring GOT slots on DVTInstrumentsFoundation
+    (a __LSCopyMatchingApplicationsWithItems slot attributed to a different __LSC... import entry) and
+    cannot express a weak import on a chained-fixups image at all.  The decoded table is the source
+    (`binds_by_dependency`), the text is read only to cross-check, and a disagreement is recorded so a
+    caller can say the two readers differ instead of trusting either blindly.
+    """
+    decoded = {"GPURawCounter": {"_GRCCopyAllCounterSourceGroup": "weak_bind",
+                                 "_GRCReleaseAllCounterSourceGroup": "weak_bind"}}
+    text_rows = [("GPURawCounter", "_GRCCopyAllCounterSourceGroup", "bind"),
+                 ("GPURawCounter", "_GRCCopyAllCounterSourceGroup", "bind"),
+                 ("GPURawCounter", "_GRCReleaseAllCounterSourceGroup", "bind"),
+                 ("GPURawCounter", "_GRCNeighbouringSlot", "bind")]
+    differences = ca.compare_bind_tables(decoded, text_rows)
+    check(("GPURawCounter", "_GRCCopyAllCounterSourceGroup", "weak_bind", "bind") in differences,
+          f"a kind disagreement is reported (decoded weak_bind, text bind): {differences}")
+    check(("GPURawCounter", "_GRCNeighbouringSlot", None, "bind") in differences,
+          f"a name only the TEXT carries is reported as such, never adopted: {differences}")
+    check(ca.compare_bind_tables(decoded,
+                                 [("GPURawCounter", "_GRCCopyAllCounterSourceGroup", "weak_bind"),
+                                  ("GPURawCounter", "_GRCReleaseAllCounterSourceGroup", "weak_bind")])
+          == [], "agreement produces no rows")
+    check(ca.compare_bind_tables(decoded, []) == [], "no text at all produces no rows")
+    print("PASS bind cross-check: the decoded table is the source, --dyld-info is only compared")
+
+
 # --------------------------------------------------------------------------- loader stop
 
 def test_loader_stop(tmp):
@@ -830,6 +858,7 @@ def main():
         test_reexport_closure(tmp / "reexport")
         test_exports_trie(tmp / "exports")
         test_cover(tmp / "cover")
+        test_bind_crosscheck(tmp / "bindcheck")
         test_loader_stop(tmp / "stop")
         test_pin_sync(tmp / "pin")
         test_cli(tmp / "cli")

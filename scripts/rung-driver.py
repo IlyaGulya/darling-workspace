@@ -131,6 +131,13 @@ def print_demand(install_name, refs, indent="  "):
         link = "weak" if ref["weak"] else "strong"
         print(f"{indent}referrer [{link}{', upward' if ref['upward'] else ''}] "
               f"{os.path.basename(ref['image'])}  ({len(per_referrer[ref['image']])} demanded)")
+        differences = ca.binds_disagreement(ref["image"])
+        if differences:
+            print(f"{indent}    NOTE: llvm-objdump --dyld-info disagrees with this image's own import "
+                  f"table on {len(differences)} name(s); the table above is DECODED from the image, "
+                  "not read from that command (it mislabels neighbouring GOT slots), e.g. "
+                  + ", ".join(f"{d[1]} {d[2] or 'absent'} vs {d[3] or 'absent'}"
+                              for d in differences[:2]))
         for sym in sorted(per_referrer[ref["image"]]):
             print(f"{indent}    {sym}  ({per_referrer[ref['image']][sym]})")
             if sym in swift_shaped:

@@ -121,6 +121,22 @@ the hypothesis that a regression then pins.
    the Swift payload, whose west pin carries the overlay commits the darling
    superproject had not yet recorded (so the gitlink is the older tree, and a
    blind sync would have removed the payload the guest was already loading).
+15. **`llvm-objdump --macho --dyld-info` mislabels neighbouring GOT slots, and
+   cannot express a weak import on a chained-fixups image — decode instead.**
+   Measured 2026-10-12 on `SharedFrameworks/DVTInstrumentsFoundation.framework/Versions/A/DVTInstrumentsFoundation`
+   (x86_64, `LC_DYLD_CHAINED_FIXUPS`): it attributed
+   `__LSCopyMatchingApplicationsWithItems` to the slot whose import entry is a
+   different `__LSC...` name, and 25 of its rows disagree with the image's own
+   imports table (`_GRCCopyAllCounterSourceGroup` and friends read `bind` where
+   the imports table's weak flag says `weak_bind`; a second Xcode image shows the
+   same shape on `____chkstk_darwin`). A rung only caught it by decoding the
+   fixups itself (format 6 = `DYLD_CHAINED_PTR_64_OFFSET`: bind bit 63, ordinal
+   in the low 24 bits, page chains) and cross-reading the import table, with the
+   caller's own disassembly as the tie-break. So no tool here takes a name, a
+   field or a kind from that command: `closure_analyze.py` decodes
+   (`image_imports`, `binds_by_dependency`), reads the text only to
+   cross-check, and records the disagreement (`binds_disagreement`), which
+   `rung-driver.py` prints next to the referrer it belongs to.
 
 ## Why these exist
 

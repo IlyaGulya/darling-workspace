@@ -871,6 +871,7 @@ def dylibs_used(image):
 
 BIND_TYPES = ("bind", "weak_bind", "lazy_bind")
 _BINDS_CACHE = {}
+_BINDS_DISAGREEMENTS = {}
 _DYLIB_ID_CACHE = {}
 _LOAD_COMMANDS_CACHE = {}
 
@@ -1225,41 +1226,79 @@ def image_imports(path):
             "rpaths": slice_["rpaths"], "imports": imports}
 
 
+def objdump_bind_rows(image):
+    """[(field, symbol, kind)] from llvm-objdump --macho --dyld-info -- the CROSS-CHECK source only.
+
+    No tool here takes a name, a field or a kind from this text: it is read to compare against the
+    table decoded from the image, because the command MISLABELS neighbouring GOT slots on at least
+    one image of this workload (measured 2026-10-12 on DVTInstrumentsFoundation, x86_64, chained
+    fixups: a `__LSCopyMatchingApplicationsWithItems` slot attributed to a different `__LSC...`
+    import entry -- the rung caught it by decoding LC_DYLD_CHAINED_FIXUPS itself).
+    """
+    out = run([swift("llvm-objdump"), "--macho", "--dyld-info", image])
+    rows = []
+    for line in out.splitlines():
+        f = line.split()
+        if len(f) >= 8 and f[4] in BIND_TYPES and f[7].startswith("_"):
+            rows.append((f[6], f[7], f[4]))
+    return rows
+
+
+def compare_bind_tables(decoded, text_rows):
+    """[(field, symbol, decoded_kind, text_kind)] where two readers of one image disagree.
+
+    Pure, so the disagreement shape is contractable: `text_kind` is None when the text does not carry
+    the name at all, and a row only the text carries comes back with `decoded_kind` None.
+    """
+    text = {}
+    for field, sym, kind in text_rows:
+        text.setdefault((field, sym), kind)
+    out = []
+    for field, syms in decoded.items():
+        for sym, kind in syms.items():
+            text_kind = text.get((field, sym))
+            if text_kind is not None and text_kind != kind:
+                out.append((field, sym, kind, text_kind))
+    for (field, sym), text_kind in text.items():
+        if sym not in decoded.get(field, {}):
+            out.append((field, sym, None, text_kind))
+    return sorted(out)
+
+
 def binds_by_dependency(image):
-    """dylib column name -> {symbol: bind kind}, from whichever import form the image carries.
+    """dylib column name -> {symbol: bind kind}, DECODED from the image itself.
 
     Cached per image for the life of the process: the sweep asks for the same referrer's table once
-    per install name it appears in, and re-reading an image's bind table is one llvm-objdump run.
+    per install name it appears in.  The decode is `image_imports` -- chained-fixups imports table
+    (with its own weak flag) or the dyld-info bind/weak_bind/lazy_bind opcodes -- from the ONE slice
+    `guest_slice` chooses, so an ordinal and the field it names always come from the same place.
 
-    The legacy form is read from `llvm-objdump --macho --dyld-info`, which is what the ladder's
-    Xcode referrers carry and what every verdict so far was measured from.  When that prints NO rows
-    the image is one of the tree-built images measured here whose LC_DYLD_INFO_ONLY table no
-    llvm-objdump command reports except --bind (CoreGraphics: --dyld-info 0 rows, --bind its table);
-    its table is then DECODED from the bind opcodes instead of reading as "demands nothing"
-    (dar-m3s0 follow-up).  A chained-fixups image (DevToolsCore, libswiftCore) is decoded from its
-    imports table the same way: a chained fixup is applied when the image loads, so its kind is
-    bind/weak_bind and never lazy.
+    `llvm-objdump --macho --dyld-info` is NOT a source here (it mislabels neighbouring GOT slots:
+    see objdump_bind_rows); its text is read only to cross-check, and a disagreement is recorded by
+    binds_disagreement(image) so a caller can say the two readers differ instead of trusting either
+    blindly.
     """
     if image in _BINDS_CACHE:
         return _BINDS_CACHE[image]
-    out = run([swift("llvm-objdump"), "--macho", "--dyld-info", image])
     table = {}
-    for line in out.splitlines():
-        f = line.split()
-        if len(f) < 8 or f[4] not in BIND_TYPES:
+    for imp in image_imports(image)["imports"]:
+        if imp["field"] is None or not imp["name"].startswith("_"):
             continue
-        dep, sym = f[6], f[7]
-        if not sym.startswith("_"):
-            continue
-        table.setdefault(dep, {}).setdefault(sym, f[4])
-    if not table:
-        for imp in image_imports(image)["imports"]:
-            if imp["field"] is None or not imp["name"].startswith("_"):
-                continue
-            table.setdefault(imp["field"], {}).setdefault(
-                imp["name"], "weak_bind" if imp["weak"] else "bind")
+        table.setdefault(imp["field"], {}).setdefault(
+            imp["name"], "weak_bind" if imp["weak"] else "bind")
+    rows = objdump_bind_rows(image)
+    if rows:
+        differences = compare_bind_tables(table, rows)
+        if differences:
+            _BINDS_DISAGREEMENTS[image] = differences
     _BINDS_CACHE[image] = table
     return table
+
+
+def binds_disagreement(image):
+    """The recorded decoded-vs-objdump disagreement for an image, or None (fills the cache first)."""
+    binds_by_dependency(image)
+    return _BINDS_DISAGREEMENTS.get(image)
 
 
 EXPORTS_TRIE_HEADER = "Exports trie:"
