@@ -475,8 +475,9 @@ def name_candidates(install_name):
     (/usr/lib/swift/libswiftUniformTypeIdentifiers.dylib), the payload file of the same name, and a
     CMake target or overlay directory with a shorter name (UniformTypeIdentifiers, exslt, xslt).
     The candidates exist so a lookup can try each of them EXPLICITLY rather than matching by
-    substring; `build_target_for` drops the shortened ones for /usr/lib/swift, where the short name
-    belongs to the framework and not to the Swift overlay.
+    substring; `target_name_candidates` drops the shortened ones for /usr/lib/swift, where the short
+    name belongs to the framework and not to the Swift overlay, and both the build-target and the
+    manifest-declaration lookups go through it.
     """
     leaf = os.path.basename(install_name)
     stem = leaf.split(".")[0]
@@ -491,6 +492,20 @@ def name_candidates(install_name):
     return [c for i, c in enumerate(out) if c and c not in out[:i]]
 
 
+def target_name_candidates(install_name):
+    """The candidates a BUILD TARGET or a deployment DECLARATION may match this install name by.
+
+    For /usr/lib/swift/libswiftX.dylib only the full `libswiftX` name counts: a target or a
+    declaration named X builds/deploys the X framework, NOT the Swift overlay over X, and accepting
+    the shortened candidate would be the same collision this module's docstring records twice --
+    once for a build target and once for the manifest's install-name stem (dar-xovc).
+    """
+    stem = os.path.basename(install_name).split(".")[0]
+    if "/usr/lib/swift/" in install_name and stem.startswith(SWIFT_OVERLAY_PREFIX):
+        return [stem]
+    return name_candidates(install_name)
+
+
 def build_target_for(install_name, cmake_targets):
     """(target, "CMakeLists.txt:line") the tree builds for an install name, or (None, None).
 
@@ -498,11 +513,7 @@ def build_target_for(install_name, cmake_targets):
     `X` builds the X framework, not the Swift overlay over X, and accepting it would be the same
     kind of substring error this module's docstring records twice.
     """
-    if "/usr/lib/swift/" in install_name and os.path.basename(install_name).startswith(SWIFT_OVERLAY_PREFIX):
-        cands = [os.path.basename(install_name).split(".")[0]]
-    else:
-        cands = name_candidates(install_name)
-    for c in cands:
+    for c in target_name_candidates(install_name):
         if c in cmake_targets:
             return c, cmake_targets[c]
     return None, None
@@ -713,7 +724,7 @@ def classify_route(install_name, refs, ctx, demanded=None):
         entry = by_install[install_name]
         return ROUTE_DECL, (f"[manifest] target={entry['target']} host_path={entry['host_path']}")
     for stem, entry in sorted(by_install.items()):
-        if os.path.basename(stem).split(".")[0] in candidates:
+        if os.path.basename(stem).split(".")[0] in target_name_candidates(install_name):
             return ROUTE_DECL, (f"[heuristic: install-name stem] manifest guest_path={stem} "
                                 f"target={entry['target']}")
     target, where = build_target_for(install_name, ctx.get("cmake_targets", {}))
@@ -920,33 +931,48 @@ def reexports_of(image):
     return names
 
 
-def reexported_exports(image, prefix, max_depth=8):
-    """(names, providers) what a deployed image satisfies through the dylibs it re-exports.
+def reexport_closure(root, reexports_of, resolve, exports_of, max_depth=8):
+    """({names}, {install name: exports}) over the images re-export-reachable from `root`.
 
-    Each re-exported install name is resolved inside the prefix the way the deploy resolves it (both
-    prefix roots), the walk is depth-bounded and cycle-safe, and `providers` maps each re-exported
-    install name to its own export trie so the caller can say WHERE a name came from.
+    Kept separate from the Mach-O readers so the SHAPE is contractable without llvm tools:
+    `reexports_of(path)` names the install names an image re-exports, `resolve(install_name)` the
+    path the deploy resolves one to (or None), `exports_of(path)` its export trie.  The walk is
+    iterative, depth-bounded and cycle-safe, because the shape that matters is the NESTED one
+    (Accelerate re-exports vecLib, vecLib re-exports libBNNS/libvDSP, and the intermediate hub's own
+    trie is empty) -- a one-level walk from the umbrella would see zero names there (dar-m3s0).
     """
     names, providers = set(), {}
-    seen = {os.path.realpath(image)}
-    queue = [(image, 0)]
+    seen = {os.path.realpath(root)}
+    queue = [(root, 0)]
     while queue:
         current, depth = queue.pop(0)
         if depth >= max_depth:
             continue
         for install_name in reexports_of(current):
-            path = deployed_path(prefix, install_name)
+            path = resolve(install_name)
             if not path:
                 continue
             real = os.path.realpath(path)
             if real in seen:
                 continue
             seen.add(real)
-            got = exports(path)
+            got = exports_of(path)
             providers[install_name] = got
             names |= got
             queue.append((path, depth + 1))
     return names, providers
+
+
+def reexported_exports(image, prefix, max_depth=8):
+    """(names, providers) what a deployed image satisfies through the dylibs it re-exports.
+
+    Dyld resolves a client's binding through the image's whole re-export graph, so these names are
+    part of what the deployed image supplies.  Each re-exported install name is resolved inside the
+    prefix the way the deploy resolves it (both prefix roots), and `providers` maps each re-exported
+    install name to its own export trie so the caller can say WHERE a name came from.
+    """
+    return reexport_closure(image, reexports_of, lambda n: deployed_path(prefix, n), exports,
+                            max_depth)
 
 
 def symbol_types(artifact):

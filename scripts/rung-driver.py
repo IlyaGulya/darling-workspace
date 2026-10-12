@@ -10,9 +10,13 @@ per dependency field by hand, decide the route, and then verify a supplied artif
           demand per dependency field with demangled shapes and weak/strong, and print the route the
           missing name takes with the evidence behind it (`closure_analyze.py --sweep` classifies the
           whole closure the same way; this is the same classifier for the current stop).
-  verify  For a supplied rung: the deployed image satisfies every strong demand (its own export
-          trie, an image it re-exports, or a demand only weak/upward referrers make), the analyzer
-          reports MISS 0, and the sha chain payload == staged resource == deployed prefix copy.
+  verify  For a supplied rung: the deployed prefix copy satisfies every strong demand (its own
+          export trie, an image its re-export graph reaches, or a demand only weak/upward referrers
+          make) and the sha chain payload == staged resource == deployed prefix copy.  The built
+          artifact's own export trie -- the analyzer's implementation view, which resolves no
+          re-exports -- is reported with its root named; it gates the rung only with
+          --fail-on-built-miss, because an artifact that exports nothing itself may still be a
+          correct rung once its re-exported providers are counted.
 
 Nothing here writes: it reads the log, the tree, the manifest, the payload and the prefix.
 `closure_analyze.py` owns the declarations, the Mach-O readers and the route classifier; this script
@@ -244,6 +248,14 @@ def cmd_verify(args):
     print()
 
     _sources, manifest, edges, ctx = rung_facts(args)
+    if decl is None and manifest:
+        # --install-name: the manifest's own entry is the declaration the analyzer uses, so the
+        # built-artifact leg judges it instead of skipping for want of a --component.
+        entry = manifest[1].get(install_name)
+        if entry:
+            decl = {"target": entry["target"], "install_name": install_name,
+                    "cmake_target": entry["target"], "source": "manifest",
+                    "host_path": entry["host_path"]}
     refs = refs_for(install_name, edges)
     if not refs:
         print("rung-driver: no referrer in the load closure names this install name -- nowhere to "
@@ -260,12 +272,17 @@ def cmd_verify(args):
     print(f"  evidence: {evidence}")
     print()
 
-    # 1. the deployed image satisfies every demand of this field.  It supplies a name from its own
-    # export trie or from a dylib it re-exports, and an absent name is a failure only when a STRONG
-    # referrer binds it (dar-m3s0): this is the analyzer's own classification, never a second one
-    # derived here from a raw count of demanded names.
+    # 1. the deployed image satisfies every demand of this field.  The ROOT of this leg is the
+    # deployed prefix copy -- what the rung is about -- and the image supplies a name from its own
+    # export trie or from any image its re-export graph reaches (Accelerate -> vecLib -> libBNNS/
+    # libvDSP).  An absent name is a failure only when a STRONG referrer binds it (dar-m3s0): this is
+    # the analyzer's own classification, never a second one derived here from a raw count of demanded
+    # names.
     print("== 1. the deployed image satisfies every demand ==")
+    print("  root judged  : the deployed prefix copy (NOT the build artifact; step 3 proves the two "
+          "equal when the sha chain holds)")
     deployed_path = ca.deployed_path(args.prefix, install_name)
+    split = None
     if not deployed_path:
         print(f"  FAIL: the prefix carries no {install_name}")
         failures.append("deployed copy absent")
@@ -297,29 +314,55 @@ def cmd_verify(args):
                      if split["tolerated"] else ""))
     print()
 
-    # 2. the analyzer reports MISS 0 for this component.
-    print("== 2. analyzer MISS 0 ==")
-    artifact = ca.resolve_artifact(manifest, decl) if decl else None
-    result = None
-    if decl:
+    # 2. the built artifact's OWN surface: what the analyzer judges, and the only leg that is about
+    # implementation rather than loadability.  It resolves no re-exports by design (an umbrella that
+    # re-exports its providers legitimately exports nothing itself), so its MISS is REPORTED with its
+    # root named and gates the rung only when asked (--fail-on-built-miss): a built-artifact absence
+    # is real information, not a verdict about the deployed rung (dar-m3s0 follow-up).
+    print("== 2. the built artifact's own surface (analyzer) ==")
+    built = ca.resolve_artifact(manifest, decl) if decl else None
+    built_miss = 0
+    built_known = False
+    if not decl:
+        print("  skipped: no declaration, so the analyzer cannot classify this install name")
+    elif not built:
+        print(f"  root judged  : (nothing) -- the manifest declares {decl['target']}"
+              f"/{decl.get('cmake_target')}, but its host_path is not a file, so there is nothing to "
+              "judge; this is NOT 'MISS 0'")
+        built_known = True
+    else:
+        print(f"  root judged  : the build artifact {built} (manifest host_path) -- NOT the deployed "
+              "chain step 1 judged")
         base = args.base or ca.ladder_base(args.darling)
         result = ca.analyze_component(args.component or install_name, decl, manifest, args.darling,
                                       base, refs)
-        miss = len(result.get("missing_fatal", [])) + len(result.get("missing_lazy", []))
-        print(f"  MISS (fatal+lazy) = {miss}   "
+        built_known = True
+        built_miss = len(result.get("missing_fatal", [])) + len(result.get("missing_lazy", []))
+        print(f"  own export trie: {len(result.get('exported', ()))} name(s) (this image itself; its "
+              "re-exports are NOT counted here)")
+        print(f"  MISS (fatal+lazy) = {built_miss}   "
               f"[fatal {len(result.get('missing_fatal', []))}, "
               f"lazy {len(result.get('missing_lazy', []))}, "
               f"tolerated {len(result.get('missing_tolerated', []))}]")
         for sym in result.get("missing_fatal", [])[:10]:
-            print(f"    MISSING (strong, non-lazy bind) {sym}")
+            print(f"    MISSING (strong, non-lazy bind, absent from this artifact's own trie) {sym}")
         for sym in result.get("missing_lazy", [])[:10]:
-            print(f"    MISSING (strong, lazy bind)     {sym}")
-        if miss:
-            failures.append(f"analyzer MISS {miss}")
+            print(f"    MISSING (strong, lazy bind, absent from this artifact's own trie)     {sym}")
+        class_line = f"  class {result['klass']}: {'; '.join(result['class_notes'])}"
+        if not built_miss:
+            print(f"  OK: MISS 0 on the artifact's own surface.  {class_line.strip()}")
         else:
-            print(f"  OK: MISS 0.  class {result['klass']}: {'; '.join(result['class_notes'])}")
-    else:
-        print("  skipped: no declaration, so the analyzer cannot classify this install name")
+            print(f"  {class_line.strip()}")
+            chain = len(split["satisfied_reexport"]) if split else 0
+            print(f"  note: this is the artifact's own surface, not a verdict about the rung: step 1 "
+                  f"judged the deployed chain, which satisfies {chain} of the field's demanded "
+                  f"name(s) through a re-export.  Pass --fail-on-built-miss to gate on this leg.")
+    if built_known and args.fail_on_built_miss:
+        if not built:
+            failures.append("the built artifact is absent and none is declared with a host_path "
+                            "(--fail-on-built-miss)")
+        elif built_miss:
+            failures.append(f"built artifact MISS {built_miss} (--fail-on-built-miss)")
     print()
 
     # 3. the sha chain payload == staged resource == deployed prefix copy.
@@ -343,9 +386,8 @@ def cmd_verify(args):
                 payload_file = None
         else:
             payload_file = None
-    built = artifact
     legs = [("payload", payload_file), ("staged resource", staged),
-            ("deployed", deployed_path), ("analyzer artifact", built)]
+            ("deployed", deployed_path), ("built artifact", built)]
     digests = {}
     for label, path in legs:
         digest = sha256(path) if path else None
@@ -374,8 +416,9 @@ def cmd_verify(args):
             print(f"  FAIL: {reason}")
         print("  RESULT: FAIL")
         return 1
-    print("  RESULT: PASS -- every strong demand is satisfied by the deployed image or its "
-          "re-exports, the analyzer reports MISS 0, and the sha chain is intact")
+    print("  RESULT: PASS -- the deployed prefix copy satisfies every strong demand (its own export "
+          "trie or a re-exported image), the sha chain is intact, and the built artifact's own "
+          "surface was reported (step 2; gate it with --fail-on-built-miss)")
     return 0
 
 
@@ -408,16 +451,23 @@ def main():
     add_common(stop)
     stop.set_defaults(func=cmd_stop)
     verify = sub.add_parser("verify", help="verify a supplied rung",
-                            description="Verify a supplied rung three ways: the deployed image "
-                                        "satisfies every strong demand (own export trie, a "
-                                        "re-exported image, or a weak/upward-only referrer), the "
-                                        "analyzer reports MISS 0, and the sha chain payload == "
-                                        "staged resource == deployed prefix copy.")
+                            description="Verify a supplied rung three ways: the deployed prefix copy "
+                                        "satisfies every strong demand (its own export trie, a "
+                                        "re-exported image, or a weak/upward-only referrer) and the "
+                                        "sha chain payload == staged resource == deployed copy; the "
+                                        "built artifact's own export trie, which resolves no "
+                                        "re-exports, is reported with its root named and gates the "
+                                        "rung only with --fail-on-built-miss.")
     verify.add_argument("--component", default=None,
                         help="declared target or install-name stem (e.g. "
                              "swift_libswiftUniformTypeIdentifiers_dylib)")
     verify.add_argument("--install-name", default=None,
                         help="verify by install name when no declaration resolves")
+    verify.add_argument("--fail-on-built-miss", action="store_true",
+                        help="also fail when the BUILD artifact's own export trie does not carry "
+                             "every strongly demanded name (or is absent).  That number is real "
+                             "information about implementation, but it is not a verdict about the "
+                             "deployed rung, so it is reported and not gated by default.")
     add_common(verify)
     verify.set_defaults(func=cmd_verify)
     args = ap.parse_args()

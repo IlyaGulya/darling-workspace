@@ -11,8 +11,9 @@ wrong by hand at least once:
   * the wave sweep's route for a missing install name (weak-only, declaration, payload, source,
     substitute) and the two non-gap routes (Xcode-provided, no-referrer), each with its evidence --
     where a source rung must hold an implementation of a demanded name and not merely a matching
-    directory (dar-xovc), and where a demand satisfied through a re-export or made only by a
-    weak/upward referrer is not a failure while a strong absence still is (dar-m3s0);
+    directory (dar-xovc), and where a demand satisfied through a re-export (including the NESTED
+    umbrella -> hub -> providers chain) or made only by a weak/upward referrer is not a failure
+    while a strong absence still is (dar-m3s0);
   * the loader stop parse, including a log with only dyld's first line;
   * pin sync's rewrite: only a revision value changes, a forward pin moves, an ahead pin is refused
     unless told otherwise, and a manifest with nothing to change is reported as no change.
@@ -271,6 +272,25 @@ def test_routes(tmp):
     check(ca.build_target_for("/System/Library/Frameworks/Widget.framework/Versions/A/Widget",
                               {"Widget": "x:1"}) == ("Widget", "x:1"),
           "the framework lookup does accept it")
+    # ... and the same guard holds for a DECLARATION: the framework's manifest entry must not answer
+    # the Swift overlay over it (dar-xovc, through the install-name stem instead of a directory name).
+    from_framework_decl = {"/System/Library/Frameworks/Widget.framework/Versions/A/Widget":
+                           {"target": "framework_Widget", "host_path": "/b/Widget",
+                            "guest_path": "/System/Library/Frameworks/Widget.framework/Versions/A/Widget"}}
+    overlay_ctx = dict(ctx)
+    overlay_ctx["manifest"] = ({}, from_framework_decl)
+    route, why = ca.classify_route("/usr/lib/swift/libswiftWidget.dylib", refs(False), overlay_ctx)
+    check(route != ca.ROUTE_DECL,
+          f"the framework's declaration must not answer the Swift overlay: {route} ({why})")
+    route, why = ca.classify_route("/System/Library/Frameworks/Widget.framework/Versions/A/Widget",
+                                   refs(False), overlay_ctx)
+    check(route == ca.ROUTE_DECL and "framework_Widget" in why,
+          f"the framework's own declaration still answers the framework: {route} ({why})")
+    check(ca.target_name_candidates("/usr/lib/swift/libswiftWidget.dylib") == ["libswiftWidget"],
+          "the overlay name has exactly one build/declaration candidate")
+    check("Widget" in ca.target_name_candidates(
+              "/System/Library/Frameworks/Widget.framework/Versions/A/Widget"),
+          "a framework install name still offers its short name")
     print("PASS routes: every route reached, with evidence, and the overlay/framework split kept")
 
 
@@ -387,6 +407,52 @@ def test_demand_split(tmp):
           "an install name the prefix does not carry has no deployed copy")
     print("PASS verifier demand: a re-export and a weak/upward referrer are tolerated, a strong "
           "absence still fails")
+
+
+def test_reexport_closure(tmp):
+    """dar-m3s0 follow-up: the NESTED re-export chain is walked to the leaves.
+
+    The shape is an umbrella that re-exports a hub that re-exports the providers (Accelerate ->
+    vecLib -> libBNNS/libvDSP), where the umbrella's own trie has 0 names and the hub's own trie has
+    0 names too: a one-level walk from the umbrella sees zero names, which is how a correct rung
+    gets reported as 12 strong demands absent.  The walk is iterative, cycle-safe and depth-bounded.
+    """
+    graph = {
+        "/x/Umbrella": ["/x/Hub", "/x/LibA"],
+        "/x/Hub": ["/x/Leaf1", "/x/Leaf2", "/x/Umbrella"],   # the back edge: a cycle
+        "/x/LibA": [],
+        "/x/Leaf1": [],
+        "/x/Leaf2": [],
+    }
+    tries = {"/x/Umbrella": set(), "/x/Hub": set(), "/x/LibA": {"_A"},
+             "/x/Leaf1": {"_L1", "_L2"}, "/x/Leaf2": {"_L3"}}
+    resolve = lambda name: name if name in graph else None            # noqa: E731
+    names, providers = ca.reexport_closure("/x/Umbrella", lambda p: graph[p], resolve,
+                                           lambda p: tries[p])
+    check(names == {"_A", "_L1", "_L2", "_L3"}, f"the walk reaches the leaves: {sorted(names)}")
+    check(set(providers) == {"/x/Hub", "/x/LibA", "/x/Leaf1", "/x/Leaf2"},
+          f"every re-exported image is a provider and the cycle re-visits none: {sorted(providers)}")
+    check(tries["/x/Umbrella"] == set() and tries["/x/Hub"] == set(),
+          "the umbrella and the hub export nothing themselves -- the shape a one-level walk gets "
+          "wrong")
+
+    # A demanded name living ONLY in a leaf is satisfied for the client, so MISS is 0 through the
+    # chain (a strong, non-lazy referrer no longer makes it fatal).
+    demanded = {"_L1": "bind", "_L3": "bind"}
+    split = ca.demand_split(demanded,
+                            [{"image": "/x/DVTSmartSearch", "weak": False, "upward": False}],
+                            {"/x/DVTSmartSearch": dict(demanded)},
+                            own=tries["/x/Umbrella"], reexported=names)
+    check(split["fatal"] == [] and split["missing"] == [] and len(split["satisfied_reexport"]) == 2,
+          f"leaf-only demanded names are satisfied through the chain: {split}")
+
+    # The bound is real: depth 1 stops at the umbrella's own re-exports, so the hub contributes
+    # nothing and the leaf-only names are not reached.
+    shallow, shallow_providers = ca.reexport_closure("/x/Umbrella", lambda p: graph[p], resolve,
+                                                     lambda p: tries[p], max_depth=1)
+    check(shallow == {"_A"} and set(shallow_providers) == {"/x/Hub", "/x/LibA"},
+          f"max_depth bounds the walk: {sorted(shallow)} / {sorted(shallow_providers)}")
+    print("PASS re-export closure: the nested chain is walked to the leaves, with a cycle and a bound")
 
 
 # --------------------------------------------------------------------------- loader stop
@@ -578,6 +644,7 @@ def main():
         test_routes(tmp / "routes")
         test_sweep(tmp / "sweep")
         test_demand_split(tmp / "verifiedemand")
+        test_reexport_closure(tmp / "reexport")
         test_loader_stop(tmp / "stop")
         test_pin_sync(tmp / "pin")
         test_cli(tmp / "cli")

@@ -142,9 +142,11 @@ refs, and agent handoff.
   RUN_LOG` is the current rung (install name, referrer, demand per dependency
   field with demangled shapes and weak/strong, route + evidence), and
   `scripts/rung-driver.py verify --component X` is the four-way check of a
-  supplied artifact (every strong demand satisfied by the deployed image or an
-  image it re-exports, analyzer MISS 0, sha chain payload == staged resource ==
-  deployed copy). `scripts/west-pin-sync.py check` compares
+  supplied artifact (every strong demand satisfied by the deployed prefix copy
+  or by any image its nested re-export graph reaches; the built artifact's own
+  export trie reported with its root named and gated only with
+  `--fail-on-built-miss`; sha chain payload == staged resource == deployed
+  copy). `scripts/west-pin-sync.py check` compares
   `west.yml`'s revisions with the darling superproject's gitlinks and `sync`
   rewrites only those revision values, refusing to lower a pin without
   `--allow-downgrade`. The rules and the measured incidents behind them are in
