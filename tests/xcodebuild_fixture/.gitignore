@@ -1,0 +1,6 @@
+# xcodebuild writes its default build directory next to the project when a workload is run in
+# place. scripts/xcodebuild-workload-run.sh installs the project into the prefix's
+# /private/var/tmp instead, so normally nothing is written here; never track it if it is.
+build/
+DerivedData/
+*.xcuserdatad/
