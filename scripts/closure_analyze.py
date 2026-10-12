@@ -109,6 +109,12 @@ LOCK_TARGETS = [
     # by configure_file, so the CMake text declares no $<TARGET_FILE:...> for it and the analysis
     # takes this component's declaration from the generated manifest (see main).
     "swift_libswiftSystem_dylib",
+    # The rung after libswiftSystem: XCTHarness's load command for
+    # /usr/lib/swift/libswiftDemangle.dylib (image not found, XCB_RC=132).  XCTHarness is the only
+    # referrer inside libxcodebuildLoader's load closure and it links the image NON-weakly, binding
+    # three C entry points eagerly (__DATA_CONST,__got).  Same payload-resource shape as the two
+    # entries above, and for the same reason (see main: manifest declarations).
+    "swift_libswiftDemangle_dylib",
 ]
 
 GUEST_XCODE_MOUNT_MARK = "Xcode.app/Contents"
