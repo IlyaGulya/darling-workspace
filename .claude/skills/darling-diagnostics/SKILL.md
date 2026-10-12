@@ -26,7 +26,7 @@ Canonical sources live in the selected manifest repository:
 
 | tool | question it answers |
 |---|---|
-| `scripts/darling-boot-run.sh` | one measured run: clean start, unique log, the workload's own duration, markers plus counters, cleanup, one `VERDICT` line |
+| `scripts/darling-boot-run.sh` | one measured run: clean start, unique log, the workload's own duration, the workload's own status plus markers and counters, cleanup, one `VERDICT` line (a declaration that names a value -- `--status-marker FIELD=`, or a `--marker`/`--poll` ending in `=` -- passes only on the integer 0) |
 | `scripts/darling-deploy-verify.sh` | are ALL runtime copies of a component the file I just built (sha256 per copy) |
 | `scripts/darling-artifact-manifest.sh` | did any artifact change since a recorded baseline (works without git history), and does a probe tag exist in the deployed copies |
 | `scripts/darling-describe-artifact.sh` | where a Mach-O starts (`LC_MAIN`), where a symbol is, whether a probe tag is in the artifact and at which file offsets, and whether the loaded copy is the built one |

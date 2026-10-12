@@ -47,6 +47,10 @@ CONTRACTS = (
     "tests/run-west-test-dry-run-contract.sh",
     "tests/run-rootless-debug-cleanup-contract.sh",
     "tests/run-darling-boot-harness-ownership-contract.sh",
+    # The harness's VERDICT rule: which declaration asserts success. It drives the harness offline against a
+    # stub launcher, so it needs no prefix and no guest (the harness reads the workload's status out of the
+    # log, and the contract's workload is a host `--cmd`).
+    "tests/run-darling-boot-verdict-contract.sh",
     "tests/run-west-test-runtime-source-reuse-contract.sh",
     "tests/run-west-test-metadata-invocation-identity-contract.sh",
     # Recovered: these contracts existed and passed but were listed by no tier,

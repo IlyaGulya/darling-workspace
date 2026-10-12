@@ -14,13 +14,24 @@
 #   1. a clean start: shutdown, then every prefix-owned process by /proc/<pid>/exe AND cmdline, then verify zero;
 #   2. a UNIQUE log path per run (never shared, never appended);
 #   3. the workload's real duration: the caller states how long the workload needs, and the harness waits it;
-#   4. a single VERDICT block at the end: the markers the caller asked for, plus the counters that matter here
-#      (per-thread RPC socket creations, denials, urgent timeouts, courier misses);
+#   4. a single VERDICT block at the end: the workload's own STATUS, the presence markers the caller asked for,
+#      plus the counters that matter here (per-thread RPC socket creations, denials, urgent timeouts, courier misses);
 #   5. cleanup afterwards, and a non-zero exit if the prefix is not clean.
 #
+# THE VERDICT RULE -- WHICH DECLARATION ASSERTS SUCCESS. A declaration that names a STRING asserts presence
+# only: an absent one is FAIL/HANG and never PASS. A declaration that names a VALUE is a STATUS field, and a
+# status field asserts success only by printing an integer 0 -- absent, unparseable or non-zero is FAIL. The
+# value-naming declarations are `--status-marker FIELD=`, and any `--marker` or caller-supplied `--poll` whose
+# text ends with `=` (which is the spelling the XCB repro used). MEASURED (dar-u4mk): the old rule matched
+# `--marker 'XCB_RC='` as a SUBSTRING of `XCB_RC=132` (128+4 = SIGILL, no artifact produced) and printed
+# VERDICT: PASS for a workload that had already died, so a status marker never asserts success on its own.
+# Ambiguity fails closed: a declaration that names a value but not as a plain literal field (no regex
+# metacharacters) is FAIL rather than success. A caller that declares no status field gets the behaviour it
+# always had, and the harness's own default --poll is never a status declaration.
+#
 # Usage:
-#   darling-boot-run.sh --prefix PATH --wait SECONDS [--marker NAME]... [--poll REGEX] [--hatch] [--cmd 'shell command']
-# Exit: 0 if every --marker appeared in the log, 1 otherwise (or if cleanup failed).
+#   darling-boot-run.sh --prefix PATH --wait SECONDS [--marker NAME]... [--status-marker FIELD=] [--poll REGEX] [--hatch] [--cmd 'shell command']
+# Exit: 0 only if every declared status field was the integer 0 and every presence marker appeared, 1 otherwise (or if cleanup failed).
 
 set -u
 
@@ -35,19 +46,32 @@ EXTRA_ENV=""
 ASSERT_MAPS=0
 LIST_OWNED=0
 POLL=""
+# Whether the caller supplied --poll itself. Only a CALLER-supplied poll can name a status value; the
+# harness's own default poll line (see below) stays a pure stop condition.
+POLL_EXPLICIT=0
+# `--status-marker FIELD=` declarations: the workload's own status values, judged as integers (verdict block).
+STATUS_MARKERS=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--prefix) PREFIX="$2"; shift 2 ;;
 		--wait) WAIT="$2"; shift 2 ;;
+		# A marker declaration. One whose text ends with `=` names a VALUE and is therefore a STATUS field:
+		# the workload asserts success only by printing an integer 0 after it (verdict block). Every other
+		# marker asserts presence only -- which is why a bare `XCB_RC=` can never be read as a pass.
 		--marker) MARKERS="$MARKERS|$2"; shift 2 ;;
+		# The explicit form of the same declaration: the field the workload's own status follows, e.g.
+		# `--status-marker XCB_RC=`. Value-naming is the whole point, so a plain literal FIELD= is required.
+		--status-marker) STATUS_MARKERS="$STATUS_MARKERS|$2"; shift 2 ;;
 		--cmd) CMD="$2"; shift 2 ;;
 		--hatch) HATCH=1; shift ;;
 		--env) EXTRA_ENV="$EXTRA_ENV $2"; shift 2 ;;
 		# The workload's own result line, as a regex: the harness stops as soon as it appears in the
 		# log instead of sleeping out --wait. Default is the original fixture's line, so every
 		# existing caller keeps the exact behaviour it had (see the poll loop below).
-		--poll) POLL="$2"; shift 2 ;;
+		# A CALLER-supplied poll whose text ends with `=` names a VALUE (e.g. `--poll XCB_RC=`) and is
+		# judged as a status field in the verdict block; the harness's own default poll is not.
+		--poll) POLL="$2"; POLL_EXPLICIT=1; shift 2 ;;
 		# DIAGNOSTIC ONLY (default off): when the marker verdict fails, leave the prefix and its
 		# processes ALIVE so an external observer (darling-debug, LLDB, host wchan) can inspect the
 		# failing incarnation. Acceptance never sets this; it exists because a watchdog stop followed
@@ -58,13 +82,27 @@ while [ $# -gt 0 ]; do
 		--verify-probe) VERIFY_PROBES="$VERIFY_PROBES
 $2"; shift 2 ;;
 		--log) LOG="$2"; shift 2 ;;
-		-h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+		# The header block, not a frozen line range: the range used to be a literal 2,22 and silently
+		# dropped the "Exit:" line as soon as the header grew.
+		-h|--help) sed -n '2,/^$/p' "$0"; exit 0 ;;
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac
 done
 
 [ -n "$PREFIX" ] || { echo "usage: $0 --prefix PATH --wait SECONDS [--marker NAME]..." >&2; exit 2; }
 [ -n "$WAIT" ] || [ "$LIST_OWNED" = 1 ] || { echo "usage: $0 --prefix PATH --wait SECONDS [--marker NAME]..." >&2; exit 2; }
+# A status field names a VALUE (`XCB_RC=`), never an expected value: `--status-marker XCB_RC=0` would make the
+# field text itself the needle and read every real line as MISS. Refuse at the front door -- before any state is
+# consumed -- rather than fail closed on a log that never carried the right shape.
+oldIFS=$IFS; IFS='|'
+for _sf in $STATUS_MARKERS; do
+	[ -n "$_sf" ] || continue
+	case "$_sf" in
+	*=) ;;
+	*) echo "usage: --status-marker FIELD= names the workload's own status field, e.g. --status-marker XCB_RC= (got '$_sf')" >&2; exit 2 ;;
+	esac
+done
+IFS=$oldIFS; unset _sf
 # Same default the poll loop always used, so an unspecified --poll cannot change any existing run.
 [ -n "$POLL" ] || POLL='RING_MACH_TEST mode=.*pass='
 
@@ -352,12 +390,73 @@ echo "waited ${_waited}s of at most ${WAIT}s" | tee -a "$LOG"
 
 STAGE=verdict; echo "== verdict =="
 verdict=0
+# THE WORKLOAD'S OWN STATUS (dar-u4mk). A declaration that names a VALUE -- `--status-marker FIELD=`, a `--marker`
+# ending in `=`, or a caller-supplied `--poll` ending in `=` -- asserts success only by an integer 0. The old rule
+# tested presence with grep and never parsed the value, so `--marker 'XCB_RC='` was satisfied by the SUBSTRING in
+# `XCB_RC=132` (128+4 = SIGILL, no artifact) and this block printed VERDICT: PASS for a workload that had died.
+# Fail closed at every step below: absent, non-numeric and non-zero all end as FAIL.
+literal_field() { # name -> 0 when it is a plain literal field name with no regex/shell metacharacters
+	case "$1" in ''|*[!A-Za-z0-9_.:-]*) return 1 ;; esac
+	return 0
+}
+# The integer that immediately follows FIELD= on the LAST log line that names it. Empty output means "no parseable
+# value" (absent, non-numeric, or the digits are not adjacent to the field) and every caller treats that as FAIL.
+# index() keeps the needle literal, so a field name is never reinterpreted as a regular expression here.
+status_value() { # FIELD=
+	grep -a -F -- "$1" "$LOG" 2>/dev/null | tail -1 | awk -v f="$1" '
+	{
+		best = ""; rest = $0
+		while ((i = index(rest, f)) > 0) {
+			tail = substr(rest, i + length(f))
+			if (match(tail, /^[0-9]+/)) best = substr(tail, RSTART, RLENGTH)
+			rest = tail
+		}
+		if (best != "") print best
+	}'
+}
+STATUS_SEEN=""
+check_status() { # DECL -> records the workload's own status; PASS only for the integer 0
+	st="$1"
+	case "$st" in *=) ;; *) st="$st=" ;; esac
+	case " $STATUS_SEEN " in *" $st "*) return 0 ;; esac	# one field declared twice (marker + poll) is judged once
+	STATUS_SEEN="$STATUS_SEEN $st"
+	if ! literal_field "${st%=}"; then
+		echo "STATUS AMBIGUOUS $st: it names a value, but not as a plain literal field; FAIL (fail closed)"
+		verdict=1
+		return 0
+	fi
+	v=$(status_value "$st")
+	if [ -z "$v" ]; then
+		echo "STATUS MISS $st: no log line carries an integer immediately after it"
+		verdict=1
+	elif [ "$v" -ne 0 ]; then
+		echo "STATUS FAIL $st value=$v"
+		verdict=1
+	else
+		echo "STATUS ok   $st value=0"
+	fi
+	return 0
+}
+# A poll the CALLER supplied that names a value is judged the same way. The harness's own default poll is NOT a
+# caller declaration and never becomes a status field -- for every caller that passes no --poll, the verdict is
+# exactly what it was before.
+if [ "$POLL_EXPLICIT" = 1 ]; then
+	case "$POLL" in *=) check_status "$POLL" ;; esac
+fi
 # MEASURED: a marker containing spaces was split by the old space-separated list, so `--marker 'ITER 0 dropped'`
 # became three markers and reported `MISS dropped` for something that was simply never queried as a whole.
 # '|' keeps a marker intact; IFS is restored right after the loop.
 oldIFS=$IFS; IFS='|'
+for f in $STATUS_MARKERS; do
+	[ -n "$f" ] || continue
+	check_status "$f"
+done
 for m in $MARKERS; do
 	[ -n "$m" ] || continue
+	# A marker that names a value is a status field, not a presence check -- this is the XCB repro's own spelling.
+	case "$m" in
+	*=) check_status "$m"; continue ;;
+	esac
 	if grep -q -- "$m" "$LOG"; then
 		echo "MARKER ok   $m"
 	else
