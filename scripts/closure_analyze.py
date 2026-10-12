@@ -115,6 +115,13 @@ LOCK_TARGETS = [
     # three C entry points eagerly (__DATA_CONST,__got).  Same payload-resource shape as the two
     # entries above, and for the same reason (see main: manifest declarations).
     "swift_libswiftDemangle_dylib",
+    # The rung after libswiftDemangle: XCTHarness's load command for
+    # /usr/lib/swift/libswiftUniformTypeIdentifiers.dylib (image not found, XCB_RC=132).  XCTHarness is
+    # the only referrer inside libxcodebuildLoader's load closure that is still missing a STRONG
+    # dependency there -- CoreImage, IOKit, Metal, OSLog, QuartzCore and simd are LC_LOAD_WEAK_DYLIB --
+    # and it binds TEN names from the dependency field, nine strong.  Same payload-resource shape as the
+    # three entries above, and for the same reason (see main: manifest declarations).
+    "swift_libswiftUniformTypeIdentifiers_dylib",
 ]
 
 GUEST_XCODE_MOUNT_MARK = "Xcode.app/Contents"
