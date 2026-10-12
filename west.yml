@@ -379,7 +379,7 @@ manifest:
     repo-path: darling-configd
     path: darling/src/external/configd
     remote: darling
-    revision: 98e52de19c52f7938e581ed20385f38abd7fa197
+    revision: c890d5b0ce078e848930b0c16e1b16f3a5b39929
     userdata:
       kind: darling-source
       upstream-repository: darling-configd
