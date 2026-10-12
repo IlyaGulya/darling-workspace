@@ -139,6 +139,16 @@ CONTRACTS = (
     # the tier it checks - the registered names are read out of the runner
     # itself, so a contract added to the tier is stubbed rather than executed.
     "tests/run-ci-test-tiers-contract.sh",
+    # The rung-loop tooling (scripts/closure_analyze.py --declarations/--sweep,
+    # scripts/rung-driver.py, scripts/west-pin-sync.py): the manifest as the
+    # declaration source with both directions reconciled, the wave sweep's route
+    # for every missing install name, the loader-stop parse, and pin sync's
+    # one-line rewrite. Every case is synthetic - a temporary tree, manifest,
+    # payload and superproject - so the host tier can run it: it needs no Xcode
+    # tree, no prefix, no build directory, no llvm tools and no network, which
+    # is exactly why the tooling's decisions are covered here and not only where
+    # the ladder runs.
+    "tests/run-rung-tooling-contract.sh",
 )
 
 # Contracts the tier runs as explicit commands rather than CONTRACTS entries,

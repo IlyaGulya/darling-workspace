@@ -132,6 +132,22 @@ refs, and agent handoff.
   `CommandLineTools`, or `DarlingCLT` clang links. Do not repair those by
   undocumented manual `mkdir`/`ln` sequences unless the command itself is what
   you are debugging.
+- The Xcode load-time ladder has its own tooling; use it instead of the five
+  hand steps per rung (read the loader stop, resolve the referrer, measure the
+  demand, decide the route, verify the artifact). `scripts/closure_analyze.py
+  --sweep` groups the WHOLE missing set of the load closure by the route that
+  supplies each name, so one wave replaces several rung-by-rung runs;
+  `--declarations` reconciles the generated manifest (the declaration source)
+  against the CMake text in both directions. `scripts/rung-driver.py stop --log
+  RUN_LOG` is the current rung (install name, referrer, demand per dependency
+  field with demangled shapes and weak/strong, route + evidence), and
+  `scripts/rung-driver.py verify --component X` is the four-way check of a
+  supplied artifact (deployed export trie, analyzer MISS 0, sha chain payload ==
+  staged resource == deployed copy). `scripts/west-pin-sync.py check` compares
+  `west.yml`'s revisions with the darling superproject's gitlinks and `sync`
+  rewrites only those revision values, refusing to lower a pin without
+  `--allow-downgrade`. The rules and the measured incidents behind them are in
+  `docs/tooling.md`.
 - `--prefix PATH` only resolves a prefix; it does not create, boot or provision
   one. Bootstrap a fresh prefix as its own invocation before running any
   prefix-backed selection: `west test --prefix <prefix>

@@ -24,6 +24,9 @@ the hypothesis that a regression then pins.
 | `scripts/darling-prefix-map.sh` | which prefix a process is rooted in | reads `maps`, because a guest process has no readable path |
 | `scripts/prefix-cleanup.sh` | prefix-scoped cleanup and a cleanliness gate | three matching arms: `exe`, `cmdline`, and `comm` + `maps` for guest processes; `--dry-run` first |
 | `scripts/guest-probe.h` | the probe contract | single literal tag, one syscall, registers preserved, and the Linux syscall-numbering rule |
+| `scripts/closure_analyze.py` | what the Xcode load-time ladder's closure demands, and which route supplies each missing name | the generated manifest is the **declaration source** (`--declarations` reconciles it against the CMake text in both directions); `--sweep` groups every install name the prefix does not carry by the route that would supply it (`xcode-provided`, `no-referrer`, `weak-only`, `declaration`, `payload`, `source`, `substitute`) and prints the evidence each classification rests on; the per-component class column keeps "it loaded" distinct from "it is implemented" |
+| `scripts/rung-driver.py` | the CURRENT rung, and a supplied rung's verification, in one command | `stop --log RUN_LOG` parses the loader stop (the LAST one: the run ended there), resolves the install name and its referrer, prints the demand per dependency field with demangled shapes and weak/strong, and prints the route with its evidence; `verify --component X` checks that the deployed export trie carries every demanded name, that the analyzer reports MISS 0, and that the sha chain payload == staged resource == deployed copy |
+| `scripts/west-pin-sync.py` | whether `west.yml`'s revisions match the darling superproject's gitlinks | `check` prints the before/after table and fails when a pin is behind its gitlink; `sync` rewrites only the `revision:` values of named projects (comments and formatting survive); a pin **ahead** of its gitlink is refused unless `--allow-downgrade` says so |
 
 ## Rules, each measured
 
@@ -73,6 +76,50 @@ the hypothesis that a regression then pins.
    and no TLS runtime requirement. That is what made it possible to confirm that
    launchd's thread prints its own seven tags and **no** probe from
    `libsystem_kernel` at all after `CONSOLE_OPEN_BEGIN`.
+11. **An image that names itself is not a client.** `llvm-objdump --macho
+   --dylibs-used` prints the image's own `LC_ID_DYLIB` as its first dependency
+   line (measured on `SharedFrameworks/AppThinning.framework/Versions/A/AppThinning`),
+   so a referrer set built from that output alone contains the image itself —
+   with no `weak` attribute, because an id is not a link. Counting it made a
+   component look like its own **strong** referrer, which is exactly the signal
+   the ladder's blocker test reads: a name only ever weakly linked would have
+   read as a strong, load-time blocker. `closure_analyze.py` compares each
+   image's own id (`--macho --dylib-id`) against the install name before counting
+   it as a referrer, and a missing name with **no** referrer is its own route
+   (`no-referrer`), never a "weak-only" absence.
+12. **Xcode's own tree is not the prefix.** The guest reaches Xcode's files
+   through the host-root mount, so an `@rpath/...` name, or a path that already
+   names the mount, is supplied by Xcode and is **not** a prefix gap; an
+   ABSOLUTE guest path (`/System/...`, `/usr/...`) never is. The guest's
+   `/System` and `/usr` come from the prefix (`libexec/darling`), which is why
+   the ladder exists at all, and Xcode ships images with colliding basenames —
+   its own `libswiftIOKit.dylib` lives under
+   `Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/macosx`. A resolver
+   that accepted those copies reported 61 of the closure's gaps as supplied; the
+   strict rule (mount-marked paths and `@rpath` only, with a bounded search for a
+   bare `@rpath` dylib or a nested framework bundle) reports the 15 the wave can
+   actually act on.
+13. **The generated manifest is the declaration source, and the CMake text is the
+   second opinion — neither is trusted silently.** The manifest is the resolved
+   declaration a prefix is actually filled from, and the only place a
+   generated/payload declaration exists (the `CONFIGURE_DEPENDS` Swift runtime,
+   the payload framework glob); the CMake text is where a declaration the prefix
+   would never receive shows up as a **deployment gap**. Reading only the CMake
+   text made the analyzer's new report contradict the prefix: it listed ~3.9k
+   "manifest-only" declarations that were in fact CMake declarations spelled as
+   `"<target>|<guest_path>"` pairs for a `foreach` (`cmake/RootlessHomebrew.cmake`),
+   so the pair spelling and `cmake/*.cmake` are read too, templates (`${...}`) are
+   skipped rather than guessed, and declarations of the OTHER rootless components
+   (the bootstrap manifest) are subtracted instead of reported as this
+   component's gap.
+14. **A pin that moves backwards silently un-supplies work.** `west.yml`'s
+   revision for a project is the only record of what the workspace runs; a
+   gitlink is the superproject's record of the same thing. When they disagree the
+   tool moves the manifest FORWARD, and refuses a pin that is **ahead** of its
+   gitlink unless `--allow-downgrade` says so out loud — the measured case being
+   the Swift payload, whose west pin carries the overlay commits the darling
+   superproject had not yet recorded (so the gitlink is the older tree, and a
+   blind sync would have removed the payload the guest was already loading).
 
 ## Why these exist
 
