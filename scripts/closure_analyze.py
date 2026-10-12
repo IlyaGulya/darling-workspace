@@ -125,7 +125,11 @@ LOCK_TARGETS = [
     "UniformTypeIdentifiers", "Rosetta", "MobileAsset", "CoreData", "ImageIO", "CoreAnalytics",
     "AssertionServices", "CoreGraphics", "DiskArbitration", "DiskManagement", "AppleSystemInfo",
     "AssetCacheServices", "DiskImages", "CrashReporterSupport", "compression", "AppleArchive",
-    "PlugInKit", "libdtrace", "NetworkStatistics", "kperf", "StreamingZip", "MetalNoGPU",
+    "PlugInKit", "libdtrace", "NetworkStatistics", "kperf", "StreamingZip", "Metal",
+    # The rung above was measured as the MetalNoGPU declaration (that is the rung comment kept in
+    # the tree); it is named by the target that DECLARES the guest Metal path now, because the same
+    # rung's measurement showed the placeholder was shadowing the real Metal this configuration
+    # builds and that QuartzCore links. See the MetalNoGPU/Metal selection in the tree's CMakeLists.
     "LoggingSupport", "QuartzCore", "CoreLocation",
     # The rung after CoreLocation: DVTInstrumentsFoundation's load command for
     # /usr/lib/swift/libswiftAppleArchive.dylib (image not found, XCB_RC=132).  Its declaration is a
