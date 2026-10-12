@@ -830,7 +830,7 @@ manifest:
     repo-path: darling-libplatform
     path: darling/src/external/libplatform
     remote: darling-next
-    revision: 300fba26032d9e78287f69f4ca02ef79fd80913c
+    revision: b36418683ea908a5e2c0a273d79a6c8729e496cc
     userdata:
       kind: darling-source
       upstream-repository: darling-libplatform
