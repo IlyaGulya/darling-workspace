@@ -838,7 +838,7 @@ manifest:
     repo-path: darling-libpthread
     path: darling/src/external/libpthread
     remote: darling-next
-    revision: 8fd9324b044470a6f659f02477785df2c89160eb
+    revision: 1ba926feb613018484633830530cade6947dca29
     userdata:
       kind: darling-source
       upstream-repository: darling-libpthread
