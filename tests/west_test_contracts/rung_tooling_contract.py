@@ -538,6 +538,100 @@ Exports trie:
     print("PASS exports trie: definitions, annotations, re-exported aliases and re-exports all count")
 
 
+def test_cover(tmp):
+    """Symbol coverage (dar-m3s0 successor): what an import resolves to, and what stops the loader.
+
+    The labels a demand can get are exactly: the field image's own trie (a definition OR an alias),
+    its NESTED re-export graph, dyld's flat lookup for the special ordinals, an absent weak import,
+    and missing.  Only an absent EAGER demand is a stop: a weak import binds to NULL, an alias is a
+    satisfaction, and a flat name no dylib exports (_memcpy's documented case) is not a failure.
+    """
+    leaf = ca.parse_exports_trie("Exports trie:\n0x00000001  _own\n")
+    hub = ca.parse_exports_trie("Exports trie:\n")
+    hub2 = ca.parse_exports_trie(
+        "Exports trie:\n[re-export] _aliased (__realname from libsystem_platform)\n")
+    details = {"/p/leaf": leaf, "/p/hub": hub, "/p/hub2": hub2}
+    detail_of = lambda p: details[p]                                     # noqa: E731
+    chains = {"/p/hub": ({"_deep", "_aliased"}, {"/p/hub2": hub2})}
+    chain_of = lambda p: chains.get(p, (set(), {}))                      # noqa: E731
+    union = {"_own", "_deep", "_aliased", "_flatname"}
+
+    def imp(field, name, weak=False, special=""):
+        return {"name": name, "field": field, "special": special, "weak": weak, "eager": True,
+                "lib_ordinal": 1}
+
+    # own trie, including an alias in it
+    check(ca._cover_label(imp("Leaf", "_own"), "/p/leaf", detail_of, chain_of, union)
+          == (ca.COVER_OWN, "/p/leaf (definition)"), "a definition is OWN")
+    check(ca._cover_label(imp("Hub2", "_aliased"), "/p/hub2", detail_of, chain_of, union)
+          == (ca.COVER_OWN, "/p/hub2 (alias)"), "an alias in the field image is OWN too")
+    # the nested re-export graph, with the provider named
+    label, where = ca._cover_label(imp("Hub", "_deep"), "/p/hub", detail_of, chain_of, union)
+    check(label == ca.COVER_REEXPORT, f"a name only the re-export graph carries is REEXPORT: {label}")
+    check(where in ("/p/hub2", "re-exported"), f"and it can name the provider: {where}")
+    # flat lookup: no field, satisfied by the closure's own union
+    check(ca._cover_label(imp(None, "_flatname", special="flat-lookup"), None, detail_of, chain_of,
+                          union) == (ca.COVER_FLAT, "the closure's own tries (flat lookup)"),
+          "a flat-lookup name is satisfied by the closure's union")
+    # weak vs eager absence
+    check(ca._cover_label(imp("Leaf", "_gone", weak=True), "/p/leaf", detail_of, chain_of, union)[0]
+          == ca.COVER_ABSENT_WEAK, "an absent WEAK import is tolerated")
+    check(ca._cover_label(imp("Leaf", "_gone"), "/p/leaf", detail_of, chain_of, union)[0]
+          == ca.COVER_MISSING, "an absent EAGER import is MISSING")
+    check(ca._cover_label(imp("Leaf", "_gone"), None, detail_of, chain_of, union)[0]
+          == ca.COVER_IMAGE_ABSENT, "a field image that resolves nowhere is its own label")
+
+    # The predicted sequence: an absent image and an absent eager symbol are stops, in traversal
+    # order; the weak and the satisfied ones are not.
+    graph = {"entries": [{"entry": "/p/entry", "path": "/p/entry"}],
+             "images": {
+                 "/p/entry": {"install_name": "/p/entry", "path": "/p/entry",
+                              "dylibs": [("/p/early", False, False), ("/p/late", False, False)],
+                              "imports": [], "labels": {}},
+                 "/p/early": {"install_name": "/p/early", "path": "/p/early", "dylibs": [],
+                              "imports": [], "labels": {}},
+                 "/p/late": {"install_name": "/p/late", "path": "/p/late", "dylibs": [],
+                             "imports": [], "labels": {}}},
+             "unresolved": [{"referrer": "/p/entry", "install_name": "/p/absent",
+                             "weak": False},
+                            {"referrer": "/p/late", "install_name": "/p/absent-weak", "weak": True}],
+             "missing": [{"image": "/p/early", "symbol": "_gone", "field": "Foundation",
+                          "label": ca.COVER_MISSING, "weak": False},
+                         {"image": "/p/early", "symbol": "_weakly", "field": "Foundation",
+                          "label": ca.COVER_ABSENT_WEAK, "weak": True}]}
+    check(ca._cover_traversal(graph) == ["/p/entry", "/p/early", "/p/late"],
+          f"traversal follows the load commands: {ca._cover_traversal(graph)}")
+    events = ca.cover_events(graph)
+    check([e["kind"] for e in events] == ["image", "symbol"],
+          f"the weak IMAGE and the weak SYMBOL are not stops: {events}")
+    check(events[0]["install_name"] == "/p/absent" and events[1]["symbol"] == "_gone",
+          f"the eager image comes before the eager symbol: {events}")
+
+    # The resolver reads BOTH prefix roots and says None for a name that is nowhere.
+    prefix = tmp / "pfx"
+    write(prefix / "usr/lib/libA.dylib", "a")
+    write(prefix / "libexec/darling/usr/lib/libB.dylib", "b")
+    resolve = ca.guest_resolver(str(prefix))
+    check(resolve("/usr/lib/libA.dylib") is not None, "the prefix root is searched")
+    check(resolve("/usr/lib/libB.dylib") is not None, "libexec/darling is searched too")
+    check(resolve("/usr/lib/libNowhere.dylib") is None, "a name in neither root resolves to None")
+    # A guest entry path is mapped to the host (the Xcode mount, and the host-root mount) when it
+    # names a file that exists there.
+    xcode = tmp / "xc"
+    write(xcode / "Frameworks" / "Q.framework" / "Versions" / "A" / "Q", "q")
+    mount_entry = f"/xc/{ca.GUEST_XCODE_MOUNT_MARK}/Frameworks/Q.framework/Versions/A/Q"
+    check(ca._host_entry_path(mount_entry, str(xcode))
+          == str(xcode / "Frameworks" / "Q.framework" / "Versions" / "A" / "Q"),
+          "a path inside the Xcode mount maps under --xcode")
+    host_file = write(tmp / "host" / "libX.dylib", "x")
+    check(ca._host_entry_path("/Volumes/SystemRoot" + str(host_file), str(xcode)) == str(host_file),
+          "a /Volumes/SystemRoot path maps to the host path it names")
+    check(ca._host_entry_path("/xc/Xcode.app/Contents/Nope/Nope", str(xcode))
+          == "/xc/Xcode.app/Contents/Nope/Nope",
+          "a guest path that exists nowhere on the host is returned unchanged, not guessed")
+    print("PASS cover: own/reexport/flat/weak labels, and only an eager absence is a stop")
+
+
 # --------------------------------------------------------------------------- loader stop
 
 def test_loader_stop(tmp):
@@ -729,6 +823,7 @@ def main():
         test_demand_split(tmp / "verifiedemand")
         test_reexport_closure(tmp / "reexport")
         test_exports_trie(tmp / "exports")
+        test_cover(tmp / "cover")
         test_loader_stop(tmp / "stop")
         test_pin_sync(tmp / "pin")
         test_cli(tmp / "cli")

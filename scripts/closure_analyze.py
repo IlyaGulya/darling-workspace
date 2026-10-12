@@ -872,6 +872,7 @@ def dylibs_used(image):
 BIND_TYPES = ("bind", "weak_bind", "lazy_bind")
 _BINDS_CACHE = {}
 _DYLIB_ID_CACHE = {}
+_LOAD_COMMANDS_CACHE = {}
 
 
 def dylib_id(image):
@@ -905,6 +906,7 @@ LC_RPATH = 0x1C | LC_REQ_DYLD
 LC_DYLD_INFO_ONLY = 0x22 | LC_REQ_DYLD
 LC_DYLD_EXPORTS_TRIE = 0x33 | LC_REQ_DYLD
 LC_DYLD_CHAINED_FIXUPS = 0x34 | LC_REQ_DYLD
+LC_ID_DYLIB = 0xD
 
 BIND_OPCODE_MASK = 0xF0
 BIND_IMMEDIATE_MASK = 0x0F
@@ -948,13 +950,21 @@ def macho_slices(data):
 
 
 def macho_load_commands(path):
-    """What the import readers need from an image's load commands.
+    """What the import readers need from an image's load commands (cached per path).
 
-    Returns {"slices": [{"cputype", "dylibs": [(install_name, weak, reexport)], "rpaths",
-    "chained_fixups": bytes|None, "dyld_info": bytes|None, "exports_trie": bytes|None,
+    Returns {"slices": [{"cputype", "dylib_id", "dylibs": [(install_name, weak, reexport)],
+    "rpaths", "chained_fixups": bytes|None, "dyld_info": bytes|None, "exports_trie": bytes|None,
     "defined": bool}]}: `dylibs` is ordinal order (ordinal 1 is the first entry), which is how a
     bind's dependency field is named, and each blob is the linkedit data itself.
     """
+    if path in _LOAD_COMMANDS_CACHE:
+        return _LOAD_COMMANDS_CACHE[path]
+    result = _read_load_commands(path)
+    _LOAD_COMMANDS_CACHE[path] = result
+    return result
+
+
+def _read_load_commands(path):
     try:
         data = open(path, "rb").read()
     except OSError:
@@ -962,7 +972,7 @@ def macho_load_commands(path):
     out = []
     for cputype, blob in macho_slices(data):
         entry = {"cputype": cputype, "dylibs": [], "rpaths": [], "chained_fixups": None,
-                 "dyld_info": None, "exports_trie": None, "defined": False}
+                 "dyld_info": None, "exports_trie": None, "defined": False, "dylib_id": None}
         if len(blob) < 32 or struct.unpack_from("<I", blob, 0)[0] != MH_MAGIC_64:
             out.append(entry)
             continue
@@ -986,6 +996,11 @@ def macho_load_commands(path):
                 start = off + nameoff
                 end = blob.find(b"\x00", start)
                 entry["rpaths"].append(blob[start:end].decode("utf-8", "replace"))
+            elif cmd == LC_ID_DYLIB:
+                nameoff, = struct.unpack_from("<I", blob, off + 8)
+                start = off + nameoff
+                end = blob.find(b"\x00", start)
+                entry["dylib_id"] = blob[start:end].decode("utf-8", "replace")
             elif cmd == LC_DYLD_CHAINED_FIXUPS:
                 doff, dsize = struct.unpack_from("<II", blob, off + 8)
                 entry["chained_fixups"] = blob[doff:doff + dsize]
@@ -1138,27 +1153,38 @@ def _read_sleb(blob, pos):
     return value, pos
 
 
+def guest_slice(path):
+    """The slice of an image the guest's architecture uses (or None).
+
+    A universal binary carries several; only a 64-bit slice has the load commands, chained fixups and
+    dyld-info opcodes this reader decodes, and a 32-bit i386 slice next to an x86_64 one would
+    otherwise supply an EMPTY dylib list (Security.framework is such a binary: 0 dylibs in slice 0,
+    21 in slice 1).  Imports and the ordinal -> image mapping must come from the SAME slice, or every
+    dependency field is misattributed.
+    """
+    slices = macho_load_commands(path)["slices"]
+    for candidate in slices:
+        if candidate["defined"]:
+            return candidate
+    return slices[0] if slices else None
+
+
 def image_imports(path):
     """The image's undefined symbols, from whichever import form it carries.
 
-    Returns {"defined", "form", "dylibs", "rpaths", "imports"}: `dylibs` is ordinal order, `form` is
-    "chained-fixups" or "dyld-info" (or "" for an image this reader cannot read), and each import is
-    {"name", "lib_ordinal", "weak", "eager", "field"} where `field` is the dependency field's own
-    name (the ordinal's install-name stem, dyld's bind-table column) or None for the special
-    ordinals (flat lookup, self, main executable).
+    Returns {"defined", "form", "dylibs", "dylib_id", "rpaths", "imports"}: `dylibs` is ordinal order
+    of the SAME slice the imports were read from, `form` is "chained-fixups" or "dyld-info" (or "" for
+    an image this reader cannot read), and each import is {"name", "lib_ordinal", "weak", "eager",
+    "field"} where `field` is the dependency field's own name (the ordinal's install-name stem, dyld's
+    bind-table column) or None for the special ordinals (flat lookup, self, main executable).
 
     This is the reader `llvm-objdump --dyld-info` is NOT: that command prints nothing at all for a
     chained-fixups image, which is how a tree-built referrer used to read as demanding nothing.
     """
-    loaded = macho_load_commands(path)
-    slice_ = None
-    for candidate in loaded["slices"]:
-        if candidate["defined"] and (candidate["chained_fixups"] or candidate["dyld_info"]
-                                     or candidate["dylibs"]):
-            slice_ = candidate
-            break
-    if slice_ is None:
-        return {"defined": False, "form": "", "dylibs": [], "rpaths": [], "imports": []}
+    slice_ = guest_slice(path)
+    if slice_ is None or not slice_["defined"]:
+        return {"defined": False, "form": "", "dylibs": [], "dylib_id": None, "rpaths": [],
+                "imports": []}
     dylibs = slice_["dylibs"]
     if slice_["chained_fixups"]:
         form = "chained-fixups"
@@ -1177,8 +1203,8 @@ def image_imports(path):
         else:
             imp["field"] = None
             imp["special"] = SPECIAL_ORDINALS.get(ordinal, f"ordinal {ordinal}")
-    return {"defined": True, "form": form, "dylibs": dylibs, "rpaths": slice_["rpaths"],
-            "imports": imports}
+    return {"defined": True, "form": form, "dylibs": dylibs, "dylib_id": slice_["dylib_id"],
+            "rpaths": slice_["rpaths"], "imports": imports}
 
 
 def binds_by_dependency(image):
@@ -1892,6 +1918,310 @@ def fmt_links(refs):
     return "weak"
 
 
+# --------------------------------------------------------------------------- symbol coverage
+
+# What an import's resolution can be, in the order the loader tries them.
+COVER_OWN = "own-export-trie"
+COVER_REEXPORT = "reexport"
+COVER_FLAT = "flat-lookup"
+COVER_ABSENT_WEAK = "absent-weak"
+COVER_MISSING = "missing"
+COVER_IMAGE_ABSENT = "field-image-absent"
+COVER_ORDER = (COVER_OWN, COVER_REEXPORT, COVER_FLAT, COVER_ABSENT_WEAK, COVER_MISSING,
+               COVER_IMAGE_ABSENT)
+COVER_HEADLINE = {
+    COVER_OWN: "the dependency field image's own export trie carries it",
+    COVER_REEXPORT: "reached through the field image's re-export graph (nested, aliases included)",
+    COVER_FLAT: "dyld's flat lookup: no field, so any image in the closure may carry it",
+    COVER_ABSENT_WEAK: "absent, but the import is weak: dyld binds it to NULL, not a stop",
+    COVER_MISSING: "absent from the field image and its re-exports: dyld ABORTS, this is a stop",
+    COVER_IMAGE_ABSENT: "the dependency field's own image is not in the prefix nor in Xcode's tree",
+}
+
+
+def guest_resolver(prefix, xcode=None):
+    """resolve(install_name, referrer=None) -> path|None, the way the guest's dyld resolves a name.
+
+    Order: the deployed prefix (BOTH roots of the union -- forgetting libexec/darling reports phantom
+    misses), then the referrer's own @rpath entries expanded against @loader_path, then Xcode's tree
+    for the names the guest reaches through the host-root mount.  None means "nowhere", which is
+    what makes a missing dependency IMAGE a predicted stop rather than a silently skipped edge.
+    """
+    def resolve(install_name, referrer=None):
+        if not install_name:
+            return None
+        path = deployed_path(prefix, install_name)
+        if path:
+            return path
+        if install_name.startswith("@rpath/") and referrer:
+            loaded = macho_load_commands(referrer)
+            slices = loaded["slices"]
+            rpaths = slices[0]["rpaths"] if slices else []
+            for rpath in rpaths:
+                base = os.path.dirname(referrer)
+                expanded = rpath.replace("@loader_path", base)
+                expanded = expanded.replace("@executable_path", os.path.dirname(referrer))
+                if expanded.startswith("@"):
+                    continue
+                tail = os.path.join(expanded, install_name[len("@rpath/"):])
+                for candidate in (tail, deployed_path(prefix, tail)):
+                    if candidate and os.path.isfile(candidate):
+                        return candidate
+        if xcode:
+            found = xcode_file(install_name, xcode)
+            if found:
+                return found
+        return None
+    return resolve
+
+
+def cover_closure(entries, prefix, xcode=None, without_images=(), without_symbols=(),
+                  max_images=600):
+    """The guest's load closure at SYMBOL granularity, image by image.
+
+    Breadth-first from `entries` over LC_LOAD_DYLIB/LC_LOAD_WEAK_DYLIB/LC_REEXPORT_DYLIB, each
+    install name resolved with `guest_resolver` (prefix both roots, then Xcode), and each image's
+    imports read with `image_imports` (chained fixups or dyld-info; one code path).  Every import is
+    then resolved against the deployed closure and labelled (COVER_*): its field image's own trie,
+    the field's nested re-export graph, dyld's flat lookup for the special ordinals, an absent weak
+    import, or MISSING -- only an absent EAGER one can stop the loader.
+
+    `without_images` treats an install name as NOT deployed and `without_symbols` treats a name as
+    exported by nobody, so a past state can be reconstructed from the current prefix (dar-m3s0's
+    stop history).  Returns the graph: entries, images, unresolved edges and the ordered events.
+    """
+    without_images = set(without_images)
+    without_symbols = set(without_symbols)
+    resolve = guest_resolver(prefix, xcode)
+    detail_cache = {}
+    chain_cache = {}
+
+    def detail_of(path):
+        if path not in detail_cache:
+            detail_cache[path] = exports_detail(path)
+        return detail_cache[path]
+
+    def chain_of(path):
+        if path not in chain_cache:
+            chain_cache[path] = reexport_closure(path, reexports_of,
+                                                 lambda n, p=path: resolve(n, p), detail_of)
+        return chain_cache[path]
+
+    # Phase 1: the graph itself.  Load commands and imports are decoded in-process (no subprocess per
+    # edge), so the BFS is cheap even at a few hundred images.
+    closure_of_path = {}
+    graph = {"entries": [], "images": {}, "unresolved": [], "missing": []}
+    queue = []
+    for entry in entries:
+        path = entry if os.path.isfile(entry) else resolve(entry)
+        graph["entries"].append({"entry": entry, "path": path})
+        if path:
+            queue.append((path, None))
+    while queue and len(graph["images"]) < max_images:
+        path, field_of = queue.pop(0)
+        if path in closure_of_path:
+            continue
+        imports = image_imports(path)
+        name = imports["dylib_id"] or path
+        closure_of_path[path] = name
+        dylibs = imports["dylibs"]
+        graph["images"][name] = {"install_name": name, "path": path, "field_of": field_of,
+                                 "form": imports["form"], "dylibs": dylibs,
+                                 "imports": imports["imports"], "labels": {}}
+        for install_name, weak, _reexport in dylibs:
+            if install_name in without_images:
+                graph["unresolved"].append({"referrer": name, "install_name": install_name,
+                                            "weak": weak})
+                continue
+            dep_path = resolve(install_name, path)
+            if not dep_path:
+                graph["unresolved"].append({"referrer": name, "install_name": install_name,
+                                            "weak": weak})
+                continue
+            queue.append((dep_path, name))
+
+    # Phase 2: what every image of the closure satisfies.  One export read per image, and the union
+    # is what dyld's flat lookup searches (_memcpy/_memmove/_memset/_strlen have no field at all).
+    exported_union = set()
+    for record in graph["images"].values():
+        detail = detail_of(record["path"])
+        if without_symbols:
+            detail = dict(detail, names=detail["names"] - set(without_symbols))
+            detail_cache[record["path"]] = detail
+        exported_union |= set(detail["names"])
+
+    # Phase 3: label every import against the deployed closure.  The field image's nested re-export
+    # graph is walked only when the name is not in the field's own trie, and cached per image.
+    for name, record in graph["images"].items():
+        for imp in record["imports"]:
+            field_path = None
+            if imp["field"] is not None and imp["lib_ordinal"] - 1 < len(record["dylibs"]):
+                field_install = record["dylibs"][imp["lib_ordinal"] - 1][0]
+                if field_install not in without_images:
+                    field_path = resolve(field_install, record["path"])
+            label, where = _cover_label(imp, field_path, detail_of, chain_of, exported_union)
+            imp["label"], imp["where"] = label, where
+            record["labels"][label] = record["labels"].get(label, 0) + 1
+            if label in (COVER_MISSING, COVER_IMAGE_ABSENT):
+                graph["missing"].append({"image": name, "path": record["path"],
+                                         "symbol": imp["name"],
+                                         "field": imp.get("field") or imp.get("special"),
+                                         "label": label, "weak": imp["weak"]})
+    return graph
+
+
+def _cover_label(imp, field_path, detail_of, chain_of, satisfied_by_all):
+    """(label, where) for one import: the export trie, a re-export, the flat lookup, or absent."""
+    if imp["field"] is None:
+        # dyld's special ordinals: a flat lookup searches every loaded image by name, and the weak
+        # lookup additionally tolerates absence (that is where _memcpy/_memmove/_memset/_strlen live:
+        # names no dylib exports).
+        name = imp["name"]
+        if name in satisfied_by_all:
+            return COVER_FLAT, "the closure's own tries (flat lookup)"
+        return COVER_ABSENT_WEAK if imp["weak"] or imp["special"] == "weak-lookup" else COVER_MISSING, ""
+    if field_path is None:
+        return COVER_IMAGE_ABSENT, ""
+    own = detail_of(field_path)
+    if imp["name"] in own["names"]:
+        how = "alias" if imp["name"] in own["aliases"] else "definition"
+        return COVER_OWN, f"{field_path} ({how})"
+    names, providers = chain_of(field_path)
+    if imp["name"] in names:
+        for install_name in sorted(providers):
+            if imp["name"] in providers[install_name]["names"]:
+                return COVER_REEXPORT, install_name
+        return COVER_REEXPORT, "re-exported"
+    return COVER_ABSENT_WEAK if imp["weak"] else COVER_MISSING, ""
+
+
+def cover_events(graph):
+    """The stop sequence dyld would report, in traversal order.
+
+    The loader walks the closure breadth-first and aborts at the first thing it cannot satisfy: an
+    image whose load command resolves nowhere, or an eager import the field image cannot supply.  A
+    run ends there, the operator supplies that one thing, and the next run stops at the next -- so the
+    sequence is produced by re-walking with each stop treated as fixed, which is exactly what the
+    ladder did one rung at a time.  Only eager demands are stops (a weak import binds to NULL).
+    """
+    events = []
+    for edge in graph["unresolved"]:
+        if not edge["weak"]:
+            events.append({"kind": "image", "referrer": edge["referrer"],
+                           "install_name": edge["install_name"]})
+    for miss in graph["missing"]:
+        if miss["label"] == COVER_MISSING and not miss["weak"]:
+            events.append({"kind": "symbol", "referrer": miss["image"], "symbol": miss["symbol"],
+                           "field": miss["field"]})
+    order = {name: i for i, name in enumerate(_cover_traversal(graph))}
+    events.sort(key=lambda e: (order.get(e.get("referrer"), len(order)), e.get("symbol") or ""))
+    return events
+
+
+def _cover_traversal(graph):
+    """Install names in the order dyld loads them: the entries, then each dependent RECURSIVELY.
+
+    dyld's `loadDependents` walks an image's load commands and, for each dependent, loads that image
+    (and its own dependents) before moving to the next command -- a pre-order depth-first walk, not a
+    breadth-first one.  That order is the whole point of predicting a stop, so it is modelled here
+    rather than approximated by "nearest first".
+    """
+    by_path = {record["path"]: name for name, record in graph["images"].items()}
+    seen = []
+
+    def visit(name, depth=0):
+        if name in seen or depth > 200:
+            return
+        record = graph["images"].get(name)
+        if not record:
+            return
+        seen.append(name)
+        for install_name, _weak, _reexport in record["dylibs"]:
+            leaf = column_key(install_name)
+            for candidate in graph["images"]:
+                if column_key(candidate) == leaf:
+                    visit(candidate, depth + 1)
+
+    for entry in graph["entries"]:
+        name = by_path.get(entry.get("path"))
+        if name:
+            visit(name)
+    for name in graph["images"]:
+        visit(name)
+    return seen
+
+
+def _host_entry_path(entry, xcode):
+    """A guest path for --entry mapped to the host: the load-command paths the guest prints.
+
+    /Volumes/SystemRoot/... is the host reached through the mount, and a path containing the Xcode
+    mount mark lives under the Xcode tree; anything else is already a host path.
+    """
+    if os.path.isfile(entry):
+        return entry
+    if entry.startswith("/Volumes/SystemRoot/"):
+        candidate = entry[len("/Volumes/SystemRoot"):]
+        if os.path.isfile(candidate):
+            return candidate
+    if GUEST_XCODE_MOUNT_MARK in entry:
+        tail = entry.split(GUEST_XCODE_MOUNT_MARK, 1)[1]
+        candidate = os.path.join(xcode, tail.lstrip("/"))
+        if os.path.isfile(candidate):
+            return candidate
+    return entry
+
+
+def print_cover(graph, prefix, out=sys.stdout):
+    """The readable table: per image its imports and its unmet eager set, then the worklist."""
+    counts = {label: 0 for label in COVER_ORDER}
+    for image in graph["images"].values():
+        for imp in image["imports"]:
+            counts[imp["label"]] = counts.get(imp["label"], 0) + 1
+    print("SYMBOL COVERAGE -- every import of the load closure resolved against the deployed prefix.", file=out)
+    print(f"  prefix : {prefix}", file=out)
+    for entry in graph["entries"]:
+        print(f"  entry  : {entry['entry']} -> {entry['path']}", file=out)
+    print(f"  images : {len(graph['images'])}", file=out)
+    print(f"  imports: {sum(counts.values())} -- " + ", ".join(
+        f"{counts[label]} {label}" for label in COVER_ORDER if counts[label]), file=out)
+    print(file=out)
+    stops = {}
+    for miss in graph["missing"]:
+        stops.setdefault(miss["image"], []).append(miss)
+    print("== images with an unmet eager demand (only these can stop the loader)", file=out)
+    for name in _cover_traversal(graph):
+        record = graph["images"].get(name)
+        if not record:
+            continue
+        unmet = [m for m in stops.get(name, []) if m["label"] == COVER_MISSING and not m["weak"]]
+        tolerated = [m for m in stops.get(name, []) if m not in unmet]
+        if not unmet and not tolerated:
+            continue
+        print(f"  {name}", file=out)
+        print(f"      path: {record['path']}  [{record['form']}]  "
+              f"{len(record['imports'])} imports", file=out)
+        for miss in unmet:
+            print(f"      STOP   {miss['symbol']}   field={miss['field']}", file=out)
+        for miss in tolerated:
+            print(f"      ok     {miss['symbol']}   field={miss['field']}  [{miss['label']}]", file=out)
+    if graph["unresolved"]:
+        print(file=out)
+        print("== load commands that resolve nowhere (a missing IMAGE stops the load too)", file=out)
+        for edge in graph["unresolved"]:
+            print(f"  {edge['referrer']}  ->  {edge['install_name']}"
+                  f"{'  [weak]' if edge['weak'] else ''}", file=out)
+    print(file=out)
+    print("== predicted stop sequence (each run ends at the first of these; the operator fixes it)", file=out)
+    for i, event in enumerate(cover_events(graph)[:20], 1):
+        if event["kind"] == "image":
+            print(f"  {i:>2}. IMAGE  {event['install_name']}  (needed by {event['referrer']})", file=out)
+        else:
+            print(f"  {i:>2}. SYMBOL {event['symbol']}  (needed by {event['referrer']}, "
+                  f"field {event['field']})", file=out)
+    print(file=out)
+    return counts
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--darling", default=DEFAULTS["darling"])
@@ -1920,6 +2250,21 @@ def main():
                          "(default: <payload>/overlays)")
     ap.add_argument("--json", action="store_true", help="emit the analysis as JSON")
     ap.add_argument("--detail", action="store_true", help="print the per-component symbol detail")
+    ap.add_argument("--cover", action="store_true",
+                    help="symbol coverage: resolve EVERY import of the load closure against the "
+                         "deployed prefix (chained fixups or dyld-info, both prefix roots, nested "
+                         "re-exports and aliases) and predict which unmet eager demand stops the "
+                         "loader first")
+    ap.add_argument("--entry", action="append", default=None, metavar="PATH",
+                    help="closure entry, repeatable (default: the Xcode loader image).  A guest path "
+                         "(/Volumes/SystemRoot/... or a path inside the Xcode mount) is mapped to the "
+                         "host")
+    ap.add_argument("--order", type=int, default=0, metavar="N",
+                    help="print the next N predicted stops (implies --cover)")
+    ap.add_argument("--without", action="append", default=[], metavar="INSTALL_NAME",
+                    help="treat this install name as NOT deployed, to reconstruct a past state")
+    ap.add_argument("--without-symbol", action="append", default=[], metavar="SYMBOL",
+                    help="treat this symbol as exported by nobody, to reconstruct a past state")
     args = ap.parse_args()
 
     global SWIFT_BIN, BUILD_DIR
@@ -1945,6 +2290,44 @@ def main():
         return 2
 
     base = args.base or ladder_base(args.darling)
+
+    if args.cover or args.order:
+        entries = args.entry or [os.path.join(args.xcode, "Frameworks/libxcodebuildLoader.dylib")]
+        entries = [_host_entry_path(e, args.xcode) for e in entries]
+        graph = cover_closure(entries, args.prefix, args.xcode, without_images=args.without,
+                              without_symbols=args.without_symbol)
+        print("closure_analyze.py --cover")
+        print(f"  darling      : {args.darling}")
+        print(f"  prefix       : {args.prefix} (both roots: the root and libexec/darling)")
+        print(f"  xcode        : {args.xcode}")
+        if args.without:
+            print(f"  withheld     : {', '.join(sorted(args.without))} (treated as NOT deployed)")
+        if args.without_symbol:
+            print(f"  withheld sym : {', '.join(sorted(args.without_symbol))}")
+        print()
+        counts = print_cover(graph, args.prefix)
+        events = cover_events(graph)
+        if args.order:
+            print(f"== next {args.order} predicted stop(s) ==")
+            for i, event in enumerate(events[:args.order], 1):
+                if event["kind"] == "image":
+                    print(f"  {i}. IMAGE  {event['install_name']}   needed by {event['referrer']}")
+                else:
+                    print(f"  {i}. SYMBOL {event['symbol']}   needed by {event['referrer']} "
+                          f"(field {event['field']})")
+            print()
+        if args.json:
+            enc = {name: {k: (v if not isinstance(v, set) else sorted(v))
+                          for k, v in record.items()} for name, record in graph["images"].items()}
+            payload = {"darling": args.darling, "prefix": args.prefix, "xcode": args.xcode,
+                       "entries": graph["entries"], "image_count": len(graph["images"]),
+                       "counts": counts, "images": enc, "unresolved": graph["unresolved"],
+                       "missing": graph["missing"], "events": cover_events(graph),
+                       "note": ("loading is not implementing: this is the load-time coverage of the "
+                                "deployed closure, and only an absent EAGER demand can stop the "
+                                "loader")}
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        return 1 if graph["missing"] or graph["unresolved"] else 0
 
     entry = os.path.join(args.xcode, "Frameworks/libxcodebuildLoader.dylib")
     edges = load_closure(entry, args.xcode)

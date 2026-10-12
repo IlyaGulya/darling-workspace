@@ -136,7 +136,10 @@ refs, and agent handoff.
   hand steps per rung (read the loader stop, resolve the referrer, measure the
   demand, decide the route, verify the artifact). `scripts/closure_analyze.py
   --sweep` groups the WHOLE missing set of the load closure by the route that
-  supplies each name, so one wave replaces several rung-by-rung runs;
+  supplies each name, so one wave replaces several rung-by-rung runs, and
+  `--cover`/`--order` do the same at SYMBOL granularity: every import of the
+  closure resolved against the deployed prefix (both roots, nested re-exports
+  and aliases, flat lookup, weak) with the next predicted stop;
   `--declarations` reconciles the generated manifest (the declaration source)
   against the CMake text in both directions. `scripts/rung-driver.py stop --log
   RUN_LOG` is the current rung (install name, referrer, demand per dependency
