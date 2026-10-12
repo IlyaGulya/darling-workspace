@@ -93,6 +93,7 @@ import hashlib
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 
@@ -882,11 +883,318 @@ def dylib_id(image):
     return _DYLIB_ID_CACHE[image]
 
 
+# --------------------------------------------------------------------------- mach-o import readers
+
+# The load commands and bind opcodes the import readers decode, so an image's undefined symbols can
+# be read from WHICHEVER form it carries.  Measured on this checkout, image by image:
+#
+#   image                              load command            --dyld-info    --bind
+#   CoreGraphics, libsystem_c (built)  LC_DYLD_INFO_ONLY       0 rows         its table
+#   DevToolsCore, libswiftCore         LC_DYLD_CHAINED_FIXUPS  its table      0 rows
+#
+# so neither llvm-objdump command covers both forms, and reading an image's demand from one of them
+# alone is how a tree-built referrer came to read as demanding nothing (dar-m3s0 follow-up).
+MH_MAGIC_64 = 0xFEEDFACF
+FAT_MAGIC = 0xCAFEBABE
+FAT_MAGIC_64 = 0xCAFEBABF
+LC_REQ_DYLD = 0x80000000
+LC_LOAD_DYLIB = 0xC
+LC_LOAD_WEAK_DYLIB = 0x18 | LC_REQ_DYLD
+LC_REEXPORT_DYLIB = 0x1F | LC_REQ_DYLD
+LC_RPATH = 0x1C | LC_REQ_DYLD
+LC_DYLD_INFO_ONLY = 0x22 | LC_REQ_DYLD
+LC_DYLD_EXPORTS_TRIE = 0x33 | LC_REQ_DYLD
+LC_DYLD_CHAINED_FIXUPS = 0x34 | LC_REQ_DYLD
+
+BIND_OPCODE_MASK = 0xF0
+BIND_IMMEDIATE_MASK = 0x0F
+BIND_OPCODE_DONE = 0x00
+BIND_OPCODE_SET_DYLIB_ORDINAL_IMM = 0x10
+BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB = 0x20
+BIND_OPCODE_SET_DYLIB_SPECIAL_IMM = 0x30
+BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM = 0x40
+BIND_OPCODE_SET_TYPE_IMM = 0x50
+BIND_OPCODE_SET_ADDEND_SLEB = 0x60
+BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB = 0x70
+BIND_OPCODE_ADD_ADDR_ULEB = 0x80
+BIND_OPCODE_DO_BIND = 0x90
+BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB = 0xA0
+BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED = 0xB0
+BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB = 0xC0
+BIND_SYMBOL_FLAGS_WEAK_IMPORT = 0x1
+BIND_TYPE_POINTER = 1
+
+# dyld's special ordinals (a bind's dependency field when it is not an image: dyld 0 means a flat
+# lookup by name across every loaded image, and the weak one is additionally allowed to be absent).
+SPECIAL_ORDINALS = {0: "flat-lookup", -1: "self", -2: "main-executable", -3: "flat-lookup",
+                    -4: "weak-lookup"}
+
+
+def macho_slices(data):
+    """[(cputype, blob)] for the slices of a Mach-O (thin or universal)."""
+    if len(data) < 8:
+        return []
+    magic = struct.unpack_from(">I", data, 0)[0]
+    if magic in (FAT_MAGIC, FAT_MAGIC_64):
+        out = []
+        count = struct.unpack_from(">I", data, 4)[0]
+        off = 8
+        for _ in range(count):
+            cpu, _sub, o, size, _align = struct.unpack_from(">iiIII", data, off)
+            off += 20
+            out.append((cpu, data[o:o + size]))
+        return out
+    return [(0, data)]
+
+
+def macho_load_commands(path):
+    """What the import readers need from an image's load commands.
+
+    Returns {"slices": [{"cputype", "dylibs": [(install_name, weak, reexport)], "rpaths",
+    "chained_fixups": bytes|None, "dyld_info": bytes|None, "exports_trie": bytes|None,
+    "defined": bool}]}: `dylibs` is ordinal order (ordinal 1 is the first entry), which is how a
+    bind's dependency field is named, and each blob is the linkedit data itself.
+    """
+    try:
+        data = open(path, "rb").read()
+    except OSError:
+        return {"slices": []}
+    out = []
+    for cputype, blob in macho_slices(data):
+        entry = {"cputype": cputype, "dylibs": [], "rpaths": [], "chained_fixups": None,
+                 "dyld_info": None, "exports_trie": None, "defined": False}
+        if len(blob) < 32 or struct.unpack_from("<I", blob, 0)[0] != MH_MAGIC_64:
+            out.append(entry)
+            continue
+        entry["defined"] = True
+        ncmds, = struct.unpack_from("<I", blob, 16)
+        off = 32
+        for _ in range(ncmds):
+            if off + 8 > len(blob):
+                break
+            cmd, cmdsize = struct.unpack_from("<II", blob, off)
+            if cmdsize < 8:
+                break
+            if cmd in (LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIB):
+                nameoff, = struct.unpack_from("<I", blob, off + 8)
+                start = off + nameoff
+                end = blob.find(b"\x00", start)
+                entry["dylibs"].append((blob[start:end].decode("utf-8", "replace"),
+                                        cmd == LC_LOAD_WEAK_DYLIB, cmd == LC_REEXPORT_DYLIB))
+            elif cmd == LC_RPATH:
+                nameoff, = struct.unpack_from("<I", blob, off + 8)
+                start = off + nameoff
+                end = blob.find(b"\x00", start)
+                entry["rpaths"].append(blob[start:end].decode("utf-8", "replace"))
+            elif cmd == LC_DYLD_CHAINED_FIXUPS:
+                doff, dsize = struct.unpack_from("<II", blob, off + 8)
+                entry["chained_fixups"] = blob[doff:doff + dsize]
+            elif cmd == LC_DYLD_INFO_ONLY:
+                _ro, _rs, bind_off, bind_size, weak_off, weak_size, lazy_off, lazy_size = \
+                    struct.unpack_from("<8I", blob, off + 8)
+                entry["dyld_info"] = {
+                    "bind": blob[bind_off:bind_off + bind_size],
+                    "weak_bind": blob[weak_off:weak_off + weak_size],
+                    "lazy_bind": blob[lazy_off:lazy_off + lazy_size],
+                }
+            elif cmd == LC_DYLD_EXPORTS_TRIE:
+                doff, dsize = struct.unpack_from("<II", blob, off + 8)
+                entry["exports_trie"] = blob[doff:doff + dsize]
+            off += cmdsize
+        out.append(entry)
+    return {"slices": out}
+
+
+def chained_fixup_imports(blob):
+    """[{name, lib_ordinal, weak, addend}] from an LC_DYLD_CHAINED_FIXUPS payload.
+
+    The imports table is the image's undefined-symbol list in that format: one entry per imported
+    name, the library ordinal that names its dependency field, and the import's own WEAK flag.  Dyld
+    applies every chained fixup when it loads the image (that is the format's whole point), so an
+    import here is EAGER: there is no lazy form to report, and a missing strong one stops the load.
+    """
+    if not blob or len(blob) < 28:
+        return []
+    _version, _starts, imports_off, symbols_off, count, fmt, symfmt = struct.unpack_from("<7I", blob, 0)
+    imports = []
+    for i in range(count):
+        if fmt == 1:          # DYLD_CHAINED_IMPORT
+            value, = struct.unpack_from("<I", blob, imports_off + 4 * i)
+            addend = 0
+        elif fmt == 2:        # DYLD_CHAINED_IMPORT_ADDEND
+            value, addend = struct.unpack_from("<Ii", blob, imports_off + 8 * i)
+        elif fmt == 3:        # DYLD_CHAINED_IMPORT_ADDEND64
+            value, addend = struct.unpack_from("<QI", blob, imports_off + 12 * i)
+        else:
+            return imports       # an imports_format this reader does not know: report what it has
+        if fmt == 3:
+            lib, weak, nameoff = value & 0xFFFF, (value >> 16) & 1, value >> 32
+        else:
+            lib, weak, nameoff = value & 0xFF, (value >> 8) & 1, value >> 9
+        if lib > 127:
+            lib -= 256
+        start = symbols_off + nameoff
+        end = blob.find(b"\x00", start)
+        if end < 0:
+            continue
+        imports.append({"name": blob[start:end].decode("utf-8", "replace"), "lib_ordinal": lib,
+                        "weak": bool(weak), "addend": addend, "eager": True})
+    return imports
+
+
+def dyld_info_bind_imports(stream, kind):
+    """[{name, lib_ordinal, weak, eager}] from one dyld-info bind opcode stream.
+
+    `kind` is "bind" (eager), "weak_bind" (a weak-definition lookup) or "lazy_bind" (deferred past
+    load): the opcode stream does not carry that distinction, the load command does.  The special
+    ordinals are kept as their values (0 = flat lookup by name, -1 self, -2 main executable, -3
+    flat), so a caller can label a dependency field honestly instead of inventing one.
+    """
+    imports = []
+    if not stream:
+        return imports
+    ordinal = 0
+    symbol = None
+    symbol_weak = kind == "weak_bind"
+    pos = 0
+    while pos < len(stream):
+        byte = stream[pos]
+        pos += 1
+        opcode, imm = byte & BIND_OPCODE_MASK, byte & BIND_IMMEDIATE_MASK
+        if opcode == BIND_OPCODE_DONE:
+            if kind == "lazy_bind":
+                continue        # a lazy stream is a series of DONE-terminated segments
+            break
+        if opcode == BIND_OPCODE_SET_DYLIB_ORDINAL_IMM:
+            ordinal = imm
+        elif opcode == BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB:
+            ordinal, pos = _read_uleb(stream, pos)
+        elif opcode == BIND_OPCODE_SET_DYLIB_SPECIAL_IMM:
+            ordinal = (imm | BIND_OPCODE_MASK) - 0x100 if imm else 0
+        elif opcode == BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM:
+            end = stream.find(b"\x00", pos)
+            if end < 0:
+                break
+            symbol = stream[pos:end].decode("utf-8", "replace")
+            symbol_weak = kind == "weak_bind" or bool(imm & BIND_SYMBOL_FLAGS_WEAK_IMPORT)
+            pos = end + 1
+        elif opcode == BIND_OPCODE_SET_TYPE_IMM:
+            pass
+        elif opcode == BIND_OPCODE_SET_ADDEND_SLEB:
+            _value, pos = _read_sleb(stream, pos)
+        elif opcode == BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB:
+            _value, pos = _read_uleb(stream, pos)
+        elif opcode == BIND_OPCODE_ADD_ADDR_ULEB:
+            _value, pos = _read_uleb(stream, pos)
+        elif opcode == BIND_OPCODE_DO_BIND:
+            _bind_import(imports, symbol, ordinal, symbol_weak, kind)
+        elif opcode == BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB:
+            _bind_import(imports, symbol, ordinal, symbol_weak, kind)
+            _value, pos = _read_uleb(stream, pos)
+        elif opcode == BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED:
+            _bind_import(imports, symbol, ordinal, symbol_weak, kind)
+        elif opcode == BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB:
+            count, pos = _read_uleb(stream, pos)
+            _skip, pos = _read_uleb(stream, pos)
+            for _ in range(count):
+                _bind_import(imports, symbol, ordinal, symbol_weak, kind)
+        else:
+            break               # an opcode this reader does not know: report what it has
+    return imports
+
+
+def _bind_import(imports, symbol, ordinal, weak, kind):
+    if symbol is None or not symbol.startswith("_"):
+        return
+    imports.append({"name": symbol, "lib_ordinal": ordinal, "weak": weak,
+                    "eager": kind == "bind"})
+
+
+def _read_uleb(blob, pos):
+    value = 0
+    shift = 0
+    while pos < len(blob):
+        byte = blob[pos]
+        pos += 1
+        value |= (byte & 0x7F) << shift
+        shift += 7
+        if not byte & 0x80:
+            break
+    return value, pos
+
+
+def _read_sleb(blob, pos):
+    value = 0
+    shift = 0
+    while pos < len(blob):
+        byte = blob[pos]
+        pos += 1
+        value |= (byte & 0x7F) << shift
+        shift += 7
+        if not byte & 0x80:
+            if byte & 0x40:
+                value -= 1 << shift
+            break
+    return value, pos
+
+
+def image_imports(path):
+    """The image's undefined symbols, from whichever import form it carries.
+
+    Returns {"defined", "form", "dylibs", "rpaths", "imports"}: `dylibs` is ordinal order, `form` is
+    "chained-fixups" or "dyld-info" (or "" for an image this reader cannot read), and each import is
+    {"name", "lib_ordinal", "weak", "eager", "field"} where `field` is the dependency field's own
+    name (the ordinal's install-name stem, dyld's bind-table column) or None for the special
+    ordinals (flat lookup, self, main executable).
+
+    This is the reader `llvm-objdump --dyld-info` is NOT: that command prints nothing at all for a
+    chained-fixups image, which is how a tree-built referrer used to read as demanding nothing.
+    """
+    loaded = macho_load_commands(path)
+    slice_ = None
+    for candidate in loaded["slices"]:
+        if candidate["defined"] and (candidate["chained_fixups"] or candidate["dyld_info"]
+                                     or candidate["dylibs"]):
+            slice_ = candidate
+            break
+    if slice_ is None:
+        return {"defined": False, "form": "", "dylibs": [], "rpaths": [], "imports": []}
+    dylibs = slice_["dylibs"]
+    if slice_["chained_fixups"]:
+        form = "chained-fixups"
+        imports = chained_fixup_imports(slice_["chained_fixups"])
+    else:
+        form = "dyld-info"
+        streams = slice_["dyld_info"] or {}
+        imports = []
+        for kind in ("bind", "weak_bind", "lazy_bind"):
+            imports += dyld_info_bind_imports(streams.get(kind), kind)
+    for imp in imports:
+        ordinal = imp["lib_ordinal"]
+        if 1 <= ordinal <= len(dylibs):
+            imp["field"] = os.path.basename(dylibs[ordinal - 1][0]).split(".")[0]
+            imp["special"] = ""
+        else:
+            imp["field"] = None
+            imp["special"] = SPECIAL_ORDINALS.get(ordinal, f"ordinal {ordinal}")
+    return {"defined": True, "form": form, "dylibs": dylibs, "rpaths": slice_["rpaths"],
+            "imports": imports}
+
+
 def binds_by_dependency(image):
-    """dylib column name -> {symbol: bind kind}, from the referrer's own bind table.
+    """dylib column name -> {symbol: bind kind}, from whichever import form the image carries.
 
     Cached per image for the life of the process: the sweep asks for the same referrer's table once
     per install name it appears in, and re-reading an image's bind table is one llvm-objdump run.
+
+    The legacy form is read from `llvm-objdump --macho --dyld-info`, which is what the ladder's
+    Xcode referrers carry and what every verdict so far was measured from.  When that prints NO rows
+    the image is one of the tree-built images measured here whose LC_DYLD_INFO_ONLY table no
+    llvm-objdump command reports except --bind (CoreGraphics: --dyld-info 0 rows, --bind its table);
+    its table is then DECODED from the bind opcodes instead of reading as "demands nothing"
+    (dar-m3s0 follow-up).  A chained-fixups image (DevToolsCore, libswiftCore) is decoded from its
+    imports table the same way: a chained fixup is applied when the image loads, so its kind is
+    bind/weak_bind and never lazy.
     """
     if image in _BINDS_CACHE:
         return _BINDS_CACHE[image]
@@ -900,24 +1208,110 @@ def binds_by_dependency(image):
         if not sym.startswith("_"):
             continue
         table.setdefault(dep, {}).setdefault(sym, f[4])
+    if not table:
+        for imp in image_imports(image)["imports"]:
+            if imp["field"] is None or not imp["name"].startswith("_"):
+                continue
+            table.setdefault(imp["field"], {}).setdefault(
+                imp["name"], "weak_bind" if imp["weak"] else "bind")
     _BINDS_CACHE[image] = table
     return table
 
 
-def exports(artifact):
-    out = run([swift("llvm-objdump"), "--macho", "--exports-trie", artifact])
-    names = set()
-    for line in out.splitlines():
-        m = re.match(r"^0x[0-9a-fA-F]+\s+(\S+)$", line.strip())
+EXPORTS_TRIE_HEADER = "Exports trie:"
+# The line forms llvm-objdump --exports-trie emits for a name a client can bind, captured from real
+# output on this checkout (163 deployed + 47 Xcode images, every line accounted for):
+#
+#   0x00058F70  _memset_s                      a definition in this image
+#   0x000AB770  __ZTISt16nested_exception [weak_def]
+#                                              a WEAK definition (the annotation is its own token)
+#   [re-export] _memset_pattern16 (__platform_memset_pattern16 from libsystem_platform)
+#                                              an ALIAS: the name is satisfied by another name in
+#                                              another image -- exactly how libsystem_c supplies
+#                                              _memcpy, _memmove, _memset, _strlen, _strcmp, _strlcpy
+#   [re-export] __spawn_via_launchd (from liblaunch)
+#                                              a plain re-export: satisfied from another image
+#
+# `0xADDR $ld$hide$osX.Y$_NAME` / `$ld$previous$...` / `R8289209$_close` / `dyld_stub_binder` are the
+# other tokens the tool prints; they carry no whitespace and were already read as names.
+EXPORT_DEFINED_RE = re.compile(r"^0x[0-9a-fA-F]+\s+(\S+)(?:\s+\[(\w+)\])?$")
+EXPORT_ALIAS_RE = re.compile(r"^\[re-export\]\s+(\S+)\s+\((\S+)\s+from\s+([^)]*)\)$")
+EXPORT_REEXPORT_RE = re.compile(r"^\[re-export\]\s+(\S+)\s+\(from\s+([^)]*)\)$")
+# The annotation tags measured in that same output; both name a symbol a client can bind (a weak
+# definition, and an absolute symbol like _swift_runtimeSupportsNoncopyableTypes).
+EXPORT_ANNOTATIONS = ("weak_def", "absolute")
+
+
+def parse_exports_trie(text):
+    """Every line form of an export trie, from captured output rather than one spelling.
+
+    Returns {"read", "names", "aliases", "providers", "annotations", "unknown"}: `names` is every name
+    a client's binding can be satisfied by (definitions, annotated definitions and re-exports alike,
+    which is what the line forms above mean); `aliases` records {name: (alias, image)}, `providers`
+    {name: image} and `annotations` {name: tag} so a caller can say WHERE a name came from and HOW.
+
+    `read` is False when the output carries no `Exports trie:` header at all -- the tool did not read
+    a trie (a non-Mach-O or an unreadable file), which is a DIFFERENT fact from a trie that IS read
+    and is empty: a load-name-only image has no names, and saying so is the honest answer rather than
+    one a fallback reader might invent.  A line matching none of the captured forms is kept in
+    `unknown` rather than dropped, so a caller can report that the trie was only partly read.
+    """
+    detail = {"read": EXPORTS_TRIE_HEADER in text, "names": set(), "aliases": {}, "providers": {},
+              "annotations": {}, "unknown": []}
+    if not detail["read"]:
+        return detail
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped == EXPORTS_TRIE_HEADER or stripped.endswith(":"):
+            continue
+        m = EXPORT_DEFINED_RE.match(stripped)
         if m:
-            names.add(m.group(1))
-    if names:
-        return names
+            detail["names"].add(m.group(1))
+            if m.group(2):
+                detail["annotations"][m.group(1)] = m.group(2)
+            continue
+        m = EXPORT_ALIAS_RE.match(stripped)
+        if m:
+            detail["names"].add(m.group(1))
+            detail["aliases"][m.group(1)] = (m.group(2), m.group(3).strip())
+            continue
+        m = EXPORT_REEXPORT_RE.match(stripped)
+        if m:
+            detail["names"].add(m.group(1))
+            detail["providers"][m.group(1)] = m.group(2).strip()
+            continue
+        detail["unknown"].append(stripped)
+    return detail
+
+
+def exports_detail(artifact):
+    """parse_exports_trie over the tool's own output, with the symbol table as a marked fallback.
+
+    The fallback runs only when NO trie was read (no header): then the names come from `llvm-nm` and
+    `source` says so, so an unread trie can never be mistaken for an empty one.
+    """
+    detail = parse_exports_trie(run([swift("llvm-objdump"), "--macho", "--exports-trie", artifact]))
+    if detail["read"]:
+        detail["source"] = "exports-trie"
+        return detail
+    names = set()
     for line in run([swift("llvm-nm"), "-g", "--defined-only", artifact]).splitlines():
         f = line.split()
         if len(f) == 3:
             names.add(f[2])
-    return names
+    detail["names"] = names
+    detail["source"] = "llvm-nm"
+    return detail
+
+
+def exports(artifact):
+    """The names an image satisfies for a client: definitions, weak definitions and re-exports.
+
+    A re-export is how libsystem_c supplies _memcpy (as __platform_memmove from
+    libsystem_platform), so dropping those lines turns a satisfied demand into a miss (dar-m3s0
+    follow-up).
+    """
+    return set(exports_detail(artifact)["names"])
 
 
 def reexports_of(image):
@@ -936,12 +1330,14 @@ def reexports_of(image):
 
 
 def reexport_closure(root, reexports_of, resolve, exports_of, max_depth=8):
-    """({names}, {install name: exports}) over the images re-export-reachable from `root`.
+    """({names}, {install name: exports detail}) over the images re-export-reachable from `root`.
 
     Kept separate from the Mach-O readers so the SHAPE is contractable without llvm tools:
     `reexports_of(path)` names the install names an image re-exports, `resolve(install_name)` the
-    path the deploy resolves one to (or None), `exports_of(path)` its export trie.  The walk is
-    iterative, depth-bounded and cycle-safe, because the shape that matters is the NESTED one
+    path the deploy resolves one to (or None), `exports_of(path)` the detail dict `exports_detail`
+    returns (the walk unions its `names`, and keeps the dict so the caller can say WHERE a name came
+    from -- including an ALIAS, `_memcpy` -> `__platform_memmove` from libsystem_platform).  The walk
+    is iterative, depth-bounded and cycle-safe, because the shape that matters is the NESTED one
     (Accelerate re-exports vecLib, vecLib re-exports libBNNS/libvDSP, and the intermediate hub's own
     trie is empty) -- a one-level walk from the umbrella would see zero names there (dar-m3s0).
     """
@@ -962,7 +1358,7 @@ def reexport_closure(root, reexports_of, resolve, exports_of, max_depth=8):
             seen.add(real)
             got = exports_of(path)
             providers[install_name] = got
-            names |= got
+            names |= set(got["names"])
             queue.append((path, depth + 1))
     return names, providers
 
@@ -973,9 +1369,9 @@ def reexported_exports(image, prefix, max_depth=8):
     Dyld resolves a client's binding through the image's whole re-export graph, so these names are
     part of what the deployed image supplies.  Each re-exported install name is resolved inside the
     prefix the way the deploy resolves it (both prefix roots), and `providers` maps each re-exported
-    install name to its own export trie so the caller can say WHERE a name came from.
+    install name to its export detail so the caller can say WHERE a name came from.
     """
-    return reexport_closure(image, reexports_of, lambda n: deployed_path(prefix, n), exports,
+    return reexport_closure(image, reexports_of, lambda n: deployed_path(prefix, n), exports_detail,
                             max_depth)
 
 

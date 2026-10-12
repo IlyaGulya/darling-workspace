@@ -424,17 +424,26 @@ def test_reexport_closure(tmp):
         "/x/Leaf1": [],
         "/x/Leaf2": [],
     }
-    tries = {"/x/Umbrella": set(), "/x/Hub": set(), "/x/LibA": {"_A"},
+    owned = {"/x/Umbrella": set(), "/x/Hub": set(), "/x/LibA": {"_A"},
              "/x/Leaf1": {"_L1", "_L2"}, "/x/Leaf2": {"_L3"}}
+
+    def detail_of(names):
+        """The detail dict the walk takes, built through the real parser so both are exercised."""
+        body = "".join(f"0x0000{i:04X}  {n}\n" for i, n in enumerate(sorted(names)))
+        return ca.parse_exports_trie("Exports trie:\n" + body)
+
+    tries = {path: detail_of(names) for path, names in owned.items()}
     resolve = lambda name: name if name in graph else None            # noqa: E731
     names, providers = ca.reexport_closure("/x/Umbrella", lambda p: graph[p], resolve,
                                            lambda p: tries[p])
     check(names == {"_A", "_L1", "_L2", "_L3"}, f"the walk reaches the leaves: {sorted(names)}")
     check(set(providers) == {"/x/Hub", "/x/LibA", "/x/Leaf1", "/x/Leaf2"},
           f"every re-exported image is a provider and the cycle re-visits none: {sorted(providers)}")
-    check(tries["/x/Umbrella"] == set() and tries["/x/Hub"] == set(),
+    check(owned["/x/Umbrella"] == set() and owned["/x/Hub"] == set(),
           "the umbrella and the hub export nothing themselves -- the shape a one-level walk gets "
           "wrong")
+    check(providers["/x/Leaf1"]["names"] == {"_L1", "_L2"},
+          f"a provider keeps its own export detail: {providers['/x/Leaf1']['names']}")
 
     # A demanded name living ONLY in a leaf is satisfied for the client, so MISS is 0 through the
     # chain (a strong, non-lazy referrer no longer makes it fatal).
@@ -442,7 +451,7 @@ def test_reexport_closure(tmp):
     split = ca.demand_split(demanded,
                             [{"image": "/x/DVTSmartSearch", "weak": False, "upward": False}],
                             {"/x/DVTSmartSearch": dict(demanded)},
-                            own=tries["/x/Umbrella"], reexported=names)
+                            own=owned["/x/Umbrella"], reexported=names)
     check(split["fatal"] == [] and split["missing"] == [] and len(split["satisfied_reexport"]) == 2,
           f"leaf-only demanded names are satisfied through the chain: {split}")
 
@@ -453,6 +462,80 @@ def test_reexport_closure(tmp):
     check(shallow == {"_A"} and set(shallow_providers) == {"/x/Hub", "/x/LibA"},
           f"max_depth bounds the walk: {sorted(shallow)} / {sorted(shallow_providers)}")
     print("PASS re-export closure: the nested chain is walked to the leaves, with a cycle and a bound")
+
+
+def test_exports_trie(tmp):
+    """Every line form llvm-objdump --exports-trie emits counts as a name a client can bind.
+
+    The forms are the captured ones (this checkout: 163 deployed + 47 Xcode images, every line
+    accounted for): a definition, an annotated definition ([weak_def], [absolute]), a re-exported
+    ALIAS (`_memcpy` as `__platform_memmove from libsystem_platform`, which is how libsystem_c
+    supplies _memcpy/_memmove/_memset/_strlen/_strcmp/_strlcpy) and a plain re-export.  Reading only
+    one spelling dropped the last two forms and turned satisfied demands into misses (dar-m3s0
+    follow-up: a correct rung failed).
+    """
+    text = """\
+/pfx/usr/lib/system/libsystem_c.dylib:
+
+Exports trie:
+0x00058F70  _memset_s
+0x000AB770  __ZTISt16nested_exception [weak_def]
+0x00000000  _swift_runtimeSupportsNoncopyableTypes [absolute]
+0x0004B310  $ld$hide$os10.5$_OBJC_CLASS_$_NSObject
+[re-export] _memset_pattern16 (__platform_memset_pattern16 from libsystem_platform)
+[re-export] _memcpy (__platform_memmove from libsystem_platform)
+[re-export] __spawn_via_launchd (from liblaunch)
+"""
+    detail = ca.parse_exports_trie(text)
+    check(detail["read"] is True, "the header means the trie WAS read")
+    for name in ("_memset_s", "__ZTISt16nested_exception", "_swift_runtimeSupportsNoncopyableTypes",
+                 "$ld$hide$os10.5$_OBJC_CLASS_$_NSObject", "_memset_pattern16", "_memcpy",
+                 "__spawn_via_launchd"):
+        check(name in detail["names"], f"{name} is a name this image satisfies: {sorted(detail['names'])}")
+    check(detail["aliases"] == {"_memset_pattern16": ("__platform_memset_pattern16", "libsystem_platform"),
+                                "_memcpy": ("__platform_memmove", "libsystem_platform")},
+          f"an alias records its name and providing image: {detail['aliases']}")
+    check(detail["providers"] == {"__spawn_via_launchd": "liblaunch"},
+          f"a plain re-export records its providing image: {detail['providers']}")
+    check(detail["annotations"] == {"__ZTISt16nested_exception": "weak_def",
+                                    "_swift_runtimeSupportsNoncopyableTypes": "absolute"},
+          f"the annotation tags measured in real output are recorded: {detail['annotations']}")
+    check(detail["unknown"] == [],
+          f"every captured form is accounted for, nothing is silently dropped: {detail['unknown']}")
+
+    # A demanded name satisfied by the ALIAS is satisfied (with the provider nameable); a genuinely
+    # absent name is still a miss, from the same non-weak referrer.
+    client = [{"image": "/x/DTXConnectionServices", "weak": False, "upward": False}]
+    demanded = {"_memcpy": "bind", "_not_anywhere": "bind"}
+    split = ca.demand_split(demanded, client, {"/x/DTXConnectionServices": dict(demanded)},
+                            own=detail["names"])
+    check(split["satisfied_own"] == ["_memcpy"] and split["missing"] == ["_not_anywhere"],
+          f"the alias satisfies _memcpy and only _not_anywhere is absent: {split}")
+    check(split["fatal"] == ["_not_anywhere"],
+          f"a genuinely absent strong demand still fails: {split}")
+
+    # The chain carries those details through, so a caller can say WHERE a name came from.
+    graph = {"/x/Umbrella": ["/x/Hub"], "/x/Hub": ["/x/libsystem_c.dylib"], "/x/libsystem_c.dylib": []}
+    empty = ca.parse_exports_trie("Exports trie:\n")
+    details = {"/x/Umbrella": empty, "/x/Hub": empty, "/x/libsystem_c.dylib": detail}
+    names, providers = ca.reexport_closure("/x/Umbrella", lambda p: graph[p],
+                                           lambda n: n if n in graph else None,
+                                           lambda p: details[p])
+    check("_memcpy" in names and providers["/x/libsystem_c.dylib"]["aliases"]["_memcpy"][1]
+          == "libsystem_platform",
+          f"a re-exported alias reaches the chain's names and keeps its provider: {sorted(names)[:4]}")
+
+    # A trie that IS read and is empty is reported as empty (a load-name-only image); a response with
+    # no trie at all is a different fact, and a line no form matches is reported, never dropped.
+    check(empty["read"] is True and empty["names"] == set() and empty["unknown"] == [],
+          f"a header-only trie is empty, not unread: {empty}")
+    unread = ca.parse_exports_trie("/x/not-a-macho:\n")
+    check(unread["read"] is False and unread["names"] == set(),
+          f"no header means no trie was read: {unread}")
+    odd = ca.parse_exports_trie("Exports trie:\n0x00000001  _ok\nsomething else entirely\n")
+    check(odd["names"] == {"_ok"} and odd["unknown"] == ["something else entirely"],
+          f"an unrecognized line is reported, not dropped: {odd}")
+    print("PASS exports trie: definitions, annotations, re-exported aliases and re-exports all count")
 
 
 # --------------------------------------------------------------------------- loader stop
@@ -645,6 +728,7 @@ def main():
         test_sweep(tmp / "sweep")
         test_demand_split(tmp / "verifiedemand")
         test_reexport_closure(tmp / "reexport")
+        test_exports_trie(tmp / "exports")
         test_loader_stop(tmp / "stop")
         test_pin_sync(tmp / "pin")
         test_cli(tmp / "cli")

@@ -138,6 +138,39 @@ def print_demand(install_name, refs, indent="  "):
     return demanded, per_referrer
 
 
+def satisfaction_lines(split, own_detail, providers, limit=20):
+    """Where each satisfied demand of the field came from: the own trie, or a re-exported image.
+
+    Provenance a bare count cannot show is printed here: a demand satisfied by a WEAK definition, and
+    one satisfied by an ALIAS in another image (`_memcpy` as `__platform_memmove from
+    libsystem_platform`) -- both line forms the readers used to drop, which turned satisfied demands
+    into misses (dar-m3s0 follow-up).
+    """
+    lines = []
+    for name in sorted(split["satisfied_own"]):
+        lines.append(f"    via own trie  {name}{_definition_note(own_detail, name)}")
+    for name in sorted(split["satisfied_reexport"]):
+        for install_name in sorted(providers):
+            detail = providers[install_name]
+            if name not in detail["names"]:
+                continue
+            lines.append(f"    via re-export {name}{_definition_note(detail, name)}"
+                         f"  <- {install_name}")
+            break
+    if len(lines) > limit:
+        return lines[:limit] + [f"    ... (+{len(lines) - limit} more satisfied demand(s))"]
+    return lines
+
+
+def _definition_note(detail, name):
+    """How the image carries the name: an alias of another name, or an annotated definition."""
+    alias = detail["aliases"].get(name)
+    if alias:
+        return f"  (alias of {alias[0]} from {alias[1]})"
+    tag = detail["annotations"].get(name)
+    return f"  ({tag} definition)" if tag else ""
+
+
 def print_declaration(sources, install_name):
     """Which declaration (if any) supplies this install name, from the manifest first."""
     manifest = sources["manifest"]
@@ -288,7 +321,8 @@ def cmd_verify(args):
         failures.append("deployed copy absent")
     else:
         print(f"  deployed copy: {deployed_path}")
-        own = ca.exports(deployed_path)
+        own_detail = ca.exports_detail(deployed_path)
+        own = own_detail["names"]
         reexported, providers = ca.reexported_exports(deployed_path, args.prefix)
         split = ca.demand_split(demanded, refs, demanded_by_referrer, own, reexported)
         print(f"  own export trie: {len(own)} name(s); re-exported: {len(reexported)} name(s) from "
@@ -298,6 +332,8 @@ def cmd_verify(args):
         print(f"  demanded: {len(demanded)}; satisfied: {len(split['satisfied_own'])} own trie + "
               f"{len(split['satisfied_reexport'])} through a re-export; absent: "
               f"{len(split['missing'])}")
+        for line in satisfaction_lines(split, own_detail, providers):
+            print(line)
         for sym in split["fatal"]:
             print(f"    MISSING (strong, non-lazy) {sym}")
         for sym in split["lazy"]:
