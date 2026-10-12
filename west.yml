@@ -107,7 +107,7 @@ manifest:
     repo-path: darling-iokituser
     path: darling/src/external/IOKitUser
     remote: darling
-    revision: 9843fd575a87926ab3cd3ee011215b97e90c1006
+    revision: b676f2ae5a1e1ebe8b3acdf6497755d8864bf093
     userdata:
       kind: darling-source
       upstream-repository: darling-iokituser
