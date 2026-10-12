@@ -103,6 +103,12 @@ LOCK_TARGETS = [
     # therefore carries this component's target/guest_path/host_path and the analysis takes the
     # declaration from there (see main: manifest declarations).
     "swift_libswiftAppleArchive_dylib",
+    # The rung after libswiftAppleArchive: DVTInstrumentsFoundation's load command for
+    # /usr/lib/swift/libswiftSystem.dylib (image not found, XCB_RC=132).  Same payload-resource shape
+    # as the entry above, and for the same reason: the libswift*.dylib payload is globbed and staged
+    # by configure_file, so the CMake text declares no $<TARGET_FILE:...> for it and the analysis
+    # takes this component's declaration from the generated manifest (see main).
+    "swift_libswiftSystem_dylib",
 ]
 
 GUEST_XCODE_MOUNT_MARK = "Xcode.app/Contents"
