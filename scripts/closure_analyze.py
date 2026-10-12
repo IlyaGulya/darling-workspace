@@ -1996,29 +1996,58 @@ def workload_entry(log_path, xcode):
 
     The log's sibling `.sh` is the recorded argv of the run, so the executable it names is the
     OBSERVED entry -- the tool that dlopens the loader and whose rpaths resolve @rpath.  `observed`
-    keeps the log's own dlopen order so the caller can say which entry it used.
+    keeps the log's own dlopen order AND a diagnosis of exactly what was found, because an entry that
+    yields no images must say which of the things it looked for was missing rather than reading like
+    "nothing to do".
     """
-    observed = {"log": log_path, "executable": None, "dlopens": [], "stops": []}
+    observed = {"log": log_path, "kind": "", "executable": None, "script": None, "dlopens": [],
+                "stops": [], "diagnosis": []}
     try:
-        text = open(log_path, encoding="utf-8", errors="replace").read()
-    except OSError:
+        with open(log_path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError as exc:
+        observed["diagnosis"].append(f"could not read {log_path}: {exc}")
         return [], observed
+    observed["diagnosis"].append(f"read {log_path} ({len(text)} bytes)")
+    guest_marks = [m for m in ("dlopen(", "Symbol not found", "Library not loaded", "XCB_RC=")
+                   if m in text]
+    observed["kind"] = "guest output" if guest_marks else "NOT a guest output"
+    observed["diagnosis"].append(
+        "entry kind: " + observed["kind"]
+        + (f" ({', '.join(guest_marks)} present)" if guest_marks else
+           " (no dlopen(, no 'Symbol not found', no 'Library not loaded', no XCB_RC= -- this looks "
+           "like a job/harness log; pass the guest's .out file)"))
     parsed = parse_run_log(text)
     observed["dlopens"] = parsed["dlopens"]
     observed["stops"] = parsed["stops"]
+    if not parsed["dlopens"]:
+        observed["diagnosis"].append("no 'dlopen(' line: the log does not say what the workload opened")
     script = os.path.splitext(log_path)[0] + ".sh"
+    observed["script"] = script
     entries = []
-    if os.path.isfile(script):
+    if not os.path.isfile(script):
+        observed["diagnosis"].append(f"runner script {script}: NOT FOUND -- the workload executable "
+                                     "cannot be named from this log")
+    else:
         try:
             script_text = open(script, encoding="utf-8", errors="replace").read()
-        except OSError:
+        except OSError as exc:
             script_text = ""
+            observed["diagnosis"].append(f"runner script {script}: unreadable ({exc})")
+        found = False
         for m in re.finditer(r'^"([^"]+)"\s+-', script_text, re.M):
             candidate = _host_entry_path(m.group(1), xcode)
             if os.path.isfile(candidate):
                 observed["executable"] = candidate
                 entries.append(candidate)
+                observed["diagnosis"].append(f"runner script {script}: workload {candidate}")
+                found = True
                 break
+            observed["diagnosis"].append(
+                f"runner script {script}: command line names {m.group(1)}, which is not a file on "
+                "the host")
+        if not found and not observed["executable"]:
+            observed["diagnosis"].append(f"runner script {script}: no quoted command line found")
     return entries, observed
 
 
@@ -2142,11 +2171,25 @@ def cover_closure(entries, prefix, xcode=None, without_images=(), without_symbol
                 # referrer -- without it the loader bundle (and its whole chain) stays unresolved.
                 path = resolve(target, observed.get("executable"))
                 graph["entries"].append({"entry": target, "path": path, "from": "dlopen in run log"})
+                observed["diagnosis"].append(
+                    f"dlopen target {target}: " + (f"resolved to {path}" if path else
+                     "UNRESOLVED (no rpath of the workload matched and the name is not in the prefix "
+                     "or Xcode's tree)"))
                 if path:
                     queue.append((path, None))
+            if not queue:
+                graph["empty_reason"] = ("the log yielded no image to walk: "
+                                         + "; ".join(observed["diagnosis"]))
             continue
         path = entry if os.path.isfile(entry) else resolve(entry)
         graph["entries"].append({"entry": entry, "path": path, "from": "argument"})
+        if path and not (guest_slice(path) or {}).get("defined"):
+            # A file that is neither a Mach-O image nor a guest run log: the mistake Main made with
+            # a job log.  Say it, rather than reporting an image with zero imports.
+            graph.setdefault("entry_problems", []).append(
+                f"{entry} is neither a Mach-O image this reader can read nor a guest run log (no "
+                "dlopen(, no 'Symbol not found', no XCB_RC=): pass the guest's .out file or an image")
+            continue
         if path:
             queue.append((path, None))
     while queue and len(graph["images"]) < max_images:
@@ -2175,6 +2218,15 @@ def cover_closure(entries, prefix, xcode=None, without_images=(), without_symbol
     # Phase 2: what every image of the closure satisfies (one export read per image, and the withheld
     # symbols removed), plus the LOAD ORDER, because an image's imports can be satisfied by anything
     # the process has already loaded at that point.
+    if not graph["images"]:
+        graph["empty_reason"] = graph.get("empty_reason") or "; ".join(
+            graph.get("entry_problems", ()) or
+            ["no image could be read from the entries given: "
+             + "; ".join(f"{e['entry']} -> {e['path']}" for e in graph["entries"])])
+        graph.setdefault("order", [])
+        graph.setdefault("reached", [])
+        graph.setdefault("rest", [])
+        return graph
     for record in graph["images"].values():
         detail = detail_of(record["path"])
         if without_symbols:
@@ -2390,8 +2442,19 @@ def print_cover(graph, prefix, ctx=None, xcode=None, out=sys.stdout):
               + (f", workload {observed['executable']}" if observed["executable"] else "")
               + (f", dlopens {', '.join(observed['dlopens'])}" if observed["dlopens"] else ""),
               file=out)
+        for note in observed.get("diagnosis", ()):
+            print(f"  entry fact: {note}", file=out)
     print(f"  images : {len(graph['images'])}  (reached by this entry: {len(reached)}; "
           f"rest of the closure: {len(graph['images']) - len(reached)})", file=out)
+    if graph.get("empty_reason"):
+        print(file=out)
+        print("== FAIL: nothing to cover -- " + graph["empty_reason"], file=out)
+        print("   the zero above is 'I could not find an entry here', not 'nothing to do'", file=out)
+        print(file=out)
+        return counts
+    if len(graph["images"]) and len(reached) < 5:
+        print(f"  note : only {len(reached)} image(s) were reached, which usually means rpath "
+              "expansion or the dlopen target failed -- see the entry facts above", file=out)
     print(f"  imports: {sum(counts.values())} -- " + ", ".join(
         f"{counts[label]} {label}" for label in COVER_ORDER if counts[label]), file=out)
     print("  labels : " + "; ".join(f"{label} = {COVER_HEADLINE[label]}" for label in COVER_ORDER
@@ -2544,6 +2607,12 @@ def main():
             print(f"  withheld sym : {', '.join(sorted(args.without_symbol))}")
         print()
         counts = print_cover(graph, args.prefix, ctx, args.xcode)
+        if graph.get("empty_reason"):
+            if args.json:
+                print(json.dumps({"entries": graph["entries"], "observed": graph.get("observed"),
+                                  "empty_reason": graph["empty_reason"], "counts": counts},
+                                 indent=2, sort_keys=True))
+            return 2      # 2 = the ENTRY gave nothing to cover (distinct from 1 = stops found)
         events = cover_events(graph)
         if args.order:
             print(f"== next {args.order} predicted stop(s) ==")
