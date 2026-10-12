@@ -602,7 +602,7 @@ manifest:
     repo-path: darling-foundation
     path: darling/src/external/foundation
     remote: darling
-    revision: 3f49bd2bdf955792ff0b2b0ef6956fb46a34813b
+    revision: 3bb01cd315d9844389214d3899c185b152966793
     userdata:
       kind: darling-source
       upstream-repository: darling-foundation
