@@ -24,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import difflib
 import os
 import re
 import subprocess
@@ -142,6 +143,63 @@ def relationship(darling, rel, west_rev, gitlink):
     return "unknown"
 
 
+def resolve_selection(projects, only):
+    """(matched, unmatched): the --project names/paths that name a manifest project, and those that do not.
+
+    A filter that matches NOTHING must never read as success.  Measured 2026-10-12: a mistyped name
+    (`darling-src-external-IOKitUser` for `darling-src-external-iokituser`) selected no row, printed an
+    empty `summary:` and `RESULT: no change -- every writable revision already matches its gitlink`,
+    exit 0, while west.yml kept the pre-rung revision and the workspace doctor then failed the next
+    bootstrap with UNDECLARED drift.  Same failure shape as a reader that reports success about a set
+    it never looked at.
+    """
+    known = {p["name"] for p in projects}
+    known |= {p["path"] for p in projects if p["path"]}
+    matched, unmatched = [], []
+    for want in only or ():
+        (matched if want in known else unmatched).append(want)
+    return matched, unmatched
+
+
+def suggest(want, known):
+    """The near-match to name in an unmatched-selection error, or None.
+
+    Two passes: difflib on the raw spelling, then on a case/separator-folded spelling, which is what
+    catches the measured case (`...-IOKitUser` vs `...-iokituser`) that a case-sensitive compare misses.
+    """
+    close = difflib.get_close_matches(want, sorted(known), n=1, cutoff=0.5)
+    if close:
+        return close[0]
+    fold = lambda s: re.sub(r"[^a-z0-9]", "", s.lower())  # noqa: E731
+    folded = {}
+    for name in sorted(known):
+        folded.setdefault(fold(name), name)
+    close = difflib.get_close_matches(fold(want), sorted(folded), n=1, cutoff=0.6)
+    return folded[close[0]] if close else None
+
+
+def selection_text(selection, total):
+    """"all N project(s)" or "M of N project(s): a, b, c" for the report and the RESULT lines."""
+    if not selection:
+        return f"all {total} project(s)"
+    return (f"{len(selection)} of {total} project(s), by --project: " + ", ".join(selection))
+
+
+def allowlist_entries(root):
+    """(path, [name-or-path]) of the doctor's declared-drift allowlist: comments and blanks skipped."""
+    path = os.path.join(root, "doctor-allow-drift.txt")
+    try:
+        with open(path, encoding="utf-8") as stream:
+            entries = []
+            for line in stream:
+                entry = line.split("#", 1)[0].strip()
+                if entry:
+                    entries.append(entry)
+    except OSError:
+        return path, []
+    return path, entries
+
+
 def plan(projects, links, darling, allow_downgrade, only=None):
     """[(project, rel, west_rev, gitlink, relationship, action)] for every manifest project."""
     rows = []
@@ -171,10 +229,14 @@ def plan(projects, links, darling, allow_downgrade, only=None):
     return rows
 
 
-def print_table(rows, manifest_path, links_source):
+def print_table(rows, manifest_path, links_source, selection=None, total=None):
     print(f"pin sync -- west.yml revisions against the gitlinks of the darling superproject")
     print(f"  manifest      : {manifest_path}")
     print(f"  gitlinks from : {links_source}")
+    if total is not None:
+        # WHICH projects this run actually examined: a selection that matched nothing must never be
+        # able to print "no change" about the tree.
+        print(f"  examined      : {selection_text(selection, total)}")
     print()
     header = f"{'PROJECT':<44} {'WEST.YML':<12} {'GITLINK':<12} {'RELATION':<13} ACTION"
     print(header)
@@ -289,8 +351,27 @@ def main():
     links = gitlinks(darling, args.ref, args.from_index)
     source = (f"git ls-files -s (the STAGED gitlinks) in {darling}" if args.from_index
               else f"git ls-tree -r {args.ref or 'HEAD'} in {darling}")
-    rows = plan(projects, links, darling, args.allow_downgrade, args.project)
-    counts = print_table(rows, manifest_path, source)
+    selection, unmatched = resolve_selection(projects, args.project)
+    if unmatched:
+        names = sorted({p["name"] for p in projects})
+        for want in unmatched:
+            hint = suggest(want, names)
+            if len(names) <= 30:
+                known = "known names: " + ", ".join(names)
+            else:
+                near = difflib.get_close_matches(want, names, n=5, cutoff=0.4)
+                near += [suggest(want, names)] if not near and hint else []
+                known = (f"{len(names)} projects in this manifest; nearest names: "
+                         + ", ".join(dict.fromkeys(near)))
+            print(f"west-pin-sync.py: no project named {want!r}; {known}"
+                  + (f" -- did you mean {hint!r}?" if hint else ""), file=sys.stderr)
+        print("west-pin-sync.py: nothing was examined, so nothing can be reported about the tree; "
+              "--project also accepts a west path (e.g. darling/src/external/iokituser)",
+              file=sys.stderr)
+        return 2
+    rows = plan(projects, links, darling, args.allow_downgrade, selection or None)
+    counts = print_table(rows, manifest_path, source, selection, len(projects))
+    examined = selection_text(selection, len(projects))
 
     refusals = [row for row in rows if row[5] == "refuse-downgrade"]
     if refusals:
@@ -313,12 +394,12 @@ def main():
                   "their gitlink and were refused; the manifest disagrees with the superproject "
                   "there, and only --allow-downgrade would act on it")
             return 0
-        print("RESULT: in sync -- every revision already matches its gitlink; no change to write")
+        print(f"RESULT: in sync -- nothing to write; examined {examined}")
         return 0
 
     new_text, changed = apply_rows(text, rows)
     if not changed:
-        print("RESULT: no change -- every writable revision already matches its gitlink")
+        print(f"RESULT: no change -- nothing to write; examined {examined}")
         return 0
     verify_only_revisions_changed(text, new_text, rows)
     for name, before, after in changed:
@@ -329,6 +410,17 @@ def main():
     with open(manifest_path, "w", encoding="utf-8") as stream:
         stream.write(new_text)
     print(f"RESULT: wrote {len(changed)} revision(s) into {manifest_path}; nothing else was touched")
+    # A fixed project that is still listed in the doctor's declared-drift allowlist is hidden from the
+    # next drift check: the allowlist line was for the drift that has just been fixed.
+    allowlist_path, listed = allowlist_entries(root)
+    fixed = {name for name, _before, _after in changed}
+    stale = sorted(fixed & set(listed)) + sorted(
+        {row[1] for row in rows if row[0]["name"] in fixed} & set(listed))
+    if stale:
+        print(f"  NOTE: {len(stale)} project(s) just fixed are still listed in {allowlist_path}: "
+              + ", ".join(stale))
+        print("        a stale allowlist line hides the NEXT real drift for that project -- remove it "
+              "now that the pin and the gitlink agree")
     return 0
 
 

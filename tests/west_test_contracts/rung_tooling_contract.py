@@ -823,6 +823,45 @@ def test_pin_sync(tmp):
     print("PASS pin sync: forward moves, refusals, no-ops, and a one-line rewrite")
 
 
+def test_pin_selection(tmp):
+    """An unmatched --project must fail loudly, and a matched one must say what it examined."""
+    super_repo, manifest, old, new, high = pin_fixture(tmp / "pin-selection")
+    # A selection that matches NOTHING must never report about the tree (measured 2026-10-12: a
+    # mistyped --project printed an empty summary and "no change ... in sync", exit 0, while west.yml
+    # kept the pre-rung revision and the doctor then failed the next bootstrap with UNDECLARED drift).
+    bad = run_pin("check", "--manifest", str(manifest), "--darling", str(super_repo),
+                  "--project", "child-Matching")
+    check(bad.returncode == 2, f"an unmatched --project must fail (rc={bad.returncode})")
+    check("no project named 'child-Matching'" in bad.stderr, f"and name it: {bad.stderr}")
+    check("did you mean 'child-matching'" in bad.stderr,
+          f"and suggest the near-match a case-sensitive compare would miss: {bad.stderr}")
+    check("nothing was examined" in bad.stderr, f"and say nothing was looked at: {bad.stderr}")
+    check("summary:" not in bad.stdout and "in sync" not in bad.stdout,
+          f"it must not report about a set it never examined: {bad.stdout}")
+
+    # ... and a real selection says WHICH projects it examined, in the table and in the RESULT -- so
+    # "no change" can never be printed by a selection that matched nothing.
+    run_pin("sync", "--manifest", str(manifest), "--darling", str(super_repo))
+    good = run_pin("check", "--manifest", str(manifest), "--darling", str(super_repo),
+                   "--project", "child-matching")
+    check("examined      : 1 of" in good.stdout and "child-matching" in good.stdout,
+          f"the selection is named in the table: {good.stdout}")
+    check("RESULT: in sync" in good.stdout and "examined 1 of" in good.stdout,
+          f"and in the RESULT, so 'no change' cannot come from an empty set: {good.stdout}")
+    check("1 of 4 project(s)" in good.stdout, f"and the total it was chosen from: {good.stdout}")
+    # The parser behind sync's stale-allowlist note (a fixed project still listed there hides the
+    # NEXT real drift): names/paths, comments and blanks skipped, a missing file is not an error.
+    root = tmp / "allow"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "doctor-allow-drift.txt").write_text(
+        "# west darling-doctor allowlist\n\nchild-ahead   # dev branch, why\nchild-nested\n")
+    _path, entries = pin.allowlist_entries(str(root))
+    check(entries == ["child-ahead", "child-nested"], f"allowlist entries: {entries}")
+    _path, entries = pin.allowlist_entries(str(tmp / "no-allowlist-here"))
+    check(entries == [], "a missing allowlist is not an error")
+    print("PASS pin selection: an unmatched --project fails loudly, a matched one says what it examined")
+
+
 # --------------------------------------------------------------------------- cli
 
 def test_cli(tmp):
@@ -861,6 +900,7 @@ def main():
         test_bind_crosscheck(tmp / "bindcheck")
         test_loader_stop(tmp / "stop")
         test_pin_sync(tmp / "pin")
+        test_pin_selection(tmp / "pin-selection")
         test_cli(tmp / "cli")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
