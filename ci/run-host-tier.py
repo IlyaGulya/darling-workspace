@@ -25,6 +25,7 @@ CONTRACTS = (
     "tests/run-core-contract.sh",
     "tests/run-process-control-slot-ownership-contract.sh",
     "tests/run-truthful-nofile-contract.sh",
+    "tests/run-bnns-random-generator-contract.sh",
     "tests/run-dtape-kqchan-modify-context-contract.sh",
     "tests/run-west-patch-stack-materialize-contract.sh",
     "tests/run-west-patch-stack-lock-first-contract.sh",
