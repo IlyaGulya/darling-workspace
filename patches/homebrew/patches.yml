@@ -5145,3 +5145,90 @@ patches:
       The fixture reads the process's own procfs with raw Linux syscalls and
       asserts the self query succeeds with a matching kp_proc.p_pid and no
       P_TRACED, while a pid that cannot exist still yields no record.
+- path: corefoundation/empty-collection-singletons.patch
+  sha256sum: 645af8d0842d82443015b338f3ba0b234662a47ac10365b2ef7e7e0174b59732
+  module: darling/src/external/corefoundation
+  source-branch: fix/constant-collection-immortality
+  source-base: 79352385a4de207357cd8eac7c40f16b30451960
+  source-commit: 98156c8e22e2112ded63dfad4947148ad34043eb
+  bead: dar-liaq
+  note: |
+    The static-storage empty-collection singletons, committed AS FOUND from this
+    session's working tree (the deployed prefix already ran it): __NSArray0__struct
+    and __NSDictionary0__struct must BE the objects, because clients bind
+    __NSArray0__struct (DVTSystemPrerequisites imports it and dyld stops with
+    "Symbol not found: ___NSArray0__struct" without it), so
+    __CFSingletonInStaticStorage() constructs them in place, and the
+    constant-collection classes NSConstantArray/NSConstantDictionary -- the
+    classes Apple's CoreFoundation exports for compiler-emitted literals -- are
+    defined for them and for client literals.  It is a separate patch because the
+    next one is the fix under test and its RED arm has to be the runtime this
+    state produces.
+- path: corefoundation/constant-collection-immortality.patch
+  sha256sum: d2a983a9870d4190ba8c28674362ff6d1b77865ac89199e7ff3447dd6d988930
+  module: darling/src/external/corefoundation
+  source-branch: fix/constant-collection-immortality
+  source-base: 98156c8e22e2112ded63dfad4947148ad34043eb
+  source-commit: 4d7086d8df2e3b017e0e7284831b424f42e68c36
+  bead: dar-liaq
+  tests:
+  - name: empty_collection_singleton_release_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      expect-failure-phase:
+      - run
+      runtime-artifacts:
+      - module: darling/src/external/corefoundation
+        build-targets:
+        - CoreFoundation
+        deploy:
+        - System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
+        - libexec/darling/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
+      expect-output-contains:
+      - RELPROBE-DIED subject=array-singleton-objc_release
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/empty_collection_singleton_release_guest.c
+    ok-marker: EMPTY_SINGLETON_RELEASE_OK
+    timeout-seconds: 300
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    guest-cc: /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+    guest-cflags: -isysroot /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+    guest-env-vars:
+      MallocDebugReport: stderr
+    requires:
+    - darling-prefix
+    note: |
+      Guest runtime proof that the empty-collection singletons in CoreFoundation's
+      static storage survive being released.  MEASURED on the unfixed runtime (the
+      patch's parent, deployed on prefix-verify14): _objc_release(__NSArray0__) --
+      exactly the call Xcode3Core's -[Xcode3CommandLineBuildTool
+      _resolvePackageDependenciesAndExit] block makes (return address
+      Xcode3Core+0x3af97, _objc_release at libobjc+0x6a00) -- drives the isa retain
+      count to zero and the ObjC runtime frees the storage with the guest's free():
+      "malloc: *** error for object 0x74558da824b8: pointer being freed was not
+      allocated", the same abort the ladder takes on 0x7b65ca1d84b8 =
+      ___NSArray0__struct.  The fixture also pins the two neighbours: the
+      -release message path (same failure), an NSConstantArray in the fixture's own
+      static data (the shape a compiler-emitted literal has; same failure), the
+      empty dictionary's singleton (SIGSEGV, because __NSCFDictionary's -release
+      routes to CFRelease, which re-dispatches -release for an object that is not a
+      CF object), and a double free control that must still die in BOTH arms, so the
+      fix cannot be "stop reporting invalid frees".  Each subject runs in its own
+      child: a child that dies must not take the verdict with it.
+      The guest compiler path is the workspace's canonical Xcode toolchain
+      (docs/environment.md), because the ladder prefix is not provisioned with the
+      guest CommandLineTools the fixture runner defaults to.
+      Reproduce by hand: copy the fixture and a driver into
+      <prefix>/private/var/tmp, then run the driver through
+      `$prefix/bin/darling shell /bin/bash --login -c '/private/var/tmp/relprobe-run.sh'`.

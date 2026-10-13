@@ -411,7 +411,7 @@ manifest:
     repo-path: darling-corefoundation
     path: darling/src/external/corefoundation
     remote: darling
-    revision: 79352385a4de207357cd8eac7c40f16b30451960
+    revision: 4d7086d8df2e3b017e0e7284831b424f42e68c36
     userdata:
       kind: darling-source
       upstream-repository: darling-corefoundation

@@ -1,0 +1,290 @@
+From 98156c8e22e2112ded63dfad4947148ad34043eb Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 13 Oct 2026 11:25:12 +0000
+Subject: [PATCH] CoreFoundation: the static-storage empty-collection
+ singletons, committed as found
+
+This is the work that was already in the working tree when the heap abort in
+Xcode3Core's package-resolution block was diagnosed; it is committed as found,
+without changes, so that the fix on top of it is buildable and reviewable.
+__NSArray0__struct and __NSDictionary0__struct must BE the objects, because
+clients bind __NSArray0__struct (DVTSystemPrerequisites imports it, and dyld
+stops with "Symbol not found: ___NSArray0__struct" without it), so
+__CFSingletonInStaticStorage() constructs them in place, and the
+constant-collection classes NSConstantArray/NSConstantDictionary -- the classes
+Apple's CoreFoundation exports for compiler-emitted literals -- are defined for
+them and for client literals.
+
+Authored earlier in this session, not by this commit's author.
+Bead: dar-liaq
+---
+ CFRuntime.c    | 91 ++++++++++++++++++++++++++++++++++++++++++++++++--
+ NSArray.m      | 58 ++++++++++++++++++++++++++++++++
+ NSDictionary.m | 53 +++++++++++++++++++++++++++++
+ 3 files changed, 199 insertions(+), 3 deletions(-)
+
+diff --git a/CFRuntime.c b/CFRuntime.c
+index 6b55812..d5b8d29 100644
+--- a/CFRuntime.c
++++ b/CFRuntime.c
+@@ -139,6 +139,32 @@ extern void __HALT(void);
+ static CFTypeID __kCFNotATypeTypeID = _kCFRuntimeNotATypeID;
+ id __NSDictionary0__, __NSArray0__;
+ 
++/*
++ * The empty-collection singletons also exist as OBJECTS in static storage,
++ * under the names __NSArray0__struct and __NSDictionary0__struct.  Apple's
++ * CoreFoundation exports both pairs -- CoreFoundation.tbd lists ___NSArray0__,
++ * ___NSArray0__struct, ___NSDictionary0__ and ___NSDictionary0__struct --
++ * because clang's empty-collection literal lowering references the singleton
++ * OBJECT: the ADDRESS of the __struct symbol is the array or the dictionary,
++ * while __NSArray0__/__NSDictionary0__ above are the pointer variables that
++ * point at that storage.  A client that needs the object cannot be satisfied by
++ * the variables alone: DVTSystemPrerequisites imports __NSArray0__struct, and
++ * dyld stops with "Symbol not found: ___NSArray0__struct / Expected in
++ * /System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation".
++ *
++ * The spelling is load-bearing, exactly as with the os_log entry points: the
++ * name is checked against the client's own bytes with
++ * `llvm-nm -m <client> | grep NSArray0`, which reports the Mach-O name
++ * __NSArray0__struct (two leading underscores, one more than the C name), never
++ * three.  The storage is filled in __CFInitialize below.
++ */
++struct __CFEmptyCollectionStorage {
++    void *isa;
++    uintptr_t reserved[15];
++};
++struct __CFEmptyCollectionStorage __NSArray0__struct;
++struct __CFEmptyCollectionStorage __NSDictionary0__struct;
++
+ #if !defined (__cplusplus)
+ static const CFRuntimeClass __CFNotATypeClass = {
+     0,
+@@ -902,6 +928,29 @@ CF_PRIVATE Boolean __CFInitialized = 0;
+ // move the next 2 lines down into the #if below, and make it static, after Foundation gets off this symbol on other platforms
+ CF_EXPORT pthread_t _CFMainPThread;
+ pthread_t _CFMainPThread = kNilPthreadT;
++
++/* Construct `cls` in `storage`, so that the symbol living at `storage` IS an
++ * object of that class, initialised the same way an ordinary instance is.
++ * Loud on the two conditions that would make the published symbol a lie: an
++ * instance that does not fit the storage, and an -init that hands back a
++ * different object (which would leave the storage a dead object and the symbol
++ * reporting success it did not perform).  Lives here, after the
++ * <objc/runtime.h> and <objc/message.h> includes above. */
++static id __CFSingletonInStaticStorage(Class cls, void *storage, size_t storageSize, const char *symbolName) {
++    size_t need = class_getInstanceSize(cls);
++    if (need > storageSize) {
++        fprintf(stderr, "CoreFoundation: %s: %s needs %zu bytes, its static storage holds %zu\n",
++                symbolName, class_getName(cls), need, storageSize);
++        __HALT();
++    }
++    id placed = objc_msgSend(objc_constructInstance(cls, storage), sel_registerName("init"));
++    if (placed != (id)storage) {
++        fprintf(stderr, "CoreFoundation: %s: -init returned %p, not the static storage %p\n",
++                symbolName, (void *)placed, storage);
++        __HALT();
++    }
++    return placed;
++}
+ #if DEPLOYMENT_TARGET_WINDOWS || DEPLOYMENT_TARGET_IPHONESIMULATOR
+ 
+ CF_EXPORT pthread_t _CF_pthread_main_thread_np(void);
+@@ -1007,6 +1056,26 @@ void __CFInitialize(void) {
+ 
+         extern char __CFConstantStringClassReference;
+         __CFConstantStringClassReferencePtr = &__CFConstantStringClassReference;
++        /* NOTHING WRITES THROUGH THIS POINTER, and that is the measured result, not an omission.
++         *
++         * MEASURED: in this image the reference IS the class object -- `llvm-nm CoreFoundation` prints
++         * `_OBJC_CLASS_$___NSCFConstantString` and `___CFConstantStringClassReference` at the SAME address
++         * (0x1faac8) -- so a store into it overwrites the class's ISA. That is exactly what a previous version of
++         * this file did: it looked NSConstantString up by name and stored it here, after which the guest's own
++         * runtime reported `object_getClassName(__NSCFConstantString) == NSConstantString`, `initialize` was
++         * resolved through the INSTANCE method chain (so `+initialize` was unreachable), and the class threw
++         * "unrecognized selector" out of its own initialization. Measured in the log:
++         *   INITIALIZE: ...: calling +[__NSCFConstantString initialize]
++         *   EXCEPTIONS: throwing ... (object ..., a NSException)
++         *   3 -[NSObject(NSObject) doesNotRecognizeSelector:]  <- the INSTANCE variant
++         *   6 CALLING_SOME_+initialize_METHOD
++         *   objc[...]: INITIALIZE: ...: +[__NSCFConstantString initialize] threw an exception
++         *
++         * AND NOTHING NEEDS TO BE STORED. An Apple-built client's literal is a bind to this symbol, so dyld gives it
++         * the symbol's ADDRESS -- the class object -- which is what a constant string's isa has to be. Measured in
++         * xcodebuild: `[isa(bind __CFConstantStringClassReference), flags=0x7c8, cstr, len]`. The reference is
++         * therefore already the answer, and `__CFConstantStringClassReferencePtr` above is left as the hook it
++         * always was. */
+ 
+         /*** _CFRuntimeCreateInstance() can finally be called generally after this line. ***/
+         __CFRuntimeClassTableCount = 7;
+@@ -1163,14 +1232,30 @@ void __CFInitialize(void) {
+ 
+         __CFProphylacticAutofsAccess = false;
+ 
+-        Class clsDict, clsArray;
++        Class clsDict, clsArray, clsConstantArray, arrayClass;
+         SEL selAlloc, selInit;
++        id dynDict, dynArray;
+         clsDict = objc_lookUpClass("NSDictionary");
+         clsArray = objc_lookUpClass("NSArray");
++        clsConstantArray = objc_lookUpClass("NSConstantArray");
+         selAlloc = sel_registerName("alloc");
+         selInit = sel_registerName("init");
+-        __NSDictionary0__ = objc_msgSend(objc_msgSend(clsDict, selAlloc), selInit);
+-        __NSArray0__ = objc_msgSend(objc_msgSend(clsArray, selAlloc), selInit);
++        /* The singletons live in static storage: __NSArray0__struct and
++         * __NSDictionary0__struct must BE the objects, because clients
++         * reference them by address (see the comment at their definition).
++         * The empty ARRAY is an NSConstantArray, as in Apple's CoreFoundation,
++         * where that constant-collection class owns the singleton; the empty
++         * dictionary keeps the class its cluster hands back.  The dynamic
++         * instance is created only to learn that class. */
++        dynDict = objc_msgSend(objc_msgSend(clsDict, selAlloc), selInit);
++        if (clsConstantArray != Nil) {
++            arrayClass = clsConstantArray;
++        } else {
++            dynArray = objc_msgSend(objc_msgSend(clsArray, selAlloc), selInit);
++            arrayClass = object_getClass(dynArray);
++        }
++        __NSDictionary0__ = __CFSingletonInStaticStorage(object_getClass(dynDict), &__NSDictionary0__struct, sizeof(__NSDictionary0__struct), "__NSDictionary0__struct");
++        __NSArray0__ = __CFSingletonInStaticStorage(arrayClass, &__NSArray0__struct, sizeof(__NSArray0__struct), "__NSArray0__struct");
+ 
+         __CFInitializing = 0;
+         __CFInitialized = 1;
+diff --git a/NSArray.m b/NSArray.m
+index 30ac9df..6195ca2 100644
+--- a/NSArray.m
++++ b/NSArray.m
+@@ -55,6 +55,27 @@ CF_PRIVATE
+ - (id)initWithObject:(NSArray *)object;
+ @end
+ 
++/* NSConstantArray is the class of the arrays the compiler emits for constant
++ * (literal) collections, and in Apple's CoreFoundation it is also the class of
++ * the empty-array singleton -- the object the __NSArray0__struct symbol names.
++ * Clients reference the CLASS OBJECT: DVTSystemPrerequisites imports
++ * _OBJC_CLASS_$_NSConstantArray, strong, bound to CoreFoundation (checked
++ * against the client's own bytes with `llvm-nm -m <client> | grep
++ * NSConstantArray`, which reports the Mach-O name with the _OBJC_CLASS_$_
++ * prefix), and dyld stops with "Symbol not found: _OBJC_CLASS_$_NSConstantArray
++ * / Expected in CoreFoundation" without it.
++ *
++ * The ivars match the names Apple's CoreFoundation.tbd declares (objc-ivars:
++ * NSConstantArray._count, NSConstantArray._objects), so an instance laid out by
++ * an Apple-built client -- including a static constant array in its data -- is
++ * read with the right offsets.  Deliberately NOT CF_PRIVATE: it is an exported
++ * symbol in Apple's CoreFoundation. */
++@interface NSConstantArray : NSArray {
++    NSUInteger _count;
++    const id *_objects;
++}
++@end
++
+ @implementation NSMutableArray (Mutation)
+ 
+ - (void)_mutate
+@@ -2195,3 +2216,40 @@ SINGLETON_RR()
+ }
+ 
+ @end
++
++@implementation NSConstantArray
++
++/* A constant array holds _count ids at _objects; the ids are compile-time
++ * constants, so they are neither retained nor released here.  The empty-array
++ * singleton (__NSArray0__struct, built in CFRuntime.c) is one of these with
++ * _count == 0 and _objects == NULL. */
++
++- (NSUInteger)count
++{
++    return _count;
++}
++
++- (id)objectAtIndex:(NSUInteger)index
++{
++    if (index < _count)
++    {
++        return (id)_objects[index];
++    }
++    [NSException raise:NSRangeException format:@"%d is out of bounds of array", index];
++    return nil;
++}
++
++- (void)getObjects:(id __unsafe_unretained [])objects range:(NSRange)range
++{
++    if (NSMaxRange(range) > _count)
++    {
++        [NSException raise:NSRangeException format:@"range {%d, %d} is out of bounds of array", range.location, range.length];
++        return;
++    }
++    if (range.length != 0)
++    {
++        memmove(objects, _objects + range.location, sizeof(id) * range.length);
++    }
++}
++
++@end
+diff --git a/NSDictionary.m b/NSDictionary.m
+index a3da56a..9182e60 100644
+--- a/NSDictionary.m
++++ b/NSDictionary.m
+@@ -1519,3 +1519,56 @@ static NSString *_getDescription(id obj, id locale, int level)
+ }
+ 
+ @end
++
++/* NSConstantDictionary is the class of the dictionaries the compiler emits for
++ * constant (literal) collections; in Apple's CoreFoundation it is one of the
++ * exported constant-collection classes (CoreFoundation.tbd: objc-classes
++ * NSConstantDictionary, objc-ivars NSConstantDictionary._count, ._keys,
++ * ._objects, ._options).  Clients reference the CLASS OBJECT by name --
++ * xcodebuild imports _OBJC_CLASS_$_NSConstantDictionary, checked against the
++ * client's own bytes with `llvm-nm -m <client> | grep NSConstant` -- and dyld
++ * stops with "Symbol not found: _OBJC_CLASS_$_NSConstantDictionary / Expected in
++ * CoreFoundation" without it.  The ivars match Apple's declared names, and their
++ * ORDER is the one Apple's own instances use: scanning every __DATA_CONST slot
++ * bound to _OBJC_CLASS_$_NSConstantDictionary across the Xcode images shows the
++ * word after the isa is ALWAYS 1 (an option/kind field), then the count, then
++ * the two parallel arrays -- e.g. MTLToolsShaderProfiler: 1, 8, ptr, ptr;
++ * LoggingSupportHost: 1, 3, ptr, ptr; xcodebuild: 1, 1, ptr, ptr.  The .tbd
++ * lists the ivar NAMES but not their order, so the instances are the evidence.
++ * The keys and values are compile-time constants: they are neither retained nor
++ * copied (which is what _options would ask for on an ordinary dictionary) and
++ * never released.  Deliberately NOT CF_PRIVATE: it is an exported symbol in
++ * Apple's CoreFoundation. */
++@interface NSConstantDictionary : NSDictionary {
++    NSUInteger _options;
++    NSUInteger _count;
++    const id *_keys;
++    const id *_objects;
++}
++@end
++
++@implementation NSConstantDictionary
++
++- (NSUInteger)count
++{
++    return _count;
++}
++
++- (id)objectForKey:(id)aKey
++{
++    for (NSUInteger idx = 0; idx < _count; idx++)
++    {
++        if (_keys[idx] == aKey || [_keys[idx] isEqual:aKey])
++        {
++            return (id)_objects[idx];
++        }
++    }
++    return nil;
++}
++
++- (NSEnumerator *)keyEnumerator
++{
++    return [[[NSArray alloc] initWithObjects:_keys count:_count] objectEnumerator];
++}
++
++@end
+-- 
+2.43.0
+
