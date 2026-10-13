@@ -5092,3 +5092,56 @@ patches:
       - id: vchroot-fdless-valid
         expect-descriptor-messages: none
     note: Guest proof for the single-snapshot readlink and the descriptor-free call. A valid directory descriptor is accepted and the published vchroot still resolves afterwards, while the same descriptor after close is rejected before any RPC. The entry point is resolved with dlsym because libsystem_kernel is not part of the CommandLineTools SDK stubs. The descriptor-trace gate observes the transport from the host - the valid call's window must contain the call and no SCM_RIGHTS-bearing message, and the console_open window in the same run must transport one descriptor, so a zero count cannot pass while the instrumentation sees nothing.
+- path: xnu/kern-proc-pid-sysctl.patch
+  sha256sum: a363048f5db85ba79da5af608510ae651849139fe4bfae6beae6e368d530e1e5
+  module: darling/src/external/xnu
+  source-branch: fix/kern-proc-pid-sysctl
+  source-base: 04434fe8d18ea689c704843608749d5608cb5abe
+  source-commit: e1c70fc1ab8cf4275d70409c311fd51648f14137
+  bead: dar-liaq
+  tests:
+  - name: kern_proc_pid_sysctl_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      source-modules:
+      - darling/src/external/darlingserver
+      runtime-artifacts:
+      - module: darling/src/external/xnu
+        build-targets:
+        - system_kernel
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
+      expect-output-contains:
+      - KPPROBE-FAIL self KERN_PROC_PID returned non-zero
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/kern_proc_pid_sysctl_guest.c
+    ok-marker: KERN_PROC_PID_SYSCTL_OK
+    timeout-seconds: 60
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    requires:
+    - darling-prefix
+    note: |
+      Guest runtime proof for the KERN_PROC_PID query DVTFoundation's
+      CurrentProcessIsBeingDebugged() makes. The emulation read "/proc" through
+      the vchroot guest path, and a rootless prefix has no procfs there
+      (darlingserver mounts one only for its non-rootless PID namespace), so
+      sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()) returned ENOENT --
+      MEASURED on a rootless prefix: rc=-1 errno=2 while getpid() was 475721, a
+      host pid, so no pid translation is involved. DVTFoundation turns the
+      non-zero return into a soft assertion whose handler re-enters the
+      once-guarded -[DVTToolsInfo runtimeInternalState] and trips libdispatch's
+      deliberate ud2 ("trying to lock recursively"), the Xcode ladder's wall.
+      The fixture reads the process's own procfs with raw Linux syscalls and
+      asserts the self query succeeds with a matching kp_proc.p_pid and no
+      P_TRACED, while a pid that cannot exist still yields no record.
