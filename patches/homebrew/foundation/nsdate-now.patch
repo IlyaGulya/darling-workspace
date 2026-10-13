@@ -1,0 +1,91 @@
+From ae0f2683cb1c4d386436d3da628b2ee272bfb21f Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 13 Oct 2026 18:24:48 +0000
+Subject: [PATCH] Foundation: +[NSDate now], the current-date accessor
+ Xcode3Core's error path sends
+
+-f[NSDate now] is the class property Apple's NSDate.h declares in the NSDateCreation
+category (macOS 10.15 / iOS 13). It was absent from this tree, so the Xcode compatibility
+ladder's error-printing path died before it could report the build error:
+
+  ** INTERNAL ERROR: Uncaught exception **
+  Uncaught Exception: +[NSDate now]: unrecognized selector sent to instance 0x7FC9845CBE40
+    7   -[Xcode3CommandLineBuildTool resolveErrorTriageResultBundleDestination] (in Xcode3Core)
+    8   -[Xcode3CommandLineBuildTool saveResultBundleForError:triageWithSchemeTask:error:] (in Xcode3Core)
+    9   -[Xcode3CommandLineBuildTool _printError:schemeTask:andFailWithCode:] (in Xcode3Core)
+   11   -[Xcode3CommandLineBuildTool run] (in Xcode3Core)
+  [sigexc-fatal sig=4 code=2 addr=0x7FC982B0847F pid=1369742 tid=1369742]
+  XCB_RC=132
+
+MEASURED, the deployed Foundation (sha256 6cd5e0b8c69d9b95... in both prefix copies): its
+NSDate category (__OBJC_$_CATEGORY_NSDate_$_NSDate) carried four INSTANCE methods and
+`classMethods 0x0`, i.e. no +now, and the only `now` in the image belonged to
++[_NSPredicateUtilities now]; the deployed CoreFoundation class NSDate lists
++[NSDate(NSDateCreation) date] / distantFuture / distantPast and no now. (The earlier
+"no `now` selector string" reading came from `strings`' default 4-character minimum; the
+3-character selector IS present as a dead string. The method-list measurement is the one
+that holds.)
+
+WHAT CHANGED. The declaration joins the NSDateCreation category exactly as Apple's header
+has it, and the implementation is `return [self date]` in the NSDate(NSDate) category: the
+class object is CoreFoundation's, the accessor is loaded from the Foundation image the way
+Apple's Foundation.framework supplies it. `self` is the receiver class, so the same
++alloc/-initWithTimeIntervalSinceReferenceDate: protocol `+date` uses (and any subclass that
+overrides it) is honoured.
+
+MEASURED after the fix (Foundation 8d9e5e3718475e90... in the build tree and BOTH prefix
+copies): tests/nsdate_now_guest.c reports NSDATE_NOW_VERDICT=GREEN -- a non-nil __NSDate
+whose timeIntervalSinceReferenceDate agrees with +date (delta 0.000032) and with time(2),
+and is none of the reference-zero/distantFuture/distantPast sentinels.
+
+NOT COVERED: the ladder's next wall, reached the moment this one is removed -- a NULL
+dereference in CoreFoundation's CFDateFormatterCreateStringWithAbsoluteTime+0xd6
+(addr 0x10, mov rdi,[rax+0x10]) via -[NSDateFormatter stringFromDate:] from Xcode3Core.
+---
+ include/Foundation/NSDate.h |  3 +++
+ src/NSDate.m                | 18 ++++++++++++++++++
+ 2 files changed, 21 insertions(+)
+
+diff --git a/include/Foundation/NSDate.h b/include/Foundation/NSDate.h
+index b3743974c73b733f6445cf5b73398cb52d0c7532..c69e26dc13e826e8eade07e5e748570abc2f298a 100644
+--- a/include/Foundation/NSDate.h
++++ b/include/Foundation/NSDate.h
+@@ -41,6 +41,9 @@ typedef double NSTimeInterval;
+ + (instancetype)dateWithTimeInterval:(NSTimeInterval)ti sinceDate:(NSDate *)date;
+ + (id)distantFuture;
+ + (id)distantPast;
++/* Apple's NSDate.h declares +now in the NSDateCreation category beside date and
++ * the distant bounds, as a readonly class property (macOS 10.15/iOS 13). */
++@property (class, readonly, copy) NSDate *now API_AVAILABLE(macos(10.15), ios(13.0), watchos(6.0), tvos(13.0));
+ - (instancetype)init;
+ - (instancetype)initWithTimeIntervalSinceNow:(NSTimeInterval)ti;
+ - (instancetype)initWithTimeIntervalSinceReferenceDate:(NSTimeInterval)ti;
+diff --git a/src/NSDate.m b/src/NSDate.m
+index c9a78aeb19ea2c5e6dece047bf72266b520a299e..3097d256377b7b6e6d8136dd7e97b0a3db63cfde 100644
+--- a/src/NSDate.m
++++ b/src/NSDate.m
+@@ -15,6 +15,24 @@
+ 
+ @implementation NSDate (NSDate)
+ 
++/* +[NSDate now] is the class property Apple's NSDate.h declares in the
++ * NSDateCreation category (macOS 10.15/iOS 13) and the accessor Xcode3Core's
++ * -[Xcode3CommandLineBuildTool resolveErrorTriageResultBundleDestination]
++ * sends on its error-printing path.  It was absent from this tree entirely --
++ * no `now` selector string in the deployed Foundation -- so the error the tool
++ * was trying to report was masked by the unrecognized-selector exception.
++ *
++ * Darwin documents `now` as an NSDate for the current date and time:
++ * `+[NSDate now]` is equivalent to `+[NSDate date]`, which is the same
++ * +alloc/-initWithTimeIntervalSinceReferenceDate: protocol the receiver class
++ * (and any subclass that overrides alloc/init) supplies.  Implemented through
++ * `self`, exactly as the neighbouring distantFuture/distantPast and date
++ * constructors are, so a subclass gets its own class back. */
+++ (id)now
++{
++    return [self date];
++}
++
+ - (Class)classForCoder
+ {
+     return [NSDate self];

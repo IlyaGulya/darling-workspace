@@ -6074,3 +6074,144 @@ patches:
       tree's Foundation: no "now" selector string in the deployed dylib at all), reached from Xcode3Core's
       error-triage path -- which also hides the build ERROR the tool was trying to print, so that error is
       not yet readable from the stream.
+- path: foundation/nsdate-now.patch
+  sha256sum: 9cc3eabc805fe387fb186bccebf0dae0ce07e76cb1b5d2c816ae4c1b8dc08adb
+  module: darling/src/external/foundation
+  source-branch: fix/ladder-constant-number-literals
+  source-base: 5866910c245bdee9c255ee708b709a9da83fe805
+  source-commit: ae0f2683cb1c4d386436d3da628b2ee272bfb21f
+  bead: dar-liaq
+  tests:
+  - name: nsdate_now_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      runtime-artifacts:
+      - module: darling/src/external/foundation
+        build-targets:
+        - Foundation
+        deploy:
+        - System/Library/Frameworks/Foundation.framework/Versions/C/Foundation
+        - libexec/darling/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation
+      expect-output-contains:
+      - '+[NSDate now]: unrecognized selector'
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/nsdate_now_guest.c
+    ok-marker: NSDATE_NOW_VERDICT=GREEN
+    timeout-seconds: 300
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    guest-cc: /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+    guest-cflags: -isysroot /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+    requires:
+    - darling-prefix
+    note: |
+      Permanent guest oracle for +[NSDate now], the class property Apple's NSDate.h declares in the
+      NSDateCreation category (macOS 10.15/iOS 13; read from the workspace's own Xcode 26.3 SDK,
+      .../iPhoneOS.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSDate.h line 60:
+      `@property (class, readonly, copy) NSDate *now API_AVAILABLE(macos(10.15), ios(13.0), watchos(6.0),
+      tvos(13.0));`). The Xcode compatibility ladder reached it from Xcode3Core's error-printing path
+      after the earlier rungs were fixed:
+
+        ** INTERNAL ERROR: Uncaught exception **
+        Uncaught Exception: +[NSDate now]: unrecognized selector sent to instance 0x7FC9845CBE40
+        Stack:
+          7   -[Xcode3CommandLineBuildTool resolveErrorTriageResultBundleDestination] (in Xcode3Core)
+          8   -[Xcode3CommandLineBuildTool saveResultBundleForError:triageWithSchemeTask:error:] (in Xcode3Core)
+          9   -[Xcode3CommandLineBuildTool _printError:schemeTask:andFailWithCode:] (in Xcode3Core)
+         11   -[Xcode3CommandLineBuildTool run] (in Xcode3Core)
+        [sigexc-fatal sig=4 code=2 addr=0x7FC982B0847F pid=1369742 tid=1369742]
+        XCB_RC=132
+
+      THE ABSENCE, MEASURED FROM THE DEPLOYED BINARIES (not from a string search). The deployed
+      Foundation (sha256 6cd5e0b8c69d9b95..., both prefix copies) carries the class object only as a
+      reference: `llvm-objdump --macho --objc-meta-data` shows __OBJC_$_CATEGORY_NSDate_$_NSDate with
+      `instanceMethods count 4` (replacementObjectForPortCoder:, classForCoder, initWithCoder:,
+      encodeWithCoder:) and `classMethods 0x0` -- no +now -- and the deployed CoreFoundation class NSDate
+      lists +[NSDate(NSDateCreation) date] / dateWithTimeIntervalSinceNow: / distantFuture etc. with no
+      now. The only `now` method in the image is +[_NSPredicateUtilities now], a different class. NOTE:
+      the earlier report "no `now` selector string in the deployed dylib" was a measurement artifact of
+      `strings`' default 4-character minimum -- the 3-character selector string IS present (unused); the
+      method-list measurement above is the one that holds.
+
+      WHAT CHANGED. The header declaration joins the NSDateCreation category exactly as Apple's header
+      has it; the implementation is `+ (id)now { return [self date]; }` in the NSDate(NSDate) category in
+      src/NSDate.m. The NSDate class object is CoreFoundation's, so the accessor is loaded from the
+      Foundation image (Apple's Foundation.framework supplies it there too). `self` is the receiver class,
+      so the same +alloc/-initWithTimeIntervalSinceReferenceDate: protocol +date uses (and any subclass
+      that overrides it) is honoured. No other member of the family was added.
+
+      GREEN is the fixture's own contract on the fixed runtime (Foundation 8d9e5e3718475e90... and, after
+      the RED-arm rebuild, a1e64e6721a16d4b... -- this build is not byte-reproducible, both carry
+      `imp +[NSDate(NSDate) now]` -- in the build tree and BOTH prefix copies), driven by
+      evidence/nsdate-now-rung/nsdateprobe.sh:
+        NSDATE-WALL class=NSDate respondsToSelector:now=1 image-foundation=0x72b24a078010
+        NSDATE-NOW class=__NSDate timeInterval=813608837.834153
+        NSDATE-CHECK name=is-nsdate ok=1 class=__NSDate
+        NSDATE-CHECK name=not-reference-zero ok=1 timeInterval=813608837.834153
+        NSDATE-CHECK name=not-distant-future ok=1 ...
+        NSDATE-CHECK name=not-distant-past ok=1 ...
+        NSDATE-CHECK name=agrees-with-date ok=1 now=813608837.834153 date=813608837.834183 delta=0.000030
+        NSDATE-CHECK name=agrees-with-wallclock ok=1 now=... wall=... delta=0.834153
+        NSDATE_NOW_VERDICT=GREEN
+        NSDATE_RUN_RC=0
+      (evidence/nsdate-now-rung/green-arm.log; darling-boot-run.sh VERDICT: PASS, NSDATE_RUN_RC=0.)
+      RED is the SAME fixture and driver on the pre-fix Foundation rebuilt from this patch's source-base
+      and deployed to BOTH prefix copies (sha256 ec54be1f5874facd...; no `imp +[NSDate(NSDate) now]` in
+      the deployed bytes):
+        NSDATE-WALL class=NSDate respondsToSelector:now=0 image-foundation=0x753877d77ff0
+        2026-10-13 18:26:03.173 nsdateprobe[1526975:3e8] Terminating app due to uncaught exception 'NSException', reason: '+[NSDate now]: unrecognized selector sent to instance 0x753876e76e40'
+        [sigexc-fatal sig=4 code=2 addr=0x753878B3F47F pid=1526975 tid=1526975]
+        NSDATE_RUN_RC=132
+      (evidence/nsdate-now-rung/red-arm.log.)
+
+      THE HARNESS RED ARM CANNOT RUN ON THIS PREFIX TODAY, the same pre-existing environment limit every
+      sibling entry records: `west test --profile homebrew --prefix <prefix> --prove-red --test
+      nsdate_now_guest` stops in the whole-profile applicability plan (evaluated before --test selects a
+      row) with "guest compiler missing in prefix root:
+      /Library/Developer/CommandLineTools/usr/bin/clang"; this prefix carries no guest CommandLineTools,
+      which is why both raw arms use the declared guest-cc/guest-cflags and the workspace's Xcode
+      toolchain. Fixture sha256 71fcf7720837f1d42f2783e81b2ef01efe1493218ce0cbcb82ac5b94e9fc6c79; driver
+      sha256 3aa614bbd1a5a460e534cd53b6188b2332f4c92e902441f6f00e13d463d9485b.
+      Reproduce by hand: cp evidence/nsdate-now-rung/nsdateprobe.sh <prefix>/private/var/tmp/, then run
+      `bash scripts/darling-boot-run.sh --prefix <prefix> --wait 300 --poll 'NSDATE_DRIVER_DONE'
+      --status-marker 'NSDATE_RUN_RC=' --marker 'NSDATE_NOW_VERDICT=GREEN' --log <LOG>
+      --cmd '/bin/bash /private/var/tmp/nsdateprobe.sh'`.
+
+      THE LADDER AFTER THIS RUNG (verbatim, scripts/xcodebuild-workload-run.sh --workload both on
+      prefix-verify14, evidence/nsdate-now-rung/ladder/). The unrecognized-selector exception is GONE
+      from both workloads' own streams (no NSDate/now line in xcodebuild-minproj.out or
+      xcodebuild-iosapp.out), and both now die later, with a SIGSEGV in the date-formatting half of the
+      same error-reporting path:
+        minproj guest_rc=139 harness=VERDICT: FAIL artifact=none
+        iosapp  guest_rc=139 harness=VERDICT: FAIL artifact=none
+        RESULT: at least one workload produced no artifact
+      and the last real lines of each own stream ($PREFIX/private/var/tmp/xcodebuild-<workload>.out,
+      after the open-trace noise):
+        [sigexc-fatal sig=11 code=1 addr=0x10 pid=1557719 tid=1557719]
+        [sigexc-default sig=11 tid=1557719]
+        XCB_RC=139
+      (iosapp the same shape, pid=1564883.) The BUILD ERROR is STILL not readable from the stream. The
+      next wall, named from the cores both workloads left (scripts/dwdiag core, /tmp/t4cores/):
+        CORE-SIGNAL sig=11 SIGSEGV
+        CORE-FAULT image=.../CoreFoundation.framework/Versions/A/CoreFoundation base=0x72496fe77000
+                   file+0x3a0986 symbol=CFDateFormatterCreateStringWithAbsoluteTime + 0xd6
+        CORE-INSN 48 8b 78 10 (movq 0x10(%rax), %rdi; rax NULL, hence si_addr 0x10)
+          #0 CFDateFormatterCreateStringWithDate + 0x75 (CoreFoundation)
+          #1 -[NSDateFormatter stringFromDate:] + 0x24a (Foundation; file+0x2d1b4a, DWARF-resolved
+             from Foundation_x86_64.dSYM)
+          #2 __33-[Xcode3CommandLineBuildTool ...] (Xcode3Core, the saveResultBundleForError:triage path)
+          #4 -[Xcode3CommandLineBuildTool _printError...] (Xcode3Core)
+          #7 XcodeBuildMain (libxcodebuildLoader.dylib)
+      So the next wall is a NULL dereference in THIS tree's own CFDateFormatterCreateStringWithAbsoluteTime
+      (a NULL formatter/ICU _df on the [+NSDate now)-derived date the tool asks -[NSDateFormatter
+      stringFromDate:] to format), reached from Xcode3Core's error triage -- still hiding the build error.
