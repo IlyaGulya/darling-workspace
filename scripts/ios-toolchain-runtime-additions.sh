@@ -6,7 +6,22 @@
 # the zlib dylib, the full Foundation closure and a libc++.1.dylib that exports the ABI those
 # tools were built against. This script installs exactly those artifacts, each through its own
 # project's CMake install target -- never by copying a built file into place -- and records a
-# receipt. Extend the list only from a real dyld error naming the missing dependency.
+# receipt. Extend the list only from a real dyld error naming the missing dependency, or from the
+# one documented exception below.
+#
+# THE EXCEPTION, MEASURED (2026-10-13, dar-liaq; prefix-verify14 + build/verify14): the ICU DATA
+# file is a runtime demand the LOADER never names. ICU is built with
+# -DICU_DATA_DIR="/usr/share/icu/" (darling/src/external/icu/icuSources/CMakeLists.txt:20) and its
+# CMake install ships icudt66l.dat to libexec/darling/usr/share/icu, but libicucore.A.dylib alone
+# resolves fine, so a prefix that carries only the dylib never produces a dyld error. The failure
+# is silent and later: `udat_open` returns NULL with U_MEMORY_ALLOCATION_ERROR (7), CoreFoundation's
+# CFDateFormatterCreate returns NULL for it (CFDateFormatter.c:892-896), Foundation's
+# -[NSDateFormatter stringFromDate:] then passes that NULL formatter into
+# CFDateFormatterCreateStringWithAbsoluteTime, which dereferences it
+# (`movq 0x10(%rax),%rdi`, formatter->_df at offset 0x10 with %rax NULL) -- the SIGSEGV the Xcode
+# ladder showed in Xcode3Core's error-printing path. So the dependency is real but invisible to the
+# loader heuristic this list was written around, and this entry is the audit of that measurement,
+# not a relaxation of the rule.
 #
 # Two prefix facts decide how the install has to finish:
 #   * a prefix keeps two runtime copies: <prefix>/libexec/darling/... and the guest-visible
@@ -45,6 +60,7 @@ done
 # records the dyld error that asked for it, so the list can be audited against evidence.
 targets=(
 	src/external/zlib/install                       # /usr/lib/libz.1.dylib missing
+	src/external/icu/icuSources/install             # /usr/share/icu/icudt66l.dat missing, a NON-dyld demand (see below)
 	src/external/libxml2/install                    # /usr/lib/libxml2.2.dylib missing (T4: Foundation loads it, Apple ld aborts)
 	src/external/libcxx/install                     # libc++ ABI: verbose abort + std::__fs::filesystem
 	src/external/foundation/install                 # Foundation.framework
