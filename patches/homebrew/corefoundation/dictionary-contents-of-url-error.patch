@@ -1,0 +1,136 @@
+From 7b5e0ce1ac312f73157f4f0120dc24b97b399549 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 13 Oct 2026 17:43:05 +0000
+Subject: [PATCH] CoreFoundation: the plist readers report the failure's own
+ error, not an invented one
+
+MEASURED (guest oracle tests/dictionary_contents_of_url_error_guest.c, RED on the runtime
+before this commit -- the parent CoreFoundation rebuilt from this tree and deployed to BOTH
+prefix-verify14 copies, sha256 6d2690e3...): +[NSDictionary dictionaryWithContentsOfURL:error:]
+answers a read of a path that does not exist with
+
+  DICTURL-ABSENT path=/private/var/tmp/dicturl-absent-1246854.plist nil=1 domain=NSDictionaryErrorDomain code=-1
+  DICTURL-WALL   path=.../Xcode.app/Contents/Resources/BetaVersion.plist nil=1 count=-1 domain=NSDictionaryErrorDomain code=-1 caller-tolerates=0
+
+and that is the Xcode ladder's wall. +[DVTToolsVersion setCurrentBetaVersionFromPlistFile:]
+(called from IDEInitialize) reads Xcode's own Contents/Resources/BetaVersion.plist, which a
+release Xcode does not ship, and the caller is written to accept exactly that: the failure
+path of that method (DVTFoundation x86_64 slice 0x54945) sends -[NSError
+dvt_hasDomain:errorCode:] with NSCocoaErrorDomain and 260 (NSFileReadNoSuchFileError), then
+with 4 (NSFileNoSuchFileError), and takes the assertion when neither matches. Answering with
+a domain that exists nowhere else in this tree made the caller assert, and the assertion
+handler's deliberate ud2 killed both xcodebuild workloads (XCB_RC=132, artifact none).
+
+WHAT CHANGED. The two error-returning readers -- the class factory
++dictionaryWithContentsOfURL:error: and the instance -initWithContentsOfURL:error: -- no
+longer fabricate NSDictionaryErrorDomain/-1. They forward the error the reader actually
+produced: the errno of the failed read as NSCocoaErrorDomain/NSFileRead* with the POSIX
+error as NSUnderlyingError, or the property list's own CFError, both supplied by the new
+Foundation-side +[NSDictionary newWithContentsOf:immutable:error:]. A non-NULL error
+out-parameter is now required for the write (the old code dereferenced it unconditionally).
+__NSPlaceholderDictionary answers the error-returning initializer itself, so the factory
+keeps both the string guard and the immutability rule (self == immutablePlaceholder) that
+its old alloc/init chain had; the category's version keeps the rule its sibling
+-initWithContentsOfURL: uses for a non-placeholder receiver.
+
+MEASURED GREEN (fixed CoreFoundation sha256 4642b1cb... + Foundation 9fa81e94... on the same
+prefix, same driver, same harness declaration): DICTURL-ABSENT ... domain=NSCocoaErrorDomain
+code=260, underlying=NSPOSIXErrorDomain/2; DICTURL-WALL ... domain=NSCocoaErrorDomain code=260
+caller-tolerates=1; the ladder's beta-plist assertion and NSDictionaryErrorDomain are gone
+from both workloads' own streams, which now stop one rung later in
+-[DVTBuildVersion initWithString:].
+
+WHAT THIS DOES NOT COVER. +[NSArray arrayWithContentsOfURL:error:] still invents
+NSArrayErrorDomain/-1 the same way (same defect one method away, unmeasured here), and the
+historic shape of the PARSE-failure path is unchanged: a NULL property list still reaches
+-[NSDictionary initWithDictionary:] as before, so that read can still answer with an empty
+dictionary -- this commit only makes its CFError visible to the caller instead of swallowing
+it.
+---
+ NSDictionary.m | 46 ++++++++++++++++++++++++++++++++++------------
+ 1 file changed, 34 insertions(+), 12 deletions(-)
+
+diff --git a/NSDictionary.m b/NSDictionary.m
+index 2f6b1a1b231c32ba361de72a5e2a5f1b92efed86..0132c9de06030b0462fb6633b802571365a7077a 100644
+--- a/NSDictionary.m
++++ b/NSDictionary.m
+@@ -28,12 +28,18 @@ CF_EXPORT CFDataRef _CFPropertyListCreateXMLData(CFAllocatorRef allocator, CFPro
+ 
+ @interface NSDictionary (Internal)
+ + (id)newWithContentsOf:(id)source immutable:(BOOL)immutable;
++// The error-returning variant reports WHY the contents could not be read (a file read failure as
++// NSCocoaErrorDomain/NSFileRead*, a property list failure as the property list's own CFError). It is
++// implemented in Foundation, beside the reader it belongs to, and consumed by the error-returning
++// public initializers below.
+++ (id)newWithContentsOf:(id)source immutable:(BOOL)immutable error:(NSError **)error;
+ @end
+ 
+ CF_PRIVATE
+ @interface __NSPlaceholderDictionary : NSMutableDictionary
+ + (id)mutablePlaceholder;
+ + (id)immutablePlaceholder;
++- (id)initWithContentsOfURL:(NSURL *)url error:(NSError **)error;
+ @end
+ 
+ CF_PRIVATE
+@@ -277,6 +283,21 @@ SINGLETON_RR()
+     return (id)[NSDictionary newWithContentsOf:path immutable:(self == immutablePlaceholder)];
+ }
+ 
++// Same reader and same immutability rule as the URL initializer above, with the failure's own error
++// handed to the caller instead of an invented one. This is the path
++// +[NSDictionary dictionaryWithContentsOfURL:error:] takes, so a bare string stays rejected here as
++// it is for the non-error variant.
++- (id)initWithContentsOfURL:(NSURL *)url error:(NSError **)error
++{
++    if (url != nil && [url isNSString__])
++    {
++        @throw [NSException exceptionWithName:NSInvalidArgumentException reason:@"sent NSString to initWithContentsOfURL - please send a URL" userInfo:nil];
++        return nil;
++    }
++
++    return (id)[NSDictionary newWithContentsOf:url immutable:(self == immutablePlaceholder) error:error];
++}
++
+ - (id)init
+ {
+     if (self == mutablePlaceholder)
+@@ -506,13 +527,13 @@ SINGLETON_RR()
+ 
+ + (instancetype)dictionaryWithContentsOfURL:(NSURL *)url error:(NSError **)error
+ {
+-    // TODO: we should actually pass along any error we get to the user so they have more info
+-    // this is just a quick and dirty implementation
+-    NSDictionary* tmp = [self dictionaryWithContentsOfURL:url];
+-    if (tmp == nil) {
+-        *error = [NSError errorWithDomain:@"NSDictionaryErrorDomain" code:-1 userInfo:nil];
+-    }
+-    return tmp;
++    // Forward the failure's OWN error. The reader knows why it could not produce a dictionary (the
++    // failed read's errno as NSCocoaErrorDomain/NSFileRead*, or the property list's CFError) and a
++    // caller acts on it: DVTFoundation's +[DVTToolsVersion setCurrentBetaVersionFromPlistFile:]
++    // tolerates exactly NSCocoaErrorDomain/NSFileReadNoSuchFileError for a plist that is legitimately
++    // absent (Xcode ships no Contents/Resources/BetaVersion.plist) and asserts on anything else, so an
++    // invented domain killed xcodebuild through the assertion handler's ud2.
++    return [[[self alloc] initWithContentsOfURL:url error:error] autorelease];
+ }
+ 
+ - (id)initWithObjectsAndKeys:(id)firstObject, ...
+@@ -731,11 +752,12 @@ SINGLETON_RR()
+ 
+ - (id)initWithContentsOfURL:(NSURL *)url error:(NSError **)error
+ {
+-    NSDictionary* tmp = [self initWithContentsOfURL:url];
+-    if (tmp == nil) {
+-        *error = [NSError errorWithDomain:@"NSDictionaryErrorDomain" code:-1 userInfo:nil];
+-    }
+-    return tmp;
++    // Reached only by a receiver that is not the placeholder -- __NSPlaceholderDictionary answers this
++    // selector itself, as it does -initWithContentsOfURL: -- so the rule is the one the
++    // non-error initializer a few lines above uses, and the receiver is released as there.
++    BOOL immutable = ![self isKindOfClass:[NSMutableDictionary class]];
++    [self release];
++    return [NSDictionary newWithContentsOf:url immutable:immutable error:error];
+ }
+ 
+ @end

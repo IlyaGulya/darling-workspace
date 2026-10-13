@@ -5817,4 +5817,116 @@ patches:
       CommandLineTools at the fixture runner's default path
       /Library/Developer/CommandLineTools/usr/bin/clang); the raw arms above are run with the
       declared guest-cc/guest-cflags instead.
+- path: corefoundation/dictionary-contents-of-url-error.patch
+  sha256sum: 739a4f8ccf5d562ccefd5f1f702c32d8228456bad92dca79fa9a00c6aaeb6aaa
+  module: darling/src/external/corefoundation
+  source-branch: fix/constant-collection-immortality
+  source-base: 429d7b282b1e035d1965ac4d2f6909eb22c4e959
+  source-commit: 7b5e0ce1ac312f73157f4f0120dc24b97b399549
+  bead: dar-liaq
+  tests:
+  - name: dictionary_contents_of_url_error_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      runtime-artifacts:
+      - module: darling/src/external/corefoundation
+        build-targets:
+        - CoreFoundation
+        deploy:
+        - System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
+        - libexec/darling/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
+      - module: darling/src/external/foundation
+        build-targets:
+        - Foundation
+        deploy:
+        - System/Library/Frameworks/Foundation.framework/Versions/C/Foundation
+        - libexec/darling/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation
+      expect-failure-phase:
+      - run
+      expect-output-contains:
+      - DICTURL-MISMATCH absent-domain got=NSDictionaryErrorDomain/-1 want=NSCocoaErrorDomain/260
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/dictionary_contents_of_url_error_guest.c
+    ok-marker: DICTURL_VERDICT=GREEN
+    timeout-seconds: 300
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    guest-cc: /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+    guest-cflags: -isysroot /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+    requires:
+    - darling-prefix
+    note: |
+      Permanent guest oracle for the ERROR CONTRACT of the plist readers
+      +[NSDictionary dictionaryWithContentsOfURL:error:] /
+      -[NSDictionary initWithContentsOfURL:error:]. The ladder's wall was
+      +[DVTToolsVersion setCurrentBetaVersionFromPlistFile:] (DVTFoundation, called from
+      IDEInitialize) reading Xcode's own Contents/Resources/BetaVersion.plist -- a file a release
+      Xcode does not ship -- and dying on the answer:
+
+        [MT] DVTAssertions: ASSERTION FAILURE in DVTFrameworks/DVTFoundation/DeveloperStructure/DVTToolsVersion.m:136
+        Details:  Failed to read beta plist: Error Domain=NSDictionaryErrorDomain Code=-1 "The operation couldn\u2019t be completed. (NSDictionaryErrorDomain error -1.)"
+        Method:   +setCurrentBetaVersionFromPlistFile:
+        [sigexc-fatal sig=4 code=2 addr=0x7F6C6CC2C47F pid=1187874 tid=1187874]
+        XCB_RC=132
+
+      The caller is written to accept exactly that miss: the failure path of that method
+      (DVTFoundation x86_64 slice 0x54945) sends -[NSError dvt_hasDomain:errorCode:] with
+      NSCocoaErrorDomain and 260 (NSFileReadNoSuchFileError), then with 4 (NSFileNoSuchFileError),
+      and takes the assertion only when neither matches. The reader answered with a domain that
+      exists nowhere else in this tree, so the assertion fired and its handler's deliberate ud2
+      killed both workloads.
+
+      The oracle gates, in one process with no compile-time Foundation reference (dlopen +
+      objc_msgSend + sel_registerName): (1) a path that does not exist -> nil plus
+      NSCocoaErrorDomain/260 with NSUnderlyingError NSPOSIXErrorDomain/ENOENT -- the underlying
+      pair is gated on purpose, because it is the errno of the open(2) that failed, so an error
+      that merely spells "260" without having attempted the read does not pass; (2) a minimal
+      plist the fixture writes itself must still parse (non-nil, count 2, the expected value) with
+      NO error set, so the reader cannot pass by inventing an error on success; (3) when argv[1]
+      names the ladder's own beta-plist path, the result must be a dictionary or exactly the
+      domain/code pair the DVT caller tolerates. The parse-failure path (data readable, not a
+      property list) is reported as DICTURL-NOTE parse-* and NOT gated: the fix under test leaves
+      that path's historic return shape alone and only makes the parser's CFError visible.
+
+      THE HARNESS RED ARM CANNOT RUN ON THIS PREFIX TODAY, the same pre-existing environment limit
+      the sibling entries record: the whole-profile applicability plan is evaluated before --test
+      selects a row and requires the guest CommandLineTools this prefix lacks, so
+      `west test --profile homebrew --prefix <prefix> --prove-red --test
+      dictionary_contents_of_url_error_guest` stops before selecting. The raw arms that WERE run,
+      same fixture and same driver (evidence/beta-plist-read-rung/betaplistprobe.sh, which
+      compiles inside the guest with the guest-cc above because the prefix carries no guest CLT)
+      and the same harness declaration, are:
+        RED   the parent CoreFoundation AND Foundation rebuilt from this tree and deployed to BOTH
+              prefix copies (CoreFoundation 6d2690e3f83b5ec3..., Foundation 715536449c15db1a...),
+              evidence/beta-plist-read-rung/red-arm-parent.log: DICTURL-ABSENT ... nil=1
+              domain=NSDictionaryErrorDomain code=-1, DICTURL-WALL ... caller-tolerates=0,
+              DICTURL-FAIL failures=3, DICTURL_RUN_RC=1.
+        GREEN the fixed pair (CoreFoundation 4642b1cbf114949b..., Foundation 9fa81e9454990f88... in
+              the build tree and BOTH prefix copies), evidence/beta-plist-read-rung/green-arm-final.log:
+              DICTURL-ABSENT ... domain=NSCocoaErrorDomain code=260
+              underlying=NSPOSIXErrorDomain/2, DICTURL-PRESENT nil=0 count=2 seed=26A123,
+              DICTURL-WALL ... domain=NSCocoaErrorDomain code=260 caller-tolerates=1,
+              DICTURL_VERDICT=GREEN, DICTURL_RUN_RC=0.
+      The RED arm's Foundation half is not removable by current-minus-patch (the Foundation
+      component has no patch entry in this profile: its change is pinned through the darling
+      superproject gitlink and west.yml, as the earlier Foundation changes in this session were),
+      which is why both halves were rebuilt from the parent working tree for the raw RED arm.
+      Reproduce by hand: copy tests/dictionary_contents_of_url_error_guest.c to
+      <prefix>/private/var/tmp/betaplistprobe.c and the driver above to
+      <prefix>/private/var/tmp/betaplistprobe.sh, then run
+      `bash scripts/darling-boot-run.sh --prefix <prefix> --wait 300 --poll DICTURL_DRIVER_DONE
+      --status-marker 'DICTURL_RUN_RC=' --marker 'DICTURL_DRIVER_DONE=1' --log <LOG>
+      --cmd '/bin/bash /private/var/tmp/betaplistprobe.sh'`.
+      NOT COVERED, recorded: +[NSArray arrayWithContentsOfURL:error:] still invents
+      NSArrayErrorDomain/-1 the same way (same defect one method away, unmeasured here).
 
