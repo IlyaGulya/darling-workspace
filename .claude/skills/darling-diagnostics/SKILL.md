@@ -108,6 +108,14 @@ Canonical sources live in the selected manifest repository:
   the prefix was cleaned up and the run repeated. Shut the prefix down (or
   otherwise prove the running server's identity) before believing a result that
   depends on server code, and treat a fresh deploy as unmeasured until then.
+* **The guest's own probe output is not in the run log.** In-guest `__simple_printf`
+  writes **fd 1** (`emulation/src/common/simple.c`), and a workload launcher may
+  redirect the workload's fd 1/2 into its own file under the prefix (measured
+  2026-10-13: `$PREFIX/private/var/tmp/xcodebuild-<workload>.out`); the harness run
+  log then carries only the loader's/mldr's share. Reading the wrong stream gives
+  conclusions that are incomplete rather than obviously wrong, which is the harder
+  failure to notice. Confirm with `/proc/<pid>/fd` which file the workload's 1 and 2
+  point at, and read that one.
 * **A guest process is not identifiable by path**: `/proc/<pid>/exe` is `ENOENT`
   (the image file is gone), `cmdline` is empty, `comm` is the stable name
   (`mldr`, `launchd`, `vchroot`, `shellspawn`), and `maps` is the only readable
