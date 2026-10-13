@@ -13,7 +13,7 @@
 #
 # Usage:
 #   darling-deploy-verify.sh --prefix PATH --build DIR [--component NAME]...
-#   components: mldr dyld libsystem_kernel darlingserver shellspawn vchroot launchd (default: all present in DIR)
+#   components: mldr dyld libsystem_kernel libxpc darlingserver shellspawn vchroot launchd (default: all present in DIR)
 #
 # The build directory is expected to be a Darling build tree; each component is looked up at its known output
 # path. This script never invents paths: an unknown component is an error, not a guess.
@@ -47,6 +47,7 @@ built_path() {
 		mldr)              echo "$BUILD/src/startup/mldr/mldr" ;;
 		dyld)              echo "$BUILD/src/external/dyld/dyld" ;;
 		libsystem_kernel)  echo "$BUILD/src/external/xnu/darling/src/libsystem_kernel/libsystem_kernel.dylib" ;;
+		libxpc)            echo "$BUILD/src/external/libxpc/libxpc.dylib" ;;
 		darlingserver)     echo "$BUILD/src/external/darlingserver/darlingserver" ;;
 		shellspawn)        echo "$BUILD/src/shellspawn/shellspawn" ;;
 		vchroot)           echo "$BUILD/src/vchroot/vchroot" ;;
@@ -60,6 +61,7 @@ dest_paths() {
 		mldr)              echo "libexec/darling/usr/libexec/darling/mldr"; echo "usr/libexec/darling/mldr" ;;
 		dyld)              echo "usr/lib/dyld"; echo "libexec/darling/usr/lib/dyld" ;;
 		libsystem_kernel)  echo "usr/lib/system/libsystem_kernel.dylib"; echo "libexec/darling/usr/lib/system/libsystem_kernel.dylib" ;;
+		libxpc)            echo "usr/lib/system/libxpc.dylib"; echo "libexec/darling/usr/lib/system/libxpc.dylib" ;;
 		darlingserver)     echo "bin/darlingserver" ;;
 		shellspawn)        echo "usr/libexec/shellspawn"; echo "libexec/darling/usr/libexec/shellspawn" ;;
 		vchroot)           echo "usr/libexec/darling/vchroot"; echo "libexec/darling/usr/libexec/darling/vchroot" ;;

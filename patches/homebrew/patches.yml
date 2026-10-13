@@ -5706,3 +5706,115 @@ patches:
       30 s handshake" is REFUTED -- launchd's sleep(30) and the workload's own ~30 s step
       clock are independent (their phase drifts ~0.5 s over 30 cycles, so the periods
       differ). The oracle makes the attribution mechanical for the next reader.
+- path: darling/libxpc-sync-send-refuses-unconnected.patch
+  sha256sum: c7b7948dd849ae4422380211f2ce355314455b8ee832e2147f99e1412547d3c3
+  module: darling/src/external/libxpc
+  source-branch: fix/xpc-sync-send-refuses-unconnected
+  source-base: a7bc346027c3433b79f13793f48ac44522c80f8c
+  source-commit: d62a6b26040aa9e88f0d256359f83968e6e67c6a
+  bead: dar-liaq
+  tests:
+  - name: xpc_sync_send_unconnected_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      source-modules:
+      - darling/src/external/libxpc
+      runtime-artifacts:
+      - module: darling/src/external/libxpc
+        build-targets:
+        - libxpc
+        deploy:
+        - usr/lib/system/libxpc.dylib
+      expect-failure-phase:
+      - run
+      expect-output-contains:
+      - 'XPCUNCONN step=send_sync_never_resumed_begin'
+      expect-output-lacks:
+      - 'XPCUNCONN step=send_sync_never_resumed_returned'
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/xpc_sync_send_unconnected_guest.c
+    ok-marker: XPC_SYNC_SEND_UNCONNECTED_OK
+    timeout-seconds: 300
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    guest-cc: /Volumes/SystemRoot/home/ilyagulya/.darling/Library/Developer/CommandLineTools/usr/bin/clang
+    guest-cflags: -isysroot /Volumes/SystemRoot/home/ilyagulya/.darling/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+    requires:
+    - darling-prefix
+    note: |
+      Permanent guest oracle for the ladder's 30 s stall loop (bead dar-liaq). libxpc's
+      -sendMessageWithSynchronousReply: went straight to
+      dispatch_mach_send_with_result_and_wait_for_reply without ever ensuring the connection was
+      activated. While libdispatch still carries DISPATCH_MACH_NEVER_CONNECTED in
+      dmsr_disconnect_cnt (event_kevent.c:3077 sets it at creation; only dispatch_mach_connect,
+      mach.c:286 -- reached only from activateLocked, connection.m:803 <- activate <- resume --
+      clears it), _dispatch_mach_send_push_and_trydrain (mach.c:1623-1634) queues the message and
+      returns WITHOUT draining, so no request is sent, no reply waiter is registered, and the
+      receive that follows cannot be woken: MACH_MSG_TIMEOUT_NONE and, because dmsr_send is
+      MACH_PORT_NULL, no MACH_RCV_SYNC_WAIT (mach.c:801-803, gated on MACH_PORT_VALID(send)).
+      MEASURED 2026-10-13 on prefix-verify14 (both xcodebuild workloads, 40 min, no artifact): the
+      workload's main thread sat in exactly that receive for the whole run --
+      dtape.ering tag=recv_park option=0x0700020E = MACH_RCV_MSG|MACH_RCV_LARGE|
+      MACH_RCV_LARGE_IDENTITY|MACH_MSG_STRICT_REPLY|MACH_RCV_TRAILER_ELEMENTS(7), timeout=0, no
+      MACH_RCV_SYNC_WAIT -- with NO request published on the ring for it, reached from
+      xpc_connection_send_message_with_reply_sync <- CoreSymbolicationDT <- DVTStackBacktrace <-
+      IDEInitialize.
+
+      WHAT THE PATCH DOES. Activate first (idempotent; the connected case then keeps its bounded
+      receive, MACH_RCV_SYNC_WAIT arms, and a peer that dies fails the receive) and return the
+      connection error -- XPC_ERROR_CONNECTION_INTERRUPTED for a named service,
+      XPC_ERROR_CONNECTION_INVALID otherwise, the file's own existing convention -- instead of
+      entering the unbounded receive when the channel was never connected. No timeout is added to
+      _dispatch_mach_msg_reply_recv: Apple's own libdispatch marks this pre-connect phase
+      incomplete (mach.c:1952, rdar://31823384) and Apple's libxpc connects at creation, so the
+      Apple-shaped end state is a FAILED send, not a flaky one.
+
+      WHO THE PEER IS, AND WHY IT HAS NO RECEIVER HERE. The sync send is CoreSymbolicationDT's
+      request to the mach service com.apple.coresymbolicationd (the literal is in the deployed
+      Xcode 26.3 Contents/SharedFrameworks/CoreSymbolicationDT.framework). Xcode's caller is not
+      the divergence: CSCppDaemonConnection's constructor creates that connection and calls
+      xpc_connection_resume (0xfcac5/0xfcad4 create_mach_service, 0xfcaf9 resume, 0xfccd4/0xfcce0
+      the synchronous send), so activation was ATTEMPTED and its bootstrap_look_up failure became
+      the park. Darling's tree carries a coresymbolicationd stub and its LaunchDaemon plist
+      (src/private-frameworks/CoreSymbolication/{src/daemon.c,resources/
+      com.apple.coresymbolicationd.plist}), and the boot chain would load
+      /System/Library/LaunchDaemons (launchctl bootstrap -S System -> system_specific_bootstrap ->
+      load -D all -> glob, launchctl.c:2291/2477/2704) -- but the deployed prefix has NEITHER the
+      daemon nor the plist, and the fixture measures the lookup itself: `lookup
+      name=com.apple.coresymbolicationd kr=1105` (1105 = BOOTSTRAP_NO_MEMORY; launchd's
+      job_mig_look_up2 returns it only on its `if (!j) return BOOTSTRAP_NO_MEMORY` and
+      job_mig_lookup_per_user_context has the same guard, so the code is recorded raw rather than
+      interpreted). Providing that peer is additive work with its own deploy plumbing; this patch
+      is the half that makes a missing peer a failed send instead of an infinite park.
+
+      RED/GREEN ARMS (raw, on prefix-verify14 with the declared guest-cc/guest-cflags, driven by
+      testkit/scripts/run-darling-c-test.sh --name xpcunconn; the same fixture bytes in both):
+        RED   pre-fix runtime, libxpc 5ff653b9... in both copies (restored from the deploy
+              transaction backup, i.e. the current-minus-patch bytes):
+              evidence/xpc-sync-send-unconnected/red-arm-pre-fix.log -- the last line is
+              `XPCUNCONN step=send_sync_never_resumed_begin`, the guest shell is killed after the
+              guest timeout, WEST_TEST_FAILURE_PHASE=run, and no `..._returned` line exists.
+        GREEN fixed runtime, libxpc 14be67e6... in BOTH copies (proved by
+              scripts/darling-deploy-verify.sh --component libxpc, every copy ok):
+              evidence/xpc-sync-send-unconnected/green-arm-post-fix.log -- both subjects return an
+              error object (`never_resumed returned=1 type=error`,
+              `resumed_missing_service returned=1 type=error`, `Connection interrupted`), the
+              mach_msg round-trip control delivers, and the fixture prints
+              XPC_SYNC_SEND_UNCONNECTED_OK.
+      The harness RED arm cannot be selected on this prefix today, the same pre-existing
+      environment limit the sibling entries record (the whole-profile applicability plan is
+      evaluated before --prove-red can select a row, and this prefix carries no guest
+      CommandLineTools at the fixture runner's default path
+      /Library/Developer/CommandLineTools/usr/bin/clang); the raw arms above are run with the
+      declared guest-cc/guest-cflags instead.
+
