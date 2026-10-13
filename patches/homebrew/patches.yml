@@ -5232,3 +5232,105 @@ patches:
       Reproduce by hand: copy the fixture and a driver into
       <prefix>/private/var/tmp, then run the driver through
       `$prefix/bin/darling shell /bin/bash --login -c '/private/var/tmp/relprobe-run.sh'`.
+- path: corefoundation/url-path-allowed-character-set.patch
+  sha256sum: c202146ecc568a529a4731322e5e3d338f21b4156498e03c8843115aea768c5c
+  module: darling/src/external/corefoundation
+  source-branch: fix/constant-collection-immortality
+  source-base: 4d7086d8df2e3b017e0e7284831b424f42e68c36
+  source-commit: 429d7b282b1e035d1965ac4d2f6909eb22c4e959
+  bead: dar-liaq
+  tests:
+  - name: url_path_allowed_character_set_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      runtime-artifacts:
+      - module: darling/src/external/corefoundation
+        build-targets:
+        - CoreFoundation
+        deploy:
+        - System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
+        - libexec/darling/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
+      expect-output-contains:
+      - URLPathAllowedCharacterSet]: unrecognized selector
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/url_path_allowed_character_set_guest.c
+    ok-marker: URLPATH_VERDICT=GREEN
+    timeout-seconds: 300
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    guest-cc: /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+    guest-cflags: -isysroot /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+    requires:
+    - darling-prefix
+    note: |
+      Guest runtime proof for +[NSCharacterSet URLPathAllowedCharacterSet], the
+      accessor the Xcode ladder's DVTFoundation/DevToolsCore pair sends. MEASURED
+      on the unfixed runtime (the patch's parent, deployed on prefix-verify14 as
+      CoreFoundation 4afd5fdb... the prefix's guest-visible and libexec copies
+      both ran it):
+
+        Uncaught Exception: +[NSCharacterSet URLPathAllowedCharacterSet]: unrecognized selector sent to instance 0x7bd992a20360
+        libc++abi: terminating with uncaught exception of type NSException
+        URLPATH_RUN_RC=132
+
+      which is exactly the line the ladder's own guest log carried before this fix
+      (both workloads, /private/var/tmp/xcodebuild-{minproj,iosapp}.out, last
+      real line before the rpc-socket-DENIED pid_for_task abort). The fix is
+      CoreFoundation-only; the Foundation half of the rung is the matching header
+      declaration in darling-foundation (NSCharacterSet.h), which the published
+      SDK surface needs but which this fixture reaches through the runtime and
+      therefore does not gate.
+
+      The fixture measures the accessor's contract and the membership this tree
+      defines: non-nil; two sends return the same object; the set is not mutated
+      by a mutating message while a mutable copy of it IS (positive control); '/'
+      '@' ':' '.' 'A' are members and ';' ' ' '?' '#' are not -- the membership is
+      the tree's own kURLPathAllowedCharacters from the swift-corelibs-foundation
+      submodule's CoreFoundation/URL.subproj/CFURLComponents_URIParser.c, which is
+      also what Apple's CFURLComponents hands out. It also reports, as a NOTE and
+      not a failure, that -[NSString
+      stringByAddingPercentEncodingWithAllowedCharacters:] is still unimplemented:
+      that is a separate API and out of this patch's scope.
+
+      THE HARNESS RED ARM CANNOT RUN ON THIS PREFIX TODAY, and that is a
+      pre-existing environment limit rather than this oracle's: `west test
+      --profile homebrew --prefix <prefix> --prove-red --test
+      empty_collection_singleton_release_guest` (the earlier oracle in this same
+      file) stops at
+
+        FATAL ERROR: darlingserver/psynch-cvwait-balanced.patch: missing required
+        environment for psynch_cvwait_balanced_guest: guest compiler missing in
+        prefix root: /Library/Developer/CommandLineTools/usr/bin/clang, ... ;
+        bootstrap this prefix first: west test --prefix <prefix>
+        --bootstrap-runtime-profile homebrew-guest-toolchain-provisioning
+
+      because the whole-profile applicability plan is evaluated before --test
+      selects a row. The declared RED arm is therefore a specification with its
+      positive reason and its two deploy paths; the raw arms that WERE run are:
+        RED   the parent CoreFoundation rebuilt from this working tree and
+              deployed to both prefix copies
+              (sha256 5c3e16fd59313ce38501371e2c15b71825b2ae79f86cc8ae88c9208fb5bfa3d1),
+              fixture run through scripts/darling-boot-run.sh:
+              evidence/urlpath-charset/red-arm-corrected.log
+        GREEN the fixed CoreFoundation deployed to both copies
+              (sha256 37ddd8b63da1c5804475cb4e68a897153455998aadd824c90142d76aa4755fc4),
+              same driver: evidence/urlpath-charset/green-arm-final.log
+      The guest compiler path is the workspace's canonical Xcode toolchain
+      (docs/environment.md), because the ladder prefix is not provisioned with the
+      guest CommandLineTools the fixture runner defaults to.
+      Reproduce by hand: copy the fixture to <prefix>/private/var/tmp/urlpathprobe.c
+      and a driver that runs the guest clang above into the same directory, then run
+      the driver through
+      `bash scripts/darling-boot-run.sh --prefix <prefix> --poll 'URLPATH_DRIVER_DONE=1'
+      --marker 'URLPATH_DRIVER_DONE=1' --env DARLING_ROOTLESS=1 --env DARLING_NOOVERLAYFS=1
+      --env DARLING_EUNION=1 --cmd '/bin/bash /private/var/tmp/urlpathprobe.sh'`.
