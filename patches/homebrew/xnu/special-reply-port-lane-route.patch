@@ -1,0 +1,141 @@
+From 36e84c09c11de233224b199e006afb6a28bb6248 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 13 Oct 2026 13:27:37 +0000
+Subject: [PATCH] emulation: route thread_get_special_reply_port over the ring
+
+thread_get_special_reply_port had NO route: no ring helper, no plane op. The generated wrapper
+therefore asked the RETIRED per-thread RPC socket for a transport, mach_driver_get_fd declined
+unconditionally, and the trap's own implementation swallowed the refusal into MACH_PORT_NULL.
+MEASURED on prefix-verify14, BOTH xcodebuild workloads of the ladder:
+
+  [rpc-socket-DENIED] pid=797268 tid=797268 call=thread_get_special_reply_port image=kernel delta=0x33D2D denied=1
+  [sigexc-fatal sig=4 code=2 addr=0x7ACA9AC35977 pid=797268 tid=797268]
+  XCB_RC=132
+
+delta=0x33D2D resolves against the DEPLOYED libsystem_kernel to
+dserver_rpc_thread_get_special_reply_port + 0x1d, the wrapper's up-front
+dserver_rpc_hooks_get_socket(). The core (scripts/dwdiag core) names the caller and the death:
+`ud2` at _dispatch_get_thread_reply_port + 0x107 in the deployed libdispatch.dylib, reached from
+_dispatch_mach_send_and_wait_for_reply <- dispatch_mach_send_with_result_and_wait_for_reply <-
+xpc_connection_send_message_with_reply_sync <- CoreSymbolicationDT <- DVTStackBacktrace <-
+IDEInitialize. libdispatch mints the thread's special reply port there once per thread and treats
+a NULL/dead port as unreachable, so MACH_PORT_NULL was not a degraded result: it was the guest's
+death warrant.
+
+Two changes, both about giving the call the transport it needs rather than silencing the refusal:
+
+1. __dserver_ring_thread_get_special_reply_port() -- literally gr_port_trap with this callnum,
+   the helper mach_reply_port/thread_self_trap/host_self_trap already share, because the wire
+   shape is identical (EMPTY request, single-uint32 port reply).
+2. thread_get_special_reply_port_impl() tries that helper FIRST and falls through to the
+   generated wrapper only on a pre-publish miss, where UDS retry is still safe -- exactly the
+   shape mach_reply_port_impl/thread_self_trap_impl use.
+
+The lane is also the correct home rather than an arbitrary one: the trap mints a per-thread port
+(no destroy, no caller-S2C, decidable from the args), the main thread reaches it long after its
+lane is attached, and the lane is where its twin mach_reply_port already lives. The server's
+allowlist and lane class for the callnum live in the sibling darlingserver patch
+(fix/special-reply-port-lane-route), which is what makes the ring route serviceable at all.
+
+REUSE CHECK (before writing anything).
+  1. THIS TREE already carries the implementation: duct-tape xnu/osfmk/kern/ipc_tt.c:1319 and the
+     generated Call::ThreadGetSpecialReplyPort -> dtape_thread_get_special_reply_port are what
+     the datagram path used; the only thing absent was the transport.
+  2. No newer upstream release of this component has such a route (the ring lane is this hard
+     fork's own perf#30 architecture).
+  3. FORKS (checked 2026-10-13 against the read-only VibeDarling checkout): darling-xnu 5506422
+     carries the SAME gap -- its thread_get_special_reply_port_impl is this same two-line shape,
+     with no ring helper and no dserver_ring_* family -- but its mach_driver_get_fd() still
+     returns __dserver_per_thread_socket(), so the per-thread socket is alive there and the wall
+     this patch fixes cannot occur. Nothing to reuse.
+---
+ .../resources/dserver-ring.h                   | 11 +++++++++++
+ .../resources/dserver-ring.c                   | 16 ++++++++++++++++
+ .../src/xnu_syscall/mach/impl/mach_traps.c     | 18 ++++++++++++++++++
+ 3 files changed, 45 insertions(+)
+
+diff --git a/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-ring.h b/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-ring.h
+index 1961ed7f878a920cab0f6707fc384fcdf603bd0f..d1c9cc4d85cb68748eec3bf7164146594cff7bba 100644
+--- a/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-ring.h
++++ b/darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-ring.h
+@@ -56,6 +56,16 @@ int __dserver_ring_task_self_trap(uint32_t* out_port);
+ int __dserver_ring_thread_self_trap(uint32_t* out_port);
+ int __dserver_ring_host_self_trap(uint32_t* out_port);
+ int __dserver_ring_mach_reply_port(uint32_t* out_port);
++// perf#30 (dar-liaq): thread_get_special_reply_port -- mach_reply_port's SPECIAL half,
++// byte-identical wire shape (EMPTY request, single uint32 port reply), so it reuses
++// gr_port_trap verbatim. It had no route at all: the guest wrapper asked the retired
++// per-thread socket for a transport, `mach_driver_get_fd` declined and printed
++// `[rpc-socket-DENIED call=thread_get_special_reply_port image=kernel delta=0x33D2D]`,
++// and the trap's own impl swallowed the refusal into MACH_PORT_NULL -- which libdispatch's
++// _dispatch_get_thread_reply_port turns into a native ud2 (SIGILL), killing the guest
++// xcodebuild before it could build anything. 0 on a valid round-trip; negative only
++// before publish, when UDS fallback is still safe.
++int __dserver_ring_thread_get_special_reply_port(uint32_t* out_port);
+ 
+ // perf #18 P5-bulk: small-inline-body ops with a header-only reply. On a valid ring round-trip each
+ // writes *out_code (the kern_return_t -- use it verbatim, it may be an error like KERN_INVALID_NAME)
+@@ -186,6 +196,7 @@ static inline int __dserver_ring_task_self_trap(uint32_t* out_port) { (void)out_
+ static inline int __dserver_ring_thread_self_trap(uint32_t* out_port) { (void)out_port; return -1; }
+ static inline int __dserver_ring_host_self_trap(uint32_t* out_port) { (void)out_port; return -1; }
+ static inline int __dserver_ring_mach_reply_port(uint32_t* out_port) { (void)out_port; return -1; }
++static inline int __dserver_ring_thread_get_special_reply_port(uint32_t* out_port) { (void)out_port; return -1; }
+ static inline int __dserver_ring_mach_port_deallocate(uint32_t target, uint32_t name, int* out_code) { (void)target; (void)name; (void)out_code; return -1; }
+ static inline int __dserver_ring_mach_port_allocate(uint32_t target, int32_t right, uint64_t name_ptr, int* out_code) { (void)target; (void)right; (void)name_ptr; (void)out_code; return -1; }
+ static inline int __dserver_ring_mach_port_insert_right(uint32_t target, uint32_t name, uint32_t poly, int32_t polyPoly, int* out_code) { (void)target; (void)name; (void)poly; (void)polyPoly; (void)out_code; return -1; }
+diff --git a/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c b/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c
+index c1d45069519e194b4c6ae1d77a9525b42e6eece9..b1a8e58a77e6756fe79256fb6ab1d64329a192d9 100644
+--- a/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c
++++ b/darling/src/libsystem_kernel/emulation/src/linux_premigration/resources/dserver-ring.c
+@@ -2630,6 +2630,22 @@ int __dserver_ring_mach_reply_port(uint32_t* out_port) {
+ 	return gr_port_trap((uint32_t)dserver_callnum_mach_reply_port, out_port);
+ }
+ 
++// perf#30 (dar-liaq): thread_get_special_reply_port is mach_reply_port's SPECIAL half and has the
++// IDENTICAL wire shape -- an EMPTY request and a single-uint32 port reply -- so it reuses gr_port_trap
++// verbatim, exactly as thread_self_trap/host_self_trap reuse the same helper. MEASURED on
++// prefix-verify14, both xcodebuild workloads, on the runtime where this was absent:
++//   [rpc-socket-DENIED] pid=797268 tid=797268 call=thread_get_special_reply_port image=kernel delta=0x33D2D denied=1
++// delta=0x33D2D resolves against the DEPLOYED libsystem_kernel to dserver_rpc_thread_get_special_reply_port
++// + 0x1d -- the generated wrapper's UP-FRONT dserver_rpc_hooks_get_socket() (mach_driver_get_fd, which has
++// declined unconditionally since the per-thread socket was retired). The trap had no ring helper and no
++// plane op, and its impl swallowed the refusal into MACH_PORT_NULL, which libdispatch's
++// _dispatch_get_thread_reply_port turns into a native ud2 (SIGILL at libdispatch+0x35977), killing the
++// main thread of xcodebuild. The lane is this trap's home for the same reason it is mach_reply_port's:
++// port minting/copyout over the fiber, no destroy, no caller-S2C, fixed request/reply bodies.
++int __dserver_ring_thread_get_special_reply_port(uint32_t* out_port) {
++	return gr_port_trap((uint32_t)dserver_callnum_thread_get_special_reply_port, out_port);
++}
++
+ // perf #18 P5 (dar-1il): generic fast path for a small-inline-body op whose reply is HEADER-ONLY
+ // (the meaningful result is the reply hdr's `code` = a kern_return_t, no port/body). Unlike
+ // gr_port_trap (empty request, port reply), this publishes `bodylen` bytes of request body inline
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/mach/impl/mach_traps.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/mach/impl/mach_traps.c
+index db1d99b081680627f69dc0ff8cc7ad42d8036f7d..4ec5107e000a2b458e1161707b5406dbb15b790d 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/mach/impl/mach_traps.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/mach/impl/mach_traps.c
+@@ -1086,6 +1086,24 @@ kern_return_t _kernelrpc_mach_port_unguard_trap_impl(
+ kern_return_t thread_get_special_reply_port_impl(void)
+ {
+ 	unsigned int port_name;
++	// perf#30 (dar-liaq): this trap had NO route at all. MEASURED on prefix-verify14, both xcodebuild
++	// workloads:
++	//   [rpc-socket-DENIED] pid=797268 tid=797268 call=thread_get_special_reply_port image=kernel delta=0x33D2D denied=1
++	// delta=0x33D2D resolves against the DEPLOYED libsystem_kernel to dserver_rpc_thread_get_special_reply_port
++	// + 0x1d, the generated wrapper's up-front dserver_rpc_hooks_get_socket() -- so the refusal was the
++	// guest's own retired per-thread socket and the server never saw the call. Swallowing it into
++	// MACH_PORT_NULL was fatal for the CALLER: libdispatch's _dispatch_get_thread_reply_port mints the
++	// special reply port here (once per thread, which is why there is exactly one denial line) and traps
++	// natively (ud2, SIGILL at libdispatch+0x35977) on a NULL/dead port, killing xcodebuild's main thread
++	// before it built anything. This is mach_reply_port's SPECIAL half and has the identical wire shape
++	// (empty request, single uint32 port reply), so it takes the same lane via gr_port_trap -- the ring
++	// helper falls back only BEFORE publish, where UDS retry is still safe. The lane is also what the
++	// server already keys off (dserver_ring_op_class == SIMPLE_C2S), so the semantics stay the ordinary
++	// Call::ThreadGetSpecialReplyPort -> dtape_thread_get_special_reply_port (directive section 15).
++	int ring_code = __dserver_ring_thread_get_special_reply_port(&port_name);
++	if (ring_code >= 0) {
++		return ring_code == 0 ? port_name : MACH_PORT_NULL;
++	}
+ 	if (dserver_rpc_thread_get_special_reply_port(&port_name) != 0) {
+ 		port_name = MACH_PORT_NULL;
+ 	}

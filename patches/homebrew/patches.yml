@@ -5535,3 +5535,129 @@ patches:
               record): evidence/task-map-corpse-info-route/red-arm.log
         GREEN fixed runtime (darlingserver 69afd4c2...):
               evidence/task-map-corpse-info-route/green-arm.log
+- path: darlingserver/special-reply-port-lane-route.patch
+  sha256sum: a7f38938660ad0f4afd785b1308374c741639b4c779597105fb0c259c7f5f1e5
+  module: darling/src/external/darlingserver
+  source-branch: fix/special-reply-port-lane-route
+  source-base: c93b1f989fdaad2e2b9bdde66e7cb06eb9c22aea
+  source-commit: 590f0f1754b376fe090392de4cc47ad588011b10
+  bead: dar-liaq
+  test-exception:
+    reason: integration-runtime-provider
+    scope: the transport-classification half of the thread_get_special_reply_port ring lane
+    note: >-
+      This patch adds the callnum to DSERVER_RING_C2S_OPCODES (the server's will-service allowlist),
+      to DSERVER_RING_OP_CLASS (SimpleRingC2SEligible, so the guest's ring gate accepts it too), and
+      to RING_GENERATED_SIMPLE (so the generated wrapper takes the lane instead of asking the retired
+      per-thread socket up front). A server-only minus-patch verdict is not meaningful: with the
+      server half reverted but the guest half present the guest publishes the request and the server
+      drops it as not-eligible, and with the guest half reverted the guest wrapper aborts at the
+      socket request before it publishes anything at all. Both modules are reverted by the RED arm
+      declared on the sibling xnu entry (red-proof.source-modules lists this module), and the same
+      guest fixture is its GREEN arm.
+- path: xnu/special-reply-port-lane-route.patch
+  sha256sum: adb4e82eb21fe6631ac421ee758a9c39bec040bee8678cef230ba9b9a35ffdd9
+  module: darling/src/external/xnu
+  source-branch: fix/special-reply-port-lane-route
+  source-base: ea5be4173879cbfd5cfe62dee20ec28e07024bc7
+  source-commit: 36e84c09c11de233224b199e006afb6a28bb6248
+  bead: dar-liaq
+  tests:
+  - name: thread_get_special_reply_port_lane_route_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      source-modules:
+      - darling/src/external/darlingserver
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
+      - module: darling/src/external/xnu
+        build-targets:
+        - system_kernel
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
+      expect-output-contains:
+      - 'call=thread_get_special_reply_port image=kernel'
+      - 'SPRPROBE first port=0x0'
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/thread_get_special_reply_port_lane_route_guest.c
+    ok-marker: THREAD_GET_SPECIAL_REPLY_PORT_LANE_ROUTE_OK
+    timeout-seconds: 300
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    guest-cc: /Volumes/SystemRoot/home/ilyagulya/.darling/Library/Developer/CommandLineTools/usr/bin/clang
+    guest-cflags: -isysroot /Volumes/SystemRoot/home/ilyagulya/.darling/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+    requires:
+    - darling-prefix
+    note: |
+      Guest runtime proof for thread_get_special_reply_port, the call that killed BOTH
+      xcodebuild workloads of this ladder after the pid_for_task and corpse-map rungs
+      were fixed. MEASURED on prefix-verify14, both workloads, on the runtime this
+      patch's parent builds:
+
+        [rpc-socket-DENIED] pid=797268 tid=797268 call=thread_get_special_reply_port image=kernel delta=0x33D2D denied=1
+        [sigexc-fault-map 7aca9ac00000-7aca9ac84000 r-xp 00001000 fc:00 5400587 .../usr/lib/system/libdispatch.dylib]
+        [sigexc-fatal sig=4 code=2 addr=0x7ACA9AC35977 pid=797268 tid=797268]
+        XCB_RC=132
+
+      delta=0x33D2D resolves against the DEPLOYED libsystem_kernel to
+      dserver_rpc_thread_get_special_reply_port + 0x1d (the generated wrapper's up-front
+      dserver_rpc_hooks_get_socket()); mach_driver_get_fd does not exist in the server
+      binary, so the denial is the guest's own retired per-thread RPC socket refusing the
+      transport and the server never saw the call. The core (scripts/dwdiag core) names
+      the caller and the death: `ud2` (0f 0b) at _dispatch_get_thread_reply_port + 0x107
+      in the deployed libdispatch.dylib, reached from _dispatch_mach_send_and_wait_for_reply
+      <- dispatch_mach_send_with_result_and_wait_for_reply <-
+      xpc_connection_send_message_with_reply_sync <- CoreSymbolicationDT <-
+      DVTStackBacktrace <- IDEInitialize. libdispatch mints the thread's special reply port
+      there ONCE per thread (exactly one denial line per run) and traps natively on a
+      NULL/dead port, so MACH_PORT_NULL was the guest's death warrant rather than a
+      degraded result.
+
+      WHAT THE FIX DOES. The trap is mach_reply_port's SPECIAL half with an identical wire
+      shape (EMPTY request, single-uint32 port reply), so it takes the same lane its twin
+      already uses: __dserver_ring_thread_get_special_reply_port() == gr_port_trap with
+      this callnum, tried first by the impl; the callnum joins
+      DSERVER_RING_C2S_OPCODES / DSERVER_RING_OP_CLASS / RING_GENERATED_SIMPLE. The
+      semantics are unchanged -- the server runs the ORDINARY
+      Call::ThreadGetSpecialReplyPort -> dtape_thread_get_special_reply_port, which is what
+      the datagram path used (directive section 15).
+
+      GREEN is the fixture's own contract: both calls return a live port name (neither
+      MACH_PORT_NULL nor MACH_PORT_DEAD) that mach_port_type reports as a SEND+RECEIVE
+      right (type=0x30000), the twin control mach_reply_port() still works, and the process
+      survives to print its verdict -- `SPRPROBE survived_controls=1 first_ok=1 second_ok=1`.
+      RED is the same fixture on the current-minus-patch runtime: `SPRPROBE first port=0x0`
+      with the denial line above, and the control still working, which is what rules out
+      "the runtime is broken" as the explanation.
+
+      THE HARNESS RED ARM CANNOT RUN ON THIS PREFIX TODAY, the same pre-existing
+      environment limit the sibling pid_for_task and corefoundation entries record (the
+      whole-profile applicability plan is evaluated before --prove-red can select a row, and
+      this prefix carries no guest CommandLineTools at the fixture runner's default path
+      /Library/Developer/CommandLineTools/usr/bin/clang). Both raw arms were therefore run
+      on prefix-verify14 with the declared guest-cc/guest-cflags and the supported driver,
+      testkit/scripts/run-darling-c-test.sh --name sprprobe, and are stored verbatim:
+        RED   current-minus-patch runtime (libsystem_kernel 218f9b28..., dyld
+              8052c221..., built from this patch's parents with this tree's other work in
+              place): evidence/thread-get-special-reply-port-lane-route/red-arm2.log,
+              fixture sha256 ad4a8457..., ORACLE_RC=1
+        GREEN fixed runtime (libsystem_kernel 0383d9a8..., dyld 18213c31...,
+              darlingserver 5236a9b4..., all copies verified by
+              scripts/darling-deploy-verify.sh): evidence/thread-get-special-reply-port-lane-route/green-arm-final.log,
+              same fixture sha256, ORACLE_RC=0
+      The GREEN arm's load-bearing lines are the two `port_type kr=0 type=0x30000` readings;
+      the RED arm's is `SPRPROBE first port=0x0` next to the `rpc-socket-DENIED` line.
