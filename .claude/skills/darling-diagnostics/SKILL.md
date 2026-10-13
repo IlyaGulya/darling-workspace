@@ -101,6 +101,13 @@ Canonical sources live in the selected manifest repository:
 * **A run can be served by another prefix's live runtime.** The log looks normal
   and every conclusion is about the wrong artifacts. Use
   `--assert-prefix-maps`; use `darling-trace-guest.sh` to see what a guest maps.
+* **A deploy does not reach an already-running server.** A `darlingserver` that is
+  already serving a prefix keeps serving the bytes it was started with, so a
+  deploy is invisible to it and every conclusion drawn from that run is about the
+  OLD binary. Measured 2026-10-13: a GREEN arm hung against a stale server until
+  the prefix was cleaned up and the run repeated. Shut the prefix down (or
+  otherwise prove the running server's identity) before believing a result that
+  depends on server code, and treat a fresh deploy as unmeasured until then.
 * **A guest process is not identifiable by path**: `/proc/<pid>/exe` is `ENOENT`
   (the image file is gone), `cmdline` is empty, `comm` is the stable name
   (`mldr`, `launchd`, `vchroot`, `shellspawn`), and `maps` is the only readable
