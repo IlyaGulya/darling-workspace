@@ -1266,7 +1266,7 @@ manifest:
     repo-path: darling-swift
     path: darling/src/external/swift
     remote: darling
-    revision: e09912da79811aced276f4d73473973ea9bcc628
+    revision: ab0a7a081d9995041fcff4f84ec50dbd2c74f7d9
     userdata:
       kind: darling-source
       upstream-repository: darling-swift
