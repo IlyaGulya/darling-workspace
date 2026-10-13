@@ -1,0 +1,121 @@
+From ea5be4173879cbfd5cfe62dee20ec28e07024bc7 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 13 Oct 2026 12:20:51 +0000
+Subject: [PATCH] emulation: publish pid_for_task on the process management
+ plane, never abort
+
+pid_for_task had NO ring route and NO plane op, so the generated wrapper asked
+the RETIRED per-thread RPC socket for a transport. MEASURED on prefix-verify14,
+both xcodebuild workloads:
+
+  [rpc-socket-DENIED] pid=670051 tid=670051 call=pid_for_task image=kernel delta=0x3B0A0 denied=1
+  pid_for_task failed (internally): -32   (== -EPIPE, the wrapper's broken-pipe status)
+  XCB_RC=134
+
+delta=0x3B0A0 resolves against the DEPLOYED libsystem_kernel (not the server
+binary: mach_driver_get_fd does not exist there) to `dserver_rpc_pid_for_task
++ 0x20`, the wrapper's up-front `dserver_rpc_hooks_get_socket()`. The core
+names the caller's frames: __simple_abort <- pid_for_task_impl <-
+_darling_mach_syscall <- CSCppMachTask::CSCppMachTask <-
+CSSymbolicatorCreateWithTaskFlagsAndNotification <-
++[DVTStackBacktraceSymbolicator ...] <- IDEInitialize.
+
+Two changes, both about the transport and the failure shape:
+
+1. The process MANAGEMENT PLANE is its home, like mach_port_type (22u),
+   mach_port_get_attributes (32u) and the mk_timer family (33u-36u). The
+   server runs the ORDINARY Call, so the semantics exist once (directive
+   section 15) -- Call::PidForTask and duct-tape's pid_for_task already exist
+   and are what the datagram path used; nothing is being implemented here.
+   The task name travels in payload word 0 and the OUT pid as the GUEST
+   ADDRESS the ordinary Call writes through writeMemory, exactly the shape
+   mach_port_get_attributes uses for its OUT parameters. Only
+   `planeStatus == -1` (nothing published) falls back to the datagram.
+
+2. A transport failure is now a kern_return_t, not a kill. pid_for_task has no
+   fatal case on macOS for ANY input, and its caller here is
+   CoreSymbolicationDT symbolicating an exception backtrace -- aborting inside
+   it destroys the report the call exists to produce. A refused transport has
+   no kern_return_t of its own, so it reports KERN_FAILURE and the caller's own
+   error path runs; the refusal is not silent (mach_driver_get_fd prints
+   `[rpc-socket-DENIED call=pid_for_task ...]`, the plane prints
+   `[plane-refuse]`/`[plane-exhausted]`).
+
+REUSE CHECK (before writing anything). Nothing is being invented here:
+  1. THIS TREE already carries the implementation. The trap's semantics live in
+     the tree's own darlingserver (duct-tape pid_for_task, and the generated
+     Call::PidForTask::processCall -> dtape_pid_for_task); the guest already had
+     dserver_rpc_pid_for_task. The only thing absent was a TRANSPORT, and the
+     tree's own convention for exactly that is the process management plane,
+     where 15 siblings of the same class already are (mach_port_type 22u,
+     mach_port_get_attributes 32u, the mk_timer family 33u-36u, pthread_kill
+     30u, thread_self_trap 31u).
+  2. No newer upstream release of this component supplies such a route: the ring
+     lane plus the process management plane is this hard fork's own perf#30
+     architecture, absent from upstream Darling.
+  3. FORKS (checked 2026-10-13 against the read-only checkout
+     /home/ilyagulya/work/wr-fresh/vibedarling): VibeDarling/darling-xnu 5506422
+     still defines `mach_driver_get_fd() { return __dserver_per_thread_socket(); }`
+     -- its per-thread RPC socket is ALIVE, so the wall this patch fixes cannot
+     occur there -- and its pid_for_task_impl is the pre-fix shape;
+     DSERVER_PROCESS_CONTROL_OP / __dserver_plane_request / dserver_ring_op_class
+     occur nowhere in the fork. There is no route to reuse, only the same
+     transport this patch plugs into, which the fork does not have.
+---
+ .../src/xnu_syscall/mach/impl/mach_traps.c    | 38 +++++++++++++++++--
+ 1 file changed, 35 insertions(+), 3 deletions(-)
+
+diff --git a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/mach/impl/mach_traps.c b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/mach/impl/mach_traps.c
+index c3e0cff..db1d99b 100644
+--- a/darling/src/libsystem_kernel/emulation/src/xnu_syscall/mach/impl/mach_traps.c
++++ b/darling/src/libsystem_kernel/emulation/src/xnu_syscall/mach/impl/mach_traps.c
+@@ -1353,11 +1353,43 @@ kern_return_t pid_for_task_impl(
+ 				mach_port_name_t t,
+ 				int *x)
+ {
+-	int code = dserver_rpc_pid_for_task(t, x);
++	int code = -1;
++	int planeStatus = -1;
++	// perf#30 (directive section 2, dar-liaq): pid_for_task had NO ring route and NO plane op, so it fell to the
++	// retired per-thread socket. MEASURED on prefix-verify14, both xcodebuild workloads:
++	// `[rpc-socket-DENIED] pid=670051 tid=670051 call=pid_for_task image=kernel delta=0x3B0A0 denied=1` resolved
++	// against the deployed libsystem_kernel to `dserver_rpc_pid_for_task + 0x20` -- the generated wrapper's UP-FRONT
++	// `dserver_rpc_hooks_get_socket()` -- followed by `pid_for_task failed (internally): -32` and __simple_abort()
++	// from CoreSymbolicationDT's CSCppMachTask while DVTFoundation symbolicates a backtrace. The process MANAGEMENT
++	// PLANE is its home, like mach_port_type / mach_port_get_attributes / the mk_timer family already there; the
++	// server runs the ORDINARY Call, so the semantics exist once (directive section 15). The task NAME travels in
++	// payload word 0 and the OUT pid as the GUEST ADDRESS the Call writes through writeMemory -- the same shape
++	// mach_port_get_attributes uses for its OUT parameters. Only `planeStatus == -1` (nothing published) falls back
++	// to the datagram.
++	{
++		uint64_t reply0 = 0;
++		planeStatus = __dserver_plane_request_ex(DSERVER_PROCESS_CONTROL_OP_PID_FOR_TASK,
++			(uint64_t)(uint32_t)t, (uint64_t)(uintptr_t)x, 0, 0, &reply0, 0);
++		if (planeStatus != -1) {
++			// `planeStatus` IS the trap's reply code (the server publishes it as reply_status, the same value the
++			// datagram path returned), so an invalid task name keeps its own kern_return_t -- KERN_FAILURE -- and is
++			// not confused with a transport failure.
++			code = planeStatus;
++		}
++	}
++	if (planeStatus == -1) {
++		code = dserver_rpc_pid_for_task(t, x);
++	}
+ 
+ 	if (code < 0) {
+-		__simple_printf("pid_for_task failed (internally): %d\n", code);
+-		__simple_abort();
++		// APPLE-SHAPED FAILURE (dar-liaq). pid_for_task returns a kern_return_t and must NEVER kill its caller;
++		// Apple's man page for task_for_pid/pid_for_task has no fatal case, and the caller here is CoreSymbolication
++		// symbolicating an exception backtrace -- an abort inside it destroys the very report the call exists to
++		// produce. A transport that cannot carry the request is not the caller's fault and has no kern_return_t of
++		// its own, so it is reported as KERN_FAILURE and the caller's own error path runs. The refusal itself is not
++		// silent: mach_driver_get_fd prints `[rpc-socket-DENIED call=pid_for_task ...]` and the plane prints
++		// `[plane-refuse]/[plane-exhausted]`, so the transport state stays visible in the run log.
++		return KERN_FAILURE;
+ 	}
+ 
+ 	return code;
+-- 
+2.43.0
+
