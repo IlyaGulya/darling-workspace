@@ -5930,3 +5930,147 @@ patches:
       NOT COVERED, recorded: +[NSArray arrayWithContentsOfURL:error:] still invents
       NSArrayErrorDomain/-1 the same way (same defect one method away, unmeasured here).
 
+- path: foundation/regular-expression-range-count.patch
+  sha256sum: 94fb53505ba360ba9615e65b2324423a0ffca1d80e954d36703d99594ab0a340
+  module: darling/src/external/foundation
+  source-branch: fix/ladder-constant-number-literals
+  source-base: 102241140f4b55f814efe7f782688d1251751fc2
+  source-commit: 5866910c245bdee9c255ee708b709a9da83fe805
+  bead: dar-liaq
+  tests:
+  - name: regular_expression_range_count_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      runtime-artifacts:
+      - module: darling/src/external/foundation
+        build-targets:
+        - Foundation
+        deploy:
+        - System/Library/Frameworks/Foundation.framework/Versions/C/Foundation
+        - libexec/darling/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation
+      expect-failure-phase:
+      - run
+      expect-output-contains:
+      - REGEX-CHECK label=no-optional name=number-of-ranges got=7 want=5
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/regular_expression_range_count_guest.c
+    ok-marker: REGEX_VERDICT=GREEN
+    timeout-seconds: 300
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    guest-cc: /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+    guest-cflags: -isysroot /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+    requires:
+    - darling-prefix
+    note: |
+      Permanent guest oracle for the RANGE COUNT AND GROUP RANGES of an NSRegularExpression match
+      (NSTextCheckingResult). The ladder's wall was -[DVTBuildVersion initWithString:] in DVTFoundation,
+      reached from IDEInitialize through +[DVTToolsInfo toolsBuildVersion] with Xcode's own
+      Contents/version.plist ProductBuildVersion:
+
+        [MT] DVTAssertions: ASSERTION FAILURE in DVTFrameworks/DVTFoundation/DeveloperStructure/DVTBuildVersion.m:48
+        Details:  There must be five ranges in this build version match
+          3 -[DVTBuildVersion initWithString:].cold.2   4 -[DVTBuildVersion initWithString:]
+          5 +[DVTBuildVersion buildVersionWithString:]  6 __33-[DVTToolsInfo toolsBuildVersion]_block_invoke
+         13 -[DVTToolsInfo toolsBuildVersion]           14 IDEInitialize
+        [sigexc-fatal sig=4 code=2 addr=0x78F6133C747F]  XCB_RC=132
+
+      The check is not inferred from the message: DVTFoundation's x86_64 slice (Xcode 26.3,
+      /Contents/SharedFrameworks/DVTFoundation.framework/Versions/A/DVTFoundation) has
+      -[DVTBuildVersion initWithString:] at 0x302d9, and at 0x303b6 it sends a selector to the match
+      object, then 0x303c6 `cmpq $0x5, %rax; 0x303ca jne 0x305ce`, and 0x305ce calls
+      -[DVTBuildVersion initWithString:].cold.1, which passes line 0x30 (48) and the CFString
+      "There must be five ranges in this build version match" to __DVTAssertionFailureHandler. The
+      pattern +[DVTBuildVersion buildVersionRegex] installs is ^(\d+)([A-Z])(\d+)([a-z]?)$ (four
+      capture groups), and the subject is "17C529" for the Xcode under test, so a faithful match
+      reports five ranges. The caller then reads rangeAtIndex: 1..4 and validates (line 49,
+      "Build version is not valid") -- the next rung if it is reached.
+
+      The backing implementation is OURS and was named before anything changed: the deployed
+      Foundation.framework defines _OBJC_CLASS_$_NSRegularExpression and libswiftFoundation (reexported
+      by Foundation) does not, so +[NSRegularExpression regularExpressionWithPattern:options:error:]
+      lands in foundation/src/NSRegularExpression.m over ICU; the match object is
+      foundation/src/NSRegularExpressionCheckingResult.m, and NSExtendedRegularExpressionCheckingResult
+      had no count ivar and answered numberOfRanges with the storage limit 7.
+
+      The oracle gates three arms in one process with no compile-time Foundation reference (dlopen +
+      objc_msgSend + sel_registerName): (1) the wall's own input, ProductBuildVersion with the optional
+      group present but empty -> numberOfRanges 5 and {0,6} {0,2} {2,1} {3,3} {6,0}, the last being an
+      EMPTY MATCH and not NSNotFound; (2) the same pattern with the optional group matching ->
+      numberOfRanges 5 and {6,1}; (3) ^(a)|(b)$ on "a" -> numberOfRanges 3 with the second group
+      {NSNotFound, 0}, so the unparticipating case cannot be faked with a zero-length range. The private
+      rangeArray is reported as a NOTE (REGEX-NOTE), not gated.
+
+      THE HARNESS RED ARM CANNOT RUN ON THIS PREFIX TODAY -- the pre-existing environment limit the
+      sibling entries record, MEASURED with this test's own invocation
+      (evidence/regex-range-rung/harness-prove-red-attempt.log):
+        $ west test --profile homebrew --prefix /home/ilyagulya/work/wr-fresh/prefix-verify14 \
+            --prove-red --test regular_expression_range_count_guest
+        FATAL ERROR: darlingserver/psynch-cvwait-balanced.patch: missing required environment for
+        psynch_cvwait_balanced_guest: guest compiler missing in prefix root:
+        /Library/Developer/CommandLineTools/usr/bin/clang ... bootstrap this prefix first ...
+      The whole-profile applicability plan is evaluated before --test selects a row and requires the guest
+      CommandLineTools this prefix lacks. The raw arms that WERE run are the
+      same fixture (sha256 3eb7d499ea428b3d39e165cdf81cd12b9933bdf3b729db7d8cada37fbd576aee) with the same
+      declaration, driven by evidence/regex-range-rung/regexprobe.sh
+      (sha256 605deba05a60f0f4ad5eec262f1415a09b20bbf1a42e0267428e8d9d15f71cc7), which compiles inside
+      the guest with the declared guest-cc/guest-cflags because the prefix carries no guest CLT:
+        RED   the deployed, unfixed Foundation (build tree and both prefix copies,
+              sha256 9fa81e9454990f88...), evidence/regex-range-rung/red-arm-deployed.log:
+              REGEX-MATCH label=no-optional ... captureGroups=4 numberOfRanges=7 whole={0,6},
+              REGEX-CHECK label=no-optional name=number-of-ranges got=7 want=5,
+              REGEX-NOTE label=no-optional rangeArray-count=7,
+              REGEX_VERDICT=RED, REGEX_RUN_RC=1.
+        GREEN the fixed Foundation (5866910c2, build tree and BOTH prefix copies,
+              sha256 6cd5e0b8c69d9b95...), evidence/regex-range-rung/green-arm.log:
+              REGEX-MATCH label=no-optional ... numberOfRanges=5 whole={0,6},
+              REGEX-RANGE label=no-optional idx=0..4 got={0,6} {0,2} {2,1} {3,3} {6,0},
+              REGEX-MATCH label=with-optional subject=17C529a ... numberOfRanges=5 idx=4 {6,1},
+              REGEX-MATCH label=unparticipating ... numberOfRanges=3 idx=2 {9223372036854775807,0},
+              REGEX_VERDICT=GREEN, REGEX_RUN_RC=0.
+      Reproduce by hand: cp evidence/regex-range-rung/regexprobe.sh
+      <prefix>/private/var/tmp/regexprobe.sh, then run
+      `bash scripts/darling-boot-run.sh --prefix <prefix> --wait 180 --poll 'REGEX_DRIVER_DONE'
+      --status-marker 'REGEX_RUN_RC=' --marker 'REGEX_DRIVER_DONE=1' --log <LOG>
+      --cmd '/bin/bash /private/var/tmp/regexprobe.sh'`.
+      NOT COVERED, recorded: -rangeAtIndex: with an index >= numberOfRanges still reads the storage slot
+      rather than raising NSRangeException (the count is now correct, so no caller that respects it
+      reaches that read); and this rung does not touch whatever DVTBuildVersion does after the five ranges
+      are accepted.
+
+      THE LADDER AFTER THIS RUNG (verbatim, scripts/xcodebuild-workload-run.sh --workload both on
+      prefix-verify14, evidence/regex-range-rung/ladder-run.log). The assertion this patch's test gates is
+      GONE from both workloads' own streams (grep -c DVTBuildVersion = 0 in xcodebuild-minproj.out and
+      xcodebuild-iosapp.out), and both now die later, in the error-reporting path of the build tool:
+        minproj guest_rc=132 harness=VERDICT: FAIL artifact=none  (waited 11s)
+        iosapp  guest_rc=132 harness=VERDICT: FAIL artifact=none  (waited 12s)
+      with the same exception and the same stack in both own streams (only the instance pointer differs,
+      which is address-space layout; this is minproj's):
+        ** INTERNAL ERROR: Uncaught exception **
+        Uncaught Exception: +[NSDate now]: unrecognized selector sent to instance 0x7FC9845CBE40
+        Stack:
+          4   +[NSObject(NSObject) doesNotRecognizeSelector:] (in CoreFoundation)
+          5   ___forwarding___ (in CoreFoundation)
+          6   _CF_forwarding_prep_0 (in CoreFoundation)
+          7   -[Xcode3CommandLineBuildTool resolveErrorTriageResultBundleDestination] (in Xcode3Core)
+          8   -[Xcode3CommandLineBuildTool saveResultBundleForError:triageWithSchemeTask:error:] (in Xcode3Core)
+          9   -[Xcode3CommandLineBuildTool _printError:schemeTask:andFailWithCode:] (in Xcode3Core)
+         10   -[Xcode3CommandLineBuildTool _printErrorString:andFailWithCode:] (in Xcode3Core)
+         11   -[Xcode3CommandLineBuildTool run] (in Xcode3Core)
+         12   XcodeBuildMain (in libxcodebuildLoader.dylib)
+        [sigexc-fatal sig=4 code=2 addr=0x7FC982B0847F pid=1369742 tid=1369742]
+        XCB_RC=132
+      So the NEXT wall is Foundation's missing +[NSDate now] (declared macOS 13+/iOS 16+, absent from this
+      tree's Foundation: no "now" selector string in the deployed dylib at all), reached from Xcode3Core's
+      error-triage path -- which also hides the build ERROR the tool was trying to print, so that error is
+      not yet readable from the stream.

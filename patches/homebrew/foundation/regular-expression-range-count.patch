@@ -1,0 +1,182 @@
+From 5866910c245bdee9c255ee708b709a9da83fe805 Mon Sep 17 00:00:00 2001
+From: Ilya Gulya <ilya@gulya.me>
+Date: Tue, 13 Oct 2026 18:05:56 +0000
+Subject: [PATCH] Foundation: a match reports the ranges it has, not the
+ storage it can hold
+
+An NSRegularExpression match is one of the NSTextCheckingResult subclasses in
+NSRegularExpressionCheckingResult.m. The simple one carried a _numberOfRanges ivar; the
+EXTENDED one did not, so -numberOfRanges answered the storage limit
+(NSRegularExpressionCheckingResultExtendedLimit, 7) instead of the number of ranges the
+match actually has. The same confusion ran through -rangeArray (7 NSValues, two of them
+uninitialized storage for a five-range match) and -_adjustRangesWithOffset: (7 slots
+adjusted), and -replacementStringForResult:inString:offset:template: bounded its group
+indices by that number.
+
+WHAT CHANGED.
+* NSExtendedRegularExpressionCheckingResult gets the _numberOfRanges ivar the simple class
+  already had, records the count it is initialized with, and answers -numberOfRanges with
+  it; -rangeArray and -_adjustRangesWithOffset: walk that count instead of the limit.
+  NSSimpleRegularExpressionCheckingResult's -rangeArray and -_adjustRangesWithOffset: get
+  the same bound: a result has one range for the whole match plus one per capture group,
+  never one per storage slot.
+* The ICU match loop makes an unparticipating group explicit: ICU answers -1 for both ends
+  of a group that did not participate, and the old code derived the LENGTH from that
+  sentinel location, which happens to give 0 only because ICU also answers -1 for the end.
+  It now stores {NSNotFound, 0}, which is what Darwin's match reports.
+
+MEASURED. Guest oracle tests/regular_expression_range_count_guest.c (dlopen + objc_msgSend,
+no compile-time Foundation reference), run in the guest through scripts/darling-boot-run.sh
+with the workspace's Xcode clang. RED on the deployed Foundation before this commit
+(sha256 9fa81e9454990f88..., evidence/regex-range-rung/red-arm-deployed.log):
+
+  REGEX-MATCH label=no-optional pattern=^([0-9]+)([A-Z])([0-9]+)([a-z]?)$ subject=17C529 \
+      class=NSExtendedRegularExpressionCheckingResult captureGroups=4 numberOfRanges=7 whole={0,6}
+  REGEX-CHECK label=no-optional name=number-of-ranges got=7 want=5
+  REGEX-NOTE label=no-optional rangeArray-count=7
+  REGEX-RANGE label=no-optional idx=4 got={6,0} want={6,0}
+  REGEX_VERDICT=RED
+  REGEX_RUN_RC=1
+
+and that count is the Xcode ladder's wall: -[DVTBuildVersion initWithString:] (DVTFoundation
+x86_64 slice 0x302d9) sends -numberOfRanges to the match object and, at 0x303c6,
+`cmpq $0x5, %rax; jne` -> cold.1, the assertion at DVTBuildVersion.m:48 ("There must be five
+ranges in this build version match") whose failure handler's ud2 kills both xcodebuild
+workloads (XCB_RC=132). The subject is the ProductBuildVersion of the Xcode under test
+(Contents/version.plist, "17C529"), and the pattern has four capture groups, so a faithful
+match reports five ranges.
+
+The semantics fixed here are the vendored reference's own, stated in the same words in this
+tree: corefoundation/submodules/swift-corelibs-foundation Sources/Foundation/
+NSTextCheckingResult.swift, `override var numberOfRanges: Int { return rangeArray.count }`,
+with range(at:) an index into that array and a not-found location normalized to
+{NSNotFound, 0}.
+
+GREEN on the same oracle after this lands (build tree and BOTH prefix copies at
+sha256 6cd5e0b8c69d9b95..., evidence/regex-range-rung/green-arm.log):
+
+  REGEX-MATCH label=no-optional ... captureGroups=4 numberOfRanges=5 whole={0,6}
+  REGEX-RANGE label=no-optional idx=0..4 got={0,6} {0,2} {2,1} {3,3} {6,0}
+  REGEX-MATCH label=with-optional subject=17C529a ... numberOfRanges=5 whole={0,7} \
+      idx=4 got={6,1} want={6,1}
+  REGEX-MATCH label=unparticipating pattern=^(a)|(b)$ subject=a ... numberOfRanges=3 \
+      idx=2 got={9223372036854775807,0} want={9223372036854775807,0}
+  REGEX_VERDICT=GREEN
+  REGEX_RUN_RC=0
+
+9223372036854775807 is NSNotFound. The no-optional arm's group 4 is {6,0} -- the optional
+([a-z]?) group DID participate and matched empty, which is a different fact from a group
+that did not participate and is exactly why both arms exist.
+
+WHAT THIS DOES NOT COVER. -rangeAtIndex: with an index >= numberOfRanges still reads the
+storage slot instead of raising: the count is now right, so no caller that respects it can
+reach that read, and Darwin's exception for it could not be measured on this host. The
+NSTextCheckingResult classes this tree does not implement (NSDataDetector's results, the
+substitution/link/date results) are untouched.
+---
+ src/NSRegularExpression.m               | 16 ++++++++++++++--
+ src/NSRegularExpressionCheckingResult.h |  1 +
+ src/NSRegularExpressionCheckingResult.m | 16 +++++++++++-----
+ 3 files changed, 26 insertions(+), 7 deletions(-)
+
+diff --git a/src/NSRegularExpression.m b/src/NSRegularExpression.m
+index 8b9b0c451..0ea1aa1e7 100644
+--- a/src/NSRegularExpression.m
++++ b/src/NSRegularExpression.m
+@@ -269,8 +269,20 @@ static UBool enumerateFindProgressCallback(const void *context, int64_t matchInd
+             int64_t location = uregex_start64(regexp, i, &error);
+             if (U_SUCCESS(error))
+             {
+-                ranges[i].location = location == -1 ? NSNotFound : location;
+-                ranges[i].length = uregex_end64(regexp, i, &error) - location;
++                int64_t end = uregex_end64(regexp, i, &error);
++                if (U_SUCCESS(error) && location == -1)
++                {
++                    /* A group that did not participate: ICU answers -1 for both ends, and Darwin's match
++                     * reports {NSNotFound, 0} -- a length derived from the sentinel location would be a
++                     * plausible-looking wrong range, so the sentinel is made explicit here (the same
++                     * normalisation swift-corelibs-foundation's NSRegularExpressionCheckingResult applies). */
++                    ranges[i] = NSMakeRange(NSNotFound, 0);
++                }
++                else if (U_SUCCESS(error))
++                {
++                    ranges[i].location = location;
++                    ranges[i].length = end - location;
++                }
+             }
+         }
+ 
+diff --git a/src/NSRegularExpressionCheckingResult.h b/src/NSRegularExpressionCheckingResult.h
+index 2f6f2a640..21393e2aa 100644
+--- a/src/NSRegularExpressionCheckingResult.h
++++ b/src/NSRegularExpressionCheckingResult.h
+@@ -46,6 +46,7 @@ NS_REQUIRES_PROPERTY_DEFINITIONS
+ {
+     NSRegularExpression *_regularExpression;
+     NSRange _ranges[NSRegularExpressionCheckingResultExtendedLimit];
++    NSUInteger _numberOfRanges;
+ }
+ 
+ - (id)initWithRangeArray:(NSArray *)ranges regularExpression:(NSRegularExpression *)expression;
+diff --git a/src/NSRegularExpressionCheckingResult.m b/src/NSRegularExpressionCheckingResult.m
+index b8b629631..8f4645609 100644
+--- a/src/NSRegularExpressionCheckingResult.m
++++ b/src/NSRegularExpressionCheckingResult.m
+@@ -119,7 +119,7 @@
+ - (NSArray *)rangeArray
+ {
+     NSMutableArray *rangeArray = [[NSMutableArray alloc] init];
+-    for (NSUInteger idx = 0; idx < NSRegularExpressionCheckingResultSimpleLimit; idx++)
++    for (NSUInteger idx = 0; idx < _numberOfRanges; idx++)
+     {
+         [rangeArray addObject:[NSValue valueWithBytes:&_ranges[idx] objCType:@encode(NSRange)]];
+     }
+@@ -138,7 +138,7 @@
+ 
+ - (BOOL)_adjustRangesWithOffset:(NSInteger)offset
+ {
+-    for (NSUInteger i = 0; i < NSRegularExpressionCheckingResultSimpleLimit; ++i) {
++    for (NSUInteger i = 0; i < _numberOfRanges; ++i) {
+         _ranges[i].location += offset;
+     }
+     return YES;
+@@ -182,6 +182,12 @@
+     self = [super init];
+     if (self)
+     {
++        /* The storage is a fixed array, but the RESULT has exactly `count` ranges: the whole match plus one
++         * per capture group. Darwin's match answers -numberOfRanges with that count (and the vendored
++         * reference in this tree, swift-corelibs-foundation's NSRegularExpressionCheckingResult, derives it
++         * from the range array it was handed), so the limit is a storage bound and not the reported count. */
++        NSAssert(count <= NSRegularExpressionCheckingResultExtendedLimit, @"Should be no more than %u ranges", NSRegularExpressionCheckingResultExtendedLimit);
++        _numberOfRanges = count;
+         memcpy(_ranges, ranges, count * sizeof(NSRange));
+         _regularExpression = [expression retain];
+     }
+@@ -197,7 +203,7 @@
+ - (NSArray *)rangeArray
+ {
+     NSMutableArray *rangeArray = [[NSMutableArray alloc] init];
+-    for (NSUInteger idx = 0; idx < NSRegularExpressionCheckingResultExtendedLimit; idx++)
++    for (NSUInteger idx = 0; idx < _numberOfRanges; idx++)
+     {
+         [rangeArray addObject:[NSValue valueWithBytes:&_ranges[idx] objCType:@encode(NSRange)]];
+     }
+@@ -211,12 +217,12 @@
+ 
+ - (NSUInteger)numberOfRanges
+ {
+-    return NSRegularExpressionCheckingResultExtendedLimit;
++    return _numberOfRanges;
+ }
+ 
+ - (BOOL)_adjustRangesWithOffset:(NSInteger)offset
+ {
+-    for (NSUInteger i = 0; i < NSRegularExpressionCheckingResultExtendedLimit; ++i)
++    for (NSUInteger i = 0; i < _numberOfRanges; ++i)
+     {
+         _ranges[i].location += offset;
+     }
+-- 
+2.43.0
+
