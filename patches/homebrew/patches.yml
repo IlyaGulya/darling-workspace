@@ -5152,6 +5152,23 @@ patches:
   source-base: 79352385a4de207357cd8eac7c40f16b30451960
   source-commit: 98156c8e22e2112ded63dfad4947148ad34043eb
   bead: dar-liaq
+  test-exception:
+    reason: behavioral-proof-on-sibling-patch
+    scope: >-
+      The adjacent homebrew corefoundation/constant-collection-immortality.patch
+      runtime gate; its empty_collection_singleton_release_guest fixture binds
+      __NSArray0__ and releases it, which cannot run at all without these objects.
+    note: >-
+      This entry declares no standalone behavioral test. What it fixes is the
+      static-storage identity of __NSArray0__struct/__NSDictionary0__struct and
+      the NSConstantArray/NSConstantDictionary classes, and its observable
+      contract is exactly what a client that imports the symbol sees: without
+      the patch dyld stops with "Symbol not found: ___NSArray0__struct" when
+      loading DVTSystemPrerequisites' importer, with it the symbol resolves to
+      the singleton. That load-time contract is recorded in this entry's note
+      and in the deployed prefix evidence rather than executed by a registered
+      fixture; a guest fixture that binds __NSArray0__struct and asserts the
+      identity is the deferred behavioral owner (bead dar-liaq).
   note: |
     The static-storage empty-collection singletons, committed AS FOUND from this
     session's working tree (the deployed prefix already ran it): __NSArray0__struct
@@ -5257,7 +5274,7 @@ patches:
         - System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
         - libexec/darling/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
       expect-output-contains:
-      - URLPathAllowedCharacterSet]: unrecognized selector
+      - 'URLPathAllowedCharacterSet]: unrecognized selector'
     runner: guest-c-fixture
     repo: darling-workspace
     script: tests/url_path_allowed_character_set_guest.c
