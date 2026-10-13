@@ -23,6 +23,14 @@ refs, and agent handoff.
   On a fresh checkout, review it, run `mise trust`, then run `mise install`
   from `darling-workspace`; from the West workspace root use
   `mise -C darling-workspace trust` and `mise -C darling-workspace install`.
+- A shell that this project's configuration has not activated will not find the
+  tools: `mise`, `west` and `br` are then absent from `PATH`, and every command
+  below fails with "command not found". Use `$HOME/.local/bin/mise`,
+  `$HOME/.local/bin/west` and `$HOME/.local/bin/br`, or prepend
+  `$HOME/.local/bin` to `PATH` for the invocation. `west dw beads` needs `br` on
+  `PATH`; with the tool present but the name unresolvable the alias fails with
+  `FileNotFoundError: 'br'`. Do not install another copy or a wrapper, and do
+  not conclude a tool is missing before checking `$HOME/.local/bin`.
 - Run workspace orchestration with `mise run dw ...` and West commands with
   `mise run west ...`. Both tasks select the pinned environment and forward
   arguments and standard streams to the command. From the West workspace root,
@@ -57,6 +65,20 @@ refs, and agent handoff.
   installed skill copies and agent entry references synchronized when changing
   this workflow; `mise run dw setup-local` preserves an existing differing
   source instruction file, so it is not an overwrite/synchronization command.
+- This file and the harness's skill roster are indexes, not the tool bodies. A
+  tooling question is not answered until the body has been read:
+  `skill://darling-diagnostics`, `skill://darling-boot`,
+  `skill://darling-durability`, `docs/tooling.md`, `docs/darling-debugger.md`.
+  The exact invocation, its prerequisites and its known silent-failure modes
+  live there; treating a one-line roster entry as the contract is how an agent
+  ends up hand-rolling a tool that already exists.
+- A delegated agent does NOT receive this file automatically. Measured
+  2026-10-13: a fresh `task` child's project context held only the workstation
+  block, with zero occurrences of `west`, `mise`, `prefix`, `dwdiag` or
+  `AGENTS.md` anywhere in its context. Every brief therefore either inlines the
+  contract the child needs (workspace root, the exact run invocation, prefix
+  hygiene, one prefix-backed run at a time, what must not be edited) or orders
+  it to read this file and the matching skill before acting.
 - Keep agent instructions and skills normative: commands, contracts, ownership
   and safety rules. Store chronology, incident narratives, measurements and
   one-off acceptance results in Beads or diagnostic evidence.
@@ -685,8 +707,11 @@ derivation ran.
   - Live thread state in a running guest - what the server believes about ONE
     thread, correlated with the host Linux tid and the guest identity:
     `darling-debug --prefix PREFIX thread --host-tid TID` (also `list`, `wait`,
-    `transport`, `identity-map`), or the same commands from upstream LLDB via
-    `tools/darling-lldb/darling.py`. It is read-only, needs
+    `transport`, `identity-map`), or the same commands from upstream LLDB via the
+    LLDB glue in the COMPONENT checkout,
+    `darling/src/external/darlingserver/tools/darling-lldb/darling.py`
+    (`darling-debug` itself is a bin of the `darling-debug-runner` sibling
+    repository: `cargo build --bin darling-debug`). It is read-only, needs
     `DSERVER_DEBUG_ABI=1` in the launcher's environment, and reports state it
     cannot supply as `unavailable` rather than guessing. It forms the
     hypothesis; `dwdiag` is still what proves the fix. See
