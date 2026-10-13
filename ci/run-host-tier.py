@@ -23,6 +23,9 @@ CONTRACTS = (
     "tests/run-trap-contract.sh",
     "tests/run-loops-contract.sh",
     "tests/run-core-contract.sh",
+    # `dwdiag identity`'s census. It writes its core with gdb (`generate-core-file`) rather than through the kernel's
+    # core_pattern, so it cannot fight run-core-contract.sh for the global setting while both run in this tier.
+    "tests/run-identity-contract.sh",
     "tests/run-process-control-slot-ownership-contract.sh",
     "tests/run-truthful-nofile-contract.sh",
     "tests/run-bnns-random-generator-contract.sh",

@@ -108,6 +108,16 @@ fn symbol_name(name: &str) -> &str {
     name.strip_prefix('_').unwrap_or(name)
 }
 
+/// A JSON STRING: `jesc` escapes the content and this is what puts the QUOTES on it.
+///
+/// MEASURED, on this very command: composing objects from pre-encoded values while passing bare `jesc` output
+/// produced `{"core":/tmp/core.1}` -- text that looks like JSON to a human and that no parser accepts, which is the
+/// one outcome a `--json` mode must never have. `jesc` stays as it is because the long hand-written `format!`
+/// objects elsewhere already supply their own quotes.
+fn jstr(s: &str) -> String {
+    format!("\"{}\"", jesc(s))
+}
+
 // ----------------------------------------------------------------------------------------------------------------
 // symbolize
 // ----------------------------------------------------------------------------------------------------------------
@@ -1518,6 +1528,10 @@ struct FaultMark {
     addr: u64,
     ip: u64,
     ip_from_addr: bool,
+    /// The thread the GUEST faulted in, as the handler printed it (`tid=%d`, decimal). It is the one field that ties
+    /// a log to a core's thread, which is why `core --log` reports it next to the core's own note order. The newer
+    /// handler generation prints no `tid=`, so this is an option rather than a field to fall back on.
+    tid: Option<u32>,
 }
 
 fn last_fault_mark(text: &str) -> Option<FaultMark> {
@@ -1539,10 +1553,16 @@ fn last_fault_mark(text: &str) -> Option<FaultMark> {
                 .find_map(|w| w.strip_prefix("sig=").and_then(|v| v.parse::<i64>().ok()))
                 .unwrap_or(0);
             let addr = grab(fatal, "addr=").unwrap_or(0);
+            // `tid=%d` is DECIMAL (unlike the addresses on the same line), so it is parsed as such and never through
+            // the hex helper above.
+            let tid = fatal
+                .split_whitespace()
+                .find_map(|w| w.strip_prefix("tid=").map(|v| v.trim_end_matches(']').to_string()))
+                .and_then(|v| v.parse::<u32>().ok());
             match grab(fatal, "rip=") {
-                Some(rip) => Some(FaultMark { sig, addr, ip: rip, ip_from_addr: false }),
+                Some(rip) => Some(FaultMark { sig, addr, ip: rip, ip_from_addr: false, tid }),
                 None if addr_is_instruction_pointer(sig) => {
-                    Some(FaultMark { sig, addr, ip: addr, ip_from_addr: true })
+                    Some(FaultMark { sig, addr, ip: addr, ip_from_addr: true, tid })
                 }
                 None => None,
             }
@@ -1749,12 +1769,12 @@ impl MachoSegmentCache {
 /// plus `[sigexc-fault-map <the one maps line containing si_addr>]`, so both generations are accepted here: the
 /// mapping comes from a dump when there is one and from the fault-map mark otherwise, and the instruction pointer is
 /// `rip=` when present and `addr=` on the synchronous traps otherwise. Both facts are printed as they were obtained.
-fn symbolize_guest_fault(text: &str, json: bool) -> Result<ExitCode> {
+fn symbolize_guest_fault(text: &str, json: bool, link: Option<&CoreLink>) -> Result<ExitCode> {
     let mark = last_fault_mark(text).context(
         "no [sigexc-fatal line this tool can symbolize: need rip=, or addr= on a synchronous trap \
          (SIGILL/SIGSEGV/SIGBUS/SIGTRAP/SIGFPE)",
     )?;
-    let FaultMark { sig, addr, ip, ip_from_addr } = mark;
+    let FaultMark { sig, addr, ip, ip_from_addr, .. } = mark;
     let rip = ip;
 
     let maps = fault_mappings(text);
@@ -1893,10 +1913,11 @@ fn symbolize_guest_fault(text: &str, json: bool) -> Result<ExitCode> {
         println!(
             "{{\"sig\":{sig},\"addr\":\"{addr:#x}\",\"ip\":\"{rip:#x}\",\"ip_from_addr\":{ip_from_addr},\
              \"image\":\"{}\",\"base\":\"{lo:#x}\",\"file_offset\":\"{target:#x}\",\"image_addr\":\"{image_addr:#x}\",\
-             \"insn\":\"{}\",\"trap\":\"{}\"}}",
+             \"insn\":\"{}\",\"trap\":\"{}\",\"core\":{}}}",
             jesc(&path),
             jesc(&hex),
-            jesc(trap)
+            jesc(trap),
+            link.map(core_link_json).unwrap_or_else(|| "null".to_string())
         );
     }
     Ok(ExitCode::SUCCESS)
@@ -1933,6 +1954,89 @@ fn newest_usable_crash_log() -> Option<String> {
     None
 }
 
+/// The core a run left, DISCOVERED from `core_pattern` rather than assumed.
+///
+/// MEASURED need: a log whose marks show a signal death says the guest faulted, and says nothing about the OPERANDS
+/// -- the masked lock owner, the once word, the thread's own TSD identity. Those live in one instant of the process,
+/// which only a core keeps, so the command that reads the fault has to name the core and the command that reads the
+/// operands. The directory is derived from the pattern (`/tmp/t4cores/core.%p` is a SETTING, not a constant) and the
+/// comparison against the log's own mtime is printed, because an earlier run's core sits in the same directory and
+/// reading it as this run's is how evidence gets misattributed.
+struct CoreLink {
+    pattern: CorePattern,
+    newest: Option<(PathBuf, u64)>,
+    newer_than_log: Option<bool>,
+}
+
+fn core_link(log: Option<&Path>) -> CoreLink {
+    let pattern = core_pattern();
+    let newest = if pattern.piped { None } else { newest_core_sized(&pattern.dir, &pattern.prefix) };
+    let log_mtime = log.and_then(|p| fs::metadata(p).ok()).and_then(|m| m.modified().ok());
+    let newer_than_log = match (&newest, log_mtime) {
+        (Some((p, _)), Some(t)) => fs::metadata(p).ok().and_then(|m| m.modified().ok()).map(|c| c >= t),
+        _ => None,
+    };
+    CoreLink { pattern, newest, newer_than_log }
+}
+
+fn say_core_link(l: &CoreLink, log: Option<&Path>) {
+    if l.pattern.piped {
+        crate::say(&format!(
+            "CRASH-CORE piped: core_pattern={} starts with '|', so the kernel PIPES the dump to a handler and keeps \
+             no file; `dwdiag cores on` installs a file pattern",
+            l.pattern.pattern
+        ));
+        return;
+    }
+    crate::say(&format!(
+        "CRASH-CORE pattern={} (read from /proc/sys/kernel/core_pattern, not assumed) dir={} name-prefix={:?}",
+        l.pattern.pattern,
+        l.pattern.dir.display(),
+        l.pattern.prefix
+    ));
+    match &l.newest {
+        Some((p, size)) => {
+            crate::say(&format!(
+                "CRASH-CORE newest={} size={size} ({})",
+                p.display(),
+                match l.newer_than_log {
+                    Some(true) => "newer than the log: it can be this run's",
+                    Some(false) => "OLDER than the log: an earlier run's core sits in the same directory, so do not \
+                                    read it as this run's without checking",
+                    None => "no --log to compare against, so this is only the newest core in the directory",
+                }
+            ));
+            let logarg = log.map(|p| format!(" --log {}", p.display())).unwrap_or_default();
+            crate::say(&format!(
+                "CRASH-CORE-NEXT the faulting frame's operands (the masked lock owner, the once word, the thread's TSD \
+                 identity) are one instant and live only in that core: dwdiag core --core {}{logarg}",
+                p.display()
+            ));
+        }
+        None => crate::say(&format!(
+            "CRASH-CORE none: nothing under {} whose name starts with {:?} exists, so this run left no core to read \
+             (a core is written only when the crashing process's `ulimit -c` is non-zero AND the pattern names a file)",
+            l.pattern.dir.display(),
+            l.pattern.prefix
+        )),
+    }
+}
+
+fn core_link_json(l: &CoreLink) -> String {
+    json_object(vec![
+        ("pattern", jstr(&l.pattern.pattern)),
+        ("piped_to_a_handler", l.pattern.piped.to_string()),
+        ("dir", jstr(&l.pattern.dir.display().to_string())),
+        ("name_prefix", jstr(&l.pattern.prefix)),
+        ("newest", l.newest.as_ref().map(|(p, _)| jstr(&p.display().to_string())).unwrap_or_else(|| "null".into())),
+        ("newest_size", l.newest.as_ref().map(|(_, s)| s.to_string()).unwrap_or_else(|| "null".into())),
+        (
+            "newest_is_newer_than_the_log",
+            l.newer_than_log.map(|b| b.to_string()).unwrap_or_else(|| "null".into()),
+        ),
+    ])
+}
+
 fn run_crash(args: CrashArgs) -> Result<ExitCode> {
     // A guest fatal signal carries everything needed in the log itself; try that first, and when neither --log nor
     // --line is given, use the newest verdict log so the obvious invocation just works.
@@ -1943,18 +2047,55 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
     };
     if let Some(text) = &log_text {
         if log_has_symbolizable_fault(text) {
-            return symbolize_guest_fault(text, args.json);
+            // A log whose marks show a signal death has nothing to say about the OPERANDS; the core this run left
+            // does. Name it (from core_pattern) and the command that reads it, before the fault report.
+            let link = core_link(args.log.as_deref());
+            if !args.json {
+                say_core_link(&link, args.log.as_deref());
+            }
+            return symbolize_guest_fault(text, args.json, Some(&link));
         }
     }
+    // The core the run left, when this log's own marks show a signal death: filled in by the log path below and
+    // reported in both the text and the JSON form of the dserver-CRASH record.
+    let mut dserver_core_link: Option<CoreLink> = None;
     let line = match (&args.line, &args.log) {
         (Some(l), _) => l.clone(),
         (None, Some(log)) => {
             let text =
                 read_log_lossy(log).with_context(|| format!("reading {}", log.display()))?;
+            // The SAME linkage as the symbolized-fault path: a log whose own marks show a signal death names the core
+            // that run left and the command that reads the operands out of it.
+            dserver_core_link = if last_fault_mark(&text).is_some() {
+                let link = core_link(Some(log));
+                if !args.json {
+                    say_core_link(&link, Some(log));
+                }
+                Some(link)
+            } else {
+                None
+            };
+            let fatal_marks = text.lines().filter(|l| l.contains("[sigexc-fatal")).count();
             text.lines()
                 .find(|l| l.contains("dserver-CRASH"))
                 .map(|l| l.to_string())
-                .with_context(|| format!("no dserver-CRASH line in {}", log.display()))?
+                .with_context(|| {
+                    // A log whose guest fault cannot be attributed is a DIFFERENT answer from a log with no guest
+                    // fault at all, and naming which is the point of the command. MEASURED: after the constant-string
+                    // fix the client stopped dying entirely and the only fatal mark left was the harness's teardown
+                    // SIGTERM; the old message read "no dserver-CRASH line", which sounds like a missing loader crash
+                    // rather than "this run had no fault".
+                    if fatal_marks > 0 {
+                        format!(
+                            "no dserver-CRASH line in {}, and no attributable guest fault either: {fatal_marks} \
+                             [sigexc-fatal line(s), none with rip= or with addr= on a synchronous trap \
+                             (SIGILL/SIGSEGV/SIGBUS/SIGTRAP/SIGFPE) -- a teardown SIGTERM is not a fault",
+                            log.display()
+                        )
+                    } else {
+                        format!("no dserver-CRASH line and no [sigexc-fatal line in {}", log.display())
+                    }
+                })?
         }
         _ => bail!("need --line or --log"),
     };
@@ -2122,7 +2263,7 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
     if args.json {
         let escaped = jesc(&disassembly);
         println!(
-            "{{\"crash\":\"{}\",\"sig\":\"{}\",\"addr\":\"{}\",\"location\":\"{}\",\"stack\":[{}],\"signal_meaning\":\"{}\",\"frames\":[{}],\"disassembly\":\"{}\"}}",
+            "{{\"crash\":\"{}\",\"sig\":\"{}\",\"addr\":\"{}\",\"location\":\"{}\",\"stack\":[{}],\"signal_meaning\":\"{}\",\"frames\":[{}],\"disassembly\":\"{}\",\"core\":{}}}",
             jesc(&crash.raw),
             jesc(&crash.sig),
             jesc(&crash.addr),
@@ -2144,7 +2285,8 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
                 ))
                 .collect::<Vec<_>>()
                 .join(","),
-            escaped
+            escaped,
+            dserver_core_link.as_ref().map(core_link_json).unwrap_or_else(|| "null".to_string())
         );
     } else {
         println!("crash: {}", crash.raw);
@@ -3047,7 +3189,7 @@ fn run_verdict(args: VerdictArgs) -> Result<ExitCode> {
                 // printed VERDICT/VERDICT-STAGE and the crash had to be chased with a second command and a hand
                 // computation. When the log carries a symbolized fault, print the fault and its caller chain here.
                 if text.lines().any(|l| l.contains("[sigexc-fatal") && l.contains("rip=")) {
-                    let _ = symbolize_guest_fault(&text, false);
+                    let _ = symbolize_guest_fault(&text, false, None);
                 }
                 let p = summarize_progress(&text, &guest, &v.mode);
                 println!(
@@ -3168,7 +3310,7 @@ fn run_verdict(args: VerdictArgs) -> Result<ExitCode> {
             // The SAME self-explanation as the other verdict path: a run that dies of a signal must name the fault and its
             // callers in this output, not only in a second command.
             if text.lines().any(|l| l.contains("[sigexc-fatal") && l.contains("rip=")) {
-                let _ = symbolize_guest_fault(&text, false);
+                let _ = symbolize_guest_fault(&text, false, None);
             }
             let p = summarize_progress(&text, &guest, &v.mode);
             println!(
@@ -3645,7 +3787,13 @@ pub struct CoreArgs {
     /// Prefix whose images resolve the faulting address. Defaults to DWDIAG_PREFIX.
     #[arg(long)]
     prefix: Option<PathBuf>,
-    /// Also print the signal and backtrace gdb derives from the core.
+    /// The guest log whose `[sigexc-fatal ...]` marks name the signal and the FAULTING THREAD as the guest saw them.
+    /// A core says which thread the KERNEL dumped from; the log says which thread the GUEST faulted in, and this
+    /// command compares the two out loud instead of assuming they agree.
+    #[arg(long)]
+    log: Option<PathBuf>,
+    /// Also print gdb's own view of the core, verbatim, under a CORE-TRACES-GDB label. It is usually useless on a
+    /// guest core (no symbols or unwind information for the guest's images), and seeing that is the point.
     #[arg(long)]
     traces: bool,
     #[arg(long)]
@@ -4597,74 +4745,710 @@ fn run_cores(args: CoresArgs) -> Result<ExitCode> {
 /// MEASURED need, twice: a guest reports its own view (`/Volumes/SystemRoot/home/...`), and those paths CONTAIN the
 /// prefix, so they map to a real file with no search. Doing this by hand in two separate places is how the same
 /// mistake gets made twice -- a guest path handed straight to a symbolizer resolves nothing.
-fn guest_path_to_host(p: &str, _prefix: Option<&std::path::Path>) -> Option<PathBuf> {
+///
+/// Every candidate is EXISTENCE-CHECKED, so a wrong guess resolves NOTHING instead of symbolizing an unrelated file:
+/// the guest view stripped of its mount root, then the path as the host sees it, then that same path under the
+/// prefix (a prefix is the guest's filesystem root, so a guest-absolute path lives at `<prefix>V`). MEASURED over
+/// the cores in /tmp/t4cores: the host-visible candidate is the one that answers, because Darling's guest processes
+/// carry host paths in their own maps -- the prefix candidates only add paths that used to resolve to nothing.
+fn guest_path_to_host(p: &str, prefix: Option<&std::path::Path>) -> Option<PathBuf> {
     const GUEST_ROOT: &str = "/Volumes/SystemRoot";
+    let under_prefix = |v: &str| -> Option<PathBuf> {
+        let px = prefix?;
+        let cand = px.join(v.trim_start_matches('/'));
+        if cand.exists() { return Some(cand); }
+        None
+    };
     if let Some(rest) = p.strip_prefix(GUEST_ROOT) {
         let cand = PathBuf::from(rest);
         if cand.exists() { return Some(cand); }
+        if let Some(hit) = under_prefix(rest) { return Some(hit); }
     }
     if p.starts_with('/') {
         let cand = PathBuf::from(p);
         if cand.exists() { return Some(cand); }
+        if let Some(hit) = under_prefix(p) { return Some(hit); }
     }
     None
 }
 
-/// Every file-backed mapping in a core, read straight out of its NT_FILE note.
+// ====================================================================================================================
+// CORE READING: one layer, shared by `core` and `identity`.
+//
+// WHY ONE LAYER. The last investigation read a core by hand: `readelf -n` REFUSED its 64-bit note on this host
+// ("Cannot decode 64-bit note in 32-bit build"), the mappings came out of gdb's `info proc mappings` text, the
+// faulting image's base was subtracted by hand (once wrongly, which briefly symbolized the wrong function), and the
+// per-thread census was greps over `thread apply all p/x` that silently dropped lines and produced a WRONG count.
+// The kernel's own notes need none of that, and they are all here in ONE file that the two commands read the same
+// way: NT_PRSTATUS carries every thread's registers (`rip`, `rbp`, `rsp`, `gs_base`), NT_SIGINFO the terminating
+// signal, NT_FILE the mapping table, NT_PRPSINFO the command line.
+//
+// The file is read where it is needed and never whole. MEASURED: a real core here is 670 MB, and the previous
+// NT_FILE parser pulled all of it into memory to look at a note that lives in the first 90 KB.
+// ====================================================================================================================
+
+/// The x86-64 general registers in `user_regs_struct` (= `elf_gregset_t`) order, which is the order an NT_PRSTATUS
+/// note stores them in.
 ///
-/// MEASURED need: gdb does NOT list mappings for a core whose image paths do not exist on the host (the guest's
-/// `/Volumes/SystemRoot/...` never does), so `info proc mappings` came back empty and the faulting address matched
-/// no image. NT_FILE has them all regardless, and it is a few lines of ELF note parsing -- the difference between
-/// "unresolved: pass --prefix" and naming the function.
-fn parse_nt_file(core: &std::path::Path) -> Option<Vec<(u64, u64, u64, String)>> {
-    let data = std::fs::read(core).ok()?;
-    if data.len() < 64 || &data[..4] != b"\x7fELF" { return None; }
-    let rd64 = |off: usize| -> Option<u64> {
-        Some(u64::from_le_bytes(data.get(off..off + 8)?.try_into().ok()?))
-    };
-    let e_phoff = rd64(0x20)?;
-    let e_phentsize = u16::from_le_bytes(data.get(0x36..0x38)?.try_into().ok()?) as u64;
-    let e_phnum = u16::from_le_bytes(data.get(0x38..0x3a)?.try_into().ok()?) as u64;
-    for i in 0..e_phnum {
-        let ph = (e_phoff + i * e_phentsize) as usize;
-        if u32::from_le_bytes(data.get(ph..ph + 4)?.try_into().ok()?) != 4 { continue; } // PT_NOTE
-        let p_offset = rd64(ph + 0x08)? as usize;
-        let p_filesz = rd64(ph + 0x20)? as usize;
-        let mut off = p_offset;
-        let end = p_offset + p_filesz;
-        while off + 12 <= end {
-            let nsz = u32::from_le_bytes(data.get(off..off + 4)?.try_into().ok()?) as usize;
-            let dsz = u32::from_le_bytes(data.get(off + 4..off + 8)?.try_into().ok()?) as usize;
-            let ntype = u32::from_le_bytes(data.get(off + 8..off + 12)?.try_into().ok()?);
-            let doff = off + 12 + ((nsz + 3) / 4) * 4;
-            if ntype == 0x46494c45 { // NT_FILE
-                let count = rd64(doff)? as usize;
-                let page = rd64(doff + 8)?;
-                let mut ents = Vec::with_capacity(count);
-                let mut e = doff + 16;
-                for _ in 0..count {
-                    let (a, b, c) = (rd64(e)?, rd64(e + 8)?, rd64(e + 16)?);
-                    ents.push((a, b, c));
-                    e += 24;
+/// MEASURED against gdb's `info registers` on /tmp/t4cores/core.127004: `rip` 0x763d6c1131dd, `rbp` 0x7fffffdfd610,
+/// `rsp` 0x7fffffdfd580, `rdi` 0x763d5799d988, `rcx` 0x100, `rdx` 0x101 and `gs_base` 0x763d6f130060 read from the
+/// note all equal gdb's values, and `*(unsigned long*)($gs_base+24)` is the same 0x103 the existing core-lock reader
+/// reports for that thread. So these are the kernel's layout, not a transcription that happens to work once.
+const GPR: [&str; 27] = [
+    "r15", "r14", "r13", "r12", "rbp", "rbx", "r11", "r10", "r9", "r8", "rax", "rcx", "rdx", "rsi", "rdi",
+    "orig_rax", "rip", "cs", "eflags", "rsp", "ss", "fs_base", "gs_base", "ds", "es", "fs", "gs",
+];
+const GPR_COUNT: usize = 27;
+const GPR_RIP: usize = 16;
+const GPR_RBP: usize = 4;
+const GPR_RSP: usize = 19;
+const GPR_GS_BASE: usize = 22;
+/// An NT_PRSTATUS descriptor: the prstatus fields, then the whole register set. The note is padded to 336 bytes but
+/// only the first 328 are fields (the last is `pr_fpvalid` plus padding), which is why the size is CHECKED before
+/// the registers are read instead of assumed.
+const PRSTATUS_REGS_AT: usize = 112;
+const PRSTATUS_BYTES: usize = PRSTATUS_REGS_AT + GPR_COUNT * 8;
+/// `pr_pid`: the LWP, which is how every other part of this tool names a thread.
+const PRSTATUS_PID_AT: usize = 32;
+/// `pr_psargs`: the first 80 bytes of the command line gdb would print as "Core was generated by ...".
+const PRPSINFO_PSARGS_AT: usize = 56;
+const PRPSINFO_PSARGS_LEN: usize = 80;
+
+const NT_PRSTATUS: u32 = 1;
+const NT_PRPSINFO: u32 = 3;
+const NT_FILE: u32 = 0x4649_4c45;
+const NT_SIGINFO: u32 = 0x5349_4749;
+
+/// `__TSD_MACH_THREAD_SELF` as libdispatch reads it: slot 3 of the thread's TSD block, i.e. the word at
+/// `$gs_base+24` on x86-64. ONE constant, because `identity`, `core` and the existing core-lock reader must mean the
+/// same word; the address is printed next to every value so a reader can check it.
+const TSD_SELF_SLOT: u64 = 3;
+const TSD_SLOT_BYTES: u64 = 8;
+
+fn tsd_self_addr(gs_base: u64) -> u64 {
+    gs_base + TSD_SELF_SLOT * TSD_SLOT_BYTES
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Regs {
+    v: [u64; GPR_COUNT],
+}
+
+impl Regs {
+    fn get(&self, name: &str) -> Option<u64> {
+        GPR.iter().position(|n| *n == name).map(|i| self.v[i])
+    }
+    fn rip(&self) -> u64 { self.v[GPR_RIP] }
+    fn rsp(&self) -> u64 { self.v[GPR_RSP] }
+    fn rbp(&self) -> u64 { self.v[GPR_RBP] }
+    fn gs_base(&self) -> u64 { self.v[GPR_GS_BASE] }
+}
+
+/// One thread of a core: the LWP the kernel recorded and the register file it saved.
+///
+/// The note also carries `pr_cursig` and `pr_info.si_signo`, and neither identifies the faulting thread: MEASURED on
+/// /tmp/t4cores/core.127004, where all 28 notes carry si_signo=4/pr_cursig=4 -- the kernel fills the DUMPED signal
+/// into every thread's status. Note ORDER is what says which thread died, and only on the first PT_NOTE.
+#[derive(Debug, Clone, Copy)]
+struct CoreThread {
+    lwp: u32,
+    regs: Regs,
+}
+
+/// A `PT_LOAD` of the core: which target addresses it covers, and how many bytes the dump actually carries.
+#[derive(Debug, Clone, Copy)]
+struct LoadSeg {
+    vaddr: u64,
+    memsz: u64,
+    file_off: u64,
+    filesz: u64,
+}
+
+/// `NT_SIGINFO`: the signal the dump was taken for, and how it arrived.
+#[derive(Debug, Clone, Copy)]
+struct CoreSignal {
+    signo: i32,
+    errno: i32,
+    code: i32,
+    addr: u64,
+}
+
+/// Which scale NT_FILE's `start`/`end` are in. Linux writes pages, but MEASURED on /tmp/t4cores/core.127004 the
+/// ranges are already BYTE addresses while the file offset is a page number -- so the scale is decided from the core
+/// itself (every entry fits inside a PT_LOAD under exactly one of the two) instead of being pinned to one kernel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MapScale {
+    Bytes,
+    Pages,
+}
+
+/// An address resolved against a core's own mapping table.
+#[derive(Debug, Clone)]
+struct Resolved {
+    /// The mapping's start: the image's load base in the target.
+    base: u64,
+    /// The path as the core records it -- what has to be shown when the file cannot be opened.
+    name: String,
+    /// The path on THIS host, after de-virtualization.
+    host: PathBuf,
+    /// Whether that host path exists. A mapping table naming an image nobody has is a different answer from a
+    /// faulting address that is in no image at all, and both must be sayable.
+    exists: bool,
+    /// The FILE offset inside the image: what the bytes at this address are read at.
+    file_off: u64,
+}
+
+/// A core file, opened once and read only where it is needed.
+struct CoreFile {
+    size: u64,
+    file: fs::File,
+    loads: Vec<LoadSeg>,
+    /// In note order. MEASURED: the kernel writes the thread it dumped FROM first, and gdb calls that same one
+    /// "Current thread" (both were LWP 127004 on core.127004).
+    threads: Vec<CoreThread>,
+    sig: Option<CoreSignal>,
+    /// NT_FILE entries with every offset ALREADY in bytes: `(start, end, file_offset, path)`.
+    maps: Vec<(u64, u64, u64, String)>,
+    scale: MapScale,
+    /// The page size the NT_FILE note declared (1 for a gdb-written core, 0x1000 for the kernel's), kept so the
+    /// unit the offsets were normalized with is part of what this reader can print.
+    file_page: u64,
+    /// `(entries inside a PT_LOAD under bytes, under pages)`, so the scale choice can be PRINTED instead of asserted.
+    inside: (usize, usize),
+    /// `NT_PRPSINFO`'s command-line bytes.
+    args: String,
+}
+
+fn read_at(file: &mut fs::File, off: u64, n: usize) -> Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    file.seek(SeekFrom::Start(off)).with_context(|| format!("seeking to {off:#x}"))?;
+    let mut buf = vec![0u8; n];
+    file.read_exact(&mut buf).with_context(|| format!("reading {n} byte(s) at {off:#x}"))?;
+    Ok(buf)
+}
+
+fn le_u32(b: &[u8]) -> Option<u32> {
+    Some(u32::from_le_bytes(b.get(..4)?.try_into().ok()?))
+}
+
+fn le_u64(b: &[u8]) -> Option<u64> {
+    Some(u64::from_le_bytes(b.get(..8)?.try_into().ok()?))
+}
+
+/// Walk the notes of one `PT_NOTE`. Kept separate from the file so the kernel's note layout can be tested against a
+/// buffer this code builds -- the alternative is a command whose only test is a multi-hundred-megabyte core, which is
+/// the same reason the existing core-lock parser is separate from its gdb run.
+fn parse_core_notes(
+    notes: &[u8],
+    threads: &mut Vec<CoreThread>,
+    sig: &mut Option<CoreSignal>,
+    maps: &mut Vec<(u64, u64, u64, String)>,
+    file_page: &mut u64,
+    args: &mut String,
+) {
+    let mut off = 0usize;
+    while off + 12 <= notes.len() {
+        let (nsz, dsz, ntype) = match (le_u32(&notes[off..]), le_u32(&notes[off + 4..]), le_u32(&notes[off + 8..])) {
+            (Some(a), Some(b), Some(c)) => (a as usize, b as usize, c),
+            _ => break,
+        };
+        let doff = off + 12 + (nsz + 3) / 4 * 4;
+        let Some(desc) = notes.get(doff..doff + dsz) else { break };
+        match ntype {
+            NT_PRSTATUS => {
+                let lwp = le_u32(&desc[PRSTATUS_PID_AT.min(desc.len())..]).unwrap_or(0);
+                if desc.len() >= PRSTATUS_BYTES {
+                    let mut v = [0u64; GPR_COUNT];
+                    for (i, slot) in v.iter_mut().enumerate() {
+                        *slot = le_u64(&desc[PRSTATUS_REGS_AT + i * 8..]).unwrap_or(0);
+                    }
+                    threads.push(CoreThread { lwp, regs: Regs { v } });
                 }
-                let mut names = Vec::with_capacity(count);
-                for _ in 0..count {
-                    let nul = data[e..].iter().position(|c| *c == 0)? + e;
-                    names.push(String::from_utf8_lossy(&data[e..nul]).into_owned());
-                    e = nul + 1;
-                }
-                // MEASURED ambiguity: some kernels write these in PAGES, and this core was in BYTES (raw start
-                // values already looked like addresses). Accept whichever scale puts a consistent image under the
-                // mappings, instead of guessing a constant.
-                let _ = page;
-                return Some(ents.into_iter().zip(names)
-                    .map(|((a, b, c), n)| (a, b, c, n)).collect());
             }
-            off = doff + dsz;
-            off = (off + 3) / 4 * 4;
+            NT_SIGINFO => {
+                // `siginfo_t`: si_signo, si_errno, si_code, then the union -- whose first member is `si_addr` for
+                // every synchronous trap, and a pid for the asynchronously raised signals.
+                let (signo, errno, code) = (
+                    le_u32(desc).map(|v| v as i32).unwrap_or(0),
+                    le_u32(&desc[4.min(desc.len())..]).map(|v| v as i32).unwrap_or(0),
+                    le_u32(&desc[8.min(desc.len())..]).map(|v| v as i32).unwrap_or(0),
+                );
+                let addr = le_u64(&desc[16.min(desc.len())..]).unwrap_or(0);
+                *sig = Some(CoreSignal { signo, errno, code, addr });
+            }
+            NT_FILE => {
+                let (Some(count), page) = (le_u64(desc).map(|v| v as usize), le_u64(&desc[8.min(desc.len())..])) else {
+                    off = doff + dsz;
+                    off = (off + 3) / 4 * 4;
+                    continue;
+                };
+                // The note's SECOND word is the unit its file offsets are in, and it is the only honest way to read
+                // them: MEASURED, the kernel writes page_size=0x1000 with file offsets in PAGES while gdb's `gcore`
+                // writes page_size=1 with file offsets in BYTES. Multiplying by the declared unit is correct for
+                // both; assuming 4096 made every gcore file offset 4096x too large (which is how a `CORE-INSN` came
+                // back empty on a core gdb wrote).
+                if let Some(p) = page {
+                    *file_page = p;
+                }
+                let mut ents: Vec<(u64, u64, u64)> = Vec::with_capacity(count.min(1 << 20));
+                for i in 0..count {
+                    let e = 16 + i * 24;
+                    let (Some(a), Some(b), Some(c)) = (
+                        le_u64(&desc[e.min(desc.len())..]),
+                        le_u64(&desc[(e + 8).min(desc.len())..]),
+                        le_u64(&desc[(e + 16).min(desc.len())..]),
+                    ) else {
+                        break;
+                    };
+                    ents.push((a, b, c));
+                }
+                // Paths follow the entries, NUL-terminated and NOT padded: an off-by-four in this walk is what
+                // turns a mapping's inode into a filename, so a missing NUL simply ends the list.
+                let mut names: Vec<String> = Vec::with_capacity(ents.len());
+                let mut p = 16 + count * 24;
+                for _ in 0..ents.len() {
+                    let Some(rel) = desc.get(p..).and_then(|rest| rest.iter().position(|c| *c == 0)) else { break };
+                    names.push(String::from_utf8_lossy(&desc[p..p + rel]).into_owned());
+                    p += rel + 1;
+                }
+                for ((a, b, c), n) in ents.into_iter().zip(names) {
+                    maps.push((a, b, c, n));
+                }
+            }
+            NT_PRPSINFO => {
+                let end = (PRPSINFO_PSARGS_AT + PRPSINFO_PSARGS_LEN).min(desc.len());
+                if end > PRPSINFO_PSARGS_AT {
+                    let raw = &desc[PRPSINFO_PSARGS_AT..end];
+                    let cut = raw.iter().position(|c| *c == 0).unwrap_or(raw.len());
+                    if args.is_empty() {
+                        *args = String::from_utf8_lossy(&raw[..cut]).trim().to_string();
+                    }
+                }
+            }
+            _ => {}
         }
+        off = doff + dsz;
+        off = (off + 3) / 4 * 4;
+    }
+}
+
+impl CoreFile {
+    /// Open a core and read what its notes say, refusing anything this reader cannot read correctly.
+    ///
+    /// The refusals are the point: an ELF that is not a core, a 32-bit note (the host's own `readelf` refuses those
+    /// on this machine, so this reader says so in its own words), or a core with no NT_PRSTATUS is reported as such
+    /// instead of producing an empty census that reads like "nothing to see".
+    fn open(path: &Path) -> Result<Self> {
+        if std::env::consts::ARCH != "x86_64" {
+            bail!(
+                "the core reader decodes the x86-64 register note (NT_PRSTATUS / elf_gregset_t) and x86-64 TSD \
+                 addressing; this host is {}", std::env::consts::ARCH
+            );
+        }
+        let mut file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        if size < 64 {
+            bail!("{} is {size} bytes, shorter than an ELF header (64): nothing here can be a core", path.display());
+        }
+        let head = read_at(&mut file, 0, 64)?;
+        if &head[..4] != b"\x7fELF" {
+            bail!("{} is not an ELF file (no ELF magic): a core is an ELF, and this reader reads those", path.display());
+        }
+        if head[4] != 2 || head[5] != 1 {
+            bail!(
+                "{} is ELF class {} data {}: this reader decodes 64-bit little-endian cores only (the host's own \
+                 `readelf -n` refuses exactly this note, which is why the notes are read here)", path.display(), head[4], head[5]
+            );
+        }
+        let e_type = u16::from_le_bytes(head[16..18].try_into().unwrap());
+        if e_type != 4 {
+            bail!("{} is ELF type {e_type}, not ET_CORE (4): it has no thread notes to read", path.display());
+        }
+        let e_phoff = le_u64(&head[0x20..]).unwrap_or(0);
+        let e_phentsize = u16::from_le_bytes(head[0x36..0x38].try_into().unwrap()) as u64;
+        let e_phnum = u16::from_le_bytes(head[0x38..0x3a].try_into().unwrap()) as u64;
+        if e_phentsize < 56 || e_phnum == 0 {
+            bail!("{} has an empty program header table ({e_phnum} entries of {e_phentsize} bytes)", path.display());
+        }
+        let table = read_at(&mut file, e_phoff, (e_phnum * e_phentsize) as usize)
+            .with_context(|| format!("reading the program headers of {}", path.display()))?;
+        let mut loads: Vec<LoadSeg> = Vec::new();
+        let mut note_ranges: Vec<(u64, u64)> = Vec::new();
+        for i in 0..e_phnum {
+            let p = (i * e_phentsize) as usize;
+            let Some(chunk) = table.get(p..p + 56) else { break };
+            let p_type = le_u32(chunk).unwrap_or(0);
+            let (p_offset, p_vaddr, p_filesz, p_memsz) = (
+                le_u64(&chunk[8..]).unwrap_or(0),
+                le_u64(&chunk[16..]).unwrap_or(0),
+                le_u64(&chunk[32..]).unwrap_or(0),
+                le_u64(&chunk[40..]).unwrap_or(0),
+            );
+            match p_type {
+                1 => loads.push(LoadSeg { vaddr: p_vaddr, memsz: p_memsz, file_off: p_offset, filesz: p_filesz }),
+                4 => note_ranges.push((p_offset, p_filesz)),
+                _ => {}
+            }
+        }
+        let mut threads: Vec<CoreThread> = Vec::new();
+        let mut sig = None;
+        let mut maps: Vec<(u64, u64, u64, String)> = Vec::new();
+        let mut file_page = 0u64;
+        let mut args = String::new();
+        for (off, len) in note_ranges {
+            let notes = read_at(&mut file, off, len as usize)
+                .with_context(|| format!("reading the notes of {}", path.display()))?;
+            parse_core_notes(&notes, &mut threads, &mut sig, &mut maps, &mut file_page, &mut args);
+        }
+        if threads.is_empty() {
+            bail!(
+                "{} has no NT_PRSTATUS note: it is an ELF core without a thread's registers, so there is no faulting \
+                 thread to report", path.display()
+            );
+        }
+        // Which scale NT_FILE's ranges are in, MEASURED from this core: the mapping table lists the process's VMAs,
+        // so under the correct scale every entry sits inside a PT_LOAD of the dump. (An earlier version scored the
+        // two scales by how many backtrace frames landed in files that exist, which needed a stack first and could
+        // not tell the scales apart for a single address -- exactly how the wrong scale named a wrong function.)
+        let inside = |pages: bool| -> usize {
+            maps.iter()
+                .filter(|(s, e, _, _)| {
+                    let (start, end) = if pages { (s * 0x1000, e * 0x1000) } else { (*s, *e) };
+                    loads.iter().any(|l| l.vaddr <= start && end <= l.vaddr + l.memsz)
+                })
+                .count()
+        };
+        let (bytes_inside, pages_inside) = (inside(false), inside(true));
+        let scale = if pages_inside > bytes_inside { MapScale::Pages } else { MapScale::Bytes };
+        // Normalize every offset to BYTES once, here, so no caller can pick the wrong unit: the ranges are scaled by
+        // the measurement above (this core's own PT_LOADs), and the file offsets by the unit the note DECLARES
+        // (`file_page`, 1 for gdb's gcore and 0x1000 for the kernel). A core with no NT_FILE keeps an empty table.
+        for m in maps.iter_mut() {
+            if scale == MapScale::Pages {
+                m.0 *= 0x1000;
+                m.1 *= 0x1000;
+            }
+            m.2 *= file_page.max(1);
+        }
+        Ok(CoreFile { size, file, loads, threads, sig, maps, scale, file_page, inside: (bytes_inside, pages_inside), args })
+    }
+
+    /// The faulting thread. The kernel writes a note for EVERY thread and marks them all with the dumped signal, so
+    /// the signal cannot identify it; the thread at the head of the first PT_NOTE is the one the dump was taken FROM
+    /// (gdb's "Current thread"). `want_lwp` -- the tid the guest log's own mark carries -- outranks that, because the
+    /// log says which thread the GUEST faulted in, and the two are compared out loud rather than assumed equal.
+    fn faulting(&self, want_lwp: Option<u32>) -> &CoreThread {
+        if let Some(w) = want_lwp {
+            if let Some(t) = self.threads.iter().find(|t| t.lwp == w) {
+                return t;
+            }
+        }
+        &self.threads[0]
+    }
+
+    /// The image that owns a target address, through the core's OWN mapping table.
+    fn resolve(&self, addr: u64, prefix: Option<&Path>) -> Option<Resolved> {
+        let (base, file_off, name) = resolve_in_core(&self.maps, addr)?;
+        let host_hit = guest_path_to_host(&name, prefix);
+        let exists = host_hit.is_some();
+        let host = host_hit.unwrap_or_else(|| PathBuf::from(&name));
+        Some(Resolved { base, name, host, exists, file_off })
+    }
+
+    /// Read the target's memory, but ONLY where the core carries it. A missing page is an ANSWER, not an error to
+    /// paper over: the kernel does not dump clean file-backed pages, so the instruction at a code fault is usually
+    /// absent (which is why those bytes are read from the image file) while a thread's TLS block is present.
+    fn read_mem(&mut self, vaddr: u64, n: usize) -> Result<Vec<u8>, String> {
+        let seg = self
+            .loads
+            .iter()
+            .find(|l| l.vaddr <= vaddr && vaddr + n as u64 <= l.vaddr + l.memsz)
+            .copied()
+            .ok_or_else(|| format!("{vaddr:#x} is in no PT_LOAD of this core"))?;
+        let delta = vaddr - seg.vaddr;
+        if delta + n as u64 > seg.filesz {
+            return Err(format!(
+                "{vaddr:#x} is in a mapping the dump did not carry ({} of {} bytes present): the kernel skips pages \
+                 it does not have to write", seg.filesz, seg.memsz
+            ));
+        }
+        read_at(&mut self.file, seg.file_off + delta, n).map_err(|e| format!("{e:#}"))
+    }
+
+    fn read_u64(&mut self, vaddr: u64) -> Result<u64, String> {
+        let b = self.read_mem(vaddr, 8)?;
+        Ok(u64::from_le_bytes(b[..8].try_into().unwrap()))
+    }
+
+    /// Whether the dump covers this address at all, for the case where no NT_FILE entry owns it: an address inside an
+    /// ANONYMOUS mapping is a different answer from one the core's tables never mention, and both must be sayable.
+    fn carried(&self, addr: u64) -> bool {
+        self.loads.iter().any(|l| l.vaddr <= addr && addr < l.vaddr + l.memsz)
+    }
+}
+
+/// One symbolization per (image, VM address): `symbolize` shells out to this tool again, which parses the image with
+/// `llvm-nm`, and a stack walk asks about the same call sites while the identity census asks about the same
+/// instruction pointer on many threads. `None` is cached too -- "this address has no symbol" is an answer.
+#[derive(Default)]
+struct SymCache {
+    by: BTreeMap<(String, u64), Option<String>>,
+}
+
+/// An address in a guest image, in the two spaces that matter: the FILE offset (where the bytes are read) and the VM
+/// address the symbol table uses.
+struct ImageAddr {
+    vm: u64,
+    /// Whether the file-offset-to-VM conversion was COMPUTED from the image's load commands. MEASURED why this is
+    /// reported instead of assumed: an unconverted offset names a confidently WRONG function (`__os_once + 0x5e` for
+    /// `_os_unfair_lock_unlock_slow + 0x10e`), so a non-Mach-O image (a host core's libc) says "unconverted".
+    converted: bool,
+    symbol: Option<String>,
+}
+
+fn image_addr_of(res: &Resolved, cache: &mut SymCache) -> ImageAddr {
+    let key = res.host.display().to_string();
+    let converted_vm = macho_vmaddr_for_fileoff(&key, res.file_off);
+    let converted = converted_vm.is_some();
+    let vm = converted_vm.unwrap_or(res.file_off);
+    let symbol = cache.by.entry((key.clone(), vm)).or_insert_with(|| unwind_symbolize(vm, &key)).clone();
+    ImageAddr { vm, converted, symbol }
+}
+
+/// One frame of the caller chain, read out of the core's memory.
+#[derive(Debug, Clone)]
+struct CoreFrame {
+    fp: u64,
+    ret: u64,
+    image: Option<Resolved>,
+}
+
+/// Walk the frame-pointer chain in the CORE's memory and map every return address through the CORE's own NT_FILE
+/// table -- never through gdb's symbol tables, because a guest's frames are exactly what a host gdb cannot see.
+///
+/// The validation is what keeps a data word from inventing a caller: the chain must ASCEND, each frame pointer must
+/// be 8-aligned, and the walk stops at the first return address that lands in no mapped image. The stop comes back
+/// with its REASON, so "the chain ends here" and "this reader cannot see further" stay different answers instead of
+/// both reading as a short list. Returning the contested frame (with no image) is deliberate: the reader sees where
+/// it stopped instead of a silently truncated stack.
+fn core_fp_chain(c: &mut CoreFile, rbp: u64, rsp: u64, prefix: Option<&Path>, max: usize) -> (Vec<CoreFrame>, String) {
+    let mut out: Vec<CoreFrame> = Vec::new();
+    if rbp == 0 {
+        return (out, "rbp is 0: this thread carries no frame pointer chain".to_string());
+    }
+    if rbp % 8 != 0 {
+        return (out, format!("rbp {rbp:#x} is not 8-aligned, so it is not a frame pointer"));
+    }
+    let mut fp = rbp;
+    loop {
+        if out.len() >= max {
+            return (out, format!("stopped at the {max}-frame cap"));
+        }
+        let next = match c.read_u64(fp) {
+            Ok(v) => v,
+            Err(e) => return (out, format!("the frame pointer at {fp:#x} is unreadable ({e})")),
+        };
+        let ret = match c.read_u64(fp + 8) {
+            Ok(v) => v,
+            Err(e) => return (out, format!("the return address at {:#x} is unreadable ({e})", fp + 8)),
+        };
+        let image = c.resolve(ret, prefix);
+        let has_image = image.is_some();
+        out.push(CoreFrame { fp, ret, image });
+        if !has_image {
+            return (out, format!("return address {ret:#x} is in no mapped image, so the walk ends there"));
+        }
+        if next == 0 {
+            return (out, "the next frame pointer is 0: the outermost frame".to_string());
+        }
+        if next <= fp {
+            return (out, format!("the next frame pointer {next:#x} does not ascend past {fp:#x} (a corrupt chain)"));
+        }
+        // The saved frame pointer must live above the stack pointer that was live in this frame. This is the check
+        // that rejects a "chain" made of data words: `rsp` only bounds the INNERMOST frame, so the first step is
+        // bounded here and later steps by the ascent rule above.
+        if out.len() == 1 && fp < rsp {
+            return (out, format!("the frame pointer {fp:#x} is below rsp {rsp:#x}, so it is not this thread's frame"));
+        }
+        fp = next;
+    }
+}
+
+/// The dispatch_once operands at the trap: the once word, the lock owner it names, and the pointer they were read
+/// through, each with the register it came from.
+struct OnceOperands {
+    predicate_reg: &'static str,
+    predicate: u64,
+    word: u64,
+    word_reg: Option<&'static str>,
+    owner: u64,
+    owner_reg: &'static str,
+}
+
+/// The registers worth reading as a predicate POINTER, in the ABI's argument order first: a core is a snapshot of one
+/// instruction, and the arguments of the function it died in are the first place to look for them.
+const ONCE_POINTER_REGS: [&str; 14] =
+    ["rdi", "rsi", "rdx", "rcx", "r8", "r9", "rax", "rbx", "r10", "r11", "r12", "r13", "r14", "r15"];
+
+/// Locate the once protocol's operands in a thread's register file.
+///
+/// The rule is STATED because this cannot be a DWARF lookup: the guest's libdispatch carries no debug info, and a
+/// core is one instant, so the register file is the only place the operands can come from. The once word is a small
+/// nonzero value whose low bits are set (the "an owner is in progress" encoding of `dispatch_once_t`) and whose
+/// masked form `word & !3` is the lock owner the code compares against -- so a register that POINTS AT such a word,
+/// together with the register holding its masked form, names `(predicate, once word, masked owner)`. MEASURED on
+/// /tmp/t4cores/core.127004: rdi points at 0x101, rcx holds 0x100 = 0x101 & !3, and rdx holds the word itself -- the
+/// three values the hand diagnosis recorded. A register file that matches nothing returns None, so the caller prints
+/// `unavailable` with its reason instead of a plausible number.
+fn once_operands<F: FnMut(u64) -> Option<u64>>(regs: &Regs, mut read: F) -> Option<OnceOperands> {
+    for name in ONCE_POINTER_REGS {
+        let Some(p) = regs.get(name) else { continue };
+        if p < 0x1000 {
+            continue;
+        }
+        let Some(word) = read(p) else { continue };
+        // A value this reader will call a once word: nonzero, small (the protocol stores counts and encoded thread
+        // ids, so a full 64-bit word is a pointer, not a word), and naming an owner (the low bits set).
+        if word == 0 || word >> 32 != 0 || word & 0x3 == 0 {
+            continue;
+        }
+        let owner = word & !0x3;
+        if owner == 0 || owner == p {
+            continue;
+        }
+        let partner = ONCE_POINTER_REGS
+            .iter()
+            .copied()
+            .find(|q| *q != name && regs.get(q) == Some(owner))?;
+        let word_reg = ONCE_POINTER_REGS.iter().copied().find(|q| *q != name && regs.get(q) == Some(word));
+        return Some(OnceOperands { predicate_reg: name, predicate: p, word, word_reg, owner, owner_reg: partner });
     }
     None
+}
+
+/// What an `si_code` says about HOW a signal arrived, which is a different question from which signal it is.
+///
+/// MEASURED on /tmp/t4cores/core.127004: its SIGILL carries `si_code = -6` (SI_TKILL) -- a signal SENT by a thread
+/// -- and not the CPU's own illegal-opcode code (ILL_ILLOPN = 2). That is the difference between "the ud2 trapped
+/// here" and "the fault was already handled and the death was raised by code", and the signal NAME cannot show it.
+fn sig_code_meaning(signo: i32, code: i32) -> Option<&'static str> {
+    match (signo, code) {
+        (_, -6) => Some("SI_TKILL: a THREAD sent this signal (tgkill/raise), so this is not the CPU's own trap code"),
+        (_, -1) => Some("SI_QUEUE: sent with sigqueue"),
+        (_, 0) => Some("SI_USER: sent by kill()"),
+        (4, 1) => Some("ILL_ILLOPC: illegal opcode"),
+        (4, 2) => Some("ILL_ILLOPN: the CPU trapped on an illegal opcode (a ud2 was executed)"),
+        (4, 3) => Some("ILL_ILLADR: illegal addressing mode"),
+        (4, 4) => Some("ILL_ILLTRP: illegal trap"),
+        (4, 5) => Some("ILL_PRVOPC: privileged opcode"),
+        (4, 6) => Some("ILL_PRVREG: privileged register"),
+        (4, 8) => Some("ILL_BADSTK: internal stack error"),
+        (11, 1) => Some("SEGV_MAPERR: the address is not mapped"),
+        (11, 2) => Some("SEGV_ACCERR: no permission for the address"),
+        _ => None,
+    }
+}
+
+/// The first bytes of an instruction, bounded, as the hex a reader compares against a disassembly.
+fn hex_bytes(b: &[u8]) -> String {
+    b.iter().take(8).map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" ")
+}
+
+/// The signal's name as it is SPOKEN. `signal_name` returns the bare name for the signals a workload dies of ("ILL"),
+/// so prefixing it is what makes "SIGILL" -- and a signal this tool has no name for is printed as its number rather
+/// than as a made-up `SIGSIG`.
+fn sig_label(signo: i32) -> String {
+    match signal_name(signo) {
+        n if n != "SIG" => format!("SIG{n}"),
+        _ => format!("{signo}"),
+    }
+}
+
+fn basename_of(p: &Path) -> String {
+    p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string())
+}
+
+/// `"k":v` pairs joined into one JSON object, with `v` already encoded (a string through `jesc`).
+///
+/// A reader that has to count placeholders in a `format!` with a dozen of them is how an object whose fields do not
+/// line up with its values gets shipped, and the consumers of `--json` here are scripts. One function keeps the two
+/// commands' objects honest, and the contract parses both with a real JSON parser.
+fn json_object(pairs: Vec<(&str, String)>) -> String {
+    let body = pairs.into_iter().map(|(k, v)| format!("\"{k}\":{v}")).collect::<Vec<_>>().join(",");
+    format!("{{{body}}}")
+}
+
+/// gdb's own view of a core, for the `--traces` flag, printed VERBATIM and labelled as the debugger's.
+///
+/// MEASURED: on a guest core gdb's backtrace is usually useless (`#0 ... in ?? ()`, then pointers) because it has no
+/// symbols or unwind information for the guest's Mach-O images. Seeing that is what the flag is for; the alternative
+/// is a reader assuming the debugger's frames are the answer. Nothing here PARSES gdb's output.
+fn core_gdb_traces(core: &Path) -> Vec<String> {
+    let out = Command::new("gdb")
+        .args(["-batch", "-nx", "-iex", "set debuginfod enabled off"])
+        .arg("-c")
+        .arg(core)
+        .args(["-ex", "info threads", "-ex", "bt"])
+        .output();
+    match out {
+        Ok(o) if !o.stdout.is_empty() => {
+            String::from_utf8_lossy(&o.stdout).lines().map(|l| l.to_string()).collect()
+        }
+        Ok(o) => vec![format!("<gdb produced no output (exit status {:?})>", o.status.code())],
+        Err(e) => vec![format!("<gdb could not be run: {e}>")],
+    }
+}
+
+/// The newest core under a directory, matched by the filename prefix a `core_pattern` produces. Shared, so "the
+/// newest core" cannot come to mean three different things in three commands.
+fn newest_core(dir: &Path, prefix: &str) -> Option<PathBuf> {
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for e in fs::read_dir(dir).ok()?.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(prefix) {
+            continue;
+        }
+        let Ok(t) = e.metadata().and_then(|m| m.modified()) else { continue };
+        if best.as_ref().map(|(bt, _)| t > *bt).unwrap_or(true) {
+            best = Some((t, e.path()));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+/// The newest core under a directory and its size, for a caller that has to report what it found.
+fn newest_core_sized(dir: &Path, prefix: &str) -> Option<(PathBuf, u64)> {
+    let p = newest_core(dir, prefix)?;
+    let size = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+    Some((p, size))
+}
+
+/// Where the kernel would write a core, DISCOVERED from `core_pattern` rather than assumed.
+///
+/// MEASURED need: the pattern on this host is `/tmp/t4cores/core.%p`, which is a setting, not a constant -- a
+/// hardcoded directory is how a crash report names a core that does not exist while the real one sits elsewhere. A
+/// pattern starting with `|` pipes the dump to a handler and keeps no file at all, which is a different answer.
+struct CorePattern {
+    pattern: String,
+    piped: bool,
+    dir: PathBuf,
+    /// The literal part of the filename before the first `%`: everything a produced file's name must start with.
+    prefix: String,
+}
+
+fn core_pattern() -> CorePattern {
+    let pattern = fs::read_to_string("/proc/sys/kernel/core_pattern").unwrap_or_else(|_| "<unreadable>".into());
+    let pattern = pattern.trim().to_string();
+    if pattern.starts_with('|') {
+        return CorePattern { pattern, piped: true, dir: PathBuf::from("."), prefix: String::new() };
+    }
+    // The kernel expands %p/%e/%t in the last path component; everything before the first `%` is literal.
+    let (dir, file) = match pattern.rfind('/') {
+        Some(i) => (PathBuf::from(&pattern[..i.max(1)]), pattern[i + 1..].to_string()),
+        None => (PathBuf::from("."), pattern.clone()),
+    };
+    let prefix = file.split('%').next().unwrap_or("").to_string();
+    CorePattern { pattern, piped: false, dir, prefix }
 }
 
 /// Translate a FILE OFFSET in a Mach-O into the VM ADDRESS the symbol tables use.
@@ -4720,23 +5504,23 @@ fn thin_vmaddr_for_fileoff(data: &[u8], slice_base: u64, file_off: u64, slice_re
     None
 }
 
-/// Resolve an address against core mappings: which image, and the offset inside that file.
+/// Resolve an address against core mappings: which image, where it starts, and the offset inside that file.
 ///
-/// MEASURED scale quirk, and it is the difference between a right and a wrong function name: in the core examined
-/// here, NT_FILE's start/end are already BYTE addresses (0x7dc012b27000, not a page number) while file_offset is a
-/// PAGE number (1 for the first mapped page). Linux's own format is pages throughout, so this is not something to
-/// hard-code either way -- the segment start is taken as given, and the FILE OFFSET is scaled, because a raw
-/// offset of 1 next to byte-range addresses cannot mean one byte.
-fn resolve_in_core(maps: &[(u64, u64, u64, String)], addr: u64, pages_for_ranges: bool)
-        -> Option<(String, u64)> {
-    for (s, e, fo, name) in maps {
-        let (start, enda) = if pages_for_ranges { (s * 0x1000, e * 0x1000) } else { (*s, *e) };
-        if start <= addr && addr < enda {
-            let off = fo * 0x1000 + (addr - start);
-            if let Some(host) = guest_path_to_host(name, None) {
-                return Some((host.display().to_string(), off));
-            }
-            return Some((name.clone(), off));
+/// MEASURED scale quirk, and it is the difference between a right and a wrong function name: the kernel writes
+/// NT_FILE's start/end as BYTE addresses (0x7dc012b27000, not a page number) while its file_offset is in PAGES (1
+/// for the first mapped page), and gdb's `gcore` writes BOTH in bytes with the note's page field set to 1. Both
+/// conventions are handled where they belong -- `CoreFile::open` normalizes every entry to bytes using the note's
+/// own declared unit -- so this function only ever sees bytes, and a caller cannot pick the wrong scale.
+/// Returns `(mapping base, file offset, image path as the core records it)`, because an "image address" is relative
+/// to the base and a reader that cannot see it cannot check the arithmetic -- getting exactly that subtraction wrong
+/// by hand is what once symbolized the wrong function.
+///
+/// De-virtualization is NOT done here: a caller that has a prefix has to be able to say so, and the path a core
+/// records has to stay visible for the case where no prefix resolves it (`CoreFile::resolve` does both).
+fn resolve_in_core(maps: &[(u64, u64, u64, String)], addr: u64) -> Option<(u64, u64, String)> {
+    for (start, enda, file_off, name) in maps {
+        if *start <= addr && addr < *enda {
+            return Some((*start, file_off + (addr - start), name.clone()));
         }
     }
     None
@@ -4748,158 +5532,952 @@ fn resolve_in_core(maps: &[(u64, u64, u64, String)], addr: u64, pages_for_ranges
 /// so Darling never sees it as a syscall and cannot report it. Four other routes were measured blind on the same
 /// crash: `dmesg` is silent because the guest installs its own handler, the loader's fault witness armed 8 times
 /// and never fired, the guest masks SIGSEGV on that path, and a gdb catch waits for a signal the guest swallows.
-/// A core needs none of that machinery: it is written by the kernel, `gdb` reads it with no ptrace, and it carries
-/// NT_PRSTATUS (registers), NT_SIGINFO (the signal) and NT_FILE (the mappings). It is also normally OFF here
-/// (`ulimit -c 0`, `core_pattern` -> apport), which is why crashes have been unreadable; this command says so
-/// instead of returning nothing.
+/// A core needs none of that machinery: it is written by the kernel and carries NT_PRSTATUS (every thread's
+/// registers), NT_SIGINFO (the signal and how it arrived), NT_FILE (the mappings) and NT_PRPSINFO (the command line).
+/// It is also normally OFF here (`ulimit -c 0`, `core_pattern` -> apport), which is why crashes have been unreadable;
+/// this command says so instead of returning nothing.
+///
+/// WHAT IT REPORTS, all of it from those notes: the terminating signal and the faulting thread; the faulting
+/// instruction pointer mapped to its image (load base + in-image address) and symbolized; the instruction there
+/// (enough to say `ud2`); the faulting frame's OPERANDS where the register file locates them, marked best-effort;
+/// and the caller chain walked through the core's own frame pointers and mapped through the core's own mapping table.
+///
+/// The notes are read HERE rather than through `gdb` or `readelf`: the host's `readelf -n` REFUSES this note
+/// ("Cannot decode 64-bit note in 32-bit build") and gdb's `bt` cannot unwind a guest frame at all, while the notes
+/// hold everything above in a few kilobytes.
 fn run_core(args: CoreArgs) -> Result<ExitCode> {
     let core = match &args.core {
         Some(p) => p.clone(),
-        None => {
-            let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
-            if let Ok(rd) = std::fs::read_dir(&args.dir) {
-                for e in rd.flatten() {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    if name.starts_with("core") {
-                        if let Ok(md) = e.metadata() {
-                            if let Ok(t) = md.modified() {
-                                if best.as_ref().map(|(bt, _)| t > *bt).unwrap_or(true) { best = Some((t, e.path())); }
-                            }
-                        }
-                    }
+        None => match newest_core(&args.dir, "core") {
+            Some(p) => p,
+            None => {
+                // Name WHY there is nothing to read. A silent empty result is what made this class of crash look
+                // like a missing feature rather than a disabled one -- and WHERE the kernel would have written it is
+                // part of the answer, so the pattern's own directory is read instead of assumed to be this one.
+                let ulimit = std::fs::read_to_string("/proc/self/limits").unwrap_or_default()
+                    .lines().find(|l| l.starts_with("Max core file size")).unwrap_or("Max core file size: <unknown>").to_string();
+                let pat = core_pattern();
+                crate::say(&format!("CORE-NONE dir={} ({})", args.dir.display(), ulimit.trim()));
+                crate::say(&format!("CORE-NOTE core_pattern={} wrote into {} -- a crash leaves nothing unless the pattern names a file (a leading '|' pipes the dump to a handler) and the crashing process's size limit is non-zero", pat.pattern, pat.dir.display()));
+                if !pat.piped && pat.dir != args.dir {
+                    crate::say(&format!("CORE-NOTE-HINT the pattern does not write into {}: a core from a crash under it would be under {}", args.dir.display(), pat.dir.display()));
                 }
+                return Ok(ExitCode::SUCCESS);
             }
-            match best {
-                Some((_, p)) => p,
-                None => {
-                    // Name WHY there is nothing to read. A silent empty result is what made this class of crash
-                    // look like a missing feature rather than a disabled one.
-                    let ulimit = std::fs::read_to_string("/proc/self/limits").unwrap_or_default()
-                        .lines().find(|l| l.starts_with("Max core file size")).unwrap_or("Max core file size: <unknown>").to_string();
-                    let pattern = std::fs::read_to_string("/proc/sys/kernel/core_pattern")
-                        .unwrap_or_else(|_| "<unreadable>".into());
-                    crate::say(&format!("CORE-NONE dir={} ({})", args.dir.display(), ulimit.trim()));
-                    crate::say(&format!("CORE-NOTE core_pattern={} -- a crash writes nothing unless it names a file (the kernel pipes it to a handler here), and the size limit above must be non-zero", pattern.trim()));
-                    return Ok(ExitCode::SUCCESS);
-                }
-            }
-        }
+        },
     };
     if !core.exists() { bail!("no such core: {}", core.display()); }
 
-    let mut cmd = Command::new("gdb");
-    let out = cmd
-        .args(["-batch", "-nx", "-iex", "set debuginfod enabled off"])
-        .arg("-c").arg(&core)
-        .args(["-ex", "info registers rip rsp", "-ex", "info proc mappings", "-ex", "bt", "-ex", "info threads"])
-        .output()
-        .context("running gdb on the core")?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let err = String::from_utf8_lossy(&out.stderr);
-
-    let mut rip = None;
-    let mut rsp = None;
-    let mut sig = String::new();
-    let mut generated_by = String::new();
-    let mut frames: Vec<u64> = Vec::new();
-    let mut in_bt = false;
-    for line in text.lines().chain(err.lines()) {
-        let t = line.trim();
-        if let Some(v) = t.strip_prefix("rip") {
-            if let Some(h) = v.split_whitespace().next().and_then(|x| x.strip_prefix("0x")) {
-                rip = u64::from_str_radix(h, 16).ok();
-            }
-        } else if let Some(v) = t.strip_prefix("rsp") {
-            if let Some(h) = v.split_whitespace().next().and_then(|x| x.strip_prefix("0x")) {
-                rsp = u64::from_str_radix(h, 16).ok();
-            }
-        } else if t.starts_with("Program terminated with signal") {
-            sig = t.to_string();
-        } else if let Some(v) = t.strip_prefix("Core was generated by ") {
-            generated_by = v.trim().to_string();
-        } else if t.starts_with("#0 ") || t.starts_with("#1 ") {
-            in_bt = true;
-            if let Some(a) = t.split_whitespace().nth(1).and_then(|x| x.strip_prefix("0x")) {
-                if let Ok(v) = u64::from_str_radix(a, 16) { frames.push(v); }
-            }
-        } else if in_bt && t.starts_with('#') {
-            if let Some(a) = t.split_whitespace().nth(1).and_then(|x| x.strip_prefix("0x")) {
-                if let Ok(v) = u64::from_str_radix(a, 16) { frames.push(v); }
-            }
-        }
-    }
-
-    // Mappings come from NT_FILE, never from gdb: gdb SKIPS images whose paths do not exist on the host, and a
-    // guest's /Volumes/SystemRoot/... never does -- which is why an earlier version resolved nothing.
-    let maps = parse_nt_file(&core).unwrap_or_default();
-    // Byte-addressed or page-addressed: measured to differ between kernels, so accept whichever scale actually
-    // covers the faulting address rather than pinning a constant.
-    // Choose the range scale by MEASURING it: the right one is the one under which several backtrace frames land
-    // in files that actually exist on this host. A single address can fall in both scales (it did), which is why
-    // the earlier one-address test picked wrong and named the wrong function.
-    let score = |pages: bool| -> usize {
-        frames.iter().filter(|a| resolve_in_core(&maps, **a, pages)
-            .map(|(f, _)| std::path::Path::new(&f).exists()).unwrap_or(false)).count()
-    };
-    let (bytes_score, pages_score) = (score(false), score(true));
-    let use_pages = pages_score > bytes_score;
-    let prefix = args.prefix.clone().or_else(|| {
+    let mut c = CoreFile::open(&core)?;
+    let prefix_owned = args.prefix.clone().or_else(|| {
         std::env::var("DWDIAG_PREFIX").ok().filter(|s| !s.is_empty()).map(PathBuf::from)
     });
-    let _ = &prefix;
-    let resolve = |addr: u64| -> Option<(String, u64)> { resolve_in_core(&maps, addr, use_pages) };
-    // The core speaks file offsets; the symbolizer speaks VM addresses. Convert, and never fall back silently to the
-    // file offset: an unconverted offset yields a confidently WRONG function name, which is worse than no name.
-    let vmaddr_of = |file: &str, off: u64| -> u64 {
-        macho_vmaddr_for_fileoff(file, off).unwrap_or(off)
+    let prefix = prefix_owned.as_deref();
+
+    // The guest log, when given, is where the FAULTING THREAD and the signal as the GUEST saw them are written,
+    // while the core is where that thread's registers are. Reading both in one command is the point: neither alone
+    // says which thread faulted AND what it was executing.
+    let log_text = match &args.log {
+        Some(p) => Some(read_log_lossy(p).with_context(|| format!("reading {}", p.display()))?),
+        None => None,
     };
-    let symbolize_frame = |addr: u64| -> Option<String> {
-        let (file, off) = resolve(addr)?;
-        unwind_symbolize(vmaddr_of(&file, off), &file)
+    let mark = log_text.as_deref().and_then(last_fault_mark);
+    let want_tid = mark.as_ref().and_then(|m| m.tid);
+    let (faulting_lwp, regs) = {
+        let t = c.faulting(want_tid);
+        (t.lwp, t.regs)
     };
-    let resolved = rip.and_then(|ip| resolve(ip));
+    let (rip, rsp, rbp, gs_base) = (regs.rip(), regs.rsp(), regs.rbp(), regs.gs_base());
+    let how_faulting = match want_tid {
+        Some(w) if w == faulting_lwp => format!("the log's own tid={w}"),
+        Some(w) => format!("lwp {w} from the log is not in this core; fell back to note order"),
+        None => "note order (no --log: the first NT_PRSTATUS is the thread the kernel dumped from)".to_string(),
+    };
+
+    let mut cache = SymCache::default();
+    let fault = c.resolve(rip, prefix);
+    let fault_addr = fault.as_ref().map(|f| image_addr_of(f, &mut cache));
+    // The instruction bytes come from the IMAGE, never from the core: the kernel does not dump clean file-backed
+    // pages, so the page this thread died on is normally absent -- and reading them from the image is what the log
+    // path does too, so "what instruction is at this address" has one answer for both commands.
+    let insn_bytes = match &fault {
+        Some(f) if f.exists => fault_bytes(&f.host.display().to_string(), f.file_off),
+        _ => None,
+    };
+    let insn_hex = insn_bytes.as_deref().map(hex_bytes).unwrap_or_default();
+    let trap = insn_bytes.as_deref().and_then(decode_trap).unwrap_or("");
+
+    // The operands. A core is one instant and the guest's libdispatch carries no debug info, so this is a
+    // BEST-EFFORT read of the register file with a stated rule (`once_operands`); when the faulting frame is
+    // demonstrably NOT a once wait, it is not attempted at all, and when nothing matches, the reason is printed.
+    let fault_symbol = fault_addr.as_ref().and_then(|a| a.symbol.clone());
+    let symbol_is_once = fault_symbol.as_deref().map(|s| s.contains("dispatch_once"));
+    let operands = match symbol_is_once {
+        Some(false) => None,
+        _ => once_operands(&regs, |a| c.read_u64(a).ok()),
+    };
+    let operand_why = if operands.is_some() {
+        String::new()
+    } else if symbol_is_once == Some(false) {
+        format!(
+            "the faulting frame is {}, which is not a dispatch_once wait, and this reader knows the once protocol's \
+             operand encoding only", fault_symbol.clone().unwrap_or_else(|| "<?>".into())
+        )
+    } else {
+        "no register points at a value whose low bits name an owner that another register also holds, which is the \
+         encoding this reader looks for".to_string()
+    };
+    let tsd = c.read_u64(tsd_self_addr(gs_base)).map_err(|e| {
+        format!(
+            "{e}; the identity word is slot {TSD_SELF_SLOT} at $gs_base + {} = {:#x}",
+            TSD_SELF_SLOT * TSD_SLOT_BYTES, tsd_self_addr(gs_base)
+        )
+    });
+
+    // The caller chain, through the core's own frame pointers and its own NT_FILE table.
+    let (frames, walk_stop) = core_fp_chain(&mut c, rbp, rsp, prefix, 64);
+    let walk: Vec<(CoreFrame, Option<ImageAddr>)> = frames
+        .into_iter()
+        .map(|f| {
+            let a = f.image.as_ref().map(|im| image_addr_of(im, &mut cache));
+            (f, a)
+        })
+        .collect();
+    let anon_hint = c.carried(rip) && fault.is_none();
+    let threads = c.threads.len();
+    let maps_count = c.maps.len();
+    let (bytes_inside, pages_inside) = c.inside;
+    let file_page = c.file_page;
+    let scale = c.scale;
+    let sig = c.sig;
+    let size = c.size;
+    let generated_by = c.args.clone();
+
+    let sig_line = match sig {
+        Some(s) => format!(
+            "CORE-SIGNAL sig={} {} (NT_SIGINFO si_signo={} si_code={} si_errno={} si_addr={:#x})",
+            s.signo, sig_label(s.signo), s.signo, s.code, s.errno, s.addr
+        ),
+        None => "CORE-SIGNAL unknown: this core carries no NT_SIGINFO note".to_string(),
+    };
+    let fault_line = match (&fault, &fault_addr) {
+        (Some(f), Some(a)) if !f.exists => format!(
+            "CORE-FAULT image={} base={:#x} file+{:#x} exists=NO: the core names this image and no such file is on \
+             this host, so there is nothing to symbolize; pass --prefix if the guest tree is mounted elsewhere",
+            f.name, f.base, f.file_off
+        ),
+        (Some(f), Some(a)) => format!(
+            "CORE-FAULT image={} base={:#x} file+{:#x} vm+{:#x} image_addr={:#x} symbol={}{}",
+            f.host.display(),
+            f.base,
+            f.file_off,
+            a.vm,
+            a.vm,
+            a.symbol.clone().unwrap_or_else(|| "<no symbol>".into()),
+            if a.converted {
+                ""
+            } else {
+                " (NOT converted: this image is not a Mach-O, so its file offset is not its symbolizer address)"
+            }
+        ),
+        _ => format!(
+            "CORE-FAULT unresolved: {rip:#x} is in no mapping this core's NT_FILE lists{}",
+            if anon_hint {
+                " -- it IS inside a PT_LOAD the dump carries, i.e. an ANONYMOUS mapping, which has no image name to give"
+            } else {
+                ""
+            }
+        ),
+    };
+    let insn_line = match (&insn_bytes, &fault) {
+        (Some(_), Some(f)) => format!(
+            "CORE-INSN {insn_hex}{} (read from {} at file offset {:#x}; the core itself does not carry that page)",
+            if trap.is_empty() { String::new() } else { format!(" -- {trap}") },
+            f.host.display(),
+            f.file_off
+        ),
+        (Some(_), None) => format!("CORE-INSN {insn_hex}"),
+        (None, Some(f) ) if f.exists => format!(
+            "CORE-INSN <unreadable: cannot open {} at file offset {:#x}>",
+            f.host.display(),
+            f.file_off
+        ),
+        _ => "CORE-INSN <no address in an image to read>".to_string(),
+    };
+    let operands_lines: Vec<String> = match &operands {
+        Some(o) => vec![
+            "CORE-OPERANDS source=registers-at-trap (BEST-EFFORT: the guest image carries no debug info and a core \
+             is one instruction, so the register file is the only place these can come from; the rule is that a \
+             register POINTS AT a word whose low bits name an owner another register also holds -- re-read the \
+             disassembly before trusting a value from here)"
+                .to_string(),
+            format!(
+                "CORE-OPERANDS predicate_reg={} predicate={:#x} once_word={:#x} once_word_reg={} masked_owner={:#x} \
+                 masked_owner_reg={} check={}",
+                o.predicate_reg,
+                o.predicate,
+                o.word,
+                o.word_reg.unwrap_or("<no register holds the word itself>"),
+                o.owner,
+                o.owner_reg,
+                if o.word_reg.is_some() {
+                    "consistent (the word a register holds equals the word at the pointer)"
+                } else {
+                    "PARTIAL (no register holds the word itself: only the dereference gave it)"
+                }
+            ),
+        ],
+        None => vec![format!("CORE-OPERANDS unavailable: {operand_why}")],
+    };
+    let tsd_line = match &tsd {
+        Ok(0) => format!(
+            "CORE-OPERANDS-TSD3 gs_base={gs_base:#x} slot={TSD_SELF_SLOT} value=0x0 (ZERO: this thread's identity \
+             word names nobody, so it can exclude no other thread)"
+        ),
+        Ok(v) => format!(
+            "CORE-OPERANDS-TSD3 gs_base={gs_base:#x} slot={TSD_SELF_SLOT} value={v:#x} (*(unsigned long*)($gs_base+{}) \
+             = __TSD_MACH_THREAD_SELF)",
+            TSD_SELF_SLOT * TSD_SLOT_BYTES
+        ),
+        Err(e) => format!("CORE-OPERANDS-TSD3 gs_base={gs_base:#x} slot={TSD_SELF_SLOT} value=UNREADABLE ({e})"),
+    };
+    let walk_lines: Vec<String> = walk
+        .iter()
+        .enumerate()
+        .map(|(i, (f, a))| match (a, &f.image) {
+            (Some(a), Some(im)) => format!(
+                "  #{i} fp={:#x} {:#x} {} file+{:#x} vm+{:#x} {}",
+                f.fp,
+                f.ret,
+                basename_of(&im.host),
+                im.file_off,
+                a.vm,
+                a.symbol.clone().unwrap_or_else(|| "<no symbol>".into())
+            ),
+            _ => format!("  #{i} fp={:#x} {:#x} <no image>", f.fp, f.ret),
+        })
+        .collect();
 
     if args.json {
-        let sym = resolved.as_ref().and_then(|(f, o)| unwind_symbolize(vmaddr_of(f, *o), f));
-        println!("{{\"core\":{},\"rip\":\"{:#x}\",\"rsp\":\"{:#x}\",\"signal\":{},\"image\":{},\"offset\":\"{:#x}\",\"symbol\":{},\"frames\":[{}]}}",
-            jesc(&core.display().to_string()),
-            rip.unwrap_or(0), rsp.unwrap_or(0), jesc(&sig),
-            resolved.as_ref().map(|(f, _)| jesc(f)).unwrap_or_else(|| "null".into()),
-            resolved.as_ref().map(|(_, o)| *o).unwrap_or(0),
-            sym.map(|x| jesc(&x)).unwrap_or_else(|| "null".into()),
-            frames.iter().map(|a| format!("\"{a:#x}\"")).collect::<Vec<_>>().join(","));
+        let sig_obj = match sig {
+            Some(s) => json_object(vec![
+                ("signo", s.signo.to_string()),
+                ("name", jstr(&sig_label(s.signo))),
+                ("meaning", jstr(sig_meaning(&s.signo.to_string()).unwrap_or(""))),
+                ("si_code", s.code.to_string()),
+                ("si_code_meaning", jstr(sig_code_meaning(s.signo, s.code).unwrap_or(""))),
+                ("si_errno", s.errno.to_string()),
+                ("si_addr", format!("\"{:#x}\"", s.addr)),
+            ]),
+            None => "null".to_string(),
+        };
+        let fault_obj = match (&fault, &fault_addr) {
+            (Some(f), Some(a)) => json_object(vec![
+                ("path", jstr(&f.host.display().to_string())),
+                ("path_as_the_core_names_it", jstr(&f.name)),
+                ("exists", f.exists.to_string()),
+                ("base", format!("\"{:#x}\"", f.base)),
+                ("file_offset", format!("\"{:#x}\"", f.file_off)),
+                ("image_addr", format!("\"{:#x}\"", a.vm)),
+                ("image_addr_converted", a.converted.to_string()),
+                ("symbol", a.symbol.clone().map(|s| jstr(&s)).unwrap_or_else(|| "null".into())),
+            ]),
+            _ => "null".to_string(),
+        };
+        let operands_obj = match &operands {
+            Some(o) => json_object(vec![
+                ("predicate_reg", jstr(o.predicate_reg)),
+                ("predicate", format!("\"{:#x}\"", o.predicate)),
+                ("once_word", format!("\"{:#x}\"", o.word)),
+                ("once_word_reg", o.word_reg.map(jstr).unwrap_or_else(|| "null".into())),
+                ("masked_owner", format!("\"{:#x}\"", o.owner)),
+                ("masked_owner_reg", jstr(o.owner_reg)),
+            ]),
+            None => "null".to_string(),
+        };
+        let tsd_obj = match &tsd {
+            Ok(v) => json_object(vec![
+                ("address", format!("\"{:#x}\"", tsd_self_addr(gs_base))),
+                ("slot", TSD_SELF_SLOT.to_string()),
+                ("value", format!("\"{v:#x}\"")),
+                ("zero", (*v == 0).to_string()),
+            ]),
+            Err(e) => json_object(vec![
+                ("address", format!("\"{:#x}\"", tsd_self_addr(gs_base))),
+                ("slot", TSD_SELF_SLOT.to_string()),
+                ("value", "null".to_string()),
+                ("read_error", jstr(e)),
+            ]),
+        };
+        let callers: String = walk
+            .iter()
+            .map(|(f, a)| {
+                let (img, off, vm, sym) = match (a, &f.image) {
+                    (Some(a), Some(im)) => {
+                        (Some(im.host.display().to_string()), Some(im.file_off), Some(a.vm), a.symbol.clone())
+                    }
+                    _ => (None, None, None, None),
+                };
+                json_object(vec![
+                    ("fp", format!("\"{:#x}\"", f.fp)),
+                    ("ret", format!("\"{:#x}\"", f.ret)),
+                    ("image", img.map(|s| jstr(&s)).unwrap_or_else(|| "null".into())),
+                    ("file_offset", off.map(|o| format!("\"{o:#x}\"")).unwrap_or_else(|| "null".into())),
+                    ("image_addr", vm.map(|v| format!("\"{v:#x}\"")).unwrap_or_else(|| "null".into())),
+                    ("symbol", sym.map(|s| jstr(&s)).unwrap_or_else(|| "null".into())),
+                ])
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let log_obj = match (&args.log, &mark) {
+            (Some(p), Some(m)) => json_object(vec![
+                ("path", jstr(&p.display().to_string())),
+                ("mark_sig", m.sig.to_string()),
+                ("mark_ip", format!("\"{:#x}\"", m.ip)),
+                ("mark_ip_is_instruction_pointer_from_addr", m.ip_from_addr.to_string()),
+                ("mark_tid", m.tid.map(|t| t.to_string()).unwrap_or_else(|| "null".into())),
+                ("same_fault_as_the_core", (m.ip == rip).to_string()),
+            ]),
+            (Some(p), None) => json_object(vec![
+                ("path", jstr(&p.display().to_string())),
+                ("mark", "null".to_string()),
+                ("note", jstr("the log carries no [sigexc-fatal mark this reader can attribute")),
+            ]),
+            (None, _) => "null".to_string(),
+        };
+        let traces = if args.traces { core_gdb_traces(&core) } else { Vec::new() };
+        println!(
+            "{}",
+            json_object(vec![
+                ("core", jstr(&core.display().to_string())),
+                ("size", size.to_string()),
+                ("signal", sig.map(|s| jstr(&sig_label(s.signo))).unwrap_or_else(|| "null".into())),
+                ("siginfo", sig_obj),
+                ("faulting_lwp", faulting_lwp.to_string()),
+                ("faulting_thread_rule", jstr(&how_faulting)),
+                ("threads", threads.to_string()),
+                ("rip", format!("\"{rip:#x}\"")),
+                ("rsp", format!("\"{rsp:#x}\"")),
+                ("rbp", format!("\"{rbp:#x}\"")),
+                ("gs_base", format!("\"{gs_base:#x}\"")),
+                ("image", fault.as_ref().map(|f| jstr(&f.host.display().to_string())).unwrap_or_else(|| "null".into())),
+                ("offset", format!("\"{:#x}\"", fault.as_ref().map(|f| f.file_off).unwrap_or(0))),
+                ("symbol", fault_addr.as_ref().and_then(|a| a.symbol.clone()).map(|s| jstr(&s)).unwrap_or_else(|| "null".into())),
+                ("fault", fault_obj),
+                ("insn", jstr(&insn_hex)),
+                ("trap", jstr(trap)),
+                ("operands", operands_obj),
+                ("operands_why", jstr(&operand_why)),
+                ("tsd_self", tsd_obj),
+                ("mappings", maps_count.to_string()),
+                ("range_scale", jstr(match scale { MapScale::Pages => "pages", MapScale::Bytes => "bytes" })),
+                ("file_offset_unit_declared_by_the_note", file_page.to_string()),
+                ("range_scale_evidence", json_object(vec![
+                    ("entries_inside_a_ptload_as_bytes", bytes_inside.to_string()),
+                    ("entries_inside_a_ptload_as_pages", pages_inside.to_string()),
+                ])),
+                ("frames", format!("[{}]", walk.iter().map(|(f, _)| format!("\"{:#x}\"", f.ret)).collect::<Vec<_>>().join(","))),
+                ("callers", format!("[{callers}]")),
+                ("callers_stop", jstr(&walk_stop)),
+                ("generated_by", jstr(&generated_by)),
+                ("log", log_obj),
+                ("gdb_traces", format!("[{}]", traces.iter().map(|l| jstr(l)).collect::<Vec<_>>().join(","))),
+            ])
+        );
         return Ok(ExitCode::SUCCESS);
     }
-    crate::say(&format!("CORE file={} size={}", core.display(),
-        std::fs::metadata(&core).map(|m| m.len()).unwrap_or(0)));
-    if !sig.is_empty() { crate::say(&format!("CORE-SIGNAL {sig}")); }
-    if !generated_by.is_empty() { crate::say(&format!("CORE-GENERATED-BY {generated_by}")); }
-    crate::say(&format!("CORE-REGISTERS rip={:#x} rsp={:#x}", rip.unwrap_or(0), rsp.unwrap_or(0)));
-    crate::say(&format!("CORE-MAPPINGS source=NT_FILE count={} range-scale={} (frames resolving under it: bytes={} pages={})",
-        maps.len(), if use_pages { "pages" } else { "bytes" }, bytes_score, pages_score));
-    match &resolved {
-        Some((img, off)) => {
-            let vm = vmaddr_of(img, *off);
-            let sym = unwind_symbolize(vm, img);
-            crate::say(&format!("CORE-FAULT image={} file+{:#x} vm+{:#x} -> {}", img,
-                off, vm, sym.unwrap_or_else(|| "<no symbol>".into())));
+    crate::say(&format!("CORE file={} size={size}", core.display()));
+    crate::say(&sig_line);
+    if let Some(s) = sig {
+        if let Some(m) = sig_code_meaning(s.signo, s.code) {
+            crate::say(&format!("CORE-SIGNAL-CODE {m}"));
         }
-        None => crate::say("CORE-FAULT unresolved: the faulting address is in no mapped image"),
     }
-    // EVERY frame symbolized, because that is the work this command exists to remove: doing it by hand took a
-    // python script over NT_FILE, and getting the path de-virtualization wrong quietly resolves nothing.
-    if !frames.is_empty() {
-        crate::say(&format!("CORE-STACK frames={} (symbolized)", frames.len()));
-        for (i, a) in frames.iter().enumerate() {
-            match (&resolve(*a), symbolize_frame(*a)) {
-                (Some((file, off)), sym) => crate::say(&format!("  #{i} {a:#x} {} file+{:#x} vm+{:#x} {}",
-                    file.rsplit('/').next().unwrap_or(file), off, vmaddr_of(file, *off),
-                    sym.unwrap_or_else(|| "?".into()))),
-                _ => crate::say(&format!("  #{i} {a:#x} <no image>")),
-            }
+    crate::say(&format!("CORE-THREAD faulting=lwp {faulting_lwp} of {threads} thread(s) ({how_faulting})"));
+    crate::say(&format!(
+        "CORE-REGISTERS rip={rip:#x} rsp={rsp:#x} rbp={rbp:#x} rdi={:#x} gs_base={gs_base:#x}",
+        regs.get("rdi").unwrap_or(0)
+    ));
+    if !generated_by.is_empty() {
+        crate::say(&format!("CORE-GENERATED-BY {generated_by}"));
+    }
+    crate::say(&format!(
+        "CORE-MAPPINGS source=NT_FILE count={maps_count} range-scale={} (decided from this core: {bytes_inside} of \
+         {maps_count} entries fall inside a PT_LOAD as bytes, {pages_inside} as pages) file-offset-unit={}",
+        match scale {
+            MapScale::Pages => "pages",
+            MapScale::Bytes => "bytes",
+        },
+        if file_page == 1 { "bytes (the note declares page_size=1)" } else { "the note's declared page size" }
+    ));
+    crate::say(&fault_line);
+    crate::say(&insn_line);
+    for l in &operands_lines {
+        crate::say(l);
+    }
+    crate::say(&tsd_line);
+    if let Some(log) = args.log.as_ref() {
+        match &mark {
+            Some(m) => crate::say(&format!(
+                "CORE-LOG {} marks sig={} ip={:#x} tid={} -- this core's faulting thread is lwp {faulting_lwp} at \
+                 rip {rip:#x}, so the two ip values {}",
+                log.display(),
+                m.sig,
+                m.ip,
+                m.tid.map(|t| t.to_string()).unwrap_or_else(|| "<none: this mark carries no tid=>".into()),
+                if m.ip == rip {
+                    "AGREE: both files describe the same fault"
+                } else {
+                    "DIFFER: the log and the core are not describing the same fault, so neither may be read as \
+                     evidence for the other"
+                }
+            )),
+            None => crate::say(&format!(
+                "CORE-LOG {} carries no [sigexc-fatal mark this reader can attribute (a mark with no rip= needs a \
+                 synchronous trap's addr=), so the faulting thread comes from the core's own note order",
+                log.display()
+            )),
+        }
+    }
+    // EVERY caller symbolized, because that is the work this command exists to remove: doing it by hand took a
+    // python script over NT_FILE and a gdb round, and getting the scale or the de-virtualization wrong resolves
+    // nothing while looking like an answer.
+    crate::say(&format!(
+        "CORE-STACK frames={} (walked through the core's own frame pointers and mapped through the core's own NT_FILE \
+         table, not through gdb)",
+        walk.len()
+    ));
+    for l in &walk_lines {
+        crate::say(l);
+    }
+    crate::say(&format!("CORE-STACK-STOP {walk_stop}"));
+    if args.traces {
+        crate::say("CORE-TRACES-GDB gdb's own view, printed verbatim: on a guest core its unwind is usually useless because it has no symbols or unwind information for the guest's Mach-O images, and seeing that is the point of the flag");
+        for l in core_gdb_traces(&core) {
+            crate::say(&format!("CORE-TRACES-GDB {l}"));
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+// identity: the per-thread census, from a core or from a live prefix process
+// --------------------------------------------------------------------------------------------------------------------
+
+#[derive(clap::Args, Debug)]
+pub struct IdentityArgs {
+    /// The core to census. Without it, the newest `core.*` under --dir is used.
+    #[arg(long)]
+    core: Option<PathBuf>,
+    /// Directory holding cores when --core is not given.
+    #[arg(long, default_value = "/tmp/t4cores")]
+    dir: PathBuf,
+    /// Census a LIVE process (host pid) instead of a core. This needs ptrace permission, because the thread's
+    /// `gs_base` is a register and only a debugger can read it. TWO samples are taken with the target RUNNING in
+    /// between: a stopped target cannot show a value changing, so a flag that could only ever be false would be a
+    /// flag that measures nothing.
+    #[arg(long)]
+    pid: Option<u32>,
+    /// Prefix whose images resolve each thread's instruction pointer. Defaults to DWDIAG_PREFIX.
+    #[arg(long)]
+    prefix: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+}
+
+/// One thread's identity at one instant.
+struct IdentitySample {
+    lwp: u32,
+    /// `__TSD_MACH_THREAD_SELF`, or a READ FAILURE with its reason. A failure is never replaced by a number: a
+    /// plausible value where the read failed is exactly the defect this command exists to remove.
+    slot3: Result<u64, String>,
+    /// Whether the value CHANGED between two observations. `None` means unobservable (a core is one instant).
+    unstable: Option<bool>,
+    ip: u64,
+    /// The image the instruction pointer is in, and the symbol there, where they resolve.
+    ip_image: Option<Resolved>,
+    ip_addr: Option<ImageAddr>,
+    /// Set when this thread appeared in only one of the two live samples (thread churn, which is NOT instability).
+    partial: bool,
+}
+
+/// The distinct identity values and the LWPs carrying each, most threads first.
+///
+/// A FAILED read is not a value: it has no identity to count, so it is carried as its own list rather than as a zero
+/// (a zero is a real, meaningful value here -- "this thread's identity names nobody").
+fn census_counts(samples: &[IdentitySample]) -> Vec<(u64, Vec<u32>)> {
+    let mut out: Vec<(u64, Vec<u32>)> = Vec::new();
+    for s in samples {
+        let Ok(v) = s.slot3 else { continue };
+        match out.iter_mut().find(|(x, _)| *x == v) {
+            Some((_, lwps)) => lwps.push(s.lwp),
+            None => out.push((v, vec![s.lwp])),
+        }
+    }
+    out.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(&b.0)));
+    out
+}
+
+/// Whether a value is shared by more than one thread. ZERO IS NOT A DUPLICATE and not a name either: an identity of 0
+/// excludes nobody, so two threads at 0 are "not set", not "two threads claiming one name" -- the distinction the
+/// existing core-lock census makes, kept here so the two commands cannot disagree about the same core.
+fn value_is_duplicated(counts: &[(u64, Vec<u32>)], v: u64) -> bool {
+    v != 0 && counts.iter().any(|(x, l)| *x == v && l.len() > 1)
+}
+
+/// Read a thread's `__TSD_MACH_THREAD_SELF` out of a core, or say exactly why it could not be read.
+fn read_tsd_self(c: &mut CoreFile, gs_base: u64) -> Result<u64, String> {
+    if gs_base == 0 {
+        return Err("gs_base is 0 in this thread's register note, so there is no TSD block to read".to_string());
+    }
+    let addr = tsd_self_addr(gs_base);
+    c.read_u64(addr).map_err(|e| format!("{e} (slot {TSD_SELF_SLOT} at {addr:#x})"))
+}
+
+/// The gdb script a LIVE census runs. `thread apply all` is what makes it a census, and every line carries the gdb
+/// thread number so a dropped line is DETECTABLE against `info threads` instead of silently changing the count.
+///
+/// The `$gs_base == 0` branch is MEASURED and necessary: on Linux x86-64 a thread's thread-local storage lives in FS,
+/// so GS is 0 for a HOST process and `*(unsigned long*)(0+24)` would make gdb abort the whole `thread apply all` at
+/// the first thread -- turning a census into a one-line error. A Darling GUEST is what this command is usually
+/// pointed at, and its GS base is real (0x763d6f130060 on /tmp/t4cores/core.127004); a host process instead gets a
+/// stated per-thread read failure, which is the answer: its identity is not GS-based.
+const IDENTITY_GDB_SCRIPT: &str = r#"set pagination off
+set confirm off
+define dvid
+  if $gs_base == 0
+    printf "@ident tid=%d gs=0x0 ip=%#lx slot3=UNREADABLE\n", $_thread, $pc
+  else
+    printf "@ident tid=%d gs=%#lx ip=%#lx slot3=%#lx\n", $_thread, $gs_base, $pc, *(unsigned long*)($gs_base+24)
+  end
+end
+thread apply all dvid
+"#;
+
+/// One gdb attach's worth of a live census.
+#[derive(Default)]
+struct LiveSample {
+    /// gdb thread number -> `(gs_base, ip, slot3)`.
+    rows: BTreeMap<u32, (u64, u64, Result<u64, String>)>,
+    /// gdb thread number -> LWP, from `info threads`.
+    lwp: BTreeMap<u32, u32>,
+    /// How many threads `info threads` listed, so a script that stopped early shows up as a gap.
+    listed: usize,
+    /// gdb's own stderr, kept because a failed memory read is the usual reason for that gap.
+    error: Option<String>,
+}
+
+/// Parse one gdb attach. Kept separate from running gdb so the join and the gap detection are testable on captured
+/// output -- the same reason the existing core-lock parser is separate from its gdb run.
+fn parse_live_sample(text: &str, error: Option<String>) -> LiveSample {
+    let mut s = LiveSample { error, ..Default::default() };
+    let re_thread = Regex::new(r"^\s*\*?\s*(\d+)\s+.*\(LWP (\d+)\)").unwrap();
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("@ident ") {
+            // `tid=` is the gdb thread NUMBER, which the script prints with `%d` (DECIMAL), while gs/ip/slot3 are
+            // `%#lx` (hex). MEASURED defect this avoids: parsing the number as hex made thread 10 read as 16, so
+            // from the tenth thread on, the row stopped matching its LWP and EVERY thread became a "no @ident line"
+            // failure -- a census whose threads silently disappear, which is the failure this command exists to
+            // remove. A target with ten or more threads is therefore what the contract starts.
+            let field = |k: &str| -> Option<&str> { rest.split_whitespace().find_map(|w| w.strip_prefix(k)) };
+            let hex = |k: &str| -> Option<u64> {
+                field(k).and_then(|v| u64::from_str_radix(v.trim_start_matches("0x"), 16).ok())
+            };
+            let Some(tid) = field("tid=").and_then(|v| v.parse::<u32>().ok()) else { continue };
+            let gs = hex("gs=").unwrap_or(0);
+            let ip = hex("ip=").unwrap_or(0);
+            // A zero here is `$gs_base` being 0, which is a thread with no TSD block, not a failed read: the script
+            // only prints a value when the read SUCCEEDED, so a zero is the value that was actually read.
+            let slot = match hex("slot3=") {
+                Some(v) if gs != 0 => Ok(v),
+                _ if gs == 0 => Err("$gs_base = 0: no GS-based TSD block to read".to_string()),
+                _ => Err("gdb printed no slot3= value for this thread".to_string()),
+            };
+            s.rows.insert(tid, (gs, ip, slot));
+            continue;
+        }
+        if let Some(c) = re_thread.captures(line) {
+            if let (Ok(tid), Ok(lwp)) = (c[1].parse::<u32>(), c[2].parse::<u32>()) {
+                s.lwp.insert(tid, lwp);
+            }
+        }
+    }
+    s.listed = s.lwp.len();
+    s
+}
+
+/// One live sample: attach, read every thread, detach.
+fn live_sample(pid: u32) -> Result<LiveSample, String> {
+    // A UNIQUE script path per invocation. MEASURED: with a fixed name under /tmp, running the census as root failed
+    // with "Permission denied" (it could not overwrite the file the invoking user already owned), and two concurrent
+    // censuses would truncate each other's script. The file is removed once gdb has read it.
+    let script = std::env::temp_dir().join(format!("dwdiag-identity-{}.gdb", std::process::id()));
+    fs::write(&script, IDENTITY_GDB_SCRIPT).map_err(|e| format!("writing {}: {e}", script.display()))?;
+    let out = Command::new("gdb")
+        .args(["-nx", "-q", "-batch", "-iex", "set debuginfod enabled off"])
+        .arg("-p")
+        .arg(pid.to_string())
+        // `info threads` runs BEFORE the script so the LWP map survives a script that stops part way.
+        .arg("-ex")
+        .arg("info threads")
+        .arg("-x")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("running gdb (ptrace permission is required to census a live process): {e}"))?;
+    let _ = fs::remove_file(&script);
+    let err = String::from_utf8_lossy(&out.stderr);
+    let err = err.lines().filter(|l| !l.trim().is_empty()).take(4).collect::<Vec<_>>().join(" | ");
+    Ok(parse_live_sample(&String::from_utf8_lossy(&out.stdout), if err.is_empty() { None } else { Some(err) }))
+}
+
+/// The live census: two samples, joined by LWP, with the target RUNNING in between.
+///
+/// A thread that gdb LISTED and never read is NOT dropped: it becomes a sample whose identity is a READ FAILURE with
+/// the reason. Dropping it is the defect this command exists to remove -- a silently missing thread changes the count
+/// of a shared identity, and the count is the answer.
+fn live_identity(pid: u32) -> Result<Vec<IdentitySample>, String> {
+    let first = live_sample(pid)?;
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    let second = live_sample(pid)?;
+    // AN EMPTY CENSUS IS NOT A MEASUREMENT. Every live process has at least one thread, so reading none means the
+    // attach did not happen -- and a report of "0 threads" would read like a process with no threads. gdb's own
+    // message is the answer to "why", and the usual one is a tracer permission this command cannot talk its way out
+    // of: a non-root tracer may only attach to its OWN DESCENDANTS (kernel.yama.ptrace_scope).
+    if first.rows.is_empty() && second.rows.is_empty() {
+        return Err(format!(
+            "gdb read no thread from pid {pid} ({} listed, none with an identity; gdb said: {}). ptrace_scope={}: a \
+             non-root tracer may attach only to its own descendants, so run this census as the target's ancestor or \
+             through sudo",
+            first.listed.max(second.listed),
+            first.error.clone().or(second.error).unwrap_or_else(|| "<no message>".to_string()),
+            fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope").unwrap_or_else(|_| "?".into()).trim(),
+        ));
+    }
+    let lwps: std::collections::BTreeSet<u32> = first.lwp.values().chain(second.lwp.values()).copied().collect();
+    let mut out = Vec::new();
+    for lwp in lwps {
+        let pick = |s: &LiveSample| -> Option<(u64, u64, Result<u64, String>)> {
+            let tid = s.lwp.iter().find(|(_, l)| **l == lwp).map(|(t, _)| *t)?;
+            s.rows.get(&tid).cloned()
+        };
+        let a = pick(&first);
+        let b = pick(&second);
+        let (slot3, unstable, partial, ip) = match (&a, &b) {
+            // The value CHANGED between two attaches with the target running: that is what unstable means here, and
+            // it is only observable because the target was resumed in between.
+            (Some((_, _, x)), Some((_, ip, y))) => {
+                (x.clone(), Some(x.as_ref().ok() != y.as_ref().ok()), false, *ip)
+            }
+            // Seen in only ONE sample: thread churn. Reporting that as instability would blame the value for the
+            // thread pool's own lifecycle, so it is flagged separately.
+            (Some((_, ip, x)), None) | (None, Some((_, ip, x))) => (x.clone(), None, true, *ip),
+            (None, None) => {
+                let why = format!(
+                    "gdb listed this thread (LWP {lwp}) and printed no @ident line for it: the script's `thread apply \
+                     all` stopped before reaching it, usually a memory read that failed{}",
+                    first
+                        .error
+                        .as_ref()
+                        .or(second.error.as_ref())
+                        .map(|e| format!(" (gdb said: {e})"))
+                        .unwrap_or_default()
+                );
+                (Err(why), None, true, 0)
+            }
+        };
+        out.push(IdentitySample { lwp, slot3, unstable, ip, ip_image: None, ip_addr: None, partial });
+    }
+    out.sort_by_key(|s| s.lwp);
+    // A census whose thread list came from `info threads` and whose values came from per-thread reads must SAY when
+    // the two disagree by more than churn.
+    let listed = first.listed.max(second.listed);
+    let read = first.rows.len().max(second.rows.len());
+    if listed > read {
+        let n = out.iter().filter(|s| s.slot3.is_err()).count();
+        if n == 0 {
+            return Err(format!(
+                "gdb listed {listed} thread(s) and read {read}: the difference is not accounted for per thread, so \
+                 this census cannot be trusted"
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// Census the guest's per-thread identity: `__TSD_MACH_THREAD_SELF` (TSD slot 3) per thread, machine-readable flags
+/// for zero, duplicate and unstable values, and a count per distinct value.
+///
+/// MEASURED why this is a command and not an incantation: the same census was taken by hand for the libdispatch
+/// SIGILL, with `thread apply all p/x` piped through greps that silently dropped lines and produced a WRONG count
+/// once -- and the number that mattered (most threads sharing one identity) is exactly the kind a truncated text
+/// scrape gets wrong. A core is read through its own notes; a live process through two gdb attaches. Either way the
+/// answer is per thread, with a stated failure where a read failed, and never a number where there was none.
+fn run_identity(args: IdentityArgs) -> Result<ExitCode> {
+    if args.pid.is_some() && args.core.is_some() {
+        bail!("--pid censuses a LIVE process and --core reads a core file: give one, not both");
+    }
+    let prefix_owned = args.prefix.clone().or_else(|| {
+        std::env::var("DWDIAG_PREFIX").ok().filter(|s| !s.is_empty()).map(PathBuf::from)
+    });
+    let prefix = prefix_owned.as_deref();
+    let mut cache = SymCache::default();
+    let mut samples: Vec<IdentitySample> = Vec::new();
+    let source: String;
+    let mut extra: Vec<(&str, String)> = Vec::new();
+    let unstable_note;
+
+    if let Some(pid) = args.pid {
+        source = format!("live pid={pid}");
+        samples = live_identity(pid).map_err(anyhow::Error::msg)?;
+        let listed = samples.iter().filter(|s| !s.partial).count();
+        extra.push(("live_samples", jstr("2 (the target ran between them)")));
+        extra.push(("live_threads_seen_in_both_samples", listed.to_string()));
+        extra.push((
+            "live_threads_churned",
+            samples.iter().filter(|s| s.partial).count().to_string(),
+        ));
+        unstable_note = "sampled by TWO attaches with the target running in between: a stopped target cannot show a \
+                         value changing, so instability is only observable this way"
+            .to_string();
+        // The instruction pointers are resolved against the LIVE process's own maps.
+        let maps = fs::read_to_string(format!("/proc/{pid}/maps"))
+            .map(|t| parse_maps_full(&t))
+            .unwrap_or_default();
+        for s in samples.iter_mut() {
+            s.ip_image = live_resolve(&maps, s.ip, prefix);
+            s.ip_addr = s.ip_image.as_ref().map(|r| image_addr_of(r, &mut cache));
+        }
+    } else {
+        let core = match &args.core {
+            Some(p) => p.clone(),
+            None => newest_core(&args.dir, "core").with_context(|| {
+                let pat = core_pattern();
+                format!(
+                    "nothing to census: no core under {} and no --pid. core_pattern is {} ({}{})",
+                    args.dir.display(),
+                    pat.pattern,
+                    if pat.piped { "it PIPES the dump to a handler, so no file is kept" } else { "" },
+                    if pat.piped { "" } else { "which writes into the directory part of the pattern" }
+                )
+            })?,
+        };
+        source = format!("core={}", core.display());
+        let mut c = CoreFile::open(&core)?;
+        let regs: Vec<(u32, u64, u64)> =
+            c.threads.iter().map(|t| (t.lwp, t.regs.gs_base(), t.regs.rip())).collect();
+        for (lwp, gs, ip) in regs {
+            samples.push(IdentitySample {
+                lwp,
+                slot3: read_tsd_self(&mut c, gs),
+                unstable: None,
+                ip,
+                ip_image: c.resolve(ip, prefix),
+                ip_addr: None,
+                partial: false,
+            });
+        }
+        for s in samples.iter_mut() {
+            s.ip_addr = s.ip_image.as_ref().map(|r| image_addr_of(r, &mut cache));
+        }
+        extra.push(("cores_check", jstr("read from the core's own notes (NT_PRSTATUS), not from gdb")));
+        unstable_note = "unobservable in a core: a core is ONE instant, so no value can be seen to change. \
+                         Re-read a live process with --pid to observe instability"
+            .to_string();
+    }
+    samples.sort_by_key(|s| s.lwp);
+
+    let counts = census_counts(&samples);
+    let unreadable: Vec<&IdentitySample> = samples.iter().filter(|s| s.slot3.is_err()).collect();
+    let zeros: Vec<u32> = samples.iter().filter(|s| s.slot3.as_ref().copied() == Ok(0)).map(|s| s.lwp).collect();
+    let unstable: Vec<u32> = samples.iter().filter(|s| s.unstable == Some(true)).map(|s| s.lwp).collect();
+    // MEASURED: a live HOST process has no GS-based TSD at all (Linux x86-64 keeps thread-locals in FS), so every
+    // thread's read fails for the same reason. That is a fact about the TARGET, not about the reads, and it is said
+    // once instead of leaving 28 identical read failures to be interpreted.
+    let all_gs_zero = args.pid.is_some()
+        && !samples.is_empty()
+        && samples.iter().all(|s| {
+            s.slot3.as_ref().err().map(|e| e.contains("$gs_base = 0") && !e.contains("no PT_LOAD")).unwrap_or(false)
+        });
+
+    if args.json {
+        let threads_json: String = samples
+            .iter()
+            .map(|s| {
+                json_object(vec![
+                    ("lwp", s.lwp.to_string()),
+                    ("slot3", s.slot3.as_ref().map(|v| format!("\"{v:#x}\"")).unwrap_or_else(|_| "null".into())),
+                    ("read_error", s.slot3.as_ref().err().map(|e| jstr(e)).unwrap_or_else(|| "null".into())),
+                    ("zero", (s.slot3.as_ref().copied() == Ok(0)).to_string()),
+                    ("duplicate", s.slot3.as_ref().map(|v| value_is_duplicated(&counts, *v).to_string()).unwrap_or_else(|_| "null".into())),
+                    ("unstable", s.unstable.map(|u| u.to_string()).unwrap_or_else(|| "null".into())),
+                    ("seen_in_one_sample_only", s.partial.to_string()),
+                    ("ip", format!("\"{:#x}\"", s.ip)),
+                    ("image", s.ip_image.as_ref().map(|r| jstr(&r.host.display().to_string())).unwrap_or_else(|| "null".into())),
+                    ("image_base", s.ip_image.as_ref().map(|r| format!("\"{:#x}\"", r.base)).unwrap_or_else(|| "null".into())),
+                    ("image_addr", s.ip_addr.as_ref().map(|a| format!("\"{:#x}\"", a.vm)).unwrap_or_else(|| "null".into())),
+                    ("image_addr_converted", s.ip_addr.as_ref().map(|a| a.converted.to_string()).unwrap_or_else(|| "null".into())),
+                    ("symbol", s.ip_addr.as_ref().and_then(|a| a.symbol.clone()).map(|x| jstr(&x)).unwrap_or_else(|| "null".into())),
+                ])
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let groups = |f: fn(&(u64, Vec<u32>)) -> bool| -> String {
+            counts
+                .iter()
+                .filter(|c| f(c))
+                .map(|(v, l)| json_object(vec![
+                    ("value", format!("\"{v:#x}\"")),
+                    ("count", l.len().to_string()),
+                    ("lwps", format!("[{}]", l.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","))),
+                ]))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let mut pairs: Vec<(&str, String)> = vec![
+            ("source", jstr(&source)),
+            ("slot", TSD_SELF_SLOT.to_string()),
+            ("slot_address", jstr("*(unsigned long*)($gs_base+24)")),
+            ("slot_name", jstr("__TSD_MACH_THREAD_SELF")),
+            ("threads_total", samples.len().to_string()),
+            ("distinct", counts.len().to_string()),
+            ("threads", format!("[{threads_json}]")),
+            ("summary", format!("[{}]", groups(|_| true))),
+            ("duplicates", format!("[{}]", groups(|(v, l)| *v != 0 && l.len() > 1))),
+            ("zero", format!("[{}]", zeros.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","))),
+            ("unreadable", format!("[{}]", unreadable.iter().map(|s| s.lwp.to_string()).collect::<Vec<_>>().join(","))),
+            ("unstable", if args.pid.is_some() { format!("[{}]", unstable.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")) } else { "null".to_string() }),
+            ("unstable_note", jstr(&unstable_note)),
+            ("not_a_guest_gs_based_tsd", all_gs_zero.to_string()),
+            ("counts_note", jstr("a value of 0 is NOT counted as a duplicate: an identity of 0 names nobody, so two threads at 0 are unset rather than sharing a name")),
+        ];
+        for (k, v) in extra {
+            pairs.push((k, v));
+        }
+        println!("{}", json_object(pairs));
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    crate::say(&format!("IDENTITY source={source} threads={}", samples.len()));
+    crate::say(&format!(
+        "IDENTITY-DEFINITION slot={TSD_SELF_SLOT} read=*(unsigned long*)($gs_base+24) name=__TSD_MACH_THREAD_SELF \
+         -- the value libdispatch compares a lock's owner against; 0 means this thread's identity names nobody"
+    ));
+    for s in &samples {
+        let (slot, dup) = match &s.slot3 {
+            Ok(v) => (format!("{v:#x}"), Some(value_is_duplicated(&counts, *v))),
+            Err(e) => (format!("UNREADABLE ({e})"), None),
+        };
+        let img = match (&s.ip_image, &s.ip_addr) {
+            (Some(r), Some(a)) if a.converted => format!(
+                " image={} image_base={:#x} image_addr={:#x} symbol={}",
+                basename_of(&r.host),
+                r.base,
+                a.vm,
+                a.symbol.clone().unwrap_or_else(|| "<no symbol>".into())
+            ),
+            // A non-Mach-O image (a host core's libc, where a guest thread's own pthread really is): the file offset
+            // is printed as what it IS, because the symbol tables do not address by file offset and calling it an
+            // image address would make a `no symbol` look like a finding about the image.
+            (Some(r), Some(a)) => format!(
+                " image={} image_base={:#x} file+{:#x} (NOT converted: not a Mach-O, so this is a file offset and the \
+                 symbol lookup for it is meaningless) symbol={}",
+                basename_of(&r.host),
+                r.base,
+                a.vm,
+                a.symbol.clone().unwrap_or_else(|| "null".into())
+            ),
+            _ => " image=<none: the instruction pointer is in no file-backed mapping>".to_string(),
+        };
+        crate::say(&format!(
+            "IDENTITY-THREAD lwp={} slot3={slot} zero={} duplicate={} unstable={} ip={:#x}{img}{}",
+            s.lwp,
+            matches!(s.slot3, Ok(0)),
+            dup.map(|d| d.to_string()).unwrap_or_else(|| "null".into()),
+            s.unstable.map(|u| u.to_string()).unwrap_or_else(|| "n/a".into()),
+            s.ip,
+            if s.partial { " seen_in_one_sample_only=true" } else { "" }
+        ));
+    }
+    for (v, lwps) in &counts {
+        if value_is_duplicated(&counts, *v) {
+            crate::say(&format!(
+                "IDENTITY-DUPLICATE value={v:#x} count={} lwps={} (these threads carry the SAME identity, so a lock \
+                 held by one reads as held by the other)",
+                lwps.len(),
+                lwps.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
+            ));
+        }
+    }
+    for (v, lwps) in &counts {
+        crate::say(&format!("IDENTITY-SUMMARY value={v:#x} count={}", lwps.len()));
+    }
+    crate::say(&format!(
+        "IDENTITY-SUMMARY distinct={} threads={} unreadable={} zero={}",
+        counts.len(),
+        samples.len(),
+        unreadable.len(),
+        zeros.len()
+    ));
+    if !zeros.is_empty() {
+        crate::say(&format!(
+            "IDENTITY-ZERO lwps={} (an identity of 0 excludes nobody and clears whatever word its unlock writes; \
+             decide whether these are guest pthreads before blaming them)",
+            zeros.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
+        ));
+    }
+    if !unreadable.is_empty() {
+        // Grouped by REASON with the LWPs listed: thirty identical paragraphs hide the fact that it is one cause,
+        // while a per-thread attribution is still what a reader needs. The JSON keeps the failure per thread.
+        let mut groups: Vec<(String, Vec<u32>)> = Vec::new();
+        for s in &unreadable {
+            let why = s.slot3.as_ref().err().cloned().unwrap_or_default();
+            match groups.iter_mut().find(|(r, _)| *r == why) {
+                Some((_, l)) => l.push(s.lwp),
+                None => groups.push((why, vec![s.lwp])),
+            }
+        }
+        for (why, lwps) in groups {
+            crate::say(&format!(
+                "IDENTITY-READ-FAILURE reason={why} lwps={}",
+                lwps.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
+            ));
+        }
+    }
+    crate::say(&format!("IDENTITY-UNSTABLE {unstable_note}"));
+    if all_gs_zero {
+        crate::say(
+            "IDENTITY-NOT-A-GUEST every thread's $gs_base is 0, so this process keeps its thread-local storage in FS \
+             and has no GS-based TSD: it is a HOST process, not a Darling guest, and the identity this command reads \
+             does not exist in it -- which is why every thread is reported as a read FAILURE rather than as a zero",
+        );
+    }
+    if args.pid.is_some() {
+        crate::say(&format!(
+            "IDENTITY-LIVE threads_seen_in_both_samples={} churned={} (a thread in one sample only is the thread \
+             pool's lifecycle, not an unstable value)",
+            samples.iter().filter(|s| !s.partial).count(),
+            samples.iter().filter(|s| s.partial).count()
+        ));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Resolve a live process's instruction pointer through its OWN `/proc/<pid>/maps`, which is the live counterpart of
+/// the core's NT_FILE table: same question, same shape of answer.
+fn live_resolve(maps: &[MapRegion], ip: u64, prefix: Option<&Path>) -> Option<Resolved> {
+    let r = maps.iter().find(|m| m.lo <= ip && ip < m.hi)?;
+    if r.file.is_empty() {
+        return None;
+    }
+    let hit = guest_path_to_host(&r.file, prefix);
+    let exists = hit.is_some();
+    Some(Resolved {
+        base: r.lo,
+        name: r.file.clone(),
+        host: hit.unwrap_or_else(|| PathBuf::from(&r.file)),
+        exists,
+        file_off: r.file_off + (ip - r.lo),
+    })
 }
 
 /// The signature of a process that is not working any more: one pattern repeating near the END of the log with
@@ -6185,6 +7763,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Trap(a) => run_trap(a),
         DiagCommand::Loops(a) => run_loops(a),
         DiagCommand::Core(a) => run_core(a),
+        DiagCommand::Identity(a) => run_identity(a),
         DiagCommand::Cores(a) => run_cores(a),
         DiagCommand::Crash(a) => run_crash(a),
         DiagCommand::Verdict(a) => run_verdict(a),
@@ -6599,6 +8178,13 @@ pub enum DiagCommand {
     /// guest that masks SIGSEGV, and a catch waiting for a swallowed signal). The core is written by the kernel and
     /// read by gdb with no ptrace; it is also OFF by default here, which this command states rather than hides.
     Core(CoreArgs),
+    /// Census the per-thread identity a core (or a live prefix process) holds: `__TSD_MACH_THREAD_SELF` per thread,
+    /// with machine-readable zero/duplicate/unstable flags and a count per distinct value.
+    ///
+    /// MEASURED why: that census was taken by hand for the libdispatch SIGILL, out of `thread apply all p/x` piped
+    /// through greps that silently dropped lines and produced a wrong count once. A shared identity is exactly what a
+    /// truncated scrape gets wrong, and it is the number the whole question turns on.
+    Identity(IdentityArgs),
     /// Report the pattern of a process that is NOT working any more: one line repeating near the end of the log
     /// with almost nothing new between its repetitions.
     ///
@@ -7190,20 +8776,23 @@ mod stack_words_tests {
 mod core_map_tests {
     use super::*;
 
-    // The scale quirk, which decided a RIGHT function name from a wrong one on a real core: ranges are byte
-    // addresses while file_offset is a page number, so a raw offset of 1 cannot mean one byte.
+    // `resolve_in_core` only ever sees BYTE offsets: the normalization (the kernel's page-scaled file offsets, and
+    // gdb's byte-scaled ones) happens once in `CoreFile::open`, against the unit the note declares. MEASURED on the
+    // real core: ranges are bytes while file_offset is a page number, so a raw offset of 1 cannot mean one byte.
     #[test]
-    fn file_offset_is_page_scaled_against_byte_ranges() {
-        let maps = vec![(0x7dc012b27000u64, 0x7dc012b30000u64, 1u64, "/tmp/nope".to_string())];
-        let (_, off) = resolve_in_core(&maps, 0x7dc012b27396, false).unwrap();
+    fn a_resolved_address_carries_its_mapping_base_and_a_byte_file_offset() {
+        let maps = vec![(0x7dc012b27000u64, 0x7dc012b30000u64, 0x1000u64, "/tmp/nope".to_string())];
+        let (base, off, name) = resolve_in_core(&maps, 0x7dc012b27396).unwrap();
+        assert_eq!(base, 0x7dc012b27000);
         assert_eq!(off, 0x1000 + 0x396);
+        assert_eq!(name, "/tmp/nope");
     }
 
     #[test]
     fn an_address_outside_every_mapping_resolves_to_nothing() {
         let maps = vec![(0x1000u64, 0x2000u64, 0u64, "/tmp/nope".to_string())];
-        assert!(resolve_in_core(&maps, 0x2000, false).is_none());
-        assert!(resolve_in_core(&maps, 0xfff, false).is_none());
+        assert!(resolve_in_core(&maps, 0x2000).is_none());
+        assert!(resolve_in_core(&maps, 0xfff).is_none());
     }
 
     // De-virtualization is what makes a guest path openable, and a path that names neither a guest view nor a real
@@ -7213,6 +8802,340 @@ mod core_map_tests {
         assert_eq!(guest_path_to_host("/Volumes/SystemRoot/tmp", None),
             Some(PathBuf::from("/tmp")));
         assert!(guest_path_to_host("/nonexistent/darling/path/xyz", None).is_none());
+    }
+}
+
+#[cfg(test)]
+mod core_identity_tests {
+    use super::*;
+
+    fn regs(pairs: &[(&str, u64)]) -> Regs {
+        let mut v = [0u64; GPR_COUNT];
+        for (n, val) in pairs {
+            v[GPR.iter().position(|x| x == n).expect("a name in GPR")] = *val;
+        }
+        Regs { v }
+    }
+
+    fn put_u16(buf: &mut [u8], at: usize, v: u16) { buf[at..at + 2].copy_from_slice(&v.to_le_bytes()); }
+    fn put_u32(buf: &mut [u8], at: usize, v: u32) { buf[at..at + 4].copy_from_slice(&v.to_le_bytes()); }
+    fn put_u64(buf: &mut [u8], at: usize, v: u64) { buf[at..at + 8].copy_from_slice(&v.to_le_bytes()); }
+
+    /// One ELF note, with the name NUL-terminated and both fields padded to 4 bytes exactly as the kernel writes
+    /// them.
+    fn note(ntype: u32, name: &str, desc: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&(name.len() as u32 + 1).to_le_bytes());
+        out.extend_from_slice(&(desc.len() as u32).to_le_bytes());
+        out.extend_from_slice(&ntype.to_le_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.push(0);
+        while out.len() % 4 != 0 { out.push(0); }
+        out.extend_from_slice(desc);
+        while out.len() % 4 != 0 { out.push(0); }
+        out
+    }
+
+    /// A complete but TINY core, built byte by byte: one PT_LOAD the dump carries (a "stack" page), one it does not
+    /// (a clean file-backed page, which is the normal case for the page a thread died on), and one PT_NOTE with an
+    /// NT_PRSTATUS, an NT_SIGINFO, an NT_FILE and an NT_PRPSINFO.
+    ///
+    /// This is what makes the note LAYOUT testable: if a field offset or a register index drifts, this test fails,
+    /// instead of a 670 MB core quietly reporting somebody else's register. The shell contract runs the same code
+    /// against a core the KERNEL writes; this one pins the offsets against hand-placed bytes.
+    ///
+    /// `note_page` and `raw_file_ofs` are the NT_FILE convention under test: the kernel writes page_size=0x1000 with
+    /// the file offset in PAGES, gdb's `gcore` writes page_size=1 with it in BYTES, and both are covered.
+    fn synthetic_core(dir: &Path, tag: &str, note_page: u64, raw_file_ofs: u64) -> (PathBuf, PathBuf) {
+        const NS: &str = "CORE";
+        const IMAGE_AT: u64 = 0x20000;
+        let image = dir.join(format!("libfake-{tag}.dylib"));
+        fs::write(&image, b"not really a Mach-O").unwrap();
+
+        let mut prstatus = vec![0u8; 336];
+        put_u32(&mut prstatus, 0, 4); // pr_info.si_signo
+        put_u32(&mut prstatus, 8, 2); // pr_info.si_code
+        put_u32(&mut prstatus, PRSTATUS_PID_AT, 42);
+        let mut set = |name: &str, v: u64| {
+            let i = GPR.iter().position(|x| *x == name).unwrap();
+            put_u64(&mut prstatus, PRSTATUS_REGS_AT + i * 8, v);
+        };
+        set("rip", IMAGE_AT + 0x200);
+        set("rbp", 0x10800);
+        set("rsp", 0x107f0);
+        set("rdi", 0x10f00); // points at the once word in the carried page
+        set("rcx", 0x100);
+        set("rdx", 0x101);
+        set("gs_base", 0x10f80); // slot 3 is at +24 = 0x10f98
+
+        let mut siginfo = vec![0u8; 128];
+        put_u32(&mut siginfo, 0, 4); // SIGILL
+        put_u32(&mut siginfo, 8, 2); // ILL_ILLOPN
+        put_u64(&mut siginfo, 16, IMAGE_AT + 0x200);
+
+        let mut file_note = Vec::new();
+        file_note.extend_from_slice(&1u64.to_le_bytes()); // count
+        file_note.extend_from_slice(&note_page.to_le_bytes()); // the unit the file offset below is in
+        file_note.extend_from_slice(&IMAGE_AT.to_le_bytes()); // start
+        file_note.extend_from_slice(&(IMAGE_AT + 0x1000).to_le_bytes()); // end
+        file_note.extend_from_slice(&raw_file_ofs.to_le_bytes());
+        file_note.extend_from_slice(image.display().to_string().as_bytes());
+        file_note.push(0);
+
+        let mut psargs = vec![0u8; 136];
+        psargs[PRPSINFO_PSARGS_AT..PRPSINFO_PSARGS_AT + 16].copy_from_slice(b"core-test-binary");
+
+        let mut notes = Vec::new();
+        notes.extend_from_slice(&note(NT_PRSTATUS, NS, &prstatus));
+        notes.extend_from_slice(&note(NT_SIGINFO, NS, &siginfo));
+        notes.extend_from_slice(&note(NT_FILE, NS, &file_note));
+        notes.extend_from_slice(&note(NT_PRPSINFO, NS, &psargs));
+
+        // The carried page: a two-frame chain, the once word rdi points at, and the thread's TSD slot 3.
+        let mut page = vec![0u8; 0x1000];
+        let at = |v: u64| (v - 0x10000) as usize;
+        put_u64(&mut page, at(0x10800), 0x10820); // [rbp]    -> next frame pointer
+        put_u64(&mut page, at(0x10808), IMAGE_AT + 0x250); // [rbp+8] -> a return address in the image
+        put_u64(&mut page, at(0x10820), 0x10830);
+        put_u64(&mut page, at(0x10828), 0x9); // a return address in NO image: the walk must stop here
+        put_u64(&mut page, at(0x10f00), 0x101); // the once word
+        put_u64(&mut page, at(0x10f98), 0x103); // TSD slot 3
+
+        let phnum = 3u16;
+        let mut buf = vec![0u8; 0x1000];
+        buf[0..4].copy_from_slice(b"\x7fELF");
+        buf[4] = 2; // 64-bit
+        buf[5] = 1; // little-endian
+        put_u16(&mut buf, 16, 4); // ET_CORE
+        put_u64(&mut buf, 0x20, 0x40); // e_phoff
+        put_u16(&mut buf, 0x36, 56); // e_phentsize
+        put_u16(&mut buf, 0x38, phnum);
+        let phdr = |buf: &mut [u8], i: usize, ptype: u32, off: u64, vaddr: u64, filesz: u64, memsz: u64| {
+            let p = 0x40 + i * 56;
+            put_u32(buf, p, ptype);
+            put_u32(buf, p + 4, 6); // rw
+            put_u64(buf, p + 8, off);
+            put_u64(buf, p + 16, vaddr);
+            put_u64(buf, p + 32, filesz);
+            put_u64(buf, p + 40, memsz);
+            put_u64(buf, p + 48, 0x1000);
+        };
+        let notes_off = 0x2000u64;
+        phdr(&mut buf, 0, 1, 0x1000, 0x10000, 0x1000, 0x1000); // the page the dump carries
+        phdr(&mut buf, 1, 1, 0x2000, IMAGE_AT, 0, 0x1000); // a clean page the dump does NOT carry
+        phdr(&mut buf, 2, 4, notes_off, 0, notes.len() as u64, 0); // PT_NOTE
+        buf.extend_from_slice(&page);
+        assert_eq!(buf.len() as u64, 0x2000, "the note area must start where the header says");
+        buf.extend_from_slice(&notes);
+
+        let core = dir.join(format!("core.synthetic-{tag}"));
+        fs::write(&core, &buf).unwrap();
+        (core, image)
+    }
+
+    /// The two NT_FILE conventions, both read the same way: the note's file offset is multiplied by the unit the note
+    /// DECLARES. MEASURED: the kernel writes page_size=0x1000 with a page-numbered file offset, gdb's `gcore` writes
+    /// page_size=1 with a byte one -- and assuming 4096 for the latter made every file offset 4096x too large, so the
+    /// instruction at the fault came back empty from a core that had it.
+    #[test]
+    fn both_nt_file_conventions_normalize_to_the_same_byte_offset() {
+        let dir = std::env::temp_dir().join(format!("dwdiag-core-unit-fmt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // The kernel: raw 1, page_size 0x1000 -> 0x1000 bytes.
+        let (kernel_core, _) = synthetic_core(&dir, "kernel", 0x1000, 1);
+        let k = CoreFile::open(&kernel_core).unwrap();
+        assert_eq!(k.file_page, 0x1000);
+        assert_eq!(k.resolve(0x20200, None).unwrap().file_off, 0x1000 + 0x200);
+        // gdb's gcore: raw 0x2800, page_size 1 -> 0x2800 bytes.
+        let (gdb_core, _) = synthetic_core(&dir, "gdb", 1, 0x2800);
+        let g = CoreFile::open(&gdb_core).unwrap();
+        assert_eq!(g.file_page, 1);
+        assert_eq!(g.resolve(0x20200, None).unwrap().file_off, 0x2800 + 0x200);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_synthetic_core_is_read_field_by_field() {
+        let dir = std::env::temp_dir().join(format!("dwdiag-core-unit-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (core, image) = synthetic_core(&dir, "kernel", 0x1000, 1);
+
+        let mut c = CoreFile::open(&core).unwrap();
+        // The LAYOUT, asserted rather than assumed: the register indices, the prstatus field offsets and the note
+        // sizes all come from the same constants the reader uses.
+        assert_eq!(GPR.len(), GPR_COUNT);
+        assert_eq!((GPR[GPR_RIP], GPR[GPR_RBP], GPR[GPR_RSP], GPR[GPR_GS_BASE]), ("rip", "rbp", "rsp", "gs_base"));
+        assert_eq!(PRSTATUS_BYTES, 328);
+        assert_eq!(c.threads.len(), 1);
+        assert_eq!(c.threads[0].lwp, 42);
+        assert_eq!(c.threads[0].regs.rip(), 0x20200);
+        assert_eq!(c.threads[0].regs.gs_base(), 0x10f80);
+        assert_eq!(c.sig.map(|s| (s.signo, s.code)), Some((4, 2)));
+        assert_eq!(c.args, "core-test-binary");
+        // The scale is decided from the core's own program headers: one entry fits a PT_LOAD as bytes, none as pages.
+        assert_eq!(c.scale, MapScale::Bytes);
+        assert_eq!(c.inside, (1, 0));
+
+        // The mapping table names the image, the base and the FILE offset (page-scaled).
+        let r = c.resolve(0x20200, None).unwrap();
+        assert_eq!((r.base, r.file_off), (0x20000, 0x1000 + 0x200));
+        assert_eq!(r.name, image.display().to_string());
+        assert!(r.exists, "the synthetic image file does exist");
+
+        // Memory: the carried page reads, the page the dump skipped does not, and it says WHY.
+        assert_eq!(c.read_u64(0x10f98).unwrap(), 0x103);
+        let err = c.read_mem(0x20000, 8).unwrap_err();
+        assert!(err.contains("did not carry"), "{err}");
+        assert!(c.carried(0x20000) && !c.carried(0x50000));
+
+        // The operands, through the same rule the real core answers with.
+        let regs = c.threads[0].regs;
+        let o = once_operands(&regs, |a| c.read_u64(a).ok()).unwrap();
+        assert_eq!((o.predicate_reg, o.predicate), ("rdi", 0x10f00));
+        assert_eq!((o.word, o.word_reg), (0x101, Some("rdx")));
+        assert_eq!((o.owner, o.owner_reg), (0x100, "rcx"));
+
+        // The walk: two frames, every return address mapped through the core's own table, and a STATED stop.
+        let (frames, stop) = core_fp_chain(&mut c, regs.rbp(), regs.rsp(), None, 16);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].ret, 0x20250);
+        assert_eq!(frames[0].image.as_ref().map(|i| i.file_off), Some(0x1000 + 0x250));
+        assert_eq!(frames[1].ret, 0x9);
+        assert!(frames[1].image.is_none());
+        assert!(stop.contains("no mapped image"), "{stop}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_core_is_refused_by_name() {
+        let dir = std::env::temp_dir().join(format!("dwdiag-core-unit-bad-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("not-a-core");
+        fs::write(&p, b"hello").unwrap();
+        let Err(err) = CoreFile::open(&p) else { panic!("a text file must be refused") };
+        let err = format!("{err:#}");
+        assert!(err.contains("shorter than an ELF header"), "{err}");
+        // A file with an ELF header's worth of bytes that is still not an ELF.
+        let p2 = dir.join("still-not-a-core");
+        fs::write(&p2, vec![b'x'; 100]).unwrap();
+        let Err(err) = CoreFile::open(&p2) else { panic!("junk must be refused") };
+        let err = format!("{err:#}");
+        assert!(err.contains("not an ELF file"), "{err}");
+        // And an ELF that is not a core: the tool's own binary is one, and the refusal has to name why.
+        if let Ok(exe) = std::env::current_exe() {
+            let Err(err) = CoreFile::open(&exe) else { panic!("a test binary must be refused") };
+            let err = format!("{err:#}");
+            assert!(err.contains("not ET_CORE"), "{err}");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The live parser, on captured output: the gdb thread NUMBER is decimal while the registers are hex, and
+    /// `info threads` is what turns that number into the host LWP.
+    ///
+    /// THREAD 10+ IS THE CASE THAT MATTERS. Parsing the number as hex makes 10 read as 16, the row stops matching its
+    /// LWP, and every thread silently becomes a "listed but never read" failure -- the dropped-thread defect this
+    /// command exists to remove, reintroduced by one radix. The blob also has a thread gdb listed and never read, so
+    /// the gap is testable too.
+    #[test]
+    fn a_live_sample_joins_decimal_thread_numbers_to_lwps_and_sees_a_short_read() {
+        let text = "\
+  Id   Target Id         Frame\n\
+* 1    Thread 0x7f (LWP 5001) \"t\" 0x0 in f ()\n\
+  10   Thread 0x7f (LWP 5010) \"t\" 0x0 in f ()\n\
+  11   Thread 0x7f (LWP 5011) \"t\" 0x0 in f ()\n\
+@ident tid=1 gs=0x1000 ip=0x2000 slot3=0x103\n\
+@ident tid=10 gs=0x1100 ip=0x2100 slot3=0x903\n";
+        let s = parse_live_sample(text, None);
+        assert_eq!(s.listed, 3, "three threads were listed");
+        assert_eq!(s.lwp.get(&1), Some(&5001));
+        assert_eq!(s.lwp.get(&10), Some(&5010), "thread 10 is ten, not sixteen");
+        assert_eq!(s.rows.get(&10).map(|r| r.2.clone()), Some(Ok(0x903)));
+        assert_eq!(s.rows.get(&10).map(|r| r.1), Some(0x2100));
+        // Listed and never read: the census has to be able to see this as a gap, which is why the count is carried.
+        assert!(s.rows.get(&11).is_none());
+        assert_eq!(s.rows.len(), 2);
+        // A zero $gs_base is a READ FAILURE with its reason, not a value of zero.
+        let s2 = parse_live_sample("@ident tid=1 gs=0x0 ip=0x2000 slot3=UNREADABLE\n", None);
+        assert_eq!(s2.rows.get(&1).map(|r| r.2.clone()), Some(Err("$gs_base = 0: no GS-based TSD block to read".to_string())));
+    }
+
+    fn sample(lwp: u32, slot: Result<u64, String>) -> IdentitySample {
+        IdentitySample { lwp, slot3: slot, unstable: None, ip: 0, ip_image: None, ip_addr: None, partial: false }
+    }
+
+    #[test]
+    fn the_census_counts_values_flags_duplicates_and_keeps_failures_out_of_the_values() {
+        let s = vec![
+            sample(1, Ok(0x103)),
+            sample(2, Ok(0x103)),
+            sample(3, Ok(0x103)),
+            sample(4, Ok(0x903)),
+            sample(5, Ok(0)),
+            sample(6, Ok(0)),
+            sample(7, Err("gs_base is 0 in this thread's register note".to_string())),
+        ];
+        let c = census_counts(&s);
+        assert_eq!(c[0], (0x103, vec![1, 2, 3]));
+        assert!(value_is_duplicated(&c, 0x103));
+        assert!(!value_is_duplicated(&c, 0x903));
+        // MEASURED rule kept from the core-lock census: an identity of 0 names nobody, so two threads at 0 are
+        // unset rather than sharing a name.
+        assert!(!value_is_duplicated(&c, 0));
+        // A failed read is not a value and not a zero: the census has 6 values over 7 threads.
+        assert_eq!(c.iter().map(|(_, l)| l.len()).sum::<usize>(), 6);
+        assert_eq!(c.iter().filter(|(v, _)| *v == 0).count(), 1);
+    }
+
+    #[test]
+    fn the_once_operands_are_located_from_the_pointer_register_and_its_masked_owner() {
+        // MEASURED, on /tmp/t4cores/core.127004: rdi points at 0x101, rcx holds 0x100 = 0x101 & !3, rdx holds the
+        // word -- the three values the hand diagnosis recorded.
+        let r = regs(&[("rdi", 0x763d_5799_d988), ("rcx", 0x100), ("rdx", 0x101)]);
+        let o = once_operands(&r, |a| (a == 0x763d_5799_d988).then_some(0x101)).unwrap();
+        assert_eq!((o.predicate_reg, o.predicate), ("rdi", 0x763d_5799_d988));
+        assert_eq!(o.word, 0x101);
+        assert_eq!(o.word_reg, Some("rdx"));
+        assert_eq!((o.owner, o.owner_reg), (0x100, "rcx"));
+    }
+
+    #[test]
+    fn operands_are_never_invented_when_the_register_file_does_not_match() {
+        // Nothing readable at all.
+        let r = regs(&[("rdi", 0x1000), ("rsi", 0x2000)]);
+        assert!(once_operands(&r, |_| None).is_none());
+        // A word whose masked form appears in NO other register: exactly the coincidence the rule must reject.
+        assert!(once_operands(&r, |a| (a == 0x1000).then_some(0xab)).is_none());
+        // A 64-bit value that is a pointer, not a once word.
+        let r = regs(&[("rdi", 0x1000), ("rcx", 0x100)]);
+        assert!(once_operands(&r, |a| (a == 0x1000).then_some(1 << 40)).is_none());
+    }
+
+    #[test]
+    fn the_signal_label_is_a_name_a_reader_recognises() {
+        assert_eq!(sig_label(4), "SIGILL");
+        assert_eq!(sig_label(11), "SIGSEGV");
+        // A signal this tool has no name for is its NUMBER, never a made-up `SIGSIG`.
+        assert_eq!(sig_label(33), "33");
+        assert!(sig_code_meaning(4, -6).unwrap().contains("SI_TKILL"));
+        assert!(sig_code_meaning(4, 2).unwrap().contains("ud2"));
+        assert!(sig_code_meaning(4, 9999).is_none());
+    }
+
+    /// The discovery that replaced a hardcoded directory: the pattern decides the directory and the name prefix, and
+    /// a pattern line for a LIVE Process is not turned into a path at all.
+    #[test]
+    fn core_pattern_is_split_into_a_directory_and_a_name_prefix() {
+        let p = core_pattern();
+        if p.pattern.starts_with('|') {
+            assert!(p.piped);
+        } else {
+            assert!(!p.piped);
+            assert!(p.pattern.starts_with(&p.dir.display().to_string()) || p.dir == Path::new("."));
+        }
     }
 }
 

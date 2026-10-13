@@ -167,6 +167,7 @@ symbolizing an offset, resolving a crash -- is now a subcommand of the Rust tool
 
 ```
 scripts/dwdiag <build|cycle|symbolize|crash|verdict|suite|witness|waits|unwind> [OPTIONS]   # build-and-exec shim, stable path
+scripts/dwdiag <core|identity> [OPTIONS]                                                     # read a core: the fault, and who each thread says it is
   = tools/darling-debug-runner/target/release/darling-debug-runner diag ...
 ```
 
@@ -243,47 +244,94 @@ reported next to **fired**, because a probe that cannot speak is indistinguishab
 
 ### `dwdiag core` -- the one artifact that still has the thread in it
 
-`scripts/dwdiag core [--core FILE] [--dir DIR] [--prefix P] [--traces] [--json]` reads a core and names the fault:
+`scripts/dwdiag core [--core FILE] [--dir DIR] [--prefix P] [--log LOG] [--traces] [--json]` reads a core and
+answers every question it can be made to answer:
 
 ```
-CORE file=/tmp/t4cores/core.1221723 size=...
-CORE-SIGNAL Program terminated with signal SIGILL, Illegal instruction.
-CORE-REGISTERS rip=0x... rsp=0x...
-CORE-MAPPINGS source=NT_FILE count=236 range-scale=bytes (frames resolving under it: bytes=5 pages=0)
-CORE-FAULT image=/…/libdispatch.dylib off=0x6d396 -> _dispatch_source_set_handler + 0x46
-CORE-STACK frames=15 (symbolized)
-  #0 0x7dc012b93396 libdispatch.dylib + 0x6d396 _dispatch_source_set_handler + 0x46
+CORE file=/tmp/t4cores/core.127004 size=705396736
+CORE-SIGNAL sig=4 SIGILL (NT_SIGINFO si_signo=4 si_code=-6 si_errno=0 si_addr=0x3e80001f01c)
+CORE-SIGNAL-CODE SI_TKILL: a THREAD sent this signal (tgkill/raise), so this is not the CPU's own trap code
+CORE-THREAD faulting=lwp 127004 of 28 thread(s) (note order (no --log: the first NT_PRSTATUS is the thread the kernel dumped from))
+CORE-REGISTERS rip=0x763d6c1131dd rsp=0x7fffffdfd580 rbp=0x7fffffdfd610 rdi=0x763d5799d988 gs_base=0x763d6f130060
+CORE-GENERATED-BY /Volumes/SystemRoot/home/.../Developer/usr/bin/xcodebuild
+CORE-MAPPINGS source=NT_FILE count=1174 range-scale=bytes (...) file-offset-unit=the note's declared page size
+CORE-FAULT image=/…/prefix-verify14/usr/lib/system/libdispatch.dylib base=0x763d6c0a7000 file+0x6d1dd vm+0x6c1dd image_addr=0x6c1dd symbol=_dispatch_once_wait + 0x17d
+CORE-INSN 0f 0b e9 00 00 00 00 48 -- ud2 (deliberate trap: __builtin_trap / unreachable) (...)
+CORE-OPERANDS predicate_reg=rdi predicate=0x763d5799d988 once_word=0x101 once_word_reg=rdx masked_owner=0x100 masked_owner_reg=rcx check=consistent
+CORE-OPERANDS-TSD3 gs_base=0x763d6f130060 slot=3 value=0x103 (*(unsigned long*)($gs_base+24) = __TSD_MACH_THREAD_SELF)
+CORE-STACK frames=27 (walked through the core's own frame pointers and mapped through the core's own NT_FILE table, not through gdb)
+  #0 fp=0x7fffffdfd610 0x763d6c0e0572 libdispatch.dylib file+0x3a572 vm+0x39572 dispatch_once_f + 0x122
+  #2 fp=0x7fffffdfd6e0 0x763d5729f654 DVTFoundation file+0x57654 vm+0x53654 -[DVTToolsInfo + 0x1b
   …
+CORE-STACK-STOP return address 0x8 is in no mapped image, so the walk ends there
 ```
 
 **Why a core, when there is already `trap`.** A guest's `ud2` is a **native** instruction: the guest's code runs on
 the host CPU, so Darling never sees it as a syscall and cannot report it. Four other routes were measured blind on
 one crash: `dmesg` is silent because the guest installs its own handler; the loader's fault witness armed eight
 times and never fired; the guest masks SIGSEGV on that path; and a gdb catch waits for a signal the guest
-swallows. The core needs none of that: the kernel writes it, `gdb` reads it with no ptrace, and it carries
-NT_PRSTATUS (registers), NT_SIGINFO (signal) and NT_FILE (mappings) -- which is enough to name the image and the
-function.
+swallows. The core needs none of that: the kernel writes it, and its own notes carry NT_PRSTATUS (every thread's
+registers), NT_SIGINFO (the signal AND how it arrived), NT_FILE (the mappings) and NT_PRPSINFO (the command line).
+
+**The notes are read here, by neither `readelf` nor `gdb`.** `readelf -n` REFUSES this note on this host
+("Cannot decode 64-bit note in 32-bit build"), gdb's `bt` cannot unwind a guest frame at all, and the previous
+version parsed `info registers`/`bt`/`info threads` text. One reader now decodes the notes directly, which is also
+what makes `identity` possible: `pr_pid` per note is the host LWP, and `elf_gregset_t` is the register file.
+
+**The faulting THREAD is identified, and how it was chosen is printed.** Every NT_PRSTATUS note carries the dumped
+signal (all 28 threads showed `si_signo=4`), so the signal cannot say which thread died; note ORDER does -- the
+first PT_NOTE's note is the thread the kernel dumped from, which is the one gdb calls "Current thread". With
+`--log` the guest's own `[sigexc-fatal ... tid=N]` outranks that, and the two are compared out loud: a log whose
+mark names a different ip than the core's rip is reported as describing a DIFFERENT fault rather than folded in.
+
+**The operands are BEST-EFFORT, and the rule is printed with them.** The faulting frame's `self`, once word and
+TSD identity were derived by hand once and are the point of reading a `ud2` in `_dispatch_once_wait`; a core is one
+instruction and the guest's libdispatch has no debug info, so they come from the register file. The rule is stated
+(`CORE-OPERANDS source=registers-at-trap`): a register that POINTS AT a word whose low bits name an owner another
+register also holds names `(predicate, once word, masked owner)`. MEASURED on `/tmp/t4cores/core.127004`:
+`rdi -> 0x101`, `rcx = 0x100 = 0x101 & !3`, `rdx = 0x101`. Nothing that does not match is reported: an unmatched
+register file prints `CORE-OPERANDS unavailable: <why>`, and a faulting frame that is demonstrably not a
+`dispatch_once` wait is not attempted at all.
+
+**The caller chain is walked by the tool, not by gdb.** Every return address is read from the core's own frame
+pointers and mapped through the core's own NT_FILE table, with the validation stated (`CORE-STACK-STOP`): the chain
+must ascend, and a return address in no image ends the walk instead of inventing a caller. Doing this by hand took a
+python script over NT_FILE and a gdb round, and gdb's own `bt` on this core is `#0 0x… in ?? ()` followed by
+pointers.
 
 **Mappings are read from NT_FILE, never from gdb.** gdb lists NO mappings for a core whose image paths do not
 exist on the host, and a guest's `/Volumes/SystemRoot/...` never does -- so `info proc mappings` came back empty
-and the faulting address matched no image, while the note had all 236 of them. NT_FILE also has a scale quirk that
-decides a right name from a wrong one: in the core measured here, `start`/`end` are already BYTE addresses but
-`file_offset` is a PAGE number, so a raw offset of 1 cannot mean one byte. The command does not guess: it scores
-both scales by how many backtrace frames land in files that EXIST, and reports the winner
-(`range-scale=bytes (frames resolving under it: bytes=5 pages=0)`). A single address fell under both scales, which
-is exactly how the one-address test picked wrong.
+and the faulting address matched no image, while the note had all 1174 of them. The note's units are not assumed:
+the RANGE scale is decided by how many entries fall inside a PT_LOAD **of this core** (bytes beat pages 1174 to 0
+here, with no stack needed), and the FILE OFFSET is multiplied by the unit the note itself DECLARES in its header
+-- MEASURED, the kernel writes `page_size=0x1000` with a page-numbered file offset while gdb's `gcore` writes
+`page_size=1` with a byte one, and assuming 4096 made every gcore offset 4096× too large.
 
-**A file offset is not a VM address, and the tool converts.** NT_FILE reports FILE offsets; `symbolize`/`llvm-nm`
-address by VM address. Measured on the deployed `libsystem_platform.dylib` they differ by a constant, because the
-dylibs are UNIVERSAL (`cafe babe`, x86_64 + i386) and a slice's segment offsets are slice-relative: a core fault at
-file offset `0x3a9e` is VM `0x2a9e`, so an unconverted offset named `__os_once + 0x5e` where the truth was
-`_os_unfair_lock_unlock_slow + 0x10e`. Both names look plausible, which is why the translation is computed from the
-load commands, both offsets are printed (`file+0x… vm+0x…`), and a unit test pins the real mapping.
+**A file offset is not a VM address, and the tool converts -- or says it cannot.** NT_FILE reports FILE offsets;
+`symbolize`/`llvm-nm` address by VM address. Measured on the deployed `libsystem_platform.dylib` they differ by a
+constant, because the dylibs are UNIVERSAL (`cafe babe`, x86_64 + i386) and a slice's segment offsets are
+slice-relative: a core fault at file offset `0x3a9e` is VM `0x2a9e`, so an unconverted offset named
+`__os_once + 0x5e` where the truth was `_os_unfair_lock_unlock_slow + 0x10e`. Both names look plausible, which is
+why the translation is computed from the load commands, both offsets are printed (`file+0x… vm+0x…`), and a
+non-Mach-O image (a host core's libc) is reported as NOT converted rather than symbolized at the wrong address.
 
 **De-virtualization and symbolization are the command's job, not the reader's.** Guest paths are mapped back to
-the prefix, and EVERY backtrace frame is symbolized with its image, offset and symbol -- doing that by hand took a
-python script over NT_FILE and a gdb disassembly round in a real session, and getting the path or the scale wrong
-resolves nothing while looking like an answer.
+the prefix (existence-checked at every step), and EVERY caller is symbolized with its image, both offsets and
+symbol -- getting the path or the scale wrong resolves nothing while looking like an answer.
+
+**`crash` points here when a run died of a signal.** A log whose marks show a signal death says nothing about the
+operands, so `dwdiag crash --log …` prints the core the run left, with the pattern DISCOVERED from
+`core_pattern` (not `/tmp/t4cores`) and the core's age next to the log's:
+
+```
+CRASH-CORE pattern=/tmp/t4cores/core.%p (read from /proc/sys/kernel/core_pattern, not assumed) dir=/tmp/t4cores name-prefix="core."
+CRASH-CORE newest=/tmp/t4cores/core.127004 size=705396736 (newer than the log: it can be this run's)
+CRASH-CORE-NEXT the faulting frame's operands (the masked lock owner, the once word, the thread's TSD identity) are one instant and live only in that core: dwdiag core --core /tmp/t4cores/core.127004 --log …
+```
+
+A `|`-prefixed pattern is reported as piping the dump to a handler (no file is kept), and a core OLDER than the log
+is flagged, because an earlier run's core sits in the same directory and reading it as this run's is how evidence
+gets misattributed.
 
 **It is OFF by default here, and `dwdiag cores` is what turns it on.** `ulimit -c` was 0 and `core_pattern` piped
 to apport, so a crash wrote nothing and looked identical to a crash with no information:
@@ -300,7 +348,50 @@ thing that decides piped-vs-file; testing for `%` said "a file" about apport's o
 
 Measured: with both set, a crash produces an `ELF 64-bit LSB core file, x86-64` and `dwdiag core` names the
 faulting function; `tests/run-core-contract.sh` generates its own core this way (no guest, no prefix) and asserts
-the NT_FILE mappings, the opened image and a symbolized stack.
+the mappings, the faulting thread, the instruction, the operand rule, the walked and symbolized callers, the log
+cross-check and the `crash` linkage. The 670 MB guest core of a real crash is an OPTIONAL input to that contract
+(`DWDIAG_GUEST_CORE=/tmp/t4cores/core.127004 bash tests/run-core-contract.sh`), which is where the acceptance
+values (image address `0x6c1dd`, `ud2`, `self`/once word, and the chain on into DVTFoundation) are pinned; it is
+never committed.
+
+### `dwdiag identity` -- who each thread says it is
+
+`scripts/dwdiag identity [--core FILE] [--dir DIR] [--pid PID] [--prefix P] [--json]` censuses
+`__TSD_MACH_THREAD_SELF` -- TSD slot 3, i.e. `*(unsigned long*)($gs_base+24)` -- for every thread of a core or of a
+live process, with the host LWP, the instruction pointer's image and symbol, machine-readable flags, and a count per
+distinct value:
+
+```
+IDENTITY source=core=/tmp/t4cores/core.127004 threads=28
+IDENTITY-THREAD lwp=127004 slot3=0x103 zero=false duplicate=true unstable=n/a ip=0x763d6c1131dd image=libdispatch.dylib image_base=0x763d6c0a7000 image_addr=0x6c1dd symbol=_dispatch_once_wait + 0x17d
+IDENTITY-DUPLICATE value=0x103 count=26 lwps=127004,127021,… (these threads carry the SAME identity, so a lock held by one reads as held by the other)
+IDENTITY-SUMMARY value=0x103 count=26
+IDENTITY-SUMMARY distinct=3 threads=28 unreadable=0 zero=0
+```
+
+**Why it is a command.** This census was taken by hand for the libdispatch SIGILL with `thread apply all p/x`
+piped through greps, and one of those greps silently dropped lines and produced a WRONG count -- of the number that
+IS the answer (26 of those 28 threads share `0x103`). Two properties are therefore the point: it counts every
+thread it lists, and a thread whose identity could not be read gets a stated FAILURE, never a plausible number.
+
+**The flags and the zeros.** `zero=true` marks an identity of 0, which names nobody and clears whatever word its
+unlock writes. `duplicate=true` marks a value shared by more than one thread -- and a ZERO IS NOT A DUPLICATE: two
+threads at 0 are unset, not two threads claiming one name. `unstable` is observable only on a live target, and only
+because TWO samples are taken with the process RUNNING in between (a stopped target cannot show a value changing);
+in a core it is `null`, because a core is one instant. A thread seen in only one of the two live samples is
+reported as churn rather than as instability.
+
+**A live target has to be one this process may trace.** `--pid` reads `$gs_base` with gdb, which needs ptrace: with
+`kernel.yama.ptrace_scope=1` a non-root tracer may only attach to its own descendants, so the census must be run as
+the target's ancestor or through `sudo`, and an attach that reads nothing is an ERROR naming gdb's message rather
+than a report of "0 threads". MEASURED on a HOST process: every `$gs_base` is 0 (Linux x86-64 keeps thread-locals in
+FS, not GS), so every thread comes back as a stated read failure and the output says the target is not a GS-based
+guest -- which is the honest answer, not a zero.
+
+`tests/run-identity-contract.sh` covers both paths and the invariants above, on a target and a core it makes itself
+with gdb's `generate-core-file` (so it never touches `core_pattern`, and cannot fight `run-core-contract.sh` for
+it). A real GUEST census is the same optional input: `DWDIAG_GUEST_CORE=/tmp/t4cores/core.127004 bash
+tests/run-identity-contract.sh`.
 
 ### `dwdiag loops` -- is the process working, or going round in circles?
 
