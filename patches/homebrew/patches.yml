@@ -4551,6 +4551,41 @@ patches:
       keeps rootless_bootstrap available and isolates the missing LaunchDaemons
       resource that caused the CI timeout.
       GREEN builds, deploys and runs the real rootless bootstrap smoke.
+  - name: native_thread_identity_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: bare
+    runner: guest-runtime-script
+    repo: darling-workspace
+    script: tests/run-native-thread-identity.sh
+    ok-marker: NATIDENT-OK
+    timeout-seconds: 240
+    requires:
+    - darling-prefix
+    env-vars:
+      # The launcher mode of the runtime under test. Measured on this workspace's rootless prefixes: without it the
+      # deployed launcher does not select the rootless runtime (the plain launcher hangs and the harness's guest
+      # stages never return), while with it `darling shell` returns normally. These are the same inputs the
+      # rootless_bootstrap_component test declares above.
+      DARLING_ROOTLESS: '1'
+      DARLING_NOOVERLAYFS: '1'
+      DARLING_EUNION: '1'
+    note: >-
+      Guest runtime gate for the mldr pthread_create interposition (bead dar-liaq): a host thread created by a
+      NATIVE (host ELF) library inside a guest process must never read another live thread's mach_thread_self
+      token at %gs:24, because libdispatch's ownership test (_dispatch_lock_is_locked_by(word, self), self =
+      slot3 & 0xfffffffc) then reads a dispatch_once gate owned by a DIFFERENT thread as "mine" and traps by
+      design. The oracle builds the native half on the HOST (a guest clang produces Mach-O and cannot build it),
+      loads it through the loader's own elfcalls dlopen, and reports for BOTH the creating and the created thread
+      the raw GS base (arch_prctl ARCH_GET_GS) and the 8 bytes at gs_base+24, read independently by the native
+      side and by the guest. MEASURED: RED on the unfixed deployed runtime (NATIDENT-VERDICT RED-false-identity
+      child_shares_gs_base=1 child_answers_creator_token=1) and GREEN after the fix (GREEN-no-identity, its own
+      gs_base with slot 3 = 0). red is deliberately UNSET: this is a GREEN runtime gate, because the fix is
+      committed on the darling checkout rather than in a locked profile patch, so a
+      guest-runtime-deploy/current-minus-patch proof would build BOTH arms from the profile forest without it.
+      Making the framework RED arm runnable needs a module:darling patch entry plus its lock-first mapping and a
+      mirror-published commit for the fix; the RED observation above is the real-runtime evidence until then.
   github:
     fork:
       repo: IlyaGulya/darling
