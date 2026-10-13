@@ -13,10 +13,16 @@
 #
 # Usage:
 #   darling-deploy-verify.sh --prefix PATH --build DIR [--component NAME]...
-#   components: mldr dyld libsystem_kernel libxpc darlingserver shellspawn vchroot launchd (default: all present in DIR)
+#   components: mldr dyld libsystem_kernel libxpc corefoundation foundation darlingserver shellspawn vchroot launchd
+#   (default: mldr dyld libsystem_kernel darlingserver shellspawn vchroot launchd -- the rest are opt-in)
 #
 # The build directory is expected to be a Darling build tree; each component is looked up at its known output
 # path. This script never invents paths: an unknown component is an error, not a guess.
+#
+# Frameworks are deployed at their CONCRETE version directory (CoreFoundation is Versions/A, Foundation is
+# Versions/C), never at the framework's top-level name: that name is a symlink in the libexec root but a
+# MISSING name in the outer root, so installing into it either destroys the symlink or creates a second,
+# loadable-looking copy. Both roots are listed because both are loaded from.
 
 set -u
 
@@ -48,6 +54,8 @@ built_path() {
 		dyld)              echo "$BUILD/src/external/dyld/dyld" ;;
 		libsystem_kernel)  echo "$BUILD/src/external/xnu/darling/src/libsystem_kernel/libsystem_kernel.dylib" ;;
 		libxpc)            echo "$BUILD/src/external/libxpc/libxpc.dylib" ;;
+		corefoundation)    echo "$BUILD/src/external/corefoundation/CoreFoundation" ;;
+		foundation)        echo "$BUILD/src/external/foundation/Foundation" ;;
 		darlingserver)     echo "$BUILD/src/external/darlingserver/darlingserver" ;;
 		shellspawn)        echo "$BUILD/src/shellspawn/shellspawn" ;;
 		vchroot)           echo "$BUILD/src/vchroot/vchroot" ;;
@@ -62,6 +70,10 @@ dest_paths() {
 		dyld)              echo "usr/lib/dyld"; echo "libexec/darling/usr/lib/dyld" ;;
 		libsystem_kernel)  echo "usr/lib/system/libsystem_kernel.dylib"; echo "libexec/darling/usr/lib/system/libsystem_kernel.dylib" ;;
 		libxpc)            echo "usr/lib/system/libxpc.dylib"; echo "libexec/darling/usr/lib/system/libxpc.dylib" ;;
+		corefoundation)    echo "System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"
+		                   echo "libexec/darling/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation" ;;
+		foundation)        echo "System/Library/Frameworks/Foundation.framework/Versions/C/Foundation"
+		                   echo "libexec/darling/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation" ;;
 		darlingserver)     echo "bin/darlingserver" ;;
 		shellspawn)        echo "usr/libexec/shellspawn"; echo "libexec/darling/usr/libexec/shellspawn" ;;
 		vchroot)           echo "usr/libexec/darling/vchroot"; echo "libexec/darling/usr/libexec/darling/vchroot" ;;
