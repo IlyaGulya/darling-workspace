@@ -72,16 +72,33 @@ consumes that file, has no source tree for the library, no install name and no
 re-export entry -- so the family had **no owner at all** in this tree, which is why the
 ladder stopped on a name no component implemented.
 
-Symbol surfaces and image lists are different questions, and only the first was swept
-here. A follow-up sweep of the same shape should classify every input that names an
-IMAGE (`optionallibs` and its relatives) against what Darling builds and re-exports,
-together with the graph's `field-image-absent` rows and the weak dylib loads the ladder
-reports (e.g. `libswiftIOKit`, `libswiftOSLog`, which dyld binds to NULL and which
-therefore never stop a load). The observed consequence of the gap was benign -- the
-family's home before Apple split it out, `libplatform`, is inside libSystem.B's
-re-export closure and took the function with no new install name, re-export line,
-manifest entry or SDK change -- but the gap is real and this record should not be read
-as covering image names.
+**That gap is now swept, and the class is closed for demand.** Apple names ten sub-libraries
+in `optionallibs` / `optionallibs_i386` / `libSystem.B.tbd` that this tree neither builds
+nor re-exports; measured against the load closure, **only two have any demand, and both are
+already absorbed by an owner**:
+
+| sub-library | demand in the closure | state |
+|---|---|---|
+| `libsystem_containermanager.dylib` | XCTHarness binds ten container-query names eagerly | family answered in `src/sandbox/sandbox.c`; image still not built or re-exported, and no longer needed |
+| `libsystem_featureflags.dylib` | XCTAutomationSupport binds `__os_feature_enabled_impl` | answered in `src/external/libplatform/src/os/feature_flags.c` |
+| `libsystem_collections.dylib` | **none** | a source tree EXISTS (`src/external/libc/collections/`); Apple builds it, CMake never references it |
+| `libsystem_secinit`, `_symptoms`, `_eligibility`, `_darwindirectory`, `_trial`, `_sanitizers`, `_product_info_filter` | none | no source tree, no consumer; `product_info_filter` has no SDK tbd at all |
+
+The verdict on `libsystem_collections` is deliberate: it is the one name here that is both
+buildable and undemanded, so wiring it would add an image to every guest process with
+nothing measured to gain -- the same reason the i386-only alias lists and
+`_MobileGestalt_copy_runnableArchitectures_obj` were left alone. If a guest ever demands an
+`_os_map_*`/`_os_set_*` symbol, this is the first place to look.
+
+Method and its limit: the demand column was read from the most recent full coverage dump
+(`state/urlresourcevalues-ioblocksize-rung/cover-pre-deploy.json`, 254 images, 248 missing
+/ 373 field-image-absent) rather than by re-running the analyzer, and that limit was stated
+in the report. It was then re-verified independently here: grepping that same 37 MB dump
+for every candidate name and symbol prefix (`libsystem_collections`,
+`libsystem_containermanager`, `libsystem_featureflags`, `_os_map_`, `_os_set_`, `_symptom_`,
+`_libsecinit_`, `__os_eligibility_`, `_DarwinDirectory`) returns **zero** occurrences of
+each, so no closure image links any of them by ordinal or symbol.
+
 
 
 Re-run the sweep after adding a component or changing a link: for each vendored input,
