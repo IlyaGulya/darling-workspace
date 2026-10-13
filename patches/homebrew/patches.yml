@@ -5661,3 +5661,48 @@ patches:
               same fixture sha256, ORACLE_RC=0
       The GREEN arm's load-bearing lines are the two `port_type kr=0 type=0x30000` readings;
       the RED arm's is `SPRPROBE first port=0x0` next to the `rpc-socket-DENIED` line.
+  - name: sem_site_wait_attribution_oracle
+    kind: contract
+    runs: host
+    diag: bare
+    red: true
+    red-proof:
+      mode: self
+      expect-output-contains: '(RED arm mis-attributed the wait to the workload as expected)'
+      why-self: >-
+        The oracle consumes a (run-log, workload-stream) pair and must NAME the stream that
+        holds the 30 s semaphore wait. The RED arm feeds it the recorded mis-attribution
+        (the workload's own stream carrying the timedwait line) and the script requires that
+        verdict, so the bad case executes the same decision logic rather than matching source
+        text, and no checkout mutation is needed. The GREEN arm feeds it the measured pair
+        and requires the run log (launchd).
+      note: RED arm supplies the mis-attributed pair and the script requires the `workload`
+        answer; GREEN arm supplies the measured pair and requires `run-log`.
+    runner: self-contract-script
+    script: tests/regression/run-sem-site-attribution-oracle.sh
+    note: |
+      Permanent guard for the measurement error that cost this ladder several runs: the
+      30-second semaphore wait was read from the PREFIX's run log and attributed to the
+      WORKLOAD, because that is where the investigator expected the wall. Measured
+      2026-10-13 (prefix-verify14, minproj, 40 min wall): the deployed DARLING_SEM_SITE_TRACE
+      line
+
+        SEM-SITE tcb=0x7CFD977FF6C0 op=timedwait a=0x903 b=0x1E
+                 sym0=semaphore_timedwait_trap_impl sym1=_darling_mach_syscall
+                 sym2=sys_semwait_signal sym3=_darling_bsd_syscall
+
+      appears ONCE in the run log and ZERO times in the workload's own stream
+      ($PREFIX/private/var/tmp/xcodebuild-minproj.out, the file the workload's fd 1/2 point
+      at). The chain `sys_semwait_signal` <- `_darling_bsd_syscall` is the BSD
+      `__semwait_signal` path, i.e. libc `nanosleep`, so `sec=30` there is a SLEEP, and the
+      only 30-second sleep in the guest image is launchd's update thread
+      (src/launchd/src/launchd.c:458-468 `sync(); sleep(launchd_sync_frequency)`, 30 at
+      launchd.c:118) -- confirmed in the DEPLOYED /sbin/launchd, whose `_update_thread`
+      (0x1000282c0) loads `_launchd_sync_frequency` (__data 0x10003e8f8 == 0x0000001e) and
+      calls `_sleep`. The workload itself issues NO semaphore wait at all (its single
+      SEM-SITE line is `op=signal a=0x0`, the benign pthread-exit convention).
+
+      Consequence for the ladder's wall: the inference "the parked XPC reply depends on the
+      30 s handshake" is REFUTED -- launchd's sleep(30) and the workload's own ~30 s step
+      clock are independent (their phase drifts ~0.5 s over 30 cycles, so the periods
+      differ). The oracle makes the attribution mechanical for the next reader.
