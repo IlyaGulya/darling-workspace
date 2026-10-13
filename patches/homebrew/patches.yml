@@ -6232,3 +6232,131 @@ patches:
       So the next wall is a NULL dereference in THIS tree's own CFDateFormatterCreateStringWithAbsoluteTime
       (a NULL formatter/ICU _df on the [+NSDate now)-derived date the tool asks -[NSDateFormatter
       stringFromDate:] to format), reached from Xcode3Core's error triage -- still hiding the build error.
+- path: workspace/icu-runtime-data.patch
+  sha256sum: 73c234db3bf4db13395dcba1385fc1b351fb7e0273c88a3b1e4e24e59b2a815b
+  module: darling-workspace
+  source-branch: fix/dateformatter-icu-data
+  source-commit: 82b8e409b69872df7d07ff47bb5f845addb5dc3c
+  bead: dar-liaq
+  tests:
+  - name: dateformatter_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      runtime-artifacts:
+      - module: darling/src/external/icu
+        build-targets:
+        - icucore
+        deploy:
+        - libexec/darling/usr/share/icu/icudt66l.dat
+      expect-output-contains:
+      - 'ptr=0x0'
+      expect-failure-phase: run
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/dateformatter_guest.c
+    ok-marker: DF_VERDICT=GREEN
+    timeout-seconds: 300
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    guest-cc: /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+    guest-cflags: -isysroot /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+    requires:
+    - darling-prefix
+    note: |
+      Permanent guest oracle for the CFDateFormatter/NSDateFormatter path Xcode3Core's error-printing
+      code uses, and the fix that unblocks it: the ICU DATA file the date formatter needs.
+
+      THE WALL THIS CLOSES. After +[NSDate now] (foundation/nsdate-now.patch), the Xcode ladder died
+      one frame later in the same error-triage path, in THIS tree's CoreFoundation:
+
+        CORE-FAULT .../CoreFoundation base=0x72496fe77000 file+0x3a0986
+                   symbol=CFDateFormatterCreateStringWithAbsoluteTime + 0xd6
+        CORE-INSN 48 8b 78 10  (movq 0x10(%rax),%rdi; rax NULL, si_addr 0x10)
+          #0 CFDateFormatterCreateStringWithDate + 0x75 (CoreFoundation)
+          #1 -[NSDateFormatter stringFromDate:] + 0x24a (Foundation, vm 0x1cb4a)
+          #2 __33-[Xcode3CommandLineBuildTool ...] (Xcode3Core, saveResultBundleForError:triage)
+        XCB_RC=139
+
+      THE NULL, NAMED FROM THE INSTRUCTION AND THE PROBE (not inferred). The deployed CoreFoundation's
+      _CFDateFormatterCreateStringWithAbsoluteTime (0x678b0) saves its SECOND ARGUMENT (rsi, the
+      formatter) to -0x628(%rbp) at 0x678d0 and loads it back at 0x6797f; 0x67986 is `movq 0x10(%rax),
+      %rdi`, and struct __CFDateFormatter (CFDateFormatter.c:217-219) is CFRuntimeBase then UDateFormat
+      *_df, so 0x10 is _df and si_addr 0x10 means %rax == formatter == NULL: the FORMATTER OBJECT
+      itself, not its _df. tests/dateformatter_guest.c measures the cause in one process on the
+      deployed runtime: CFDateFormatterCreate (the call -[NSDateFormatter _regenerateFormatter] makes)
+      returns NULL because ICU's udat_open returns NULL with status 7 for EVERY locale
+      ("en_US", "en", "root", ""), because /usr/share/icu/icudt66l.dat is ABSENT.
+
+      THE FIX. ICU is compiled with -DICU_DATA_DIR="/usr/share/icu/"
+      (darling/src/external/icu/icuSources/CMakeLists.txt:20) and its CMake install ships icudt66l.dat
+      to libexec/darling/usr/share/icu, but libicucore.A.dylib alone resolves, so the loader never
+      named the gap and nothing in the deploy list carried the data file. The patch adds ICU's own
+      CMake install target to scripts/ios-toolchain-runtime-additions.sh -- the declared runtime
+      additions for this lane, each already installed through its owner's install target -- so the
+      data file is installed with the dylib. No CoreFoundation or Foundation source change: both
+      constructed and reported the failure correctly, and Apple's contract for
+      CFDateFormatterCreateStringWithAbsoluteTime requires a valid formatter (the formatter's _df is
+      dereferenced unconditionally), so a nil check there would convert a real defect into silent
+      wrong output.
+
+      RED, RUN RAW (the declared red-proof cannot be SELECTED on this prefix: the whole-profile
+      applicability plan is evaluated before --test selects a row and needs the guest CLT this prefix
+      lacks -- so the arms below are raw, on the deployed runtime, exactly as the previous rungs'
+      were). Fixture sha256 3927715b52b49b516b5a663d300191334683e19696208021cddf2530942661e2
+      (tests/dateformatter_guest.c), driver sha256 cf5919d3614e9a4a25a1c02413fe93ffebc302cfb379e49f85f6fb43d2be1054.
+      RED (deployed icudt66l.dat removed, everything else untouched):
+
+        DF-ICUDATA path="/usr/share/icu/icudt66l.dat" readable=0 size=-1
+        DF-UOPEN locale="en_US" dateStyle=MEDIUM timeStyle=NONE ptr=0x0 status=7
+        DF-CREATE locale=currentLocale dateStyle=MEDIUM timeStyle=MEDIUM ptr=0x0
+        DF-CHECK name=cfdateformatter-create-current ok=0 locale=currentLocale medium/medium
+        [sigexc-fatal sig=11 code=1 addr=0x10 pid=1678239 tid=1678239]
+        DF_RUN_RC=139
+
+      GREEN (same fixture bytes, ICU data installed through ICU's own CMake install target):
+
+        DF-ICUDATA path="/usr/share/icu/icudt66l.dat" readable=1 size=29074368
+        DF-CREATE locale=currentLocale dateStyle=MEDIUM timeStyle=MEDIUM ptr=0x7b9762b29690
+        DF-STRING formatter=0x7b9762b325c0 date=0x7b9762b37340 string=0x7b9762b3d6f0 value="2021 M06 15 12:00:00"
+        DF-CHECK name=stringFromDate-non-null ok=1
+        DF-CHECK name=stringFromDate-non-empty ok=1
+        DF-CHECK name=stringFromDate-has-year ok=1
+        DF-CHECK name=stringFromDate-has-time ok=1
+        DF_VERDICT=GREEN
+
+      Deployed sha256 after the fix: CoreFoundation 4642b1cb... (BOTH copies, unchanged),
+      Foundation a1e64e67... (BOTH copies, unchanged), libicucore.A.dylib fe5f98bb... (BOTH copies),
+      libexec/darling/usr/share/icu/icudt66l.dat 6b6a6faf4630a9ba0703a5da8ba28905edd3dd5dc790c98126a220e2d549367b,
+      dyld 18213c31... (BOTH copies, unchanged).
+
+      WHAT IT DOES NOT COVER. The ladder then reaches the NEXT wall, still in the same error-printing
+      path and still keeping the build error out of the stream: -[NSFileManager temporaryDirectory]
+      (Apple's NSFileManager.h:462 declares it) is absent from this tree's Foundation, and
+      -[Xcode3CommandLineBuildTool resolveErrorTriageResultBundleDestination] sends it. From the
+      workloads' own streams (both workloads, /private/var/tmp/xcodebuild-{minproj,iosapp}.out) and
+      from scripts/dwdiag core on the cores they left (/tmp/t4cores/core.1694958):
+
+        ** INTERNAL ERROR: Uncaught exception **
+        Uncaught Exception: -[NSFileManager temporaryDirectory]: unrecognized selector sent to instance 0x787d62c08390
+        Stack:
+          4   -[NSObject(NSObject) doesNotRecognizeSelector:] (in CoreFoundation)
+          7   -[Xcode3CommandLineBuildTool resolveErrorTriageResultBundleDestination] (in Xcode3Core)
+          8   -[Xcode3CommandLineBuildTool saveResultBundleForError:triageWithSchemeTask:error:] (in Xcode3Core)
+         10   -[Xcode3CommandLineBuildTool _printErrorString:andFailWithCode:] (in Xcode3Core)
+        [sigexc-fatal sig=4 code=2 addr=0x787D662C347F pid=1694958 tid=1694958]
+        XCB_RC=132
+        CORE-FAULT image=.../libsystem_c.dylib symbol=__abort + 0x15f  CORE-INSN ud2
+        CORE-STACK #1 _Xcode3CommandLineToolHandleException (Xcode3Core) #3 _NSExceptionHandler (Foundation)
+                   #4 _objc_terminate (libobjc) #14/#15 Xcode3CommandLineBuildTool (Xcode3Core)
+
+      Both workloads still report artifact=none, so the build error remains hidden behind the next
+      missing Foundation API.
