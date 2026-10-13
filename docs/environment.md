@@ -33,6 +33,10 @@ Build paths:
     diagnostic prefix  /home/ilyagulya/work/wr-fresh/prefix-ios-diag   (reserved name, see below)
     Xcode input        /home/ilyagulya/work/local-target/xcode-26.3/Xcode.app   (read-only)
     Swift overlay      /home/ilyagulya/work/wr-fresh/toolchain-overlays/swift-6.3.1-macos
+    sibling-fork reference
+                       /home/ilyagulya/work/wr-fresh/vibedarling   (read-only shallow clones of
+                       the VibeDarling forks: a source of implementations that already exist.
+                       NEVER a build source, never a West project, never a source authority.)
 
 Rules that keep the area usable:
 

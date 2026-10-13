@@ -79,6 +79,18 @@ refs, and agent handoff.
   contract the child needs (workspace root, the exact run invocation, prefix
   hygiene, one prefix-backed run at a time, what must not be edited) or orders
   it to read this file and the matching skill before acting.
+- Before implementing an API this tree lacks, check in this order and say in the
+  commit or comment what you found: (1) the tree's own vendored sources and
+  submodules -- an implementation may already be there and simply not wired
+  into the build; (2) the same component's newer upstream open-source release;
+  (3) the sibling forks (VibeDarling and other open Darling forks); the local
+  read-only checkout of the relevant VibeDarling components is
+  `/home/ilyagulya/work/wr-fresh/vibedarling` (see `docs/environment.md`) -- it
+  is a reference, never a build source or a source authority. Apple's
+  CoreFoundation is closed source and the dyld shared cache is not available
+  here, so "absent from our sources" is the normal case and not by itself a
+  licence to invent. Reuse the authoritative implementation when it can be
+  built, and when it cannot, say why in the code next to the replacement.
 - Keep agent instructions and skills normative: commands, contracts, ownership
   and safety rules. Store chronology, incident narratives, measurements and
   one-off acceptance results in Beads or diagnostic evidence.
