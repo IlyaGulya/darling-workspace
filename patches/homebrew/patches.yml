@@ -5334,3 +5334,204 @@ patches:
       `bash scripts/darling-boot-run.sh --prefix <prefix> --poll 'URLPATH_DRIVER_DONE=1'
       --marker 'URLPATH_DRIVER_DONE=1' --env DARLING_ROOTLESS=1 --env DARLING_NOOVERLAYFS=1
       --env DARLING_EUNION=1 --cmd '/bin/bash /private/var/tmp/urlpathprobe.sh'`.
+- path: darlingserver/pid-for-task-plane-route.patch
+  sha256sum: d8ce7aacdff80f49d70d3c989ac4cc244653881ec78dca104742eb8d8f6fc5f9
+  module: darling/src/external/darlingserver
+  source-branch: fix/pid-for-task-plane-route
+  source-base: 15291c1519d05500720fb99a77afcd059b9f8661
+  source-commit: c0dc8bb5abf6e0dd12f32da4f9d85f40e3867dc6
+  bead: dar-liaq
+  test-exception:
+    reason: integration-runtime-provider
+    scope: the server-side half of the pid_for_task process-management-plane route
+    note: >-
+      This patch appends plane op 37u and the server's transport adapter in front of the ALREADY EXISTING
+      Call::PidForTask / duct-tape pid_for_task. A server-only minus-patch verdict is not meaningful: with
+      the server half reverted but the guest half present the guest still publishes the request and the
+      server answers -ENOSYS, and with the guest half reverted the guest aborts before it publishes anything
+      at all. Both modules are reverted by the RED arm declared on the sibling xnu entry
+      (red-proof.source-modules lists this module), and the same guest fixture is its GREEN arm.
+- path: xnu/pid-for-task-plane-route.patch
+  sha256sum: 7ab77d706c46b5c89ff90d29e00bebecf4b5c836e365f21ba0d92d943a0969e7
+  module: darling/src/external/xnu
+  source-branch: fix/pid-for-task-plane-route
+  source-base: e1c70fc1ab8cf4275d70409c311fd51648f14137
+  source-commit: ea5be4173879cbfd5cfe62dee20ec28e07024bc7
+  bead: dar-liaq
+  tests:
+  - name: pid_for_task_plane_route_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      source-modules:
+      - darling/src/external/darlingserver
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
+      - module: darling/src/external/xnu
+        build-targets:
+        - system_kernel
+        deploy:
+        - usr/lib/system/libsystem_kernel.dylib
+      expect-output-contains:
+      - 'call=pid_for_task image=kernel delta=0x3B0A0 denied=1'
+      - 'pid_for_task failed (internally): -32'
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/pid_for_task_plane_route_guest.c
+    ok-marker: PID_FOR_TASK_PLANE_ROUTE_OK
+    timeout-seconds: 300
+    compile-flags:
+    - -std=gnu11
+    - -Wall
+    - -Wextra
+    - -Werror
+    guest-cc: /Volumes/SystemRoot/home/ilyagulya/.darling/Library/Developer/CommandLineTools/usr/bin/clang
+    guest-cflags: -isysroot /Volumes/SystemRoot/home/ilyagulya/.darling/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+    requires:
+    - darling-prefix
+    note: |
+      Guest runtime proof for pid_for_task, the call that killed BOTH xcodebuild
+      workloads of this ladder. MEASURED on the unfixed runtime (prefix-verify14,
+      libsystem_kernel 4091bcec..., dyld 61261ebe..., darlingserver bce0d370...):
+
+        [rpc-socket-DENIED] pid=711889 tid=711889 call=pid_for_task image=kernel delta=0x3B0A0 denied=1
+        pid_for_task failed (internally): -32
+        __simple_abort pid=711889 ra=0x7860A303E44E[sigexc-fatal sig=6 ...]
+        ORACLE_RC=134
+
+      and the core (scripts/dwdiag core) named the frames
+      __simple_abort + 0x33 <- pid_for_task_impl + 0x3e <- _darling_mach_syscall + 0x39.
+      delta=0x3B0A0 resolves against the DEPLOYED libsystem_kernel to
+      `dserver_rpc_pid_for_task + 0x20` (the generated wrapper's up-front
+      dserver_rpc_hooks_get_socket()); mach_driver_get_fd does not exist in the
+      server binary, so the denial is the guest's own retired per-thread RPC
+      socket refusing the transport and the server never saw the call. The call
+      had NO ring route and NO plane op; the server-side handler already existed.
+
+      RED is therefore the abort plus the denied-call line, and GREEN is the
+      fixture's own contract: pid_for_task(own task port) returns KERN_SUCCESS and
+      getpid(); the port is a live SEND right (mach_port_type); MACH_PORT_NULL and
+      an unbacked name return KERN_FAILURE (5) with the process still alive to
+      print its verdict; and a CHILD asking the same question gets its OWN pid.
+
+      THE HARNESS RED ARM CANNOT RUN ON THIS PREFIX TODAY, the same pre-existing
+      environment limit the sibling corefoundation/url-path-allowed-character-set
+      entry records: the whole-profile applicability plan is evaluated before
+      --prove-red can select a row, and this prefix carries no guest
+      CommandLineTools at the fixture runner's default path
+      (/Library/Developer/CommandLineTools/usr/bin/clang). Both raw arms were
+      therefore run on prefix-verify14 with the declared guest-cc/guest-cflags and
+      are stored verbatim:
+        RED   unfixed runtime (the shas above), scripts/darling-boot-run.sh-free
+              driver testkit/scripts/run-darling-c-test.sh --name pdtprobe:
+              evidence/pid-for-task-plane-route/red-arm.log
+        GREEN fixed runtime (libsystem_kernel c714eaa9..., dyld 116ddecc...,
+              darlingserver 9c86f44b...), same driver:
+              evidence/pid-for-task-plane-route/green-arm.log
+      The GREEN arm's line `PDTPROBE own_task kr=0 pid=731533 expected=731533`
+      is the load-bearing assertion; `PDTPROBE null_name kr=5` / `bogus_name kr=5`
+      are the controls that must fail rather than die.
+- path: darlingserver/task-map-corpse-info-route.patch
+  sha256sum: 258a743467bad89147224e04ccc197003f9e21b1d15a79e89a981e914d7dfa38
+  module: darling/src/external/darlingserver
+  source-branch: fix/task-map-corpse-info-route
+  source-base: c0dc8bb5abf6e0dd12f32da4f9d85f40e3867dc6
+  source-commit: c93b1f989fdaad2e2b9bdde66e7cb06eb9c22aea
+  bead: dar-liaq
+  tests:
+  - name: task_map_corpse_info_guest
+    kind: guest
+    coverage-tier: runtime
+    runs: guest
+    diag: bare
+    red: true
+    red-proof:
+      mode: guest-runtime-deploy
+      bad-profile: current-minus-patch
+      runtime-artifacts:
+      - module: darling/src/external/darlingserver
+        build-targets:
+        - darlingserver
+        deploy:
+        - bin/darlingserver
+      expect-output-contains:
+      - 'CORPSEPROBE pre-map64'
+      - 'dserver-CRASH sig=6'
+    runner: guest-c-fixture
+    repo: darling-workspace
+    script: tests/task_map_corpse_info_guest.c
+    ok-marker: TASK_MAP_CORPSE_INFO_OK
+    timeout-seconds: 120
+    guest-cc: /Volumes/SystemRoot/home/ilyagulya/.darling/Library/Developer/CommandLineTools/usr/bin/clang
+    guest-cflags: -isysroot /Volumes/SystemRoot/home/ilyagulya/.darling/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+    requires:
+    - darling-prefix
+    note: |
+      Guest runtime proof for task_map_corpse_info_64, the call whose duct-tape
+      entry point was `dtape_stub_unsafe()` -- `dtape_stub_log(__FUNCTION__, -1,
+      ...)` followed by `abort()` (duct-tape/src/stubs.c:49-80). The abort kills
+      the SERVER, so the guest never receives a kern_return_t: it blocks in the
+      Mach trap and every other thread of the process loses the shared
+      process-control page at the same instant.
+
+      THIS IS THE WALL THAT STOPPED BOTH xcodebuild WORKLOADS, and the denied
+      checkin is its SYMPTOM, not its cause. MEASURED on prefix-verify14
+      (darlingserver 9c86f44b..., libsystem_kernel c714eaa9..., dyld
+      116ddecc...), the server's last record of the whole incarnation is the stub
+      line for the call
+
+        [P:747758(747758)][T:747758(747758)] 747758(747758):...: stub (unsafe): task_map_corpse_info_64
+
+      after which the server writes NOTHING for the remaining ~300 s of the run.
+      With the plane's server gone an earlier pthread_canceled publication
+      (plane op 7, tid 747760) is never completed, `request_state` stays PENDING,
+      and the loader's NEXT thread-create checkin cannot claim the single
+      management slot:
+
+        [checkin-republish] tid=747917 attempt=1 page=1 ready=1 req=0x1 rep=0x0 pub=0
+        [rpc-socket-DENIED] pid=747758 tid=747917 call=checkin image=loader denied=1 (no per-thread transport)
+
+      so the guest aborts and then hangs to the harness timeout (XCB_RC=absent;
+      iosapp the same shape, pid=756555 tid=756773). The checkin therefore had a
+      transport all along -- page=1 ready=1 -- and no server behind it; the
+      `[dserver-CRASH ...]` the probe writes goes to the server's own fds 1/2,
+      which is why dserver.log alone cannot show the death.
+
+      WHAT THE FIX DOES. XNU's own routine (xnu/osfmk/corpses/corpse.c:733) opens
+      with `if (task == TASK_NULL || task_is_a_corpse_fork(task)) return
+      KERN_INVALID_ARGUMENT;` and `if (corpse_task == TASK_NULL ||
+      !task_is_a_corpse(corpse_task) || ...) return KERN_INVALID_ARGUMENT;`. No
+      Darling task can carry TF_CORPSE (task_generate_corpse(), the only source
+      of a corpse port, is itself unimplemented), so XNU's answer is the exact
+      answer for every input this platform can receive. The guards are reproduced
+      verbatim; the 32-bit entry point became XNU's own narrowing wrapper. REUSE
+      CHECK: this tree's corpses/corpse.c is NOT in the darlingserver_duct_tape
+      source list and needs the kcdata/VM-kernel machinery the build omits;
+      upstream duct-tape and VibeDarling's fork carry the identical unsafe stub
+      and also omit corpse.c.
+
+      RED is the fixture stopping at the call with the server's crash line in the
+      same stream; GREEN is map64/map32 both answering KERN_INVALID_ARGUMENT (4)
+      with a thread CREATE+JOIN working both BEFORE and AFTER the call.
+      THE HARNESS RED ARM CANNOT RUN ON THIS PREFIX TODAY, the same pre-existing
+      environment limit the sibling pid_for_task and
+      corefoundation/url-path-allowed-character-set entries record (the
+      whole-profile applicability plan is evaluated before --prove-red can select
+      a row, and this prefix carries no guest CommandLineTools at the fixture
+      runner's default path). Both raw arms were therefore run on prefix-verify14
+      with the declared guest-cc/guest-cflags and the supported driver,
+      testkit/scripts/run-darling-c-test.sh --name corpseinfo, and are stored
+      verbatim:
+        RED   unfixed runtime (darlingserver 9c86f44b..., its sha in the crash
+              record): evidence/task-map-corpse-info-route/red-arm.log
+        GREEN fixed runtime (darlingserver 69afd4c2...):
+              evidence/task-map-corpse-info-route/green-arm.log
