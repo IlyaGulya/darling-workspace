@@ -136,7 +136,17 @@ set(_eunion_harness_include_dirs
   "${_eunion_harness_dir}/src/linux_premigration"
   "${_workspace_root}/experiments/e-union/shim"
   "${_eunion_include_root}"
-  "${_workspace_root}/experiments/e-union")
+  "${_workspace_root}/experiments/e-union"
+  # The emulation's own CMakeLists.txt takes these two headers from the darling
+  # checkout (src/external/darlingserver/include) and from mldr's elfcalls
+  # directory (staged into the darling build tree). The harness builds the same
+  # production sources without a darling build tree, so it must name the same
+  # two source directories: vchroot_userspace.c and openat.c include
+  # <darlingserver/rpc-supplement.h> and <elfcalls.h> UNCONDITIONALLY (not inside
+  # #ifndef TEST), so without them the suite cannot be compiled against the
+  # current tree at all -- it fails in ctest-discovery instead of asserting.
+  "${DARLING_SRC}/src/external/darlingserver/include"
+  "${DARLING_SRC}/src/startup/mldr/elfcalls")
 if(EXISTS "${_eunion_resolver_impl}")
   list(APPEND _eunion_harness_sources "${_eunion_resolver_impl}")
   list(APPEND _eunion_harness_include_dirs "${_eunion_harness_dir}/include")
@@ -510,6 +520,63 @@ else()
   message(WARNING
     "darling checkout not found at ${DARLING_SRC}; skipping dar-gwn.5 "
     "(set -DDARLING_SRC=/path/to/darling)")
+endif()
+
+# ---------------------------------------------------------------------------
+# dar-liaq — the two absent Foundation APIs that stand between the Xcode
+# compatibility ladder and a real build.
+#
+# Both are source-driven guest cases: add_compat_test() uploads the fixture,
+# compiles it inside the prefix with the guest toolchain the case is configured
+# for, and runs it against the runtime that prefix has deployed. Neither fixture
+# names NSTemporaryDirectory()'s value or any host path, so the same case measures
+# a runtime whose temporary directory is /tmp/ and one whose is /var/folders/....
+#
+# The fixtures are self-contained C (dlopen + dlsym + objc_msgSend), because the
+# guest C transport compiles a single .c source with no link inputs, and testing
+# an Objective-C selector needs neither: objc_getClass/class_getClassMethod give
+# presence without raising, so the RED arm reports the unrecognized selector
+# instead of dying of it.
+#
+#   foundation_url_relative_guest          +[NSURL fileURLWithPath:isDirectory:relativeToURL:]
+#                                          (DVTFoundation -[DVTPlugInBundleMetadata
+#                                          URLForResource:withExtension:], the initial plug-in scan)
+#   foundation_temporary_directory_guest   -[NSFileManager temporaryDirectory]
+#                                          (Xcode3Core -[Xcode3CommandLineBuildTool
+#                                          resolveErrorTriageResultBundleDestination], the error path)
+# ---------------------------------------------------------------------------
+set(_foundation_url_relative_guest
+  "${_workspace_root}/tests/foundation_url_relative_guest.c")
+if(EXISTS "${_foundation_url_relative_guest}")
+  add_compat_test(
+    NAME       foundation_url_relative_guest
+    SOURCE     "${_foundation_url_relative_guest}"
+    ENVS       darling
+    BEAD       dar-liaq
+    SUBMODULES foundation
+    TIMEOUT    60
+    OK_MARKER  "FOUNDATION_URL_RELATIVE_VERDICT=GREEN"
+  )
+else()
+  message(WARNING
+    "workspace missing ${_foundation_url_relative_guest}; skipping dar-liaq NSURL oracle")
+endif()
+
+set(_foundation_temporary_directory_guest
+  "${_workspace_root}/tests/foundation_temporary_directory_guest.c")
+if(EXISTS "${_foundation_temporary_directory_guest}")
+  add_compat_test(
+    NAME       foundation_temporary_directory_guest
+    SOURCE     "${_foundation_temporary_directory_guest}"
+    ENVS       darling
+    BEAD       dar-liaq
+    SUBMODULES foundation
+    TIMEOUT    60
+    OK_MARKER  "FOUNDATION_TEMPDIR_VERDICT=GREEN"
+  )
+else()
+  message(WARNING
+    "workspace missing ${_foundation_temporary_directory_guest}; skipping dar-liaq NSFileManager oracle")
 endif()
 
 # Run after every source-owned registration and caller property override.
