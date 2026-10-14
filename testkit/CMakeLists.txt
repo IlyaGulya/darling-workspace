@@ -719,5 +719,37 @@ else()
     "workspace missing ${_unmet_eager_closure_guest}; skipping dar-liaq unmet-eager closure oracle")
 endif()
 
+# ---------------------------------------------------------------------------
+# dar-liaq — guest oracle for +[NSBundle bundleWithIdentifier:] answering from the
+# CFBundle layer instead of only from an NSBundle-private registration table.
+#
+# The rung after the eager-closure one: the workload's load closure is complete, the
+# plug-ins load, and the platform/SDK specification scan stops in +[PBXBuildRule
+# initialize] (DevToolsCore) constructing a PBXFileType spec dictionary whose "Name"
+# member is nil -- because [NSBundle cachedBundleWithIdentifier:@"com.apple.Xcode.
+# DevToolsCore"] (DevToolsSupport) reduces to [NSBundle bundleWithIdentifier:], which
+# here read only its own table and so answered nil for a framework dyld HAD loaded.
+#
+# The fixture writes a minimal .bundle, registers it through CFBundleCreate ONLY, and
+# demands that [NSBundle bundleWithIdentifier:] return it while CFBundle already does.
+# RED on a prefix deployed before the fix, GREEN after.
+# ---------------------------------------------------------------------------
+set(_nsbundle_bundle_with_identifier_guest
+  "${_workspace_root}/tests/nsbundle_bundle_with_identifier_guest.c")
+if(EXISTS "${_nsbundle_bundle_with_identifier_guest}")
+  add_compat_test(
+    NAME       nsbundle_bundle_with_identifier_guest
+    SOURCE     "${_nsbundle_bundle_with_identifier_guest}"
+    ENVS       darling
+    BEAD       dar-liaq
+    SUBMODULES foundation
+    TIMEOUT    90
+    OK_MARKER  "NSBUNDLE_BUNDLE_ID_VERDICT=GREEN"
+  )
+else()
+  message(WARNING
+    "workspace missing ${_nsbundle_bundle_with_identifier_guest}; skipping dar-liaq NSBundle bundleWithIdentifier: oracle")
+endif()
+
 # Run after every source-owned registration and caller property override.
 darling_install_native_bundle()
