@@ -33,7 +33,7 @@ cc -std=gnu11 -Wall -Wextra -Werror \
 	-o "$work/runtime-mode-test"
 
 test "$("$work/runtime-mode-test")" = "DARLING_RUNTIME_MODE_CONTRACT_OK"
-for focused_case in lock-race durability capability interruptions
+for focused_case in lock-race durability capability interruptions namespace
 do
 	DARLING_RUNTIME_PREFIX_TEST_CASE="$focused_case" \
 		"$work/runtime-mode-test"
