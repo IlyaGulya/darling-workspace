@@ -57,6 +57,21 @@ int dserver_rpc_vchroot_path(char* a, unsigned long b, uint64_t* c){(void)a;(voi
 void __simple_abort(void){__builtin_trap();}
 int __simple_printf(const char* f, ...){(void)f;return 0;}
 
+/* The current tree's openat.c console path reaches the loader's elfcalls
+ * process-plane publisher (declared in elfcalls_wrapper.h) and the fd-taking
+ * simple printf. Neither exists in a host build: -1 is the documented
+ * "not published / not completed -> fall back" status the caller already
+ * handles, and the diagnostic is swallowed exactly like __simple_printf above.
+ * (The 812e6e82/f033c577 arms do not reference them, so these stubs are
+ * additive for the fixed tree only.) */
+int __dserver_plane_request_ex(uint32_t op, uint64_t p0, uint64_t p1, uint64_t p2,
+        uint64_t p3, uint64_t* outReply0, uint64_t* outReply1)
+{
+    (void)op; (void)p0; (void)p1; (void)p2; (void)p3; (void)outReply0; (void)outReply1;
+    return -1;
+}
+void __simple_fprintf(int fd, const char* f, ...){(void)fd;(void)f;}
+
 /* rename the unit-under-test's main so we can supply our own */
 #define main vchroot_unit_main
 #include "vchroot_userspace.c"
@@ -158,6 +173,66 @@ static int name_count(const char* buf, int n, const char* name) {
 }
 static int name_in(const char* buf, int n, const char* name) {
     return name_count(buf, n, name) > 0;
+}
+
+/* --- raw-vs-merged directory oracles -------------------------------------
+ * Drain a directory fd into a NUL-separated name set, either through the union
+ * entry point (vchroot_getdents_merge) or through the kernel's own getdents64.
+ * A 256-byte page forces several calls, so a multi-page listing is exercised
+ * even for a small directory. Nothing is filtered: the comparison below needs
+ * the kernel's EXACT set (including "." and "..") to catch a function that
+ * returns an empty listing instead of the real one. */
+
+/* append one name; returns 0 when the set buffer is full */
+static int nameset_add(char* names, int cap, int* used, int* count, const char* name) {
+    int l = (int)strlen(name) + 1;
+    if (*used + l > cap) return 0;
+    memcpy(names + *used, name, l);
+    *used += l;
+    (*count)++;
+    return 1;
+}
+
+static int nameset_merged(int fd, char* names, int cap, int* count) {
+    char page[256]; int n, used = 0, guard = 0;
+    *count = 0; names[0] = '\0';
+    while ((n = vchroot_getdents_merge(fd, page, sizeof(page))) > 0) {
+        int pos = 0;
+        while (pos < n) {
+            struct linux_dirent64* de = (void*)(page + pos);
+            pos += de->d_reclen;
+            if (!nameset_add(names, cap, &used, count, de->d_name)) return -1;
+        }
+        if (++guard > 1000) return -1;
+    }
+    return n < 0 ? -1 : 0;
+}
+
+static int nameset_raw(int fd, char* names, int cap, int* count) {
+    char page[256]; long n; int used = 0, guard = 0;
+    *count = 0; names[0] = '\0';
+    while ((n = LINUX_SYSCALL(__NR_getdents64, fd, page, sizeof(page))) > 0) {
+        int pos = 0;
+        while (pos < (int)n) {
+            struct linux_dirent64* de = (void*)(page + pos);
+            pos += de->d_reclen;
+            if (!nameset_add(names, cap, &used, count, de->d_name)) return -1;
+        }
+        if (++guard > 1000) return -1;
+    }
+    return n < 0 ? -1 : 0;
+}
+
+/* multiset equality; an EMPTY set never equals anything (the oracle requires a
+   non-empty raw listing, so an empty merged listing must lose) */
+static int nameset_equal(const char* a, int an, const char* b, int bn) {
+    if (an != bn || an <= 0) return 0;
+    const char* p = a;
+    for (int i = 0; i < an; i++) {
+        if (name_count(b, bn, p) != name_count(a, an, p)) return 0;
+        p += strlen(p) + 1;
+    }
+    return 1;
 }
 
 /* read whole file into buf, return length or -1 */
@@ -1466,6 +1541,44 @@ int main(void) {
             close(hfd);
         }
 
+        /* F3b (7cfb5e16). A DIRECTORY fd outside BOTH layers must not be MERGED.
+               The escape hatch names no upper and no lower path, so the union has
+               nothing to merge for it and vchroot_getdents_merge must hand back the
+               kernel's RAW getdents64 listing. Running the merge anyway looks up
+               <upper>/Volumes/SystemRoot/... and <lower>/Volumes/SystemRoot/...,
+               finds neither, and reports a directory that has entries as EMPTY
+               with no error the caller can tell apart from a genuinely empty one
+               (this is what made DVTPlatform's platform scan see zero bundles).
+               Fixture: the harness root (the cwd) -- the PARENT of both union
+               layers, so its fd is a real escape hatch, the same class of fd F3
+               reads. Both arms read the SAME fd (rewound in between): the union
+               entry point and LINUX_SYSCALL(__NR_getdents64), and the two name
+               sets must match (non-empty), or the union is lying about a
+               directory it does not own. */
+        {
+            char root[4096], mnames[16384], rnames[16384];
+            int mcount = 0, rcount = 0;
+            getcwd(root, sizeof(root));
+            int rdfd = open(root, O_RDONLY | O_DIRECTORY);
+            check("F3b fixture: out-of-union dir fd opens", rdfd >= 0);
+            if (rdfd >= 0) {
+                fp.fd = rdfd; fp.path = got; fp.maxlen = sizeof(got);
+                int rv = vchroot_fdpath(&fp);
+                check("F3b out-of-union dir fd -> /Volumes/SystemRoot escape hatch",
+                      rv == 0 && strncmp(got, "/Volumes/SystemRoot/", 20) == 0);
+
+                int mr = nameset_merged(rdfd, mnames, (int)sizeof(mnames), &mcount);
+                lseek(rdfd, 0, SEEK_SET);
+                int rr = nameset_raw(rdfd, rnames, (int)sizeof(rnames), &rcount);
+                printf("  note: escape-hatch listing had %d merged names, %d raw names\n",
+                       mcount, rcount);
+                check("F3b escape-hatch dirfd returns the RAW getdents64 name set",
+                      mr == 0 && rr == 0 &&
+                      nameset_equal(rnames, rcount, mnames, mcount));
+                close(rdfd);
+            }
+        }
+
         /* F4. vchroot_unexpand (path-string variant) detranslates a lower host
                path to the guest path, mirroring F1. */
         {
@@ -1589,6 +1702,31 @@ int main(void) {
                 check("H2 relative-path target materialized in upper",
                       access(p, F_OK) == 0);
                 close(dfd);
+            }
+        }
+
+        /* H2b (7cfb5e16). The other half of the H2 gate: a dirfd that resolves
+               OUTSIDE both union layers (the /Volumes/SystemRoot escape hatch)
+               must be a NO-OP for relative-path copy-up. The target lives on the
+               native host root, so there is nothing to copy up and nothing may be
+               materialized under the prefix. The gate used to ask `base[0] != '/'`,
+               which a SUCCESSFUL vchroot_fdpath never produces -- the branch was
+               dead and never asked the escape-hatch question its comment claimed.
+               Fixture: the harness root (cwd), the parent of both layers, whose fd
+               is the same hatch class F3/F3b read. */
+        {
+            char root[4096];
+            getcwd(root, sizeof(root));
+            int rdfd = open(root, O_RDONLY | O_DIRECTORY);
+            check("H2b fixture: out-of-union dir fd opens", rdfd >= 0);
+            if (rdfd >= 0) {
+                int rv = vchroot_prepare_write_at(rdfd, "no_such_union_target");
+                snprintf(p, sizeof(p), "%s/Volumes/SystemRoot", prefix);
+                check("H2b prepare_write_at(escape-hatch dirfd, rel) is a no-op success",
+                      rv == 0);
+                check("H2b escape hatch never materialized into the union",
+                      access(p, F_OK) != 0);
+                close(rdfd);
             }
         }
 
