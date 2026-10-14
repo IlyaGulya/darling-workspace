@@ -781,5 +781,55 @@ else()
     "workspace missing ${_percent_encoding_family_guest}; skipping dar-liaq percent-encoding family oracle")
 endif()
 
+# ---------------------------------------------------------------------------
+# dar-liaq — guest oracle for the NSString file-reading members that take no encoding.
+#
+# The rung after the percent-encoding family one. Xcode 26.3's images send the DEPRECATED
+# -[NSString initWithContentsOfFile:] (23 references of `initWithContentsOfFile:` across 7 images of
+# the workload's 64-image load closure: DevToolsCore, DevToolsSupport, IDEFoundation, DVTFoundation,
+# DVTInstrumentsUtilities, Localization, SymbolicationDT), and on the bytes deployed before this
+# rung's fix that send was fatal: -_initWithBytesOfUnknownEncoding:length:copy:usedEncoding: freed
+# the bytes it had just copied, which are the NSData's own buffer, so the NSData's deallocator freed
+# the same pointer again and the malloc subsystem abort()ed (SIGILL, rc 132).
+#
+# ONE CTEST ENTRY PER CASE, each running the same fixture with that case's name as argv[1]. The
+# first version isolated its cases with fork() inside one entry and its RED arm was invalid: every
+# case, controls included, died of signal 11, so it measured the fixture's own fork usage rather
+# than the members. A case per process needs no isolation primitive, a case that traps takes only
+# its own entry down, and the failing entry names the member that trapped. The per-case entries
+# gate on the file being read back byte for byte; the two controls go through the same file reader
+# with the encoding named, so an arm in which they fail cannot be read as a member failure.
+# RED on the prefix deployed before the fix, GREEN after.
+#
+# TIMEOUT is 240, not the 90 the first revision used: one entry costs three `darling shell`
+# invocations (upload, in-guest compile with the Xcode clang, run) and MEASURED durations on this
+# prefix swing from 18 s to 91 s for identical work, so a 90 s executor budget reported a GREEN
+# fixture as a timeout (entry #42 in green-arm-post-fix.txt printed
+# STRING_CONTENTS_VERDICT=GREEN and ORACLE_RC=0 and was still marked Failed).  A budget that turns a
+# passing measurement into a failure is a defect in the declaration, not a result.
+# ---------------------------------------------------------------------------
+set(_string_contents_file_guest
+  "${_workspace_root}/tests/string_contents_file_guest.c")
+if(EXISTS "${_string_contents_file_guest}")
+  foreach(_string_contents_case IN ITEMS
+      class_encoding instance_encoding class_deprecated instance_deprecated class_deprecated_bom)
+    string(REPLACE "_" "-" _string_contents_arg "${_string_contents_case}")
+    add_compat_test(
+      NAME       string_contents_file_${_string_contents_case}_guest
+      SOURCE     "${_string_contents_file_guest}"
+      ENVS       darling
+      BEAD       dar-liaq
+      SUBMODULES foundation
+      TIMEOUT    90
+      ARGS       ${_string_contents_arg}
+      OK_MARKER  "STRING_CONTENTS_VERDICT=GREEN"
+      TIMEOUT    240
+    )
+  endforeach()
+else()
+  message(WARNING
+    "workspace missing ${_string_contents_file_guest}; skipping dar-liaq NSString file-contents oracle")
+endif()
+
 # Run after every source-owned registration and caller property override.
 darling_install_native_bundle()
