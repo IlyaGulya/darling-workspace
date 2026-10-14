@@ -666,14 +666,18 @@ endif()
 #
 #   coresimulator_load_guest  /Library/Developer/PrivateFrameworks/CoreSimulator.framework/
 #                             Versions/A/CoreSimulator, the install name Xcode's own
-#                             IDESimulatorFoundation hard-links, plus the EIGHT names
-#                             that referrer binds from it (strong, eager). SEVEN are
-#                             backed by the built image; the eighth
-#                             (_OBJC_CLASS_$_SimUsageTracker) is an implementation gap
-#                             inside the image, printed in every arm as
-#                             CORESIMULATOR-EXPORT-GAP and named as a wall rather than
-#                             asserted, because no deploy can add a class and a gate
-#                             that can never pass is not a gate.
+#                             IDESimulatorFoundation hard-links, plus ALL EIGHT names
+#                             that referrer binds from it (strong, eager). All eight are
+#                             asserted: the eighth, _OBJC_CLASS_$_SimUsageTracker, was an
+#                             implementation gap this tree now fills
+#                             (src/private-frameworks/CoreSimulator/src/SimUsageTracker.m),
+#                             and the fixture also exercises the one call the plug-in makes
+#                             (+sharedTrackerWithIdentifier: then -lastUsage), whose contract
+#                             the header of that file measures from Apple's own CoreSimulator
+#                             in XcodeSystemResources.pkg and from the plug-in's own selector
+#                             references. The previous arm printed it as
+#                             CORESIMULATOR-EXPORT-GAP instead of asserting it, because then
+#                             no deploy could add a class.
 # ---------------------------------------------------------------------------
 set(_coresimulator_load_guest
   "${_workspace_root}/tests/coresimulator_load_guest.c")
@@ -690,6 +694,36 @@ if(EXISTS "${_coresimulator_load_guest}")
 else()
   message(WARNING
     "workspace missing ${_coresimulator_load_guest}; skipping dar-liaq CoreSimulator oracle")
+endif()
+
+# ---------------------------------------------------------------------------
+# dar-liaq -- the OTHER symbol of the same plug-in walk: a Swift-mangled
+# Foundation overlay member, so the fixture cannot call it (a resilient Swift
+# struct returned indirectly from a foreign module would need a guessed calling
+# convention); it measures the RESOLUTION of the exact name through the channel
+# the referrer's bind uses, plus the contract of the delegation target the
+# member's one-line Darwin body calls (NSHomeDirectory).
+#
+#   foundation_url_homedirectory_guest  _$s10Foundation3URLV13homeDirectoryACvgZ,
+#                                       the one strong eager swift import of
+#                                       IDESimulatorFoundation the deployed
+#                                       overlay set did not export
+# ---------------------------------------------------------------------------
+set(_foundation_url_homedirectory_guest
+  "${_workspace_root}/tests/foundation_url_homedirectory_guest.c")
+if(EXISTS "${_foundation_url_homedirectory_guest}")
+  add_compat_test(
+    NAME       foundation_url_homedirectory_guest
+    SOURCE     "${_foundation_url_homedirectory_guest}"
+    ENVS       darling
+    BEAD       dar-liaq
+    SUBMODULES foundation
+    TIMEOUT    60
+    OK_MARKER  "FOUNDATION_URL_HOMEDIRECTORY_VERDICT=GREEN"
+  )
+else()
+  message(WARNING
+    "workspace missing ${_foundation_url_homedirectory_guest}; skipping dar-liaq URL.homeDirectory oracle")
 endif()
 
 # ---------------------------------------------------------------------------

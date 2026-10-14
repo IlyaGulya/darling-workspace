@@ -54,3 +54,8 @@ west-commands:
       - name: darling-source-worktree
         class: DarlingSourceWorktree
         help: Materialize exact nested source worktrees from local canonical refs
+  - file: west_commands/xcode_system_resources.py
+    commands:
+      - name: darling-xcode-system-resources
+        class: DarlingXcodeSystemResources
+        help: Provision Apple's Xcode system-resource frameworks into a Darling prefix
