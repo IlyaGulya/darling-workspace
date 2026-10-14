@@ -831,5 +831,42 @@ else()
     "workspace missing ${_string_contents_file_guest}; skipping dar-liaq NSString file-contents oracle")
 endif()
 
+# ---------------------------------------------------------------------------
+# dar-liaq — guest oracle for the Objective-C UTType family the workload demands.
+#
+# The rung after the NSString file-read double free. The workload now runs past IDE initialisation and
+# stops in +[DVTLocalComputerLocator localComputer] (DVTFoundation), which sends
+# +[UTType typesWithTag:tagClass:conformingToType:] to a class whose deployed binary
+# (UniformTypeIdentifiers.framework 14ec858722ec7605...) answers NOTHING of the family: its UTType
+# class carries only -methodSignatureForSelector:/-forwardInvocation:, and the name typesWithTag:
+# exists in this tree only as a DECLARATION in the Swift-overlay shim. The FAMILY is the scope: the
+# workload's 64-image load closure references the class methods (typesWithTag:..., typeWithIdentifier:,
+# typeWithFilenameExtension:, conformsToType:) directly AND through the component's own Swift half
+# libswiftUniformTypeIdentifiers.dylib, whose __objc_methname section is the set of ObjC selectors the
+# overlay forwards to; the measurement is in evidence/uttype-family-rung/family-enumeration.txt.
+#
+# ONE fixture for the whole family, in one guest process: the presence of every class/instance member
+# by -respondsToSelector:/class_getInstanceMethod, the workload's own call (tagClass and supertype both
+# NULL, because _UTTagClassDeviceModelCode/_UTTypeDevice are NULL slots in this tree), tag and
+# identifier lookups, conformance, and -stringByAppendingPathExtensionForType:. Every send is guarded
+# by the presence checks, so the RED arm names the missing members and exits cleanly instead of dying
+# in the uncaught-exception path. RED on the prefix deployed before the fix, GREEN after.
+# ---------------------------------------------------------------------------
+set(_uttype_family_guest "${_workspace_root}/tests/uttype_family_guest.c")
+if(EXISTS "${_uttype_family_guest}")
+  add_compat_test(
+    NAME       uttype_family_guest
+    SOURCE     "${_uttype_family_guest}"
+    ENVS       darling
+    BEAD       dar-liaq
+    SUBMODULES darling
+    TIMEOUT    240
+    OK_MARKER  "UTTYPE_FAMILY_VERDICT=GREEN"
+  )
+else()
+  message(WARNING
+    "workspace missing ${_uttype_family_guest}; skipping dar-liaq UTType family oracle")
+endif()
+
 # Run after every source-owned registration and caller property override.
 darling_install_native_bundle()
