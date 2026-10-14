@@ -6,8 +6,9 @@
 # the zlib dylib, the full Foundation closure and a libc++.1.dylib that exports the ABI those
 # tools were built against. This script installs exactly those artifacts, each through its own
 # project's CMake install target -- never by copying a built file into place -- and records a
-# receipt. Extend the list only from a real dyld error naming the missing dependency, or from the
-# one documented exception below.
+# receipt. Extend the list only from a real dyld error naming the missing dependency, or from a
+# runtime demand the LOADER never names (the two documented cases below: ICU's data file, which is
+# read by path, and libobjc-trampolines.dylib, which libobjc dlopens by absolute name).
 #
 # THE EXCEPTION, MEASURED (2026-10-13, dar-liaq; prefix-verify14 + build/verify14): the ICU DATA
 # file is a runtime demand the LOADER never names. ICU is built with
@@ -82,6 +83,14 @@ targets=(
 	src/external/sqlite/install
 	src/external/xar/install
 	src/external/xnu/libkern/kxld/install
+	# /usr/lib/libobjc-trampolines.dylib missing (T4, 2026-10-14): libobjc dlopens this image BY
+	# ABSOLUTE NAME at src/external/objc4/runtime/objc-block-trampolines.mm:173 the first time a
+	# block trampoline is used, and its _objc_fatal arm aborts (abort_with_payload; both xcodebuild
+	# workloads returned XCB_RC=134). Nothing links it, so no dyld "Library not loaded" error ever
+	# named it and the deploy closure cannot reach it -- the same invisible-to-the-loader class as
+	# the ICU data file above. The tree builds and installs the image; it was simply never declared
+	# here, and its own LC_ID is exactly the demanded /usr/lib/libobjc-trampolines.dylib.
+	src/external/objc4/runtime/install
 )
 
 echo "ios-additions: installing ${#targets[@]} declared additions into $prefix"
@@ -106,6 +115,11 @@ guest_visible_required=(
 	# while the file existed only under libexec/darling, which the guest does not
 	# search for /usr/lib. Declared here for the same reason as libxml2.2.
 	"usr/lib/libz.1.dylib"
+	# MEASURED 2026-10-14: libobjc's dlopen names the GUEST path /usr/lib/libobjc-trampolines.dylib
+	# and that name resolves in the guest-visible tree, which shadows libexec/darling. The install
+	# target above writes libexec/darling/usr/lib/libobjc-trampolines.dylib; without this the guest
+	# copy would not exist and the dlopen would fail exactly as it did before.
+	"usr/lib/libobjc-trampolines.dylib"
 )
 required_list="$(mktemp)"
 printf '%s\n' "${guest_visible_required[@]}" >"$required_list"
@@ -134,6 +148,8 @@ want = [
     "libexec/darling/usr/lib/libc++.1.dylib",
     "libexec/darling/usr/lib/libz.1.dylib",
     "usr/lib/libxml2.2.dylib",
+    "libexec/darling/usr/lib/libobjc-trampolines.dylib",
+    "usr/lib/libobjc-trampolines.dylib",
     "libexec/darling/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
 ]
 open(receipt,'w').write(json.dumps({

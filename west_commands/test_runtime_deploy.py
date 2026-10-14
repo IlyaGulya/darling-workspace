@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from deploy_receipt import build_receipt, write_receipt
-from deploy_transaction import DeploymentTransaction, DeploymentTransactionError
+from deploy_transaction import (
+    DeploymentTransaction,
+    DeploymentTransactionError,
+    sha256_file,
+)
 from test_runtime import (
     ROOTLESS_BOOTSTRAP_RESOURCE,
     ROOTLESS_TOOLCHAIN_RESOURCE,
@@ -258,7 +262,25 @@ class RuntimeDeploymentService:
             resources
             & {ROOTLESS_BOOTSTRAP_RESOURCE, ROOTLESS_TOOLCHAIN_RESOURCE}
         )
-        plan = []
+        # Two deploy paths can name ONE prefix file: a symlink and its target, or two paths
+        # reachable through a symlinked directory. ``DeploymentTransaction.replace()`` resolves a
+        # destination before replacing it, so such a pair is one real file written twice and it
+        # refuses the second write ("duplicate deploy destination").
+        #
+        # MEASURED 2026-10-14 (prefix-verify14, build/verify14): that is exactly how the canonical
+        # bootstrap aborted. The toolchain component declares /usr/lib/libsqlite3.dylib (every
+        # Xcode client names that path) while the Mach-O closure resolves the image's own
+        # LC_ID /usr/lib/libsqlite3.0.dylib, and the prefix's
+        # libexec/darling/usr/lib/libsqlite3.dylib is a SYMLINK to libsqlite3.0.dylib (created by
+        # objc-free sqlite's own InstallSymlink). Both plan entries aimed at the same built file
+        # (.../src/external/sqlite/libsqlite3.0.dylib) through the same real destination.
+        #
+        # So resolve here, where the plan is the object being built, and state the truth the
+        # transaction will act on: one file, identical bytes, is deployed ONCE. Two DIFFERENT built
+        # files aimed at one prefix file is a genuine error and is refused by name rather than
+        # silently dropped.
+        plan: list[tuple[Path, Path]] = []
+        claimed: dict[Path, Path] = {}
         for deploy_path, entry in deployments.items():
             try:
                 targets = runtime_deploy_targets(
@@ -269,7 +291,25 @@ class RuntimeDeploymentService:
                 )
             except ValueError as error:
                 self._host.die(str(error))
-            plan.extend((entry.source, target) for target in targets)
+            source = entry.source.resolve()
+            for target in targets:
+                real = target.resolve()
+                owner = claimed.get(real)
+                if owner is None:
+                    claimed[real] = source
+                    plan.append((entry.source, target))
+                elif sha256_file(owner) == sha256_file(source):
+                    note = getattr(self._host, "inf", None)
+                    if note is not None:
+                        note(
+                            f"  runtime deploy: {target} is the already planned file {real} "
+                            "(identical bytes); deployed once"
+                        )
+                else:
+                    self._host.die(
+                        "guest-runtime-deploy plan aims two different built files at one "
+                        f"prefix file: {real} <- {owner} (already planned) and {source}"
+                    )
         return plan
 
     def _runtime_mode_marker_required(
