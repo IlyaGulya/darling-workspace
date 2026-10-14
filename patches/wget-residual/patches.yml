@@ -108,6 +108,11 @@ patches:
     runs: host
     diag: bare
     ctest-label: eunion-host
+    # `eunion-host` labels THREE cases (the resolver unit, the fixture setup, and
+    # this suite). Without an exact name the metadata binds all three and the RED
+    # proof runs this declaration three times, two of them against cases that are
+    # not this one.
+    ctest-name: host/eunion_hardening_host_suite
     ctest-source-override: DARLING_XNU_SRC
     red: true
     red-proof:
@@ -116,7 +121,8 @@ patches:
       source-revision: f033c5773992dfa57b6657f10f53f719664a5f18
       expect-output-contains:
       - 'FAIL  RESOLVE1 upper non-directory blocks lower directory'
-    note: Host behavioral RED-to-GREEN suite for syscall-site copy-up, template protection, nested path handling, metadata/error policy and directory-view lifecycle; the selected XNU source is compiled and run through the eunion-host CTest label and the fixed source passes 293 assertions.
+      - 'FAIL  F3b escape-hatch dirfd returns the RAW getdents64 name set'
+    note: Host behavioral RED-to-GREEN suite for syscall-site copy-up, template protection, nested path handling, metadata/error policy and directory-view lifecycle; the selected XNU source is compiled and run through the eunion-host CTest label and the fixed source passes the suite (the harness's last line reports its own assertion count; the measured count for this tree lives in evidence/eunion-out-of-union-dir-rung/README.md).
   - name: eunion_nested_lower_root_host_suite
     kind: unit
     coverage-tier: host

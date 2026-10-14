@@ -321,6 +321,21 @@ fi
 
 include_dirs=("-I$SRCDIR" "-I$WORK/shim" "-I$WORK/include")
 
+# The current production tree includes <darlingserver/rpc-supplement.h> and
+# <elfcalls.h> unconditionally, and resolves them the same way the emulation's
+# own CMakeLists.txt does: the darlingserver header from the darling checkout,
+# the elfcalls ABI header from mldr's elfcalls directory. Name those two source
+# directories too, or a GREEN arm against the current tree cannot compile at
+# all. Both are absent when XNU_SRC_ROOT is a bad/source-base worktree that
+# predates those includes, which is why this is conditional.
+DARLING_SRC="${DARLING_SRC:-$(cd "$HERE/../../.." && pwd)/darling}"
+for _include in "$DARLING_SRC/src/external/darlingserver/include" \
+                "$DARLING_SRC/src/startup/mldr/elfcalls"; do
+	if [ -d "$_include" ]; then
+		include_dirs+=("-I$_include")
+	fi
+done
+
 # The resolver extraction comes after the historical E-UNION patch under test.
 # Keep the source-base RED arm on its old production closure, but link the
 # extracted resolver whenever the selected GREEN source tree provides it.

@@ -532,6 +532,19 @@ class CtestSelectionMixin:
                     self.die(f"{patch['path']}: could not resolve CTest reference {ctest_reference_args(test)}")
                 try:
                     registrations = json.loads(discovery.stdout)["tests"]
+                    # CTest's discovery also returns the FIXTURES_REQUIRED setup
+                    # case(s) of whatever it selected. Those are the selected
+                    # case's scaffolding, not additional registrations of this
+                    # metadata test: when the metadata names its case exactly,
+                    # only that name binds. Without this, a fixture-backed
+                    # ctest binding is run once per case returned, and every run
+                    # but the named one is a different test.
+                    named = test.get("ctest-name")
+                    if named:
+                        registrations = [
+                            registration for registration in registrations
+                            if registration.get("name") == named
+                        ]
                     if not registrations:
                         raise ValueError(f"missing CTest reference {ctest_reference_args(test)}")
                     indices = ctest_registration_indices(catalogues[scope], registrations)
