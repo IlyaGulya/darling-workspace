@@ -657,6 +657,42 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# dar-liaq -- the wall after MobileDevice in the same plug-in walk, and the first
+# artifact of this ladder whose guest path is under Library/ rather than usr/ or
+# System/. Source-driven guest case like the seven above, for the same reason:
+# the guest C transport compiles one .c with no link inputs, and reporting
+# presence through dlopen + dlsym is what lets the RED arm print the missing
+# image instead of dying of it.
+#
+#   coresimulator_load_guest  /Library/Developer/PrivateFrameworks/CoreSimulator.framework/
+#                             Versions/A/CoreSimulator, the install name Xcode's own
+#                             IDESimulatorFoundation hard-links, plus the EIGHT names
+#                             that referrer binds from it (strong, eager). SEVEN are
+#                             backed by the built image; the eighth
+#                             (_OBJC_CLASS_$_SimUsageTracker) is an implementation gap
+#                             inside the image, printed in every arm as
+#                             CORESIMULATOR-EXPORT-GAP and named as a wall rather than
+#                             asserted, because no deploy can add a class and a gate
+#                             that can never pass is not a gate.
+# ---------------------------------------------------------------------------
+set(_coresimulator_load_guest
+  "${_workspace_root}/tests/coresimulator_load_guest.c")
+if(EXISTS "${_coresimulator_load_guest}")
+  add_compat_test(
+    NAME       coresimulator_load_guest
+    SOURCE     "${_coresimulator_load_guest}"
+    ENVS       darling
+    BEAD       dar-liaq
+    SUBMODULES darling
+    TIMEOUT    60
+    OK_MARKER  "CORESIMULATOR_VERDICT=GREEN"
+  )
+else()
+  message(WARNING
+    "workspace missing ${_coresimulator_load_guest}; skipping dar-liaq CoreSimulator oracle")
+endif()
+
+# ---------------------------------------------------------------------------
 # dar-liaq -- the wall after MobileDevice: the first wall of this ladder that is
 # a SYMBOL and not an image. Source-driven guest case like the six above, for the
 # same reason: the guest C transport compiles one .c with no link inputs, and

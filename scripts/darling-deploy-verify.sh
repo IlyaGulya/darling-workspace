@@ -13,7 +13,7 @@
 #
 # Usage:
 #   darling-deploy-verify.sh --prefix PATH --build DIR [--component NAME]...
-#   components: mldr dyld libsystem_kernel libxpc corefoundation foundation objc-trampolines oah mobiledevice darlingserver shellspawn vchroot launchd
+#   components: mldr dyld libsystem_kernel libxpc corefoundation foundation objc-trampolines oah mobiledevice coresimulator darlingserver shellspawn vchroot launchd
 #   (default: mldr dyld libsystem_kernel darlingserver shellspawn vchroot launchd -- the rest are opt-in)
 #
 # The build directory is expected to be a Darling build tree; each component is looked up at its known output
@@ -58,6 +58,7 @@ built_path() {
 		foundation)        echo "$BUILD/src/external/foundation/Foundation" ;;
 		objc-trampolines)  echo "$BUILD/src/external/objc4/runtime/libobjc-trampolines.dylib" ;;
 		mobiledevice)      echo "$BUILD/src/private-frameworks/MobileDevice/MobileDevice" ;;
+		coresimulator)     echo "$BUILD/src/private-frameworks/CoreSimulator/CoreSimulator" ;;
 		oah)               echo "$BUILD/src/liboah/liboah.dylib" ;;
 		darlingserver)     echo "$BUILD/src/external/darlingserver/darlingserver" ;;
 		shellspawn)        echo "$BUILD/src/shellspawn/shellspawn" ;;
@@ -85,6 +86,14 @@ dest_paths() {
 		# LC_ID, which is the name Xcode's IDEiOSSupportCore hard-links.
 		mobiledevice)      echo "System/Library/PrivateFrameworks/MobileDevice.framework/Versions/A/MobileDevice"
 		                   echo "libexec/darling/System/Library/PrivateFrameworks/MobileDevice.framework/Versions/A/MobileDevice" ;;
+		# Same rule as mobiledevice, with one difference the reader should know: this guest path is
+		# under Library/, not System/. The canonical deploy gives a Library/ path ONE destination --
+		# the guest-visible root, which is where the guest resolves an absolute /Library path -- and
+		# the install-side copy under libexec/darling is made by the CMake install rule that
+		# scripts/ios-toolchain-runtime-additions.sh runs. Both are listed because both exist and
+		# both are installed by a mechanism; the loader is asked for the guest-visible one.
+		coresimulator)     echo "Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/CoreSimulator"
+		                   echo "libexec/darling/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/CoreSimulator" ;;
 		oah)               echo "usr/lib/liboah.dylib"; echo "libexec/darling/usr/lib/liboah.dylib" ;;
 		darlingserver)     echo "bin/darlingserver" ;;
 		shellspawn)        echo "usr/libexec/shellspawn"; echo "libexec/darling/usr/libexec/shellspawn" ;;

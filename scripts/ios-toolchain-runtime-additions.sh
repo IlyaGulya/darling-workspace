@@ -99,6 +99,16 @@ targets=(
 	# only through a declaration -- the same class as objc-trampolines above. The tree builds and
 	# installs the image; its own LC_ID is exactly the demanded path.
 	src/private-frameworks/MobileDevice/install
+	# /Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/CoreSimulator missing
+	# (T4, 2026-10-14): Xcode's IDESimulatorFoundation has a STRONG LC_LOAD_DYLIB for exactly that path
+	# (compatibility 1.0.0, current 1051.17.8; the artifact declares compatibility 1.0.0, the value
+	# dyld checks, so the demanded current version is informational) and binds EIGHT strong eager names
+	# from it, so dlopen_preflight refuses the plug-in with "image not found". Nothing links it FROM
+	# THIS TREE (its only referrer is Xcode's own bundle), so the deploy closure reaches it only
+	# through a declaration -- the same class as objc-trampolines and MobileDevice above. The tree
+	# builds and installs the image; its own LC_ID is exactly the demanded path. It is the first
+	# artifact in this list whose guest path is under Library/ rather than usr/ or System/.
+	src/private-frameworks/CoreSimulator/install
 )
 
 echo "ios-additions: installing ${#targets[@]} declared additions into $prefix"
@@ -133,6 +143,15 @@ guest_visible_required=(
 	# root at all, and the refresh walk below cannot create a name that is missing there, so it is
 	# declared: without this the outer root would not carry the image the loader is asked for.
 	"System/Library/PrivateFrameworks/MobileDevice.framework/Versions/A/MobileDevice"
+	# MEASURED 2026-10-14: Xcode's IDESimulatorFoundation hard-links the CONCRETE absolute path
+	# Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/CoreSimulator. The install
+	# target above writes it under libexec/darling (CMake's install rule for a
+	# /Library/Developer/PrivateFrameworks framework); the guest resolves an absolute /Library path in
+	# the guest-visible root, which does not carry a Library/Developer at all, and the refresh walk
+	# below cannot create a name that is missing there -- so it is declared, exactly as MobileDevice
+	# is. This is also the root the canonical deploy writes for a Library/ path (the deploy gives
+	# Library/ exactly one destination, the guest-visible one), so both mechanisms agree on it.
+	"Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/CoreSimulator"
 )
 required_list="$(mktemp)"
 printf '%s\n' "${guest_visible_required[@]}" >"$required_list"
@@ -165,6 +184,8 @@ want = [
     "usr/lib/libobjc-trampolines.dylib",
     "libexec/darling/System/Library/PrivateFrameworks/MobileDevice.framework/Versions/A/MobileDevice",
     "System/Library/PrivateFrameworks/MobileDevice.framework/Versions/A/MobileDevice",
+    "libexec/darling/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/CoreSimulator",
+    "Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/CoreSimulator",
     "libexec/darling/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
 ]
 open(receipt,'w').write(json.dumps({
