@@ -693,6 +693,11 @@ class DarlingTest(
                 "ctest_label": test.get("ctest-label"),
                 "ctest_name": selection.get("name", test.get("ctest-name")),
                 "ctest_build": selection.get("build"),
+                # Preserved when a source-override arm repoints `ctest_build` at
+                # a bad/fixed source tree's build directory: the registration
+                # identity compares each WORKING_DIRECTORY relative to the build
+                # tree that produced it.
+                "ctest_selection_build": selection.get("build"),
                 "ctest_index": selection.get("index"),
                 "ctest_directory": selection.get("directory"),
                 "ctest_env": test.get("env"),

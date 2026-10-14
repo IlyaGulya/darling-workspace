@@ -189,6 +189,28 @@ def ctest_test_name_regex(names: list[str]) -> str:
     return "^(" + "|".join(re.escape(name) for name in names) + ")$"
 
 
+def ctest_case_directory(build: Path, directory: str | None) -> str | None:
+    """Return one CTest WORKING_DIRECTORY as a build-relative identity.
+
+    CTest reports WORKING_DIRECTORY as an absolute path, and a fixture-backed
+    case therefore carries the build directory inside its identity. A
+    source-base RED/GREEN arm deliberately reconfigures the SAME case in a
+    DIFFERENT build directory (the bad/fixed source tree), so comparing the two
+    absolute spellings would always look like "the registration changed" and
+    refuse to run the case at all. What identifies the case is its name plus the
+    directory RELATIVE to its own build tree; a directory that lies outside the
+    build tree keeps its absolute spelling, so the check still rejects a case
+    that moved somewhere unrelated.
+    """
+    if directory is None:
+        return None
+    path = Path(directory)
+    try:
+        return path.relative_to(build).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def ctest_runtime_group_passthrough(passthrough: list[str]) -> list[str]:
     """Drop CTest selectors after discovery has frozen an exact test group.
 
@@ -322,12 +344,23 @@ class CtestSelectionMixin:
                 "refusing a false GREEN"
             )
         if invocation.get("ctest_index") is not None:
+            # The identity is (name, build-relative working directory): a
+            # source-override arm reconfigures the same case in another build
+            # directory, so the absolute WORKING_DIRECTORY cannot be compared
+            # across the two catalogue reads.
+            expected_directory = ctest_case_directory(
+                Path(invocation.get("ctest_selection_build") or build),
+                invocation["ctest_directory"],
+            )
             identities = [
-                (test["name"], next((item["value"] for item in test.get("properties", [])
-                                    if item["name"] == "WORKING_DIRECTORY"), None))
+                (test["name"], ctest_case_directory(
+                    build,
+                    next((item["value"] for item in test.get("properties", [])
+                          if item["name"] == "WORKING_DIRECTORY"), None),
+                ))
                 for test in selected
             ]
-            if identities.count((invocation["ctest_name"], invocation["ctest_directory"])) != 1:
+            if identities.count((invocation["ctest_name"], expected_directory)) != 1:
                 self.die("CTest registration changed after discovery; refusing to run a different case")
         return label_args
 
