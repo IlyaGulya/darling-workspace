@@ -751,5 +751,35 @@ else()
     "workspace missing ${_nsbundle_bundle_with_identifier_guest}; skipping dar-liaq NSBundle bundleWithIdentifier: oracle")
 endif()
 
+# ---------------------------------------------------------------------------
+# dar-liaq — guest oracle for the NSString(NSURLUtilities) percent-encoding family and the
+# NSCharacterSet(NSURLUtilities) URL sets it consumes.
+#
+# The rung after the NSBundle bundleWithIdentifier: one. The workload stops in
+# +[PackedPathEntry entryWithParent:bytes:length:] (PackedPaths), which builds a string from UTF-8
+# bytes and sends -stringByAddingPercentEncodingWithAllowedCharacters: with
+# +[NSCharacterSet URLPathAllowedCharacterSet]; the receiver is __NSCFString and that member existed
+# nowhere in the tree. The fixture measures the WHOLE family in one process -- the four selectors by
+# -respondsToSelector:, the two URL sets the load closure references, the encoding contract taken from
+# the tree's own CF URL parser, and the round trip through -stringByRemovingPercentEncoding. RED on a
+# prefix deployed before the fix, GREEN after.
+# ---------------------------------------------------------------------------
+set(_percent_encoding_family_guest
+  "${_workspace_root}/tests/percent_encoding_family_guest.c")
+if(EXISTS "${_percent_encoding_family_guest}")
+  add_compat_test(
+    NAME       percent_encoding_family_guest
+    SOURCE     "${_percent_encoding_family_guest}"
+    ENVS       darling
+    BEAD       dar-liaq
+    SUBMODULES foundation corefoundation
+    TIMEOUT    90
+    OK_MARKER  "PERCENT_ENCODING_VERDICT=GREEN"
+  )
+else()
+  message(WARNING
+    "workspace missing ${_percent_encoding_family_guest}; skipping dar-liaq percent-encoding family oracle")
+endif()
+
 # Run after every source-owned registration and caller property override.
 darling_install_native_bundle()
