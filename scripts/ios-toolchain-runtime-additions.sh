@@ -91,6 +91,14 @@ targets=(
 	# the ICU data file above. The tree builds and installs the image; it was simply never declared
 	# here, and its own LC_ID is exactly the demanded /usr/lib/libobjc-trampolines.dylib.
 	src/external/objc4/runtime/install
+	# /System/Library/PrivateFrameworks/MobileDevice.framework/Versions/A/MobileDevice missing (T4,
+	# 2026-10-14): Xcode's IDEiOSSupportCore has a STRONG LC_LOAD_DYLIB for exactly that path (current
+	# version 1818.60.2, compatibility 1.0.0 -- the artifact declares compatibility 1.0.0, which is the
+	# value dyld checks) and binds twelve strong eager names from it, so dlopen_preflight refuses the
+	# plug-in with "image not found". Nothing links it FROM THIS TREE, so the deploy closure reaches it
+	# only through a declaration -- the same class as objc-trampolines above. The tree builds and
+	# installs the image; its own LC_ID is exactly the demanded path.
+	src/private-frameworks/MobileDevice/install
 )
 
 echo "ios-additions: installing ${#targets[@]} declared additions into $prefix"
@@ -119,7 +127,12 @@ guest_visible_required=(
 	# and that name resolves in the guest-visible tree, which shadows libexec/darling. The install
 	# target above writes libexec/darling/usr/lib/libobjc-trampolines.dylib; without this the guest
 	# copy would not exist and the dlopen would fail exactly as it did before.
-	"usr/lib/libobjc-trampolines.dylib"
+	# MEASURED 2026-10-14: Xcode's IDEiOSSupportCore hard-links the CONCRETE framework path
+	# System/Library/PrivateFrameworks/MobileDevice.framework/Versions/A/MobileDevice, and the install
+	# target above writes it under libexec/darling. A System path may not exist in the guest-visible
+	# root at all, and the refresh walk below cannot create a name that is missing there, so it is
+	# declared: without this the outer root would not carry the image the loader is asked for.
+	"System/Library/PrivateFrameworks/MobileDevice.framework/Versions/A/MobileDevice"
 )
 required_list="$(mktemp)"
 printf '%s\n' "${guest_visible_required[@]}" >"$required_list"
@@ -150,6 +163,8 @@ want = [
     "usr/lib/libxml2.2.dylib",
     "libexec/darling/usr/lib/libobjc-trampolines.dylib",
     "usr/lib/libobjc-trampolines.dylib",
+    "libexec/darling/System/Library/PrivateFrameworks/MobileDevice.framework/Versions/A/MobileDevice",
+    "System/Library/PrivateFrameworks/MobileDevice.framework/Versions/A/MobileDevice",
     "libexec/darling/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
 ]
 open(receipt,'w').write(json.dumps({

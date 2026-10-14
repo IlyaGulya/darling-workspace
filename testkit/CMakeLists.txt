@@ -628,5 +628,33 @@ else()
     "workspace missing ${_nsnumberformatter_compatibility_guest}; skipping dar-liaq NSNumberFormatter oracle")
 endif()
 
+# ---------------------------------------------------------------------------
+# dar-liaq -- the wall after liboah/NSNumberFormatterCompatibility. Source-driven
+# guest case like the four above, for the same reason: the guest C transport
+# compiles one .c with no link inputs, and reporting presence through dlopen +
+# dlsym is what lets the RED arm print the missing image instead of dying of it.
+#
+#   mobiledevice_load_guest   /System/Library/PrivateFrameworks/MobileDevice.framework/
+#                             Versions/A/MobileDevice, the install name Xcode's
+#                             IDEiOSSupportCore hard-links, plus the TWELVE names that
+#                             referrer binds from it (strong, eager)
+# ---------------------------------------------------------------------------
+set(_mobiledevice_load_guest
+  "${_workspace_root}/tests/mobiledevice_load_guest.c")
+if(EXISTS "${_mobiledevice_load_guest}")
+  add_compat_test(
+    NAME       mobiledevice_load_guest
+    SOURCE     "${_mobiledevice_load_guest}"
+    ENVS       darling
+    BEAD       dar-liaq
+    SUBMODULES darling
+    TIMEOUT    60
+    OK_MARKER  "MOBILEDEVICE_VERDICT=GREEN"
+  )
+else()
+  message(WARNING
+    "workspace missing ${_mobiledevice_load_guest}; skipping dar-liaq MobileDevice oracle")
+endif()
+
 # Run after every source-owned registration and caller property override.
 darling_install_native_bundle()
