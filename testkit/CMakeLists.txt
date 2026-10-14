@@ -579,5 +579,54 @@ else()
     "workspace missing ${_foundation_temporary_directory_guest}; skipping dar-liaq NSFileManager oracle")
 endif()
 
+# ---------------------------------------------------------------------------
+# dar-liaq — the next two walls after the platform scan. Both are source-driven
+# guest cases like the two above, and for the same reason: the guest C transport
+# compiles one .c with no link inputs, and reporting presence/behaviour through
+# dlopen + dlsym + objc_msgSend is what lets the RED arm print the missing member
+# instead of dying of it.
+#
+#   liboah_translated_predicate_guest      /usr/lib/liboah.dylib, the install name Xcode's
+#                                          IDEiOSSupportCore hard-links (and whose absence made
+#                                          every plug-in load fail) plus the ONE symbol
+#                                          IDEInterfaceBuilderCocoaTouchIntegration imports from it
+#   nsnumberformatter_compatibility_guest  the NSNumberFormatterCompatibility block, whose
+#                                          setHasThousandSeparators: was the fatal unrecognized
+#                                          selector in DVTInstrumentsUtilities' HexFormatStyle
+# ---------------------------------------------------------------------------
+set(_liboah_translated_predicate_guest
+  "${_workspace_root}/tests/liboah_translated_predicate_guest.c")
+if(EXISTS "${_liboah_translated_predicate_guest}")
+  add_compat_test(
+    NAME       liboah_translated_predicate_guest
+    SOURCE     "${_liboah_translated_predicate_guest}"
+    ENVS       darling
+    BEAD       dar-liaq
+    SUBMODULES darling
+    TIMEOUT    60
+    OK_MARKER  "LIBOAH_VERDICT=GREEN"
+  )
+else()
+  message(WARNING
+    "workspace missing ${_liboah_translated_predicate_guest}; skipping dar-liaq liboah oracle")
+endif()
+
+set(_nsnumberformatter_compatibility_guest
+  "${_workspace_root}/tests/nsnumberformatter_compatibility_guest.c")
+if(EXISTS "${_nsnumberformatter_compatibility_guest}")
+  add_compat_test(
+    NAME       nsnumberformatter_compatibility_guest
+    SOURCE     "${_nsnumberformatter_compatibility_guest}"
+    ENVS       darling
+    BEAD       dar-liaq
+    SUBMODULES foundation
+    TIMEOUT    60
+    OK_MARKER  "NSNUMBERFORMATTER_COMPAT_VERDICT=GREEN"
+  )
+else()
+  message(WARNING
+    "workspace missing ${_nsnumberformatter_compatibility_guest}; skipping dar-liaq NSNumberFormatter oracle")
+endif()
+
 # Run after every source-owned registration and caller property override.
 darling_install_native_bundle()

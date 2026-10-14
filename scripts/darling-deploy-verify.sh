@@ -13,7 +13,7 @@
 #
 # Usage:
 #   darling-deploy-verify.sh --prefix PATH --build DIR [--component NAME]...
-#   components: mldr dyld libsystem_kernel libxpc corefoundation foundation objc-trampolines darlingserver shellspawn vchroot launchd
+#   components: mldr dyld libsystem_kernel libxpc corefoundation foundation objc-trampolines oah darlingserver shellspawn vchroot launchd
 #   (default: mldr dyld libsystem_kernel darlingserver shellspawn vchroot launchd -- the rest are opt-in)
 #
 # The build directory is expected to be a Darling build tree; each component is looked up at its known output
@@ -57,6 +57,7 @@ built_path() {
 		corefoundation)    echo "$BUILD/src/external/corefoundation/CoreFoundation" ;;
 		foundation)        echo "$BUILD/src/external/foundation/Foundation" ;;
 		objc-trampolines)  echo "$BUILD/src/external/objc4/runtime/libobjc-trampolines.dylib" ;;
+		oah)               echo "$BUILD/src/liboah/liboah.dylib" ;;
 		darlingserver)     echo "$BUILD/src/external/darlingserver/darlingserver" ;;
 		shellspawn)        echo "$BUILD/src/shellspawn/shellspawn" ;;
 		vchroot)           echo "$BUILD/src/vchroot/vchroot" ;;
@@ -76,6 +77,7 @@ dest_paths() {
 		foundation)        echo "System/Library/Frameworks/Foundation.framework/Versions/C/Foundation"
 		                   echo "libexec/darling/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation" ;;
 		objc-trampolines)  echo "usr/lib/libobjc-trampolines.dylib"; echo "libexec/darling/usr/lib/libobjc-trampolines.dylib" ;;
+		oah)               echo "usr/lib/liboah.dylib"; echo "libexec/darling/usr/lib/liboah.dylib" ;;
 		darlingserver)     echo "bin/darlingserver" ;;
 		shellspawn)        echo "usr/libexec/shellspawn"; echo "libexec/darling/usr/libexec/shellspawn" ;;
 		vchroot)           echo "usr/libexec/darling/vchroot"; echo "libexec/darling/usr/libexec/darling/vchroot" ;;
