@@ -656,5 +656,39 @@ else()
     "workspace missing ${_mobiledevice_load_guest}; skipping dar-liaq MobileDevice oracle")
 endif()
 
+# ---------------------------------------------------------------------------
+# dar-liaq -- the wall after MobileDevice: the first wall of this ladder that is
+# a SYMBOL and not an image. Source-driven guest case like the six above, for the
+# same reason: the guest C transport compiles one .c with no link inputs, and
+# reporting presence through dlopen + dlsym is what lets the RED arm print the
+# missing member instead of dying of it. The member is a Swift-mangled Foundation
+# overlay name, so the fixture cannot call it (a `__shared String` parameter and
+# a throwing indirect-String return hand-rolled in C would be a guessed calling
+# convention); it measures the RESOLUTION of the exact name through the channel
+# the referrer's bind uses, and the contract of the delegation target the
+# member's one-line Darwin body calls.
+#
+#   foundation_string_contentsofile_guest  _$sSS10FoundationE14contentsOfFileS2Sh_tKcfC,
+#                                          the one strong eager swift import of
+#                                          XCTDaemonControlMobileDevice that the
+#                                          deployed overlay set does not export
+# ---------------------------------------------------------------------------
+set(_foundation_string_contentsofile_guest
+  "${_workspace_root}/tests/foundation_string_contentsofile_guest.c")
+if(EXISTS "${_foundation_string_contentsofile_guest}")
+  add_compat_test(
+    NAME       foundation_string_contentsofile_guest
+    SOURCE     "${_foundation_string_contentsofile_guest}"
+    ENVS       darling
+    BEAD       dar-liaq
+    SUBMODULES foundation
+    TIMEOUT    60
+    OK_MARKER  "FOUNDATION_STRING_CONTENTSOFFILE_VERDICT=GREEN"
+  )
+else()
+  message(WARNING
+    "workspace missing ${_foundation_string_contentsofile_guest}; skipping dar-liaq String contentsOfFile oracle")
+endif()
+
 # Run after every source-owned registration and caller property override.
 darling_install_native_bundle()
