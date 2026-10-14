@@ -690,5 +690,34 @@ else()
     "workspace missing ${_foundation_string_contentsofile_guest}; skipping dar-liaq String contentsOfFile oracle")
 endif()
 
+# ---------------------------------------------------------------------------
+# dar-liaq — guest oracle for the THREE strong eager C imports of the workload's
+# load closure that the deployed runtime did not export, plus the two instrument
+# measurements that settled the census which names them:
+#   _NSLocalizedFileSizeDescription   Foundation    referrer DTDeviceKitBase
+#   __LSASNCreate                     CoreServices  referrer IDEiOSSupportCore
+#   __LSOpenApplicationURL            CoreServices  referrer IDEiOSSupportCore
+# The measurements: /usr/lib/system/libunwind.dylib's flat-lookup pair
+# (___stack_chk_guard/___stderrp, exported by the prefix's libsystem_c.dylib) and
+# SKSupport.dylib's four SourceKit::UIdent exports, which the loader's rpath chain
+# resolves.  RED on a prefix deployed before the members exist (the demanded names
+# are absent in every channel whose CONTROL name is visible); GREEN after.
+# ---------------------------------------------------------------------------
+set(_unmet_eager_closure_guest "${_workspace_root}/tests/unmet_eager_closure_guest.c")
+if(EXISTS "${_unmet_eager_closure_guest}")
+  add_compat_test(
+    NAME       unmet_eager_closure_guest
+    SOURCE     "${_unmet_eager_closure_guest}"
+    ENVS       darling
+    BEAD       dar-liaq
+    SUBMODULES foundation
+    TIMEOUT    90
+    OK_MARKER  "UNMET_EAGER_CLOSURE_VERDICT=GREEN"
+  )
+else()
+  message(WARNING
+    "workspace missing ${_unmet_eager_closure_guest}; skipping dar-liaq unmet-eager closure oracle")
+endif()
+
 # Run after every source-owned registration and caller property override.
 darling_install_native_bundle()

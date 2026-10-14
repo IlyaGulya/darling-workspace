@@ -933,10 +933,13 @@ BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB = 0xC0
 BIND_SYMBOL_FLAGS_WEAK_IMPORT = 0x1
 BIND_TYPE_POINTER = 1
 
-# dyld's special ordinals (a bind's dependency field when it is not an image: dyld 0 means a flat
-# lookup by name across every loaded image, and the weak one is additionally allowed to be absent).
-SPECIAL_ORDINALS = {0: "flat-lookup", -1: "self", -2: "main-executable", -3: "flat-lookup",
-                    -4: "weak-lookup"}
+# dyld's special ordinals (a bind's dependency field when it is not an image).  The values are the
+# guest's own dyld header's (darling/src/external/dyld/dyld3/MachOFile.h and dyldinfo.cpp):
+# BIND_SPECIAL_DYLIB_SELF = 0, MAIN_EXECUTABLE = -1, FLAT_LOOKUP = -2, WEAK_LOOKUP = -3.  The
+# earlier map here was shifted (it called -2 "main-executable" and only knew a weak lookup at -4),
+# which both mislabelled every special-ordinal bind and made a -3 weak-coalesce lookup read as a
+# flat one -- i.e. a weak lookup that is allowed to be absent could be reported as a hard stop.
+SPECIAL_ORDINALS = {0: "self", -1: "main-executable", -2: "flat-lookup", -3: "weak-lookup"}
 
 
 def macho_slices(data):
@@ -2122,33 +2125,53 @@ def supply_route(field_install_name, field_path, prefix, xcode, ctx):
 
 
 def guest_resolver(prefix, xcode=None):
-    """resolve(install_name, referrer=None) -> path|None, the way the guest's dyld resolves a name.
+    """resolve(install_name, referrer=None, rpath_from=()) -> path|None, the way the guest's dyld
+    resolves a name.
 
     Order: the deployed prefix (BOTH roots of the union -- forgetting libexec/darling reports phantom
-    misses), then the referrer's own @rpath entries expanded against @loader_path, then Xcode's tree
-    for the names the guest reaches through the host-root mount.  None means "nowhere", which is
-    what makes a missing dependency IMAGE a predicted stop rather than a silently skipped edge.
+    misses), then the @rpath entries of the referrer AND OF ITS LOADER CHAIN expanded against
+    @loader_path, then Xcode's tree for the names the guest reaches through the host-root mount.
+    None means "nowhere", which is what makes a missing dependency IMAGE a predicted stop rather
+    than a silently skipped edge.
+
+    THE RPATH CHAIN IS THE GUEST'S OWN dyld BEHAVIOUR, NOT A CONVENIENCE.  `ImageLoader::
+    recursiveLoadLibraries` (darling/src/external/dyld/src/ImageLoader.cpp) builds
+    `RPathChain thisRPaths(&loaderRPaths, &rpathsFromThisImage)` -- the image's own LC_RPATHs plus
+    every rpath already in effect up the load chain -- and expands `@rpath/...` against THAT, so an
+    image with NO LC_RPATH of its own (measured: .../SKAgent.xpc/Contents/Frameworks/SKIPC.dylib)
+    still resolves `@rpath/SKSupport.dylib` through the rpath its loader carries (measured:
+    SourceKit.framework's `@loader_path/XPCServices/com.apple.dt.SKAgent.xpc/Contents/Frameworks`).
+    Resolving against the referrer's own rpaths alone is what used to report that existing image as
+    absent.  `rpath_from` is that chain, nearest loader first, the loader's own rpaths always tried
+    first -- the order `RPathChain` walks.
     """
-    def resolve(install_name, referrer=None):
+    load_cache = {}
+
+    def rpaths_of(holder):
+        if holder not in load_cache:
+            loaded = macho_load_commands(holder)
+            slices = loaded["slices"]
+            load_cache[holder] = slices[0]["rpaths"] if slices else []
+        return load_cache[holder]
+
+    def resolve(install_name, referrer=None, rpath_from=()):
         if not install_name:
             return None
         path = deployed_path(prefix, install_name)
         if path:
             return path
         if install_name.startswith("@rpath/") and referrer:
-            loaded = macho_load_commands(referrer)
-            slices = loaded["slices"]
-            rpaths = slices[0]["rpaths"] if slices else []
-            for rpath in rpaths:
-                base = os.path.dirname(referrer)
-                expanded = rpath.replace("@loader_path", base)
-                expanded = expanded.replace("@executable_path", os.path.dirname(referrer))
-                if expanded.startswith("@"):
-                    continue
-                tail = os.path.join(expanded, install_name[len("@rpath/"):])
-                for candidate in (tail, deployed_path(prefix, tail)):
-                    if candidate and os.path.isfile(candidate):
-                        return candidate
+            for holder in (referrer,) + tuple(rpath_from):
+                base = os.path.dirname(holder)
+                for rpath in rpaths_of(holder):
+                    expanded = rpath.replace("@loader_path", base)
+                    expanded = expanded.replace("@executable_path", base)
+                    if expanded.startswith("@"):
+                        continue
+                    tail = os.path.join(expanded, install_name[len("@rpath/"):])
+                    for candidate in (tail, deployed_path(prefix, tail)):
+                        if candidate and os.path.isfile(candidate):
+                            return candidate
         if xcode:
             found = xcode_file(install_name, xcode)
             if found:
@@ -2231,6 +2254,25 @@ def cover_closure(entries, prefix, xcode=None, without_images=(), without_symbol
             continue
         if path:
             queue.append((path, None))
+    # The load chain, for `@rpath` expansion: dyld hands every image the rpath chain of the image
+    # that required it (ImageLoader::recursiveLoadLibraries), so a name is resolved against the
+    # referrer's own LC_RPATHs and then each ancestor's, nearest first (see guest_resolver).
+    parent_of = {}
+
+    def rpath_chain(name):
+        """The ancestor image PATHS of `name`, nearest loader first (empty for an entry)."""
+        chain = []
+        seen = {name}
+        parent = parent_of.get(name)
+        while parent and parent not in seen:
+            seen.add(parent)
+            record = graph["images"].get(parent)
+            if not record:
+                break
+            chain.append(record["path"])
+            parent = parent_of.get(parent)
+        return chain
+
     while queue and len(graph["images"]) < max_images:
         path, field_of = queue.pop(0)
         if path in closure_of_path:
@@ -2242,12 +2284,14 @@ def cover_closure(entries, prefix, xcode=None, without_images=(), without_symbol
         graph["images"][name] = {"install_name": name, "path": path, "field_of": field_of,
                                  "form": imports["form"], "dylibs": dylibs,
                                  "imports": imports["imports"], "labels": {}}
+        if field_of:
+            parent_of[name] = field_of
         for install_name, weak, _reexport in dylibs:
             if install_name in without_images:
                 graph["unresolved"].append({"referrer": name, "install_name": install_name,
                                             "weak": weak})
                 continue
-            dep_path = resolve(install_name, path)
+            dep_path = resolve(install_name, path, rpath_chain(name))
             if not dep_path:
                 graph["unresolved"].append({"referrer": name, "install_name": install_name,
                                             "weak": weak})
@@ -2277,8 +2321,12 @@ def cover_closure(entries, prefix, xcode=None, without_images=(), without_symbol
     graph["rest"] = [name for name in graph["images"] if name not in order]
 
     # Phase 3: label every import.  The field image's nested re-export graph is walked only when the
-    # name is not in the field's own trie, and cached per image; `loaded_before` is the union of what
-    # the images loaded up to and including this one satisfy.
+    # name is not in the field's own trie, and cached per image; `loaded_paths` is the union of what
+    # the images loaded up to and including this one satisfy (the field/load-order MODEL), and
+    # `closure_paths` is every mapped image, which is what a field-less SPECIAL-ORDINAL bind (flat
+    # or weak lookup) resolves against -- dyld binds only after the whole closure is mapped.
+    closure_paths = [graph["images"][n]["path"] for n in order + graph["rest"]
+                     if n in graph["images"]]
     loaded_paths = []
     for name in order + graph["rest"]:
         record = graph["images"].get(name)
@@ -2292,8 +2340,9 @@ def cover_closure(entries, prefix, xcode=None, without_images=(), without_symbol
             if imp["field"] is not None and imp["lib_ordinal"] - 1 < len(record["dylibs"]):
                 field_install = record["dylibs"][imp["lib_ordinal"] - 1][0]
                 if field_install not in without_images:
-                    field_path = resolve(field_install, record["path"])
-            label, where = _cover_label(imp, field_path, detail_of, chain_of, loaded_paths)
+                    field_path = resolve(field_install, record["path"], rpath_chain(name))
+            label, where = _cover_label(imp, field_path, detail_of, chain_of, loaded_paths,
+                                        closure_paths)
             imp["label"], imp["where"] = label, where
             record["labels"][label] = record["labels"].get(label, 0) + 1
             if label in (COVER_MISSING, COVER_IMAGE_ABSENT):
@@ -2350,19 +2399,28 @@ def supplied_by_loaded(name, loaded_paths, detail_of, chain_of):
     return None
 
 
-def _cover_label(imp, field_path, detail_of, chain_of, loaded_paths):
+def _cover_label(imp, field_path, detail_of, chain_of, loaded_paths, closure_paths=()):
     """(label, where) for one import: the export trie, a re-export, a loaded image, or absent.
 
     `loaded_paths` is the images the process has loaded (bound) at or before this one, in order:
     STATIC for the field image, a MODEL for the flat/weak path -- the label says which.
+    `closure_paths` is every image of the closure, in bind order, and it is what a FLAT lookup
+    (a special-ordinal bind) resolves against: the guest's own dyld loads the WHOLE closure before
+    it binds anything (`ImageLoader::recursiveLoadLibraries` then `recursiveRebase` then
+    `recursiveBind`, darling/src/external/dyld/src/ImageLoader.cpp), and a flat lookup is
+    `flatFindExportedSymbol` -> `findExportedSymbol`, which walks `sAllImages`.  Resolving a flat
+    lookup against "the images traversed so far" instead under-approximates whenever the traversal
+    order and dyld's load order disagree -- measured on /usr/lib/system/libunwind.dylib, whose
+    `___stack_chk_guard`/`___stderrp` are exported by the prefix's libsystem_c.dylib and were
+    reported missing because the model's post-order put libunwind first.
     """
     if imp["field"] is None:
-        # dyld's special ordinals: a flat lookup searches every loaded image by name (and the
+        # dyld's special ordinals: a flat lookup searches every mapped image by name (and the
         # main-executable ordinal falls back to it), while the weak lookup additionally tolerates
         # absence -- that is where _memcpy/_memmove/_memset/_strlen live: names no dylib exports.
-        where = supplied_by_loaded(imp["name"], loaded_paths, detail_of, chain_of)
+        where = supplied_by_loaded(imp["name"], closure_paths or loaded_paths, detail_of, chain_of)
         if where:
-            return COVER_FLAT, f"{where} (loaded, flat lookup)"
+            return COVER_FLAT, f"{where} (mapped in the closure, flat lookup)"
         return _absence_label(imp), ""
     if field_path is None:
         return COVER_IMAGE_ABSENT, ""
