@@ -4625,7 +4625,8 @@ fn fp_chain(mem: &[u8], base: u64, rbp: u64, rsp: u64, maps: &[(u64, u64, bool, 
 /// Frames from a raw stack image. Shared by the live unwinder and by catch mode, which has the
 /// stack as a file rather than as memory, so both paths answer the same question the same way.
 fn scan_stack(mem: &[u8], maps: &[(u64, u64, bool, u64, String)],
-              image_ok: &dyn Fn(&str) -> bool, max: usize) -> Vec<(u64, String, String)> {
+              image_ok: &dyn Fn(&str) -> bool, max: usize,
+              segments: &mut MachoSegmentCache) -> Vec<(u64, String, String)> {
     let image_of = |addr: u64| -> Option<(u64, u64, u64, String)> {
         maps.iter()
             .find(|(lo, hi, x, _, _)| *x && *lo <= addr && addr < *hi)
@@ -4640,7 +4641,15 @@ fn scan_stack(mem: &[u8], maps: &[(u64, u64, bool, u64, String)],
         // the Mach-O header and load commands -- bytes that live in an executable mapping and
         // otherwise arrive as "frames" like image_base+2.
         if v < lo + 0x4000 { continue; }
-        if let Some(sym) = unwind_symbolize(v - lo + foff, &path) {
+        // The mapping reports a FILE offset; the symbol table wants the IMAGE address. For a UNIVERSAL
+        // guest image those differ by the slice base (MEASURED: libswiftCore.dylib's x86_64 slice starts at
+        // file 0x4000, and resolving with the file offset named `-[__SwiftValue + 0x289` for an instruction
+        // that is `_swift_getObjectType + 0x19`). MachoSegments turns one into the other; when it cannot
+        // read the image the old arithmetic is kept, so a non-Mach-O frame still resolves.
+        let sym_addr = segments
+            .image_addr(&path, foff + (v - lo))
+            .unwrap_or(v - lo + foff);
+        if let Some(sym) = unwind_symbolize(sym_addr, &path) {
             frames.push((v, path.clone(), sym));
         }
         if frames.len() >= max { break; }
@@ -6851,9 +6860,10 @@ fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
             }
         }
         dumps.sort();
+        let mut segments = MachoSegmentCache::default();
         for (rsp, path) in dumps {
             let mem = std::fs::read(&path).unwrap_or_default();
-            let frames = scan_stack(&mem, &maps, &image_ok, 12);
+            let frames = scan_stack(&mem, &maps, &image_ok, 12, &mut segments);
             crate::say(&format!("CATCH-STACK rsp={rsp:#x} frames={}", frames.len()));
             for (addr, img, sym) in &frames {
                 crate::say(&format!("  FRAME {addr:#x} image={} {sym}",
@@ -6890,6 +6900,10 @@ fn run_unwind(args: UnwindArgs) -> Result<ExitCode> {
             .find(|(lo, hi, x, _, _)| *x && *lo <= addr && addr < *hi)
             .map(|(lo, hi, _, foff, p)| (*lo, *hi, *foff, p.clone()))
     };
+    // A mapping's `foff` is a FILE offset while a symbol table speaks IMAGE addresses, and for a UNIVERSAL
+    // guest image those differ by the slice base. MachoSegments makes that conversion (see scan_stack);
+    // the cache keeps one parse per image.
+    let mut segments = MachoSegmentCache::default();
 
     let mut total_frames = 0usize;
     let mut rows: Vec<(u64, u64, u64, Option<(String, u64)>, Vec<(u64, String, String)>, &'static str)> = Vec::new();
@@ -6913,13 +6927,16 @@ fn run_unwind(args: UnwindArgs) -> Result<ExitCode> {
         // and the output says which, because those are different kinds of evidence.
         let fp_rets = fp_chain(&mem, rsp, *rbp_ref, rsp, &maps, &image_ok, args.max);
         let (frames, via) = if fp_rets.is_empty() {
-            (scan_stack(&mem, &maps, &image_ok, args.max), "scan")
+            (scan_stack(&mem, &maps, &image_ok, args.max, &mut segments), "scan")
         } else {
             let decoded = fp_rets
                 .into_iter()
                 .filter_map(|v| {
                     let (lo, _, foff, path) = image_of(v)?;
-                    let sym = unwind_symbolize(v - lo + foff, &path)?;
+                    let sym_addr = segments
+                        .image_addr(&path, foff + (v - lo))
+                        .unwrap_or(v - lo + foff);
+                    let sym = unwind_symbolize(sym_addr, &path)?;
                     Some((v, path, sym))
                 })
                 .collect::<Vec<_>>();
@@ -6959,7 +6976,12 @@ fn run_unwind(args: UnwindArgs) -> Result<ExitCode> {
         let rip_s = match rip_img {
             Some((p, _lo)) => {
                 let sym = image_of(*rip_abs)
-                    .and_then(|(lo, _, foff, path)| unwind_symbolize(rip_abs - lo + foff, &path));
+                    .and_then(|(lo, _, foff, path)| {
+                        let sym_addr = segments
+                            .image_addr(&path, foff + (rip_abs - lo))
+                            .unwrap_or(rip_abs - lo + foff);
+                        unwind_symbolize(sym_addr, &path)
+                    });
                 match sym {
                     Some(sym) => format!("image={} rip={sym}", p.rsplit('/').next().unwrap_or(p)),
                     None => format!("image={}", p.rsplit('/').next().unwrap_or(p)),
