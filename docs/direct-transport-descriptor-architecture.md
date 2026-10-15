@@ -13300,3 +13300,21 @@ slot to IDLE while the server still owns the request, and the next publisher's c
 request's stale DONE. The decision is whether to make abandonment safe (an ownership/generation token the server
 honours, so a late answer is discarded rather than delivered) or unnecessary (a longer bound, which the earlier 20 s
 attempt already showed blows the 30 s shellspawn handshake).
+
+### 256. `dwdiag unwind --catch` reported the wrong thread's registers (fix, 2026-10-15)
+
+The catch transcript printed `rip`/`rsp` and an `x/4i $pc` disassembly under gdb's "Thread N received signal
+SIGSEGV" line, and they were not that thread's: the gdb script ran `info registers rip rsp` and `x/4i $pc`
+AFTER its python block, and that block iterates `inf.threads()` with `t.switch()`, so the LAST iterated thread
+was selected when the registers were read. MEASURED 2026-10-15 on a guest xcodebuild: the reported rip was
+glibc `__futex_abstimed_wait_cancelable64` on a host stack, so the forced SIGSEGV read as a fault in a host
+Vulkan worker, while the thread the signal was actually delivered to was a guest libdispatch worker parked in
+`__linux_futex -> sem_down -> sys_workq_kernreturn -> _dispatch_worker_thread2` — visible in the SAME transcript,
+because the per-thread `CATCH-STACK rsp=` image dumps are per-thread and were never affected. The instrument
+contradicted itself and the wrong half was the one shaped like the answer.
+
+Fix in `tools/darling-debug-runner/src/diag.rs`: capture `info registers rip rsp` and `x/4i $pc` immediately
+after `continue`, before the python block, and say why in a comment. The runner is rebuilt with
+`cargo build --release` in that directory. A catch session is only as good as the thread its registers belong
+to, so a future change to that script must keep the register read and the signal stop in the same thread
+selection.
