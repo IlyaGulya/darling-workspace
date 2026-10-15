@@ -474,6 +474,34 @@ if(EXISTS "${_xpc_sync_send_unconnected_guest}")
   )
 endif()
 
+# The FileCoordination synchronous-XPC oracle: a client's synchronous send must be ANSWERED (phase 1), a
+# well-formed intent must complete with the client surviving (phase 2), and the client's own
+# async+semaphore shape must complete (phase 3). It proves the libxpc NULL-event-handler fix (6cc6faf,
+# deployed as 522299a1bb522673): a client that only ever sends synchronously never sets an event handler,
+# and libxpc invoked it unconditionally for an UNSOLICITED message -- measured with rdi=0 inside
+# dispatch_mach_handler, the message being the daemon's presenter notification (type 8) for the intent the
+# client had just sent. The test was written with that fix and was never declared; this is that
+# registration.
+#
+# WEAK SPOT, stated because it is real: if the FileCoordination connection cannot be created the test
+# prints `create-failed` and STILL emits FCD_NO_PARK_OK, so on a prefix with no daemon it passes
+# trivially. Its phases mean something only when the `FCD send-returned`, `FCD2 intent-reply` and
+# `FCD3 async-reply` lines are present, so a bare OK_MARKER hit is not by itself a green gate, and the run
+# recorded with this registration quotes those lines.
+set(_fcd_sync_send_park_guest
+  "${_workspace_root}/tests/fcd_sync_send_park_guest.c")
+if(EXISTS "${_fcd_sync_send_park_guest}")
+  add_compat_test(
+    NAME       fcd_sync_send_park_guest
+    SOURCE     "${_fcd_sync_send_park_guest}"
+    ENVS       darling
+    BEAD       dar-libxpc-reply-receive-null-deref-hixt
+    SUBMODULES libxpc foundation
+    TIMEOUT    60
+    OK_MARKER  "FCD_NO_PARK_OK"
+  )
+endif()
+
 set(_fork_checkin_signal_storm_guest
   "${_workspace_root}/tests/fork_checkin_signal_storm_guest.c")
 if(EXISTS "${_fork_checkin_signal_storm_guest}")
