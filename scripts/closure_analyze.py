@@ -2686,9 +2686,18 @@ def main():
 
     base = args.base or ladder_base(args.darling)
 
+    # The closure entries: --entry when given, else the Xcode loader image.  BOTH the cover and the
+    # sweep read them (dar-nowc: --sweep used to hardcode the loader and silently ignore --entry, so
+    # a wall inside a later-loaded bundle -- SWBBuildSystem's strong OSLog demand, for one -- could
+    # not be swept at all and the wrong closure was reported as "the" wave).
+    entries = args.entry or [os.path.join(args.xcode, "Frameworks/libxcodebuildLoader.dylib")]
+    entries = [_host_entry_path(e, args.xcode) for e in entries]
+    for e in entries:
+        if not os.path.isfile(e):
+            print(f"closure_analyze.py: entry image does not exist: {e}", file=sys.stderr)
+            return 2
+
     if args.cover or args.order:
-        entries = args.entry or [os.path.join(args.xcode, "Frameworks/libxcodebuildLoader.dylib")]
-        entries = [_host_entry_path(e, args.xcode) for e in entries]
         graph = cover_closure(entries, args.prefix, args.xcode, without_images=args.without,
                               without_symbols=args.without_symbol)
         ctx = classify_context(args.darling, manifest, args.xcode,
@@ -2740,13 +2749,19 @@ def main():
             print(json.dumps(payload, indent=2, sort_keys=True))
         return 1 if events else 0
 
-    entry = os.path.join(args.xcode, "Frameworks/libxcodebuildLoader.dylib")
-    edges = load_closure(entry, args.xcode)
-
     if args.sweep:
         payload = args.payload or os.path.join(args.darling, "src/external/swift")
         ctx = classify_context(args.darling, manifest, args.xcode, payload=payload,
                                overlay=args.overlay)
+        # The referrer set must be the closure the ENTRY reaches, resolved the way dyld resolves it:
+        # against the prefix's both roots, then the referrer's own rpath chain.  load_closure above
+        # resolves a dependency by NAME alone (xcode_file), which reaches 2 of the 108 images the
+        # SWBBuildService.bundle entry loads and therefore reported a wave of 9 rows for a closure
+        # of 40 -- so the sweep takes its edges from the same walk --cover uses (dar-nowc, measured
+        # 2026-10-15).  `dylibs` is already [(install_name, weak, reexport)] per image.
+        graph = cover_closure(entries, args.prefix, args.xcode)
+        edges = {rec["path"]: [tuple(d) for d in rec["dylibs"]]
+                 for rec in graph["images"].values()}
         print("closure_analyze.py --sweep")
         print(f"  darling      : {args.darling}")
         print(f"  manifest     : {manifest_path}")
@@ -2754,7 +2769,11 @@ def main():
         print(f"  overlay      : {ctx['overlay_dir']}")
         print(f"  prefix       : {args.prefix}")
         print(f"  xcode        : {args.xcode}")
-        print(f"  closure      : {len(edges)} images in the load-command closure of {entry}")
+        print(f"  closure      : {len(graph['images'])} images reached from "
+              + " + ".join(entries))
+        print(f"  entry facts  : {', '.join(str(e.get('path')) for e in graph['entries'])}")
+        if graph.get("empty_reason"):
+            print(f"  EMPTY        : {graph['empty_reason']}")
         print()
         rows = sweep_missing(edges, args.prefix, ctx)
         counts = print_sweep(rows, args.prefix)
@@ -2765,6 +2784,10 @@ def main():
 
     wanted = LOCK_TARGETS if not args.components else \
         [c.strip() for c in args.components.split(",") if c.strip()]
+
+    edges = {}
+    for e in entries:
+        edges.update(load_closure(e, args.xcode))
 
     results = []
     for t in wanted:
