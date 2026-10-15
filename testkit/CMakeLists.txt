@@ -455,6 +455,25 @@ foreach(_case IN LISTS _simple_xnu_guest_cases)
   endif()
 endforeach()
 
+# The stall's synchronous-XPC oracle: a synchronous send on a connection whose libdispatch channel was
+# never connected must RETURN with an error object instead of parking in an unbounded receive. Subject B
+# of the test is the workload's own case -- a resumed connection for a service no receiver exists for --
+# and it prints the raw bootstrap lookup result, so "the peer does not exist" is measured, not assumed.
+# The test was written with the libxpc fix (d62a6b2) but was never registered; this is that registration.
+set(_xpc_sync_send_unconnected_guest
+  "${_workspace_root}/tests/xpc_sync_send_unconnected_guest.c")
+if(EXISTS "${_xpc_sync_send_unconnected_guest}")
+  add_compat_test(
+    NAME       xpc_sync_send_unconnected_guest
+    SOURCE     "${_xpc_sync_send_unconnected_guest}"
+    ENVS       darling
+    BEAD       dar-liaq
+    SUBMODULES libxpc
+    TIMEOUT    60
+    OK_MARKER  "XPC_SYNC_SEND_UNCONNECTED_OK"
+  )
+endif()
+
 set(_fork_checkin_signal_storm_guest
   "${_workspace_root}/tests/fork_checkin_signal_storm_guest.c")
 if(EXISTS "${_fork_checkin_signal_storm_guest}")
