@@ -565,6 +565,29 @@ if(EXISTS "${_mach_send_timeout_semantics_guest}")
   )
 endif()
 
+# Does a receive/send right a parent created survive into a CHILD? Measured with this fixture: it does NOT.
+# In a forked child, in a forked child with a right extracted under a SEPARATE name, and in a posix_spawned
+# (fork+exec) child, the inherited name reports mach_port_type KERN_SUCCESS with NO bits, mach_port_get_refs
+# KERN_INVALID_NAME, and a send of MACH_SEND_INVALID_DEST; the parent receives nothing. The same two operations
+# in one process succeed. That is the shape of the parent->child channel this ladder needs, so it is a
+# registered gate rather than a note. See evidence/oslog-framework-rung/README.md section 27.
+#
+# WEAK SPOT: the fixture cannot say WHY (it reports the kernel's answers, not the server's copy path); the
+# mechanism is a separate question and is recorded as NOT ESTABLISHED where the source does not answer it.
+set(_fork_inherited_right_guest
+  "${_workspace_root}/tests/fork_inherited_right_guest.c")
+if(EXISTS "${_fork_inherited_right_guest}")
+  add_compat_test(
+    NAME       fork_inherited_right_guest
+    SOURCE     "${_fork_inherited_right_guest}"
+    ENVS       darling
+    BEAD       dar-xcodebuild-ideinitialize-park-u196
+    SUBMODULES xnu darlingserver
+    TIMEOUT    90
+    OK_MARKER  "FORK_INHERITED_RIGHT_DONE"
+  )
+endif()
+
 set(_fork_checkin_signal_storm_guest
   "${_workspace_root}/tests/fork_checkin_signal_storm_guest.c")
 if(EXISTS "${_fork_checkin_signal_storm_guest}")
