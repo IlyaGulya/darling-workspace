@@ -55,6 +55,12 @@ CONTRACTS = (
     # stub launcher, so it needs no prefix and no guest (the harness reads the workload's status out of the
     # log, and the contract's workload is a host `--cmd`).
     "tests/run-darling-boot-verdict-contract.sh",
+    # The harness's RUN BUNDLE: one self-describing directory per run, with both logs, every capture path PRINTED,
+    # the child's environment/descriptor table from the HOST, any core, the abort text carried whole, the counters,
+    # the deployed-copy digest, launchd's own look-up lines, and a census that NAMES the instruments that stayed
+    # silent -- every item PRESENT <path> or MISSING <reason>. Offline, like the verdict contract above: it drives
+    # the harness against a stub launcher, so it needs no prefix and no guest.
+    "tests/run-run-bundle-contract.sh",
     "tests/run-west-test-runtime-source-reuse-contract.sh",
     "tests/run-west-test-metadata-invocation-identity-contract.sh",
     # Recovered: these contracts existed and passed but were listed by no tier,
@@ -281,6 +287,15 @@ EXPLICIT_CONTRACTS = (
     # not emitted, that a missing SDK tree fails by path, and that the maps
     # committed in the SDK are exactly what the generator produces now.
     ("sdk-module-maps", "tests/run-sdk-module-maps-contract.sh", False),
+    # Uncached on purpose: the file it judges (`src/xtrace/safe_read.cpp`) lives in the darling source forest rather
+    # than in this workspace, so the tier's cache key does not identify the bytes it judged. It compiles that reader
+    # on the host and holds it to its promise with real mappings: an unmapped range is REPORTED (process survives), a
+    # partly mapped range is a SHORT copy, a string ending on a page boundary is read to its NUL, and a string whose
+    # end is unmapped is UNREADABLE. Its last arm is the RED PROOF: the same address dereferenced directly must still
+    # die (SIGSEGV/SIGBUS), because an instrument that faults on a formatting path kills the run it is measuring --
+    # measured, once, as arm RC=139 with core /tmp/t4cores/core.2915140. It exits 77 with UNMEASURED when the source
+    # forest is absent, because a fault-safety nobody measured must not read as one that holds.
+    ("xtrace-safe-read", "tests/run-xtrace-safe-read-contract.sh", False),
 )
 
 # Contracts deliberately kept out of the tier. Each entry states the reason,

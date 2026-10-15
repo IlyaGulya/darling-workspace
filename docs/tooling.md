@@ -169,8 +169,41 @@ symbolizing an offset, resolving a crash -- is now a subcommand of the Rust tool
 ```
 scripts/dwdiag <build|cycle|symbolize|crash|verdict|suite|witness|waits|unwind> [OPTIONS]   # build-and-exec shim, stable path
 scripts/dwdiag <core|identity> [OPTIONS]                                                     # read a core: the fault, and who each thread says it is
+scripts/dwdiag <mappings|env> [OPTIONS]                                                      # a core's OWN NT_FILE table / the deployed-copy digest (RUN-ENV)
   = tools/darling-debug-runner/target/release/darling-debug-runner diag ...
 ```
+
+### `dwdiag mappings` -- a core's OWN mapping table, because `readelf` refuses the note
+
+```
+scripts/dwdiag mappings [--core FILE|--dir DIR] [--prefix P] [--addr ADDR] [--read ADDR:LEN] [--json]
+```
+
+MEASURED why this is a command: the host's `readelf -n` REFUSES this core's 64-bit `NT_FILE` note ("Cannot decode
+64-bit note in 32-bit build"), and the mapping list (or the bytes of a mapping) was then read by a throwaway script
+written from scratch three times, twice with the wrong page/byte unit for the note's file offsets. The reader is the
+one `core`/`identity`/`unwind` already use; this is its standalone face:
+
+```
+MAPPINGS core=/tmp/t4cores/core.2915140 size=895692800
+MAPPINGS-COUNT source=NT_FILE count=1267 range-scale=bytes (decided from this core: 1267 of 1267 entries fall inside a PT_LOAD as bytes, 0 as pages) file-offset-unit=the note's declared page size
+MAPPINGS-ROW start=0x5ee28f52c000 end=0x5ee28f52e000 file_off=0x0 name=<prefix>/libexec/darling/usr/libexec/darling/mldr
+MAPPINGS-OWNER addr=0x5ee28f52c100 base=0x5ee28f52c000 file_off=0x100 name=...
+MAPPINGS-READ addr=0x5ee28f52c000 len=16 bytes=7f 45 4c 46 02 01 01 00
+```
+
+An address in no mapping is reported as such (never as offset 0); a range the dump does not cover is refused with the
+reason; a core with no `NT_FILE` prints `MAPPINGS-EMPTY` rather than zero rows.
+
+### `dwdiag env` -- the deployed-copy digest on its own
+
+```
+scripts/dwdiag env [--prefix P] [--json]      # RUN-ENV prefix=... mldr=<12hex> libsystem_kernel.dylib=... dyld=...
+```
+
+The candidate table lives in ONE place (the tool), so `verdict`'s `RUN-ENV` line and the boot harness's bundle row can
+never describe different sets of files. A prefix with no runtime installed prints the line and then exits 1 with
+`RUN-ENV-EMPTY`, because an empty digest must not read as "the same build as the other run".
 
 The tool is **vendored in this workspace** (`tools/darling-debug-runner`, source + README + `Cargo.lock`), so its code,
 its documentation and every instruction that calls it live in one tree; the sibling repository of the same name is only a
@@ -828,6 +861,69 @@ information about the product. When a run supplies `--cmd`, judge it by the mark
 counter block; the boot markers only apply to a default boot. A `--cmd` run that neither prints its own completion
 marker nor its expected output has not executed the workload at all, and that is what the two zero counts above
 (`checkout-skipped`, `R1-CHURN-DONE`) actually said.
+
+## The RUN BUNDLE: one run, one self-describing directory, announced on stdout
+
+`scripts/darling-boot-run.sh` writes a **run bundle** on every run (`<log>.bundle`; `--bundle DIR` to move it,
+`--no-bundle` to suppress). No extra flag is needed, because the failures it removes were all "the evidence existed
+and nobody knew where it was":
+
+```
+BUNDLE dir=/tmp/demo/harness.log.bundle
+BUNDLE-ITEM guest-capture-prd-minproj-bare-t.trace.3081254 path=.../captures/... note=captured from <prefix>/private/var/tmp/... (3169724 bytes)
+BUNDLE-COUNT guest-captures path=.../captures 10 capture(s) written during this run ...
+BUNDLE-COUNT child-records path=.../children 15 guest process(es) sampled from the HOST while alive ...
+BUNDLE-MISSING core reason=no new core under /tmp/t4cores during this run ... (ulimit -c 0)
+BUNDLE-ITEM witness-census path=.../witness.txt note=instruments fired=14; SILENT=[fault,segvdisp,...]
+BUNDLE-RUN-ENV RUN-ENV prefix=... mldr=1baff608437b libsystem_kernel.dylib=0ebe7c78dad2 dyld=e7b9a432bdb6
+BUNDLE-LAUNCHD the services launchd recorded for this run (top 5 by count; ...)
+```
+
+It holds, and NAMES: **both logs** (the harness's own and the prefix server's, copied pre AND post, because
+`<prefix>/private/var/log/dserver.log` is append-only *across* runs and only the delta is this run's); **every guest
+capture** with its path printed (`*.trace.<pid>` for the traced process, `*.traceg.<pid>` for its children, and the
+workload's own redirected `*.out`); the **child's environment and descriptor table read from the HOST** (sampled
+while the child is alive, because a guest cannot read its own `/proc`); **any core** written during the run (symlinked,
+not copied); the **abort/terminate text wherever it landed**, lines copied WHOLE with the longest one's length
+reported; the **plane/ledger counters**; the **deployed sha256 of every runtime copy** (the `RUN-ENV` line, produced
+by `dwdiag env`, so there is one candidate table and not two); launchd's own debug log and its quoted
+`Mach service lookup` lines; and the **instrument census that names every silent instrument**.
+
+Every item is a row of the bundle's `MANIFEST`: `PRESENT <path>` or `MISSING <reason>`. Rules:
+
+* a piece the harness could not collect is **MISSING with the reason**, never silently absent -- including the
+  directories that were searched, so the next reader cannot look in the wrong place;
+* **INCOMPLETE** next to the manifest means the harness did not reach the end of the run, and the manifest ends with
+  `BUNDLE-COMPLETE` only when it did;
+* a `--bundle DIR` that already holds files is **refused**: a mixed bundle reads as this run's evidence;
+* a silent instrument is NAMED (`BUNDLE-WITNESS silent=[...]`), and `build-declarations.txt` records where the build
+  ITSELF says a section is absent, so "silent by build" is distinguished from "silent, and therefore broken";
+* nothing is truncated at a small constant. A 512-byte cap once cut the very buffer an abort message was in; the
+  bound is now the record's own declared length (or `XTRACE_MAX_PAYLOAD_BYTES`, default 64 KiB) and **a cut is
+  printed** -- `...[truncated: printed the first N of M declared byte(s)]`.
+
+Contracts: `tests/run-run-bundle-contract.sh` (offline, stub launcher: the announcements, a `MISSING` row's reason,
+the whole >512-byte abort line, launchd's lines quoted, the refusal of a dirty bundle directory).
+
+### Reading foreign memory without killing the process being measured (xtrace)
+
+An instrument that reads the traced programme's memory cannot be allowed to fault: MEASURED, a descriptor's
+**address** was dereferenced on a formatting path and a traced arm died with SIGSEGV 3 s in (`RC=139`, core
+`/tmp/t4cores/core.2915140`) -- the instrument killed its own subject and the run was lost. A bound on the LENGTH
+cannot prevent that; the BASE can be stale. So `src/xtrace/safe_read.cpp` is the ONE reader:
+
+* it reads with a raw `process_vm_readv` (a syscall cannot raise) and never with a load; a raw `syscall` is also
+  invisible to the tracer's own hooks, so it cannot recurse;
+* an unmapped or partly-mapped range returns `XTRACE_READ_UNREADABLE` / a short count, and the caller prints
+  `unreadable: <reason>` -- a printed record, never silence and never a zero;
+* `print_mach_msg` also CLAMPS its descriptor walk to the message's own `msgh_size`, so a truncated message stops the
+  walk with `DECODE-STOPPED` instead of reading past the buffer;
+* the 32-bit image keeps its previous behaviour and says so: it does not read a descriptor's out-of-line content at
+  all, because the guard cannot be built there.
+
+Contract: `tests/run-xtrace-safe-read-contract.sh` compiles that reader on the host and holds it to real mappings,
+with a RED arm that dereferences the same address directly and must still die -- without that arm the contract would
+pass against a reader that refuses everything.
 
 ## darling-debug-runner: self-attributing run logs (`RUN-ENV` / `[dwdiag-env ...]`)
 

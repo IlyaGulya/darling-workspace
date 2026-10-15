@@ -735,6 +735,63 @@ struct StraceAttacher {
     handle: thread::JoinHandle<()>,
 }
 
+/// Refuse a strace capture BEFORE the workload runs, when a trace on this host cannot work.
+///
+/// MEASURED, twice in one session: `strace` was asked to attach to a guest process and failed with
+/// `ptrace(PTRACE_SEIZE, ...): Operation not permitted`, and a whole-run `strace -f` around the boot STALLED it --
+/// so each attempt cost a full run and produced nothing, and "strace says nothing" was then rediscovered by the
+/// next reader. Both are knowable before the run: `strace` must exist, and an attach to a process that is not a
+/// descendant of the tracer needs `ptrace_scope == 0` (or CAP_SYS_PTRACE). The check MEASURES the permission with a
+/// throwaway target instead of reading the policy file alone, because the policy cannot say whether `sudo -n` will
+/// actually hand this user root.
+fn strace_preflight() -> Result<()> {
+    let present = Command::new("strace")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !present {
+        bail!(
+            "--attach-strace was requested but `strace` is not runnable on PATH (install it, e.g. `apt install \
+             strace`, or drop --attach-strace). Refused before the workload runs, so the run is not spent on a \
+             capture that cannot be taken"
+        );
+    }
+    let scope = fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope")
+        .map(|v| v.trim().to_string())
+        .unwrap_or_default();
+    // A throwaway target that is OUR child but NOT strace's: the same relation a real attach has, so the probe
+    // measures the permission the capture will need.
+    let mut probe = Command::new("sleep")
+        .arg("3")
+        .spawn()
+        .context("cannot spawn the attach probe (`sleep 3`)")?;
+    let outcome = Command::new("sudo")
+        .args(["-n", "strace", "-f", "-e", "trace=write", "-p", &probe.id().to_string(), "-o", "/dev/null"])
+        .output();
+    let _ = probe.kill();
+    let _ = probe.wait();
+    match outcome {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => bail!(
+            "--attach-strace cannot work on this host and is refused BEFORE the workload runs. The permission probe \
+             (`sudo -n strace -f -p <probe>`) failed with status {}: {}\n  yama/ptrace_scope={} -- 1 or 2 means an \
+             attach to a process that is not a descendant of the tracer is EPERM unless the tracer holds \
+             CAP_SYS_PTRACE (root).\n  Fix one of: make `sudo -n` work for this user; `sysctl \
+             kernel.yama.ptrace_scope=0`; or start the target as a child of the traced command instead of attaching \
+             to it. A whole-run `strace -f` is the third trap: MEASURED, it stalls the boot, so it is not an \
+             alternative here.",
+            o.status,
+            String::from_utf8_lossy(&o.stderr).trim().replace('\n', " | "),
+            if scope.is_empty() { "unreadable".to_string() } else { scope }
+        ),
+        Err(error) => bail!(
+            "--attach-strace cannot even run its permission probe (`sudo -n strace ...`): {error}. Refused before the \
+             workload runs; make `sudo -n` work or drop --attach-strace"
+        ),
+    }
+}
+
 impl StraceAttacher {
     /// Poll for the earliest process matching `pattern` and attach `strace -f`
     /// to it, logging the configured syscalls to `bundle/rpctrace.log`.
@@ -774,12 +831,33 @@ impl StraceAttacher {
                             "-o",
                         ])
                         .arg(&log);
+                    // strace's OWN words go into the bundle: a refused attach (EPERM) prints there and exits at
+                    // once, and without this the only evidence is an empty rpctrace.log that reads like "the target
+                    // did nothing" -- the exact silent-void this tool exists to remove.
+                    let err_path = bundle.join("attach-strace.err");
+                    if let Ok(f) = File::create(&err_path) {
+                        command.stderr(f);
+                    }
                     match command.spawn() {
-                        Ok(handle) => {
+                        Ok(mut handle) => {
                             let _ = fs::write(
                                 &status,
                                 format!("attached target_pid={pid} strace_pid={}\n", handle.id()),
                             );
+                            // A refused attach exits almost immediately. Wait a moment, and if it is already gone,
+                            // replace the status file with the real answer instead of leaving "attached" standing.
+                            thread::sleep(Duration::from_millis(700));
+                            if let Ok(Some(exit)) = handle.try_wait() {
+                                let why = fs::read_to_string(&err_path).unwrap_or_default();
+                                let _ = fs::write(
+                                    &status,
+                                    format!(
+                                        "strace DIED immediately (status {exit}) for target_pid={pid}: {}\n",
+                                        why.trim().replace('\n', " | ")
+                                    ),
+                                );
+                                return;
+                            }
                             *child_t.lock().unwrap() = Some(handle);
                         }
                         Err(error) => {
@@ -879,6 +957,10 @@ fn run_experiment(
     }
     if args.capture_on_line.is_some() && args.stall_log.is_none() {
         println!("NOTE --capture-on-line watches the workload's stdout and stderr (no --stall-log named)");
+    }
+    // A trace that cannot be taken must be refused HERE, not after a run has been spent on it.
+    if args.attach_strace.is_some() {
+        strace_preflight()?;
     }
     println!("BUNDLE={}", bundle.display());
     let mut detector = StallDetector::from_args(args)?;

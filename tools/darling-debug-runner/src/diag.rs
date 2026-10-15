@@ -2830,18 +2830,30 @@ fn install_artifact_into_prefix(
 }
 
 fn runtime_fingerprint(prefix: &std::path::Path) -> String {
-    const CANDIDATES: [&str; 7] = [
-        "libexec/darling/usr/libexec/darling/mldr",
-        "usr/libexec/darling/mldr",
-        "libexec/darling/usr/lib/system/libsystem_kernel.dylib",
-        "usr/lib/system/libsystem_kernel.dylib",
-        "libexec/darling/usr/lib/dyld",
-        "usr/lib/dyld",
-        "libexec/darling/usr/bin/darlingserver",
-    ];
-    let mut parts: Vec<String> = Vec::new();
+    let parts = runtime_fingerprint_parts(prefix);
+    let joined = parts.iter().map(|(n, v)| format!("{n}={v}")).collect::<Vec<_>>().join(" ");
+    format!("prefix={} {}", prefix.display(), joined)
+}
+
+/// The DEPLOYED runtime copies the artifact identity line digests, in the order they are printed. The list lives
+/// HERE, once: a second list would answer "which build actually ran" about a different set of files, and the whole
+/// reason this line exists is that two prefixes (one stale) served two runs that were then compared.
+const RUNTIME_FINGERPRINT_CANDIDATES: [&str; 7] = [
+    "libexec/darling/usr/libexec/darling/mldr",
+    "usr/libexec/darling/mldr",
+    "libexec/darling/usr/lib/system/libsystem_kernel.dylib",
+    "usr/lib/system/libsystem_kernel.dylib",
+    "libexec/darling/usr/lib/dyld",
+    "usr/lib/dyld",
+    "libexec/darling/usr/bin/darlingserver",
+];
+
+/// `(name, first-12-hex-of-sha256)` per distinct deployed copy. A copy whose digest has already been printed is
+/// skipped, because the prefix installs several of these files twice and two rows with one digest say nothing.
+fn runtime_fingerprint_parts(prefix: &std::path::Path) -> Vec<(String, String)> {
+    let mut parts: Vec<(String, String)> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
-    for rel in CANDIDATES {
+    for rel in RUNTIME_FINGERPRINT_CANDIDATES {
         let p = prefix.join(rel);
         if !p.exists() {
             continue;
@@ -2863,9 +2875,9 @@ fn runtime_fingerprint(prefix: &std::path::Path) -> String {
             .and_then(|s| s.to_str())
             .unwrap_or("?")
             .to_string();
-        parts.push(format!("{name}={short}"));
+        parts.push((name, short));
     }
-    format!("prefix={} {}", prefix.display(), parts.join(" "))
+    parts
 }
 
 fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
@@ -5535,6 +5547,240 @@ fn resolve_in_core(maps: &[(u64, u64, u64, String)], addr: u64) -> Option<(u64, 
     None
 }
 
+/// Parse an address argument that may be hex (`0x…`, or bare hex) or decimal. A bare value with letters is hex
+/// (the addresses in a core are printed hex everywhere else in this tool), and `MappingsArgs::read` uses `:` as the
+/// separator so a bare hex length keeps working.
+fn parse_addr_arg(s: &str) -> Result<u64> {
+    let t = s.trim();
+    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        return u64::from_str_radix(hex, 16).with_context(|| format!("not a hex address: {s}"));
+    }
+    if let Ok(v) = t.parse::<u64>() {
+        return Ok(v);
+    }
+    u64::from_str_radix(t, 16).with_context(|| format!("not an address (decimal or hex): {s}"))
+}
+
+/// `ADDR:LEN` for `--read`. The separator is explicit so a bare hex address (which may contain letters that are also
+/// not digits) is unambiguous, and a missing separator is refused rather than guessed.
+fn parse_read_arg(s: &str) -> Result<(u64, usize)> {
+    let (a, l) = s
+        .split_once(':')
+        .with_context(|| format!("--read wants ADDR:LEN (hex addresses, length in bytes), got {s:?}"))?;
+    let addr = parse_addr_arg(a)?;
+    let len: usize = l
+        .trim()
+        .parse()
+        .with_context(|| format!("--read length is not a byte count: {l:?}"))?;
+    Ok((addr, len))
+}
+
+/// Print a CORE's OWN mapping table. See the `Mappings` variant for the measured reason this is a command.
+fn run_mappings(args: MappingsArgs) -> Result<ExitCode> {
+    let path = match args.core.clone() {
+        Some(p) => p,
+        None => newest_core(&args.dir, "core").with_context(|| {
+            format!(
+                "no --core given and no core.* under {}: cores are OFF unless the crashing process had \
+                 `ulimit -c unlimited` AND core_pattern names a FILE (a leading `|` pipes them to a handler and keeps \
+                 nothing) -- `dwdiag cores status` reports both",
+                args.dir.display()
+            )
+        })?,
+    };
+    let prefix = resolve_prefix(args.prefix.clone(), None);
+    let mut c = CoreFile::open(&path)?;
+    let size = c.size;
+    let maps_count = c.maps.len();
+    let scale = c.scale;
+    let file_page = c.file_page;
+    let (bytes_inside, pages_inside) = c.inside;
+    let scale_word = match scale {
+        MapScale::Pages => "pages",
+        MapScale::Bytes => "bytes",
+    };
+    let unit_word = if file_page == 1 {
+        "bytes (the note declares page_size=1)"
+    } else {
+        "the note's declared page size"
+    };
+    let owner = match args.addr.as_deref() {
+        Some(raw) => {
+            let addr = parse_addr_arg(raw)?;
+            Some((addr, resolve_in_core(&c.maps, addr)))
+        }
+        None => None,
+    };
+    let read = match args.read.as_deref() {
+        Some(raw) => {
+            let (addr, len) = parse_read_arg(raw)?;
+            let bytes = c.read_mem(addr, len);
+            Some((addr, len, bytes))
+        }
+        None => None,
+    };
+    if maps_count == 0 {
+        // An EMPTY table is stated, not printed as zero rows: a core with no NT_FILE and a core whose table was
+        // parsed wrongly must not look the same, and only the first is what this says.
+        let line = format!(
+            "MAPPINGS-EMPTY core={} size={size} source=NT_FILE: this core carries no NT_FILE note, so no mapping \
+             table can be printed (the note is what lists the process's VMAs; a dump that predates the process's \
+             mappings has none)",
+            path.display()
+        );
+        crate::say(&line);
+        return Ok(ExitCode::SUCCESS);
+    }
+    if args.json {
+        let rows: Vec<String> = c
+            .maps
+            .iter()
+            .map(|(start, end, off, name)| {
+                let host = guest_path_to_host(name, prefix.as_deref());
+                json_object(vec![
+                    ("start", format!("\"{start:#x}\"")),
+                    ("end", format!("\"{end:#x}\"")),
+                    ("file_offset", format!("\"{off:#x}\"")),
+                    ("name", jstr(name)),
+                    (
+                        "host",
+                        host.as_ref().map(|h| jstr(&h.display().to_string())).unwrap_or_else(|| "null".into()),
+                    ),
+                    (
+                        "host_exists",
+                        host.as_ref().map(|h| h.exists().to_string()).unwrap_or_else(|| "null".into()),
+                    ),
+                ])
+            })
+            .collect();
+        let owner_obj = match &owner {
+            Some((addr, Some((base, off, name)))) => json_object(vec![
+                ("addr", format!("\"{addr:#x}\"")),
+                ("base", format!("\"{base:#x}\"")),
+                ("file_offset", format!("\"{off:#x}\"")),
+                ("name", jstr(name)),
+            ]),
+            Some((addr, None)) => json_object(vec![
+                ("addr", format!("\"{addr:#x}\"")),
+                ("name", "null".to_string()),
+                ("reason", jstr("the address is in no mapping this core's NT_FILE lists")),
+            ]),
+            None => "null".to_string(),
+        };
+        let read_obj = match &read {
+            Some((addr, len, Ok(bytes))) => json_object(vec![
+                ("addr", format!("\"{addr:#x}\"")),
+                ("len", len.to_string()),
+                ("bytes", jstr(&hex_bytes(bytes))),
+            ]),
+            Some((addr, len, Err(why))) => json_object(vec![
+                ("addr", format!("\"{addr:#x}\"")),
+                ("len", len.to_string()),
+                ("bytes", "null".to_string()),
+                ("reason", jstr(why)),
+            ]),
+            None => "null".to_string(),
+        };
+        let doc = json_object(vec![
+            ("core", jstr(&path.display().to_string())),
+            ("size", size.to_string()),
+            ("source", jstr("NT_FILE")),
+            ("count", maps_count.to_string()),
+            ("range_scale", jstr(scale_word)),
+            ("file_offset_unit", jstr(unit_word)),
+            ("inside_as_bytes", bytes_inside.to_string()),
+            ("inside_as_pages", pages_inside.to_string()),
+            ("rows", format!("[{}]", rows.join(","))),
+            ("owner", owner_obj),
+            ("read", read_obj),
+        ]);
+        crate::say(&doc);
+        return Ok(ExitCode::SUCCESS);
+    }
+    crate::say(&format!("MAPPINGS core={} size={size}", path.display()));
+    crate::say(&format!(
+        "MAPPINGS-COUNT source=NT_FILE count={maps_count} range-scale={scale_word} (decided from this core: \
+         {bytes_inside} of {maps_count} entries fall inside a PT_LOAD as bytes, {pages_inside} as pages) \
+         file-offset-unit={unit_word}"
+    ));
+    for (start, end, off, name) in &c.maps {
+        let host = guest_path_to_host(name, prefix.as_deref());
+        let mut line = format!("MAPPINGS-ROW start={start:#x} end={end:#x} file_off={off:#x} name={name}");
+        if let Some(h) = host.as_ref() {
+            let here = h.display().to_string();
+            if &here != name {
+                line.push_str(&format!(" host={here}"));
+                if !h.exists() {
+                    line.push_str(" host-absent=1");
+                }
+            }
+        }
+        crate::say(&line);
+    }
+    if let Some((addr, found)) = &owner {
+        match found {
+            Some((base, off, name)) => crate::say(&format!(
+                "MAPPINGS-OWNER addr={addr:#x} base={base:#x} file_off={off:#x} name={name}"
+            )),
+            None => crate::say(&format!(
+                "MAPPINGS-OWNER addr={addr:#x} none: the address is in no mapping this core's NT_FILE lists"
+            )),
+        }
+    }
+    if let Some((addr, len, bytes)) = &read {
+        match bytes {
+            Ok(b) => crate::say(&format!("MAPPINGS-READ addr={addr:#x} len={len} bytes={}", hex_bytes(b))),
+            Err(why) => crate::say(&format!("MAPPINGS-READ addr={addr:#x} len={len} unavailable: {why}")),
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Print the run's artifact identity line. The candidate table lives in `runtime_fingerprint_parts` so this and
+/// `verdict`'s line can never describe different sets of files.
+fn run_env(args: EnvArgs) -> Result<ExitCode> {
+    let prefix = args.prefix.clone().or_else(|| {
+        for key in ["DWDIAG_PREFIX", "DPREFIX"] {
+            if let Ok(v) = std::env::var(key) {
+                if !v.is_empty() {
+                    return Some(PathBuf::from(v));
+                }
+            }
+        }
+        None
+    });
+    let prefix = prefix.with_context(|| {
+        "no prefix: pass --prefix, or set DWDIAG_PREFIX/DPREFIX. This digest is of DEPLOYED files, so a build tree \
+         cannot answer it"
+    })?;
+    if !prefix.is_dir() {
+        bail!("{} is not a directory, so no deployed copy can be digested", prefix.display());
+    }
+    let parts = runtime_fingerprint_parts(&prefix);
+    if args.json {
+        let pairs: Vec<(&str, String)> = parts
+            .iter()
+            .map(|(n, v)| (n.as_str(), jstr(v)))
+            .collect();
+        let mut pairs = pairs;
+        pairs.push(("prefix", jstr(&prefix.display().to_string())));
+        crate::say(&json_object(pairs));
+        return Ok(ExitCode::SUCCESS);
+    }
+    crate::say(&format!("RUN-ENV {}", runtime_fingerprint(&prefix)));
+    if parts.is_empty() {
+        // The line is printed either way; the emptiness is stated so "no digests" cannot read as "identical build".
+        eprintln!(
+            "RUN-ENV-EMPTY prefix={} : none of the {} runtime candidate paths exists under this prefix, so this line \
+             identifies no build -- the prefix has no runtime installed",
+            prefix.display(),
+            RUNTIME_FINGERPRINT_CANDIDATES.len()
+        );
+        return Ok(ExitCode::from(1));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Read a CORE, because it is the one artifact that still has the faulting thread in it.
 ///
 /// MEASURED why this exists next to `trap`. A guest's `ud2` is a NATIVE instruction: the code runs on the host CPU,
@@ -7792,6 +8038,8 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
         DiagCommand::Unwind(a) => run_unwind(a),
         DiagCommand::Trap(a) => run_trap(a),
         DiagCommand::Loops(a) => run_loops(a),
+        DiagCommand::Mappings(a) => run_mappings(a),
+        DiagCommand::Env(a) => run_env(a),
         DiagCommand::Core(a) => run_core(a),
         DiagCommand::Identity(a) => run_identity(a),
         DiagCommand::Cores(a) => run_cores(a),
@@ -8223,12 +8471,65 @@ pub enum DiagCommand {
     /// never whether it is still doing anything. The real signature -- `pc-entry -> pc-postplane st=#- ->
     /// pc-return-9+` repeating for pages with nothing new between -- had to be found by eye.
     Loops(LoopsArgs),
+    /// Print a core's OWN mapping table (NT_FILE), one row per mapping, plus optionally the mapping that owns an
+    /// address and the bytes the core carries there.
+    ///
+    /// MEASURED why this is a command and not a throwaway script: the host's `readelf -n` REFUSES this core's 64-bit
+    /// note ("Cannot decode 64-bit note in 32-bit build"), and reading the mapping list (or the bytes of a mapping)
+    /// by hand was written from scratch three times -- twice with the page/byte unit of the note's file offsets
+    /// wrong. The reader below is the one `core`/`identity`/`unwind` already use; this command is its standalone
+    /// face, so the mapping table can be read without naming a faulting function first.
+    Mappings(MappingsArgs),
+    /// Print the run's artifact identity line (`RUN-ENV prefix=... mldr=... libsystem_kernel.dylib=... dyld=...`):
+    /// the sha256 of every DEPLOYED runtime copy, which is what answers "which build actually ran".
+    ///
+    /// MEASURED why it is a command: `verdict`/`cycle` print that line for a run they started, so a run started any
+    /// other way (the boot harness, a hand-invoked launcher) carried no identity at all, and two runs served by
+    /// different copies were compared as if they were the same build. The table of candidate paths lives here, once,
+    /// so a caller cannot invent a second list.
+    Env(EnvArgs),
 }
 
 // A tiny helper used by the table so a caller can see the set in a stable order under --json too.
 #[allow(dead_code)]
 fn btree_from(pairs: Vec<(String, String)>) -> BTreeMap<String, String> {
     pairs.into_iter().collect()
+}
+
+#[derive(clap::Args, Debug)]
+pub struct MappingsArgs {
+    /// The core file to read. Without it, the newest `core.*` under --dir is used.
+    #[arg(long)]
+    core: Option<PathBuf>,
+    /// Directory holding cores when --core is not given.
+    #[arg(long, default_value = "/tmp/t4cores")]
+    dir: PathBuf,
+    /// Prefix whose guest paths are de-virtualized so a row also names the file on THIS host. Without it the rows
+    /// carry the path as the core records it, which is the /private/... path the guest used.
+    #[arg(long)]
+    prefix: Option<PathBuf>,
+    /// Also report the ONE mapping that owns this address (hex with or without `0x`, or decimal) and the file offset
+    /// inside it. An address in no mapping is reported as such, never as offset 0.
+    #[arg(long, value_name = "ADDR")]
+    addr: Option<String>,
+    /// Also print the bytes the core carries at ADDR:LEN (hex addresses, length in bytes), read through the core's
+    /// OWN PT_LOAD segments. This is the arithmetic a throwaway parser did by hand, and it refuses -- with the reason
+    /// -- when the dump does not cover the range instead of printing zeros.
+    #[arg(long, value_name = "ADDR:LEN")]
+    read: Option<String>,
+    /// One compact JSON line instead of the human rows.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct EnvArgs {
+    /// Prefix whose deployed runtime copies are digested. Defaults to DWDIAG_PREFIX, then DPREFIX.
+    #[arg(long)]
+    prefix: Option<PathBuf>,
+    /// One compact JSON line instead of the RUN-ENV line.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -8832,6 +9133,61 @@ mod core_map_tests {
         assert_eq!(guest_path_to_host("/Volumes/SystemRoot/tmp", None),
             Some(PathBuf::from("/tmp")));
         assert!(guest_path_to_host("/nonexistent/darling/path/xyz", None).is_none());
+    }
+}
+
+#[cfg(test)]
+mod mappings_cmd_tests {
+    use super::*;
+
+    // The address argument is typed by a human reading a hex dump, so both spellings must land on the same value,
+    // and junk must be REFUSED rather than silently read as 0 -- 0 is a real address in a core, so a parse that
+    // defaults to zero answers about the wrong mapping.
+    #[test]
+    fn an_address_argument_accepts_both_spellings_and_refuses_junk() {
+        assert_eq!(parse_addr_arg("0x7dc012b27000").unwrap(), 0x7dc012b27000);
+        assert_eq!(parse_addr_arg("7dc012b27000").unwrap(), 0x7dc012b27000);
+        assert_eq!(parse_addr_arg("4096").unwrap(), 4096);
+        assert!(parse_addr_arg("0xzz").is_err());
+        assert!(parse_addr_arg("not-an-address").is_err());
+    }
+
+    // A `--read` argument is the arithmetic the throwaway parser did by hand: an address and a length, with a
+    // missing separator or a non-numeric length REFUSED rather than read as zero -- zero bytes of the wrong range
+    // is exactly the silent wrong answer this replaces.
+    #[test]
+    fn a_read_argument_needs_both_halves_and_a_numeric_length() {
+        assert_eq!(parse_read_arg("0x5ee28f52c000:16").unwrap(), (0x5ee28f52c000, 16));
+        assert_eq!(parse_read_arg("4096:4").unwrap(), (4096, 4));
+        assert!(parse_read_arg("0x5ee28f52c000").is_err());
+        assert!(parse_read_arg("0x5ee28f52c000:0x10").is_err());
+        assert!(parse_read_arg("nope:4").is_err());
+    }
+}
+
+#[cfg(test)]
+mod runtime_fingerprint_tests {
+    use super::*;
+
+    // The identity line is the answer to "which build actually ran", so it must digest the DEPLOYED copy and it
+    // must be empty (stating a reason) when there is nothing deployed -- an empty list can never read as "the same
+    // build as the other run".
+    #[test]
+    fn the_fingerprint_names_a_deployed_copy_and_is_empty_without_one() {
+        let root = std::env::temp_dir().join(format!("dwdiag-env-{}-{}", std::process::id(), line!()));
+        let deployed = root.join("usr/libexec/darling");
+        fs::create_dir_all(&deployed).unwrap();
+        fs::write(deployed.join("mldr"), b"not-really-a-loader\n").unwrap();
+        let parts = runtime_fingerprint_parts(&root);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].0, "mldr");
+        assert_eq!(parts[0].1.len(), 12);
+        assert!(runtime_fingerprint(&root).starts_with(&format!("prefix={} mldr=", root.display())));
+        let empty = std::env::temp_dir().join(format!("dwdiag-envempty-{}", std::process::id()));
+        fs::create_dir_all(&empty).unwrap();
+        assert!(runtime_fingerprint_parts(&empty).is_empty());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&empty);
     }
 }
 

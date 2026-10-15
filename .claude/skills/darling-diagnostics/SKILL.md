@@ -26,7 +26,9 @@ Canonical sources live in the selected manifest repository:
 
 | tool | question it answers |
 |---|---|
-| `scripts/darling-boot-run.sh` | one measured run: clean start, unique log, the workload's own duration, the workload's own status plus markers and counters, cleanup, one `VERDICT` line (a declaration that names a value -- `--status-marker FIELD=`, or a `--marker`/`--poll` ending in `=` -- passes only on the integer 0) |
+| `scripts/darling-boot-run.sh` | one measured run: clean start, unique log, the workload's own duration, the workload's own status plus markers and counters, cleanup, one `VERDICT` line (a declaration that names a value -- `--status-marker FIELD=` , or a `--marker`/`--poll` ending in `=` -- passes only on the integer 0). **It also writes the RUN BUNDLE** (below) and announces it on stdout, so the standalone-rules above are satisfied by the run itself |
+| `scripts/dwdiag mappings` | a core's OWN mapping table (NT_FILE): every mapping with its file offset, the mapping that owns an address, and the bytes the core carries at `ADDR:LEN`. `readelf -n` REFUSES this note on this host, and this was read by a throwaway script three times (twice with the wrong page/byte unit) before it became a command |
+| `scripts/dwdiag env` | the deployed-copy digest (`RUN-ENV prefix=... mldr=<12hex> ...`) on its own, so a run started outside `verdict` can still say which build actually ran. One candidate table, in the tool |
 | `scripts/darling-deploy-verify.sh` | are ALL runtime copies of a component the file I just built (sha256 per copy) |
 | `scripts/darling-artifact-manifest.sh` | did any artifact change since a recorded baseline (works without git history), and does a probe tag exist in the deployed copies |
 | `scripts/darling-describe-artifact.sh` | where a Mach-O starts (`LC_MAIN`), where a symbol is, whether a probe tag is in the artifact and at which file offsets, and whether the loaded copy is the built one |
@@ -44,6 +46,43 @@ Canonical sources live in the selected manifest repository:
 
 ## Rules the tools enforce, each from a measured failure
 
+* **A run writes ONE self-describing BUNDLE, and announces it.** `scripts/darling-boot-run.sh` collects, per run, in
+  `<log>.bundle`: both logs (the harness's own, and the prefix server's pre AND post -- `private/var/log/dserver.log`
+  is append-only ACROSS runs, so only the delta is this run's), every guest capture WITH ITS PATH PRINTED (the xtrace
+  naming `<arm-out-prefix>.trace.<pid>` / `.traceg.<pid>`, plus the workload's own redirected `*.out`), the child's
+  environment and descriptor table read from the HOST while it was alive, any core written during the run, the
+  abort/terminate text lifted WHOLE from wherever it landed, the plane/ledger counters, the deployed sha256 of every
+  runtime copy (`BUNDLE-RUN-ENV`, from `dwdiag env`), launchd's own `Mach service lookup` lines, and the census that
+  NAMES the instruments that stayed silent. Every item is a `MANIFEST` row: **PRESENT <path> or MISSING <reason>**.
+  Read the console block (`BUNDLE dir=`, `BUNDLE-ITEM`, `BUNDLE-MISSING`, `BUNDLE-COUNT`, `BUNDLE-WITNESS`,
+  `BUNDLE-COUNTERS`) instead of guessing where a word could be, and never present a partial bundle as complete --
+  `INCOMPLETE` next to the manifest means the harness did not reach the end of the run. MEASURED why: the answer to
+  the rung's question was in a DIFFERENT process's log than the one under test (launchd's, and the server's), and two
+  of those logs were collected by nothing and announced nowhere.
+
+* **The useful answer may be in ANOTHER process's log.** launchd's debug log
+  (`<prefix>/private/var/log/com.apple.launchd/launchd-debug*.log`) records every Mach-service look-up WITH the
+  asking process -- a resolved `Mach service lookup: X` and a landscape of `Mach service lookup failed: Y`. It is in
+  the bundle and quoted in the console block for exactly that reason: "which service did the workload resolve" was
+  answered from there, not from the workload's own output.
+
+* **Nothing is truncated at a small constant; the bound is the record's own declared length.** A 512-byte cap cut
+  the very buffer a `libc++abi: terminating ...` message was in, so the record that mattered arrived in half and read
+  like a different one. In xtrace the bound is now the payload's own `msgh_size`/`syscall length` (or
+  `XTRACE_MAX_PAYLOAD_BYTES`, default 64 KiB), and a cut is PRINTED
+  (`...[truncated: printed the first N of M declared byte(s)]`). Same rule in the bundle: abort lines are copied
+  whole and the longest one's length is reported.
+
+* **An instrument must not be able to kill the thing it measures.** MEASURED: dereferencing a descriptor's ADDRESS on
+  a formatting path segfaulted a traced arm 3 s in (arm `RC=139`, core `/tmp/t4cores/core.2915140`) and the run was
+  lost. A bound on the LENGTH cannot prevent that -- the BASE can be stale. So every read of the traced programme's
+  memory goes through `src/xtrace/safe_read.cpp`: a raw `process_vm_readv` (a syscall cannot raise, and a raw
+  `syscall` is not routed through the tracer's own hooks), a short or unmapped read reported as
+  `unreadable: <reason>`, and the Mach descriptor walk CLAMPED to `msgh_size` with `DECODE-STOPPED` when a message is
+  merely truncated. `tests/run-xtrace-safe-read-contract.sh` holds that reader to real mappings and has a RED arm
+  (the same address, dereferenced directly, must still die) -- without it the contract would pass against a reader
+  that refuses everything. The 32-bit image does not read out-of-line content at all, because the guard cannot be
+  built there.
 * **A guest's illegal instruction is NATIVE, so no syscall-level tool can see it.** Darling does not interpret the
   guest's instructions: they run on the host CPU, and only the BOUNDARIES (syscall entry/exit, mappings, thread
   creation, signals) pass through our code. That is why `ud2` produced a silent `dmesg`, a silent fault witness and

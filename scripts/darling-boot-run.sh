@@ -16,7 +16,18 @@
 #   3. the workload's real duration: the caller states how long the workload needs, and the harness waits it;
 #   4. a single VERDICT block at the end: the workload's own STATUS, the presence markers the caller asked for,
 #      plus the counters that matter here (per-thread RPC socket creations, denials, urgent timeouts, courier misses);
-#   5. cleanup afterwards, and a non-zero exit if the prefix is not clean.
+#   5. a RUN BUNDLE, ON BY DEFAULT, with a console block that announces it.
+#
+# THE RUN BUNDLE (`--bundle DIR`, `--no-bundle`). One self-describing directory per run, `<log>.bundle` by default.
+# It holds, and NAMES on stdout: both logs (the harness's own and the prefix server's, pre and post -- the server's
+# stderr never appears in the run log), every guest-process capture found under the prefix with its path PRINTED
+# (the xtrace naming `<arm-out-prefix>.trace.<pid>`/`.traceg.<pid>` is announced nowhere else), the child's
+# environment and descriptor table read from the HOST while it was alive (a guest cannot read its own /proc), any
+# core written during the run, the abort/terminate text lifted WHOLE from wherever it landed, the plane/ledger
+# counters, the deployed sha256 of every runtime copy (the RUN-ENV line), and the instrument census that NAMES every
+# instrument that stayed silent. Every item is a row of the bundle's MANIFEST: PRESENT <path> or MISSING <reason>,
+# so a piece the harness could not collect is reported rather than silently absent, and `INCOMPLETE` in the bundle
+# marks one that did not finish. It is produced before teardown and on the freeze-on-fail path too.
 #
 # THE VERDICT RULE -- WHICH DECLARATION ASSERTS SUCCESS. A declaration that names a STRING asserts presence
 # only: an absent one is FAIL/HANG and never PASS. A declaration that names a VALUE is a STATUS field, and a
@@ -30,7 +41,7 @@
 # always had, and the harness's own default --poll is never a status declaration.
 #
 # Usage:
-#   darling-boot-run.sh --prefix PATH --wait SECONDS [--marker NAME]... [--status-marker FIELD=] [--poll REGEX] [--hatch] [--cmd 'shell command']
+#   darling-boot-run.sh --prefix PATH --wait SECONDS [--marker NAME]... [--status-marker FIELD=] [--poll REGEX] [--hatch] [--cmd 'shell command'] [--bundle DIR|--no-bundle]
 # Exit: 0 only if every declared status field was the integer 0 and every presence marker appeared, 1 otherwise (or if cleanup failed).
 
 set -u
@@ -51,6 +62,26 @@ POLL=""
 POLL_EXPLICIT=0
 # `--status-marker FIELD=` declarations: the workload's own status values, judged as integers (verdict block).
 STATUS_MARKERS=""
+# THE RUN BUNDLE. ON BY DEFAULT: every run writes ONE self-describing bundle beside its log, and the run output
+# announces the bundle path, every capture path and the instrument census. MEASURED why: this harness was already
+# the only path with a clean start, a unique log and a verdict, yet a diagnosis of a run it produced still had to
+# guess where the guest's xtrace captures went (they are `<arm-out-prefix>.trace.<pid>`/`.traceg.<pid>` under the
+# prefix, named nowhere in the output), that the server's own log is a SECOND log at
+# `<prefix>/private/var/log/dserver.log`, that the child's environment and descriptors can only be read from the
+# HOST while the child is alive, and which instruments never spoke. Each of those cost a rung. `--no-bundle`
+# turns it off; `--bundle DIR` puts it somewhere else.
+BUNDLE=1
+BUNDLE_DIR=""
+BUNDLE_MANIFEST=""
+BUNDLE_CHILD_DIR=""
+BUNDLE_CAPTURE_DIR=""
+BUNDLE_CORES_DIR=""
+BUNDLE_STAMP=""
+BUNDLE_SERVER_LOG=""
+BUNDLE_SERVER_PRE=""
+BUNDLE_RUN_ENV=""
+BUNDLE_CORE_PATTERN=""
+BUNDLE_CORE_DIR=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -79,6 +110,10 @@ while [ $# -gt 0 ]; do
 		--freeze-on-fail) FREEZE_ON_FAIL=1; shift ;;
 		--list-owned) LIST_OWNED=1; shift ;;
 		--assert-prefix-maps) ASSERT_MAPS=1; shift ;;
+		# The run bundle: on by default (a diagnosis must not depend on knowing where to look). `--bundle DIR`
+		# chooses the directory, `--no-bundle` suppresses it.
+		--bundle) BUNDLE_DIR="$2"; shift 2 ;;
+		--no-bundle) BUNDLE=0; shift ;;
 		--verify-probe) VERIFY_PROBES="$VERIFY_PROBES
 $2"; shift 2 ;;
 		--log) LOG="$2"; shift 2 ;;
@@ -157,7 +192,9 @@ own_ancestors() {
 # Teardown witness: every destructive decision names ITSELF and the EVIDENCE it acted on, on stderr so the pid lists on
 # stdout stay parseable. A caller that dies during teardown (MEASURED: exit 143 = SIGTERM at wait+6 s) cannot be diagnosed
 # from a process count: the arm that matched, the ancestry verdict and the command text are the diagnosis.
-witness() { echo "$@" >&2; }
+# `WITNESS_QUIET=1` suppresses it for the enumeration the bundle runs ONCE PER POLL during the workload: the same
+# evidence printed hundreds of times is not more evidence, and it would bury the console the bundle announces on.
+witness() { [ "${WITNESS_QUIET:-0}" = 1 ] || echo "$@" >&2; }
 # The harness records its OWN death too: MEASURED, a group-directed SIGTERM killed the harness and the tool that spawned
 # it at the same instant, so neither of them reached the teardown witness and the run simply stopped. A trap turns
 # "it stopped" into "sig=15 arrived at this point in the script".
@@ -270,6 +307,419 @@ clear_stale_runtime_files() {
 	return 0
 }
 
+# ---------------------------------------------------------------------------------------------------------------------
+# THE RUN BUNDLE: one self-describing directory per run.
+#
+# REQUIREMENT, measured: a diagnosis must not depend on an agent happening to know where to look. The whole reason
+# this harness exists is that "run once, read one log" was wrong in four separate ways, so the harness now also
+# COLLECTS, per run, in one place: both logs (the harness's own and the prefix server's, pre and post), every
+# guest-process capture with its path PRINTED, the child's environment and descriptor table read from the HOST, any
+# core written during the run, the abort/terminate text wherever it landed, the plane/ledger counters, the deployed
+# sha256 of every runtime artifact, and a census that NAMES the instruments that stayed silent.
+#
+# The rules it obeys:
+#   * every item is a ROW of `MANIFEST`, with PRESENT <path> or MISSING <reason> -- a missing piece is never
+#     silently absent, and a row that is not there at all is itself the defect;
+#   * nothing is truncated at a small constant: an abort line is copied WHOLE and its length is reported, so the
+#     bound is the record's own (the 512-byte cap that cut the very buffer the abort message was in is exactly the
+#     failure this replaces);
+#   * a bundle that did not finish says so: `INCOMPLETE` exists from the moment the directory is created and is
+#     removed only after the manifest is complete;
+#   * no extra flags are needed: this is the normal path.
+# ---------------------------------------------------------------------------------------------------------------------
+BUNDLE_MANIFEST_ROW() { # ITEM STATE PATH DETAIL
+	printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$BUNDLE_MANIFEST"
+}
+
+bundle_present() { # FILE-ITEM SRC [NOTE]
+	BUNDLE_MANIFEST_ROW "$1" PRESENT "$2" "$3"
+}
+
+bundle_missing() { # ITEM REASON
+	BUNDLE_MANIFEST_ROW "$1" MISSING "-" "$2"
+}
+
+# A one-line summary of a file's own size, so a reader sees the truncation bound being the record's own length.
+bundle_bytes() { wc -c < "$1" 2>/dev/null | tr -d ' '; }
+
+bundle_begin() {
+	[ "$BUNDLE" = 1 ] || return 0
+	[ -n "$BUNDLE_DIR" ] || BUNDLE_DIR="$LOG.bundle"
+	case "$BUNDLE_DIR" in /*) ;; *) BUNDLE_DIR="$PWD/$BUNDLE_DIR" ;; esac
+	if [ -e "$BUNDLE_DIR" ]; then
+		if [ -n "$(ls -A "$BUNDLE_DIR" 2>/dev/null)" ]; then
+			echo "refusing --bundle $BUNDLE_DIR: it is not empty, and a bundle that holds another run's files reads as this run's evidence" >&2
+			exit 2
+		fi
+	else
+		mkdir -p "$BUNDLE_DIR" || { echo "cannot create bundle $BUNDLE_DIR" >&2; exit 2; }
+	fi
+	BUNDLE_MANIFEST="$BUNDLE_DIR/MANIFEST"
+	BUNDLE_CHILD_DIR="$BUNDLE_DIR/children"
+	BUNDLE_CAPTURE_DIR="$BUNDLE_DIR/captures"
+	BUNDLE_CORES_DIR="$BUNDLE_DIR/cores"
+	mkdir -p "$BUNDLE_CHILD_DIR" "$BUNDLE_CAPTURE_DIR" "$BUNDLE_CORES_DIR"
+	# From here to the end of the manifest there IS no complete bundle: say so, and remove it only at the end.
+	: > "$BUNDLE_DIR/INCOMPLETE"
+	# Only files NEWER than this stamp are this run's: the prefix's guest tmp keeps earlier runs' captures, and a
+	# copy that is not this run's is worse than no copy.
+	BUNDLE_STAMP="$BUNDLE_DIR/run-start.stamp"
+	touch "$BUNDLE_STAMP"
+	{
+		echo "# darling run bundle"
+		echo "# log=$LOG prefix=$PREFIX wait=$WAIT"
+		echo "# cmd=$CMD"
+		echo "# rows are: ITEM <TAB> PRESENT|MISSING <TAB> PATH <TAB> DETAIL"
+		echo "# MISSING means the collector could not obtain it; the detail says why. INCOMPLETE next to this file means"
+		echo "# the harness did not reach the end of the run, so the bundle is a partial one."
+	} > "$BUNDLE_MANIFEST"
+	echo "BUNDLE dir=$BUNDLE_DIR"
+	bundle_present run-log "$LOG" "the harness's own log: the guest's and the loader's fd 1/2 for this run"
+	# THE SERVER'S LOG IS A SECOND LOG. MEASURED: its stderr never appears in the run log (it goes to
+	# <prefix>/private/var/log/dserver.log), so a run that "said nothing" about the plane was read as a silent plane
+	# while the server's own log carried 52 doorbell records. It is copied on BOTH sides of the run, because it is
+	# append-only ACROSS runs: only the delta between the two copies is this run's.
+	BUNDLE_SERVER_LOG="$PREFIX/private/var/log/dserver.log"
+	if [ -r "$BUNDLE_SERVER_LOG" ]; then
+		BUNDLE_SERVER_PRE="$BUNDLE_DIR/server.pre.log"
+		cp -f "$BUNDLE_SERVER_LOG" "$BUNDLE_SERVER_PRE"
+		bundle_present server-log-pre "$BUNDLE_SERVER_PRE" "copy of $BUNDLE_SERVER_LOG before the boot ($(bundle_bytes "$BUNDLE_SERVER_PRE") bytes; append-only across runs, so only the post-minus-pre delta is this run's)"
+	else
+		BUNDLE_SERVER_PRE=""
+		bundle_missing server-log-pre "no readable server log at $BUNDLE_SERVER_LOG: the prefix has not booted yet (or logs elsewhere), so no server-side rows can be attributed to this run"
+	fi
+	# THE DEPLOYED ARTIFACT IDENTITY. `dwdiag` owns the candidate table (one list, no second convention), and the
+	# line is what answers "which build actually ran" -- two runs served by different copies were compared as if they
+	# were the same build twice.
+	BUNDLE_RUN_ENV=""
+	if [ -x "$SCRIPT_DIR/dwdiag" ]; then
+		"$SCRIPT_DIR/dwdiag" env --prefix "$PREFIX" > "$BUNDLE_DIR/run-env.raw" 2>"$BUNDLE_DIR/run-env.err"
+		env_rc=$?
+		if [ "$env_rc" -eq 0 ] && [ -s "$BUNDLE_DIR/run-env.raw" ]; then
+			BUNDLE_RUN_ENV=$(cat "$BUNDLE_DIR/run-env.raw")
+			cp -f "$BUNDLE_DIR/run-env.raw" "$BUNDLE_DIR/run-env.txt"
+			bundle_present run-env "$BUNDLE_DIR/run-env.txt" "$BUNDLE_RUN_ENV"
+		else
+			rm -f "$BUNDLE_DIR/run-env.raw"
+			bundle_missing run-env "dwdiag env --prefix $PREFIX exited $env_rc, so no deployed copy under this prefix could be digested (see $BUNDLE_DIR/run-env.err). The digest is of DEPLOYED files: without it nothing in this bundle names the build that ran"
+		fi
+	else
+		bundle_missing run-env "no executable $SCRIPT_DIR/dwdiag: the deployed-copy digest cannot be taken (and the instrument census below will be missing too)"
+	fi
+	# WHAT CRASH CAPTURE WOULD DO, stated before the run: cores are OFF here by default, so a crash normally leaves
+	# no core -- and "no core" must never look like "the fault left no evidence".
+	BUNDLE_CORE_PATTERN=$(cat /proc/sys/kernel/core_pattern 2>/dev/null)
+	echo "${BUNDLE_CORE_PATTERN:-<unreadable>}" > "$BUNDLE_DIR/core-pattern.txt"
+	BUNDLE_CORE_DIR=""
+	case "$BUNDLE_CORE_PATTERN" in
+	"") ;;
+	"|"*) bundle_missing core-capture-allowed "core_pattern pipes cores to a handler ('$BUNDLE_CORE_PATTERN'): NO core file is kept for any process, so a crash this run leaves nothing to read. Fix: dwdiag cores on --dir <dir>" ;;
+	*)
+		BUNDLE_CORE_DIR=$(dirname "$BUNDLE_CORE_PATTERN")
+		if [ ! -d "$BUNDLE_CORE_DIR" ]; then
+			bundle_missing core-capture-allowed "core_pattern is '$BUNDLE_CORE_PATTERN' but its directory $BUNDLE_CORE_DIR does not exist, so a core cannot be written"
+		fi
+		;;
+	esac
+	# A baseline of the cores that already exist, so the post-run scan reports only THIS run's.
+	if [ -n "$BUNDLE_CORE_DIR" ] && [ -d "$BUNDLE_CORE_DIR" ]; then
+		ls -1 "$BUNDLE_CORE_DIR" 2>/dev/null > "$BUNDLE_DIR/cores.baseline"
+	fi
+	# The child's environment and descriptor table exist only while the child is alive, and ONLY the HOST can read
+	# them: inside the guest, /proc/<child>/fd and /proc/<child>/environ return nothing (the guest's /proc is a view
+	# of the guest's own address space). So they are sampled during the run by `bundle_watch_children`, and the row
+	# describing the result is written at the END (a row here would be a claim about a run that has not happened).
+	: > "$BUNDLE_CHILD_DIR/pids.txt"
+	return 0
+}
+
+# Sample the prefix-owned processes seen so far, once per call: every pid whose environment/fd table has not been
+# recorded yet gets one. This is the answer to "which file did the workload's stdout go to" -- the guest cannot read
+# its own /proc, so without this every investigation re-derived it by hand.
+bundle_watch_children() {
+	[ "$BUNDLE" = 1 ] || return 0
+	[ -d "$BUNDLE_CHILD_DIR" ] || return 0
+	WITNESS_QUIET=1 owned_pids | while read -r pid; do
+		[ -n "$pid" ] || continue
+		[ -e "$BUNDLE_CHILD_DIR/$pid.environ" ] && continue
+		comm=$(cat "/proc/$pid/comm" 2>/dev/null)
+		{
+			echo "# host-side record of pid=$pid, captured the moment this harness first saw it"
+			echo "# comm=$comm"
+			echo "# exe=$(readlink "/proc/$pid/exe" 2>/dev/null || echo '<unreadable: the image file is gone>')"
+			echo "# cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+			echo "# environ follows, one NAME=VALUE per line (read BY THE HOST: the guest's own /proc gives nothing)"
+			tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null || echo "<unreadable>"
+		} > "$BUNDLE_CHILD_DIR/$pid.environ" 2>/dev/null
+		{
+			echo "# host-side descriptor table of pid=$pid (fd -> what it points at)"
+			ls -l "/proc/$pid/fd" 2>/dev/null || echo "<unreadable>"
+			echo "# the workload's own stdout/stderr target, which is NOT the run log:"
+			for n in 1 2; do
+				echo "#   fd$n -> $(readlink "/proc/$pid/fd/$n" 2>/dev/null || echo '<unreadable>')"
+			done
+		} > "$BUNDLE_CHILD_DIR/$pid.fd" 2>/dev/null
+		echo "$pid" >> "$BUNDLE_CHILD_DIR/pids.txt"
+	done
+	return 0
+}
+
+# The vocabulary of an abort anywhere in the run: the C++ runtime's terminate path, the loader's fatal-signal
+# record, the server's panic, and the kernel's own trap line for a NATIVE guest fault. Copied WHOLE, never cut.
+BUNDLE_ABORT_PATTERN='libc[+][+]abi|terminating with|terminate called|std\.terminate|uncaught exception|dserver-CRASH|\[sigexc-fatal|GUEST-FAULT|thread .* panicked|CORE-SIGNAL'
+
+bundle_collect_abort_text() {
+	out="$BUNDLE_DIR/abort.txt"
+	{
+		echo "# The abort/terminate text of this run, from EVERY file the bundle holds (the harness log, the server's"
+		echo "# log on both sides, and every guest capture). Lines are copied in full: the bound is the line's own"
+		echo "# length, and the longest line found is reported in the MANIFEST for exactly that reason."
+	} > "$out"
+	scanned=0
+	lines=0
+	longest=0
+	for f in "$LOG" "$BUNDLE_DIR"/server.pre.log "$BUNDLE_DIR"/server.post.log \
+		"$BUNDLE_DIR"/*.log "$BUNDLE_DIR"/*.log.1 "$BUNDLE_DIR"/*.log.post "$BUNDLE_DIR"/captures/*; do
+		[ -f "$f" ] || continue
+		# The run log is scanned through its collected copy, so it is not scanned twice when both exist.
+		[ "$f" = "$LOG" ] && [ -f "$BUNDLE_DIR/harness.log" ] && continue
+		scanned=$((scanned + 1))
+		hits=$(grep -aEc "$BUNDLE_ABORT_PATTERN" "$f" 2>/dev/null)
+		[ -n "$hits" ] || hits=0
+		[ "$hits" -gt 0 ] || continue
+		grep -aEn "$BUNDLE_ABORT_PATTERN" "$f" 2>/dev/null | while IFS= read -r l; do
+			printf '%s: %s\n' "$f" "$l"
+		done >> "$out"
+		lines=$((lines + hits))
+		# The longest matching line: `wc -L` is the file's longest line and is close enough for the report here,
+		# which exists to show the bound is not a constant.
+		l=$(grep -aE "$BUNDLE_ABORT_PATTERN" "$f" 2>/dev/null | wc -L | tr -d ' ')
+		[ -n "$l" ] || l=0
+		[ "$l" -gt "$longest" ] && longest=$l
+	done
+	if [ "$lines" -gt 0 ]; then
+		bundle_present abort-text "$out" "$lines matching line(s) in $scanned scanned file(s); longest=${longest} bytes (lines copied whole, no fixed cap)"
+	elif [ "$scanned" -gt 0 ]; then
+		bundle_missing abort-text "searched $scanned file(s) of this run (the run log, both server copies, all captures) and no abort/terminate line was there: the run reached its end without one"
+	else
+		bundle_missing abort-text "there was nothing to search: no run log and no captures were collected"
+	fi
+	return 0
+}
+
+bundle_finish() {
+	[ "$BUNDLE" = 1 ] || return 0
+	[ -n "$BUNDLE_MANIFEST" ] || return 0
+	# THE HARNESS LOG, complete as far as this run goes.
+	if [ -s "$LOG" ]; then
+		cp -f "$LOG" "$BUNDLE_DIR/harness.log"
+		bundle_present harness-log "$BUNDLE_DIR/harness.log" "the run log this console was reading ($(bundle_bytes "$BUNDLE_DIR/harness.log") bytes)"
+	else
+		bundle_present harness-log "$LOG" "the run log is empty: the guest printed nothing at all (this is a fact about the run, not a missing file)"
+	fi
+	# THE SERVER'S LOG, POST. Copied while the server is still alive (cleanup shuts it down).
+	if [ -n "$BUNDLE_SERVER_LOG" ] && [ -r "$BUNDLE_SERVER_LOG" ]; then
+		cp -f "$BUNDLE_SERVER_LOG" "$BUNDLE_DIR/server.post.log"
+		bundle_present server-log-post "$BUNDLE_DIR/server.post.log" "copy of $BUNDLE_SERVER_LOG after the run; the run's own server rows are post minus pre"
+	else
+		bundle_missing server-log-post "$BUNDLE_SERVER_LOG is not readable after the run, so the server's own rows for this run cannot be separated from earlier runs'"
+	fi
+	# OTHER PREFIX LOGS THIS RUN TOUCHED (launchd, fcdaemon, ...): the plural of "the prefix server log(s)".
+	other=0
+	for f in "$PREFIX"/private/var/log/*.log; do
+		[ -f "$f" ] || continue
+		[ "$f" = "$BUNDLE_SERVER_LOG" ] && continue
+		[ "$f" -nt "$BUNDLE_STAMP" ] || continue
+		cp -f "$f" "$BUNDLE_DIR/$(basename "$f").post" 2>/dev/null || continue
+		other=$((other + 1))
+		bundle_present "prefix-log-$(basename "$f")" "$BUNDLE_DIR/$(basename "$f").post" "another prefix log written during this run"
+	done
+	[ "$other" -gt 0 ] || bundle_missing prefix-log-other "no other log under $PREFIX/private/var/log was written during this run (the server log above is the one this run used)"
+	# LAUNCHD'S OWN DEBUG LOG, deliberately: MEASURED, the answer to "which service does the workload actually
+	# resolve, which look-ups fail, and which process asked" was in launchd's log -- a DIFFERENT process's log from
+	# the one under test -- and nothing collected it or said where it was. It records every Mach-service look-up
+	# WITH the asking process. Rotated files are taken too, because a long run crosses the rotation.
+	launchd_dir="$PREFIX/private/var/log/com.apple.launchd"
+	launchd_any=0
+	for f in "$launchd_dir"/launchd-debug*.log "$launchd_dir"/launchd-debug*.log.1; do
+		[ -f "$f" ] || continue
+		cp -f "$f" "$BUNDLE_DIR/$(basename "$f")" 2>/dev/null || continue
+		launchd_any=$((launchd_any + 1))
+		bundle_present "launchd-log-$(basename "$f")" "$BUNDLE_DIR/$(basename "$f")" "launchd's own debug log ($(bundle_bytes "$BUNDLE_DIR/$(basename "$f")") bytes): it records every Mach-service look-up WITH the asking process, so the service a workload resolved (and the ones that failed) can be named from HERE"
+	done
+	lookups="$BUNDLE_DIR/launchd-service-lookups.txt"
+	{
+		echo "# Every Mach-service look-up launchd recorded for this run, with the asking process. The interesting"
+		echo "# shape is: a service the workload asked for that FAILED to resolve, attributed to the process that asked."
+	} > "$lookups"
+	grep -ah 'Mach service lookup' "$launchd_dir"/launchd-debug*.log "$launchd_dir"/launchd-debug*.log.1 2>/dev/null \
+		| sort | uniq -c | sort -rn | head -80 >> "$lookups"
+	lookup_lines=$(grep -ac 'Mach service lookup' "$BUNDLE_DIR"/launchd-debug*.log 2>/dev/null | awk -F: '{s += $NF} END {print s + 0}')
+	[ -n "$lookup_lines" ] || lookup_lines=0
+	resolved=$(grep -ah 'Mach service lookup:' "$BUNDLE_DIR"/launchd-debug*.log 2>/dev/null | wc -l | tr -d ' ')
+	failed=$(grep -ah 'Mach service lookup failed' "$BUNDLE_DIR"/launchd-debug*.log 2>/dev/null | wc -l | tr -d ' ')
+	if [ "$launchd_any" -gt 0 ]; then
+		bundle_present launchd-service-lookups "$lookups" "$resolved resolved and $failed failed look-up line(s) in launchd's log ($lookup_lines total including any other shape)"
+	else
+		bundle_missing launchd-service-lookups "no launchd debug log under $launchd_dir is readable: without it 'which service did the workload resolve, and which look-up failed' cannot be answered from this bundle at all"
+	fi
+	# EVERY GUEST-PROCESS CAPTURE, WITH ITS PATH. The guest's xtrace writes one capture per process, named
+	# `<arm-out-prefix>.trace.<pid>` (the arm itself) or `<arm-out-prefix>.traceg.<pid>` (its children) under the
+	# prefix's guest tmp -- and NOTHING used to announce that, so a reader grepped the arm's stdout for a trace and
+	# concluded there was none. Both suffixes are scanned, the base directories are named, and every path found is
+	# PRINTED. A path the guest's own output announces is honoured too, if a future xtrace announces it.
+	captures=0
+	announced=$(grep -aoE 'XTRACE-CAPTURE path=[^ ]+' "$LOG" 2>/dev/null | sed 's/^XTRACE-CAPTURE path=//' | sort -u)
+	for d in "$PREFIX/private/var/tmp" "$PREFIX/private/tmp" "$PREFIX/tmp"; do
+		# BOTH SUFFIXES xtrace writes (`.trace.<pid>` for the traced process, `.traceg.<pid>` for its children) AND
+		# the workload's own redirected stream (`prd-<arm>.out`). MEASURED (darling-diagnostics): the guest's own
+		# output does NOT reach the run log -- a launcher redirects the workload's fd 1/2 into a file under the
+		# prefix -- so a bundle that collected only the harness log would be missing the workload's own words.
+		for f in "$d"/*.trace.* "$d"/*.traceg.* "$d"/*.out; do
+			[ -f "$f" ] || continue
+			[ "$f" -nt "$BUNDLE_STAMP" ] || continue
+			announced="$announced
+$f"
+		done
+	done
+	for f in $announced; do
+		[ -f "$f" ] || continue
+		base=$(basename "$f")
+		cp -f "$f" "$BUNDLE_CAPTURE_DIR/$base" 2>/dev/null || { bundle_missing "guest-capture-$base" "$f exists but could not be copied ($(bundle_bytes "$f") bytes)"; continue; }
+		captures=$((captures + 1))
+		bundle_present "guest-capture-$base" "$BUNDLE_DIR/captures/$base" "captured from $f ($(bundle_bytes "$BUNDLE_DIR/captures/$base") bytes): the child's own in-path records for this run"
+	done
+	if [ "$captures" -gt 0 ]; then
+		BUNDLE_MANIFEST_ROW guest-captures COUNT "$BUNDLE_CAPTURE_DIR" "$captures capture(s) written during this run and younger than its start stamp"
+	else
+		bundle_missing guest-captures "no *.trace.<pid>/*.traceg.<pid> capture under $PREFIX/private/var/tmp (or private/tmp, or tmp) is younger than this run's start stamp, and no XTRACE-CAPTURE line announced one: either xtrace was not enabled for this run (an instrument that is off is not an instrument that stayed silent) or no guest process was traced"
+	fi
+	# THE CHILDREN THE HOST SAW. Their environment and descriptor tables, read from the HOST while they were alive:
+	# this is the answer to "which file did the workload's stdout go to", which the guest cannot answer about itself.
+	child_count=$(wc -l < "$BUNDLE_CHILD_DIR/pids.txt" 2>/dev/null | tr -d ' ')
+	[ -n "$child_count" ] || child_count=0
+	if [ "$child_count" -gt 0 ]; then
+		BUNDLE_MANIFEST_ROW child-records COUNT "$BUNDLE_CHILD_DIR" "$child_count guest process(es) sampled from the HOST while alive; one <pid>.environ and <pid>.fd each (the guest's own /proc gives nothing for these)"
+	else
+		bundle_missing child-records "no prefix-owned process was observed by this harness during the run, so no child environment/descriptor table could be read. The sampling runs every 2 s while the harness waits, so a process that neither appeared nor was alive at a sample is not seen here; its own capture (if xtrace was on) still is"
+	fi
+	# ANY CORE WRITTEN DURING THIS RUN.
+	cores=0
+	if [ -n "$BUNDLE_CORE_DIR" ] && [ -d "$BUNDLE_CORE_DIR" ]; then
+		for f in "$BUNDLE_CORE_DIR"/*; do
+			[ -f "$f" ] || continue
+			grep -qF "$(basename "$f")" "$BUNDLE_DIR/cores.baseline" 2>/dev/null && continue
+			ln -sf "$f" "$BUNDLE_CORES_DIR/$(basename "$f")" 2>/dev/null
+			cores=$((cores + 1))
+			bundle_present "core-$(basename "$f")" "$BUNDLE_CORES_DIR/$(basename "$f")" "core written during this run: $f ($(bundle_bytes "$f") bytes); read it with 'dwdiag core --core $f' (this bundle symlinks it rather than copying ~1 GB)"
+		done
+	fi
+	if [ "$cores" -eq 0 ]; then
+		case "$BUNDLE_CORE_PATTERN" in
+		"|"*) bundle_missing core "no core was written and none CAN be: core_pattern pipes cores to a handler ('$BUNDLE_CORE_PATTERN'). A fatal fault in this run left no core to read -- use 'dwdiag trap' (the kernel's own line in dmesg) or turn cores on with 'dwdiag cores on'" ;;
+		"") bundle_missing core "core_pattern is unreadable, so it cannot be said whether a core would have been kept" ;;
+		*) bundle_missing core "no new core under $BUNDLE_CORE_DIR during this run. Either nothing faulted fatally, or the process's own ulimit -c was 0 (MEASURED default on this host) -- the harness's own limit is $(ulimit -c), which is NOT the guest process's" ;;
+		esac
+	fi
+	# THE COUNTERS THE SESSION COUNTS. The four the VERDICT block prints, plus the plane/ledger instruments the
+	# rungs read by hand. The server's rows come from the DELTA between the two copies of its append-only log.
+	counters="$BUNDLE_DIR/counters.txt"
+	{
+		echo "# name<TAB>run-log<TAB>server-delta<TAB>what it is"
+		printf '%s\t%s\t%s\t%s\n' sockets-created "$(grep -ac 'rpc-socket. created' "$LOG" 2>/dev/null)" "-" "per-thread RPC sockets created"
+		printf '%s\t%s\t%s\t%s\n' socket-denials "$(grep -ac 'rpc-socket-DENIED' "$LOG" 2>/dev/null)" "-" "RPC socket DENIED (the guest asked for a transport the server refused)"
+		printf '%s\t%s\t%s\t%s\n' urgent-timeouts "$(grep -ac 'urgent-wait-TIMEOUT' "$LOG" 2>/dev/null)" "-" "an urgent call waited past its bound"
+		printf '%s\t%s\t%s\t%s\n' courier-misses "$(grep -ac 'fd-courier-recv. MISS' "$LOG" 2>/dev/null)" "-" "a descriptor courier receive found nothing"
+		printf '%s\t%s\t%s\t%s\n' plane-publishes "$(grep -ac 'plane-publish' "$LOG" 2>/dev/null)" "$(bundle_server_delta 'plane-publish')" "plane operations PUBLISHED by the guest"
+		printf '%s\t%s\t%s\t%s\n' plane-doorbell-sent "$(grep -ac 'plane-doorbell-sent' "$LOG" 2>/dev/null)" "$(bundle_server_delta 'plane-doorbell-sent')" "doorbells the SERVER sent (server log only)"
+		printf '%s\t%s\t%s\t%s\n' plane-refuse "$(grep -ac 'plane-refuse' "$LOG" 2>/dev/null)" "$(bundle_server_delta 'plane-refuse')" "plane operations REFUSED"
+		printf '%s\t%s\t%s\t%s\n' lane-release "$(grep -ac 'lane-release' "$LOG" 2>/dev/null)" "$(bundle_server_delta 'lane-release')" "lane releases"
+		printf '%s\t%s\t%s\t%s\n' plane-republish "$(grep -ac 'plane-republish' "$LOG" 2>/dev/null)" "$(bundle_server_delta 'plane-republish')" "plane re-publishes"
+		printf '%s\t%s\t%s\t%s\n' dserver-crash "$(grep -ac 'dserver-CRASH' "$LOG" 2>/dev/null)" "$(bundle_server_delta 'dserver-CRASH')" "the server's own crash record"
+	} > "$counters"
+	bundle_present counters "$counters" "the four counters the VERDICT prints plus the plane/ledger instruments; the server column is the DELTA between server.pre.log and server.post.log (the file is append-only across runs)"
+	# THE INSTRUMENT CENSUS, WHICH NAMES THE SILENT ONES. `dwdiag witness` owns the instrument table; a hand-written
+	# grep finds the line it was written for and cannot say which OTHER instrument never spoke.
+	witness_out="$BUNDLE_DIR/witness.txt"
+	if [ -x "$SCRIPT_DIR/dwdiag" ]; then
+		if "$SCRIPT_DIR/dwdiag" witness --log "$LOG" > "$witness_out" 2>"$BUNDLE_DIR/witness.err"; then
+			silent=$(sed -n 's/^WITNESS-SILENT //p' "$witness_out" | tr '\n' ',')
+			fired=$(sed -n 's/^WITNESS log=.* fired=\([0-9]*\)$/\1/p' "$witness_out" | tail -1)
+			bundle_present witness-census "$witness_out" "instruments fired=${fired:-?}; SILENT=[${silent%,}] -- an instrument with zero hits is NAMED here, never inferred from silence"
+		else
+			bundle_missing witness-census "dwdiag witness failed (rc=$?); see $BUNDLE_DIR/witness.err. The census cannot be taken offline, so 'which instrument stayed silent' is UNKNOWN for this run rather than empty"
+		fi
+	else
+		bundle_missing witness-census "no executable $SCRIPT_DIR/dwdiag: the instrument census cannot be taken, so 'which instrument stayed silent' is UNKNOWN for this run rather than empty"
+	fi
+	# Instruments that are silent BY BUILD are not the same as instruments that broke: state which the run itself
+	# declared unavailable, so the census above cannot be read as "these guards did nothing".
+	decl="$BUNDLE_DIR/build-declarations.txt"
+	grep -ahE 'unavailable \(|records no |not carried by this build|this server build' "$LOG" "$BUNDLE_DIR"/server.post.log 2>/dev/null | sort -u | head -40 > "$decl"
+	declared=$(wc -l < "$decl" 2>/dev/null | tr -d ' ')
+	[ -n "$declared" ] || declared=0
+	if [ "$declared" -gt 0 ]; then
+		bundle_present build-declarations "$decl" "$declared statement(s) in which this BUILD says a section or instrument is absent/unavailable -- a silent instrument whose instrument is declared unavailable here is SILENT-BY-BUILD, not broken"
+	else
+		bundle_missing build-declarations "the run's logs carry no 'unavailable'/this-server-build statement, so no instrument can be excused as SILENT-BY-BUILD: every silent instrument above is a real silence for this run"
+	fi
+	bundle_collect_abort_text
+	printf 'BUNDLE-COMPLETE %s\n' "$(date -Is)" >> "$BUNDLE_MANIFEST"
+	rm -f "$BUNDLE_DIR/INCOMPLETE"
+	return 0
+}
+
+# How many times a pattern appears in the DELTA of the server's append-only log: post count minus pre count. A count
+# over the whole file would mix in every earlier run's rows, which is exactly how "the server sent 19210 doorbells"
+# was once about another prefix's run.
+bundle_server_delta() {
+	pat="$1"
+	pre=0
+	post=0
+	[ -n "$BUNDLE_SERVER_PRE" ] && [ -f "$BUNDLE_SERVER_PRE" ] && pre=$(grep -ac "$pat" "$BUNDLE_SERVER_PRE" 2>/dev/null)
+	[ -f "$BUNDLE_DIR/server.post.log" ] && post=$(grep -ac "$pat" "$BUNDLE_DIR/server.post.log" 2>/dev/null)
+	[ -n "$pre" ] || pre=0
+	[ -n "$post" ] || post=0
+	echo $((post - pre))
+}
+
+# THE CONSOLE BLOCK: every path, every missing item and the census, printed as part of the run's own output. A bundle
+# a reader cannot find is a bundle that does not exist.
+bundle_report() {
+	[ "$BUNDLE" = 1 ] || return 0
+	echo "== bundle =="
+	echo "BUNDLE dir=$BUNDLE_DIR"
+	echo "BUNDLE-MANIFEST $BUNDLE_MANIFEST"
+	if [ -f "$BUNDLE_DIR/INCOMPLETE" ]; then
+		echo "BUNDLE-INCOMPLETE the harness did not reach the end of the run: this bundle is PARTIAL, not a complete one"
+	fi
+	# One line per manifest row: paths are printed, MISSING rows carry the reason. A reader never has to guess.
+	awk -F'\t' '
+		$2 == "PRESENT" { printf "BUNDLE-ITEM %s path=%s%s\n", $1, $3, ($4 != "" ? " note=" $4 : "") }
+		$2 == "COUNT"   { printf "BUNDLE-COUNT %s path=%s %s\n", $1, $3, $4 }
+		$2 == "MISSING" { printf "BUNDLE-MISSING %s reason=%s\n", $1, $4 }
+	' "$BUNDLE_MANIFEST"
+	# The census on its own line, because "which instrument stayed silent" must be readable without opening a file.
+	silent=$(sed -n 's/^WITNESS-SILENT //p' "$BUNDLE_DIR/witness.txt" 2>/dev/null | tr '\n' ',')
+	fired=$(sed -n 's/^WITNESS log=.* fired=\([0-9]*\)$/\1/p' "$BUNDLE_DIR/witness.txt" 2>/dev/null | tail -1)
+	if [ -f "$BUNDLE_DIR/witness.txt" ]; then
+		echo "BUNDLE-WITNESS fired=${fired:-?} silent=[${silent%,}]"
+	fi
+	if [ -n "$BUNDLE_RUN_ENV" ]; then
+		echo "BUNDLE-RUN-ENV $BUNDLE_RUN_ENV"
+	fi
+	if [ -f "$BUNDLE_DIR/counters.txt" ]; then
+		echo "BUNDLE-COUNTERS $(awk -F'\t' '$1=="sockets-created"||$1=="socket-denials"||$1=="urgent-timeouts"||$1=="courier-misses" { printf "%s=%s ", $1, $2 }' "$BUNDLE_DIR/counters.txt")"
+	fi
+	# The launchd look-up lines are QUOTED here, not just counted: the measured use of that log is naming the
+	# service a workload resolved (and the ones that failed), which is a line, not a number.
+	if [ -f "$BUNDLE_DIR/launchd-service-lookups.txt" ]; then
+		echo "BUNDLE-LAUNCHD the services launchd recorded for this run (top 5 by count; full list in $BUNDLE_DIR/launchd-service-lookups.txt):"
+		grep -v '^#' "$BUNDLE_DIR/launchd-service-lookups.txt" | head -5 | sed 's/^/BUNDLE-LAUNCHD   /'
+	fi
+	return 0
+}
+
 # A mode that must NOT boot anything: report what this harness would treat as prefix-owned, then exit. The ownership
 # rule is what decides whether the next boot starts clean, and a rule that can only be exercised by booting cannot be
 # tested; tests/run-darling-boot-harness-ownership-contract.sh drives this mode with synthetic processes.
@@ -339,6 +789,8 @@ if [ -n "$VERIFY_PROBES" ]; then
 	fi
 fi
 
+bundle_begin
+
 echo "== run =="
 echo "log: $LOG"
 if [ "$HATCH" = 1 ]; then
@@ -379,6 +831,11 @@ _waited=0
 while [ "$_waited" -lt "$WAIT" ]; do
 	if grep -aq "$POLL" "$LOG" 2>/dev/null; then
 		break
+	fi
+	# THE HOST-ONLY RECORD, taken while the child is alive. Every second poll (a 2 s resolution) so the sampling
+	# cannot dominate the run. Whatever was missed is reported as a MISSING row with that granularity as the reason.
+	if [ "$BUNDLE" = 1 ] && [ $((_waited % 2)) -eq 0 ]; then
+		bundle_watch_children
 	fi
 	sleep 1
 	_waited=$((_waited + 1))
@@ -470,6 +927,13 @@ echo "socket denials:    $(grep -c 'rpc-socket-DENIED' "$LOG" 2>/dev/null)"
 echo "urgent timeouts:   $(grep -c 'urgent-wait-TIMEOUT' "$LOG" 2>/dev/null)"
 echo "courier misses:    $(grep -c 'fd-courier-recv. MISS' "$LOG" 2>/dev/null)"
 echo "log lines:         $(wc -l < "$LOG")"
+
+# THE BUNDLE IS PRODUCED HERE, BEFORE ANY TEARDOWN AND ON EVERY PATH: while the server is still alive (so its post
+# log can be copied), after the log holds everything the run wrote, and before the freeze exit -- a frozen run is the
+# one whose bundle is needed most. The console block that follows is the run's own announcement of where everything is.
+STAGE=bundle
+bundle_finish
+bundle_report
 
 if [ "${FREEZE_ON_FAIL:-0}" -eq 1 ] && [ "$verdict" -ne 0 ]; then
 	STAGE=freeze; echo "== freeze-on-fail (diagnostic) =="
