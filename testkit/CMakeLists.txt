@@ -502,6 +502,48 @@ if(EXISTS "${_fcd_sync_send_park_guest}")
   )
 endif()
 
+# The xcodebuild park, reduced to a fixture: an asynchronous NSOperation's completion polled between BARE,
+# one-shot CFRunLoopRun() calls, which is the shape the deployed Xcode3Core method
+# -[Xcode3CommandLineBuildTool waitForBuildWithBuildLog:...] sits in (callq _CFRunLoopRun at file VM 0x2a9d1,
+# return 0x2a9d6, predicate [operationToEnqueue isFinished]; see evidence/oslog-framework-rung/README.md
+# section 24). NSOperation/NSOperationQueue and CFRunLoop are Darling's implementations here, so the variants
+# separate, by measurement, "the queue never drains" from "the operation never starts" from "the completion
+# never runs" from "a bare CFRunLoopRun() never returns": (a) a private concurrent NSOperationQueue + an
+# NSOperation polled by the bare loop, (b) the same on [NSOperationQueue mainQueue], (c) a main-queue
+# dispatch_async polled by the bare loop, (d) control: the same setter with a BOUNDED run loop, (e) control: a
+# background-queue setter with the bounded loop, (f) return-control: nothing to poll, a background thread stops
+# the loop, (g) the DVTOperation shape: a custom ASYNCHRONOUS NSOperation whose isFinished is KVO'd from its
+# own async completion. Every variant has a bounded deadline and prints its own RESULT line, so a hang is a
+# printed FAIL rather than a stall.
+#
+# WEAK SPOT, stated because it is real: on a prefix whose Foundation cannot create a queue at all the variant
+# reports NIL_QUEUE and the final marker is still reached, so a bare marker hit is not by itself a green gate;
+# the RESULT lines are what carry the finding, and the run recorded with this registration quotes them.
+#
+# The SOURCE is Objective-C: the testkit runner stages it under a `.c` name, so the language must be forced
+# with `-x objective-c` in the guest flags (and Foundation linked explicitly). The flags go on the TEST's
+# environment, which is the idiom the posix-spawn registration uses; they are NOT an ENVS entry.
+set(_nsoperationqueue_runloop_poll_guest
+  "${_workspace_root}/tests/nsoperationqueue_runloop_poll_guest.m")
+if(EXISTS "${_nsoperationqueue_runloop_poll_guest}")
+  add_compat_test(
+    NAME       nsoperationqueue_runloop_poll_guest
+    SOURCE     "${_nsoperationqueue_runloop_poll_guest}"
+    ENVS       darling
+    BEAD       dar-xcodebuild-ideinitialize-park-u196
+    SUBMODULES foundation
+    TIMEOUT    90
+    OK_MARKER  "NSOPERATIONQUEUE_RUNLOOP_POLL_DONE"
+  )
+  # The sysroot and compiler here MIRROR what the runtime profile itself passes (measured in the recorded
+  # bundle's env.txt: DARLING_GUEST_CFLAGS=--sysroot /Volumes/SystemRoot/...MacOSX.sdk). This variable is
+  # replaced, not appended, by the testkit runner, so the value must be complete; the only additions are the
+  # Objective-C language selection (the runner stages the source under a `.c` name) and the framework link.
+  set_property(TEST darling/nsoperationqueue_runloop_poll_guest APPEND PROPERTY
+    ENVIRONMENT
+    "DARLING_GUEST_CFLAGS=--sysroot /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -x objective-c -fblocks -framework Foundation")
+endif()
+
 set(_fork_checkin_signal_storm_guest
   "${_workspace_root}/tests/fork_checkin_signal_storm_guest.c")
 if(EXISTS "${_fork_checkin_signal_storm_guest}")
