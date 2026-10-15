@@ -102,8 +102,16 @@ def rung_facts(args):
     """Resolve the tree's facts once: declarations, closure, and the route context."""
     sources = ca.declaration_sources(args.darling, args.build)
     manifest = sources["manifest"]
-    edges = ca.load_closure(os.path.join(args.xcode, "Frameworks/libxcodebuildLoader.dylib"),
-                            args.xcode)
+    # The default entry is the loader image; --entry replaces it (a bundle's own images load later
+    # than the loader's closure reaches, so their referrers are invisible without it).
+    entries = args.entry or [os.path.join(args.xcode, "Frameworks/libxcodebuildLoader.dylib")]
+    entries = [ca._host_entry_path(e, args.xcode) for e in entries]
+    edges = {}
+    for entry in entries:
+        if not os.path.isfile(entry):
+            print(f"rung-driver: entry image does not exist: {entry}", file=sys.stderr)
+            raise SystemExit(2)
+        edges.update(ca.load_closure(entry, args.xcode))
     ctx = ca.classify_context(args.darling, manifest, args.xcode, payload=args.payload,
                               overlay=args.overlay)
     return sources, manifest, edges, ctx
@@ -478,6 +486,13 @@ def add_common(ap):
                     help="payload tree (default: <darling>/src/external/swift)")
     ap.add_argument("--overlay", default=None,
                     help="overlay checkout (default: <payload>/overlays)")
+    ap.add_argument("--entry", action="append", default=None, metavar="PATH",
+                    help="closure entry, repeatable (default: the Xcode loader image).  The loader's "
+                         "own closure does not contain images that a bundle loads LATER -- "
+                         "SWBBuildService.bundle's SWBBuildSystem, for one -- so a rung inside one of "
+                         "those has no referrer without this (dar-oslogfwk): a guest path "
+                         "(/Volumes/SystemRoot/... or a path inside the Xcode mount) is mapped to the "
+                         "host")
 
 
 def main():
