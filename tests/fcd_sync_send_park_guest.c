@@ -77,6 +77,55 @@ int main(void)
 		reply ? (int) xpc_get_type(reply) : -1);
 	printf("FCD-VERDICT service=%s lookup_kr=%d parked=0\n", FCD_SERVICE, kr);
 
+	// THE CLIENT SIDE OF THE PRESENTER HANDSHAKE (follow-up 11). The daemon does not answer an intent
+	// until the client has answered the presenter notification it sends for that path
+	// (NSFileCoordinator+Internal.h: DaemonMessageTypePresenterNotification must come back as
+	// DaemonMessageTypePresenterReply with a "responses" array whose items carry the notification's own
+	// type and DaemonPresenterReplyItemResultOk -- exactly what NSFileCoordinator.m's
+	// handle_xpc_notification does). Without a handler the daemon correctly waits forever, so the phases
+	// below could only ever park. Installing it AFTER phase 1 keeps phase 1's no-handler case in the test:
+	// phase 1's answer arrives as the reply to a synchronous send and never needs a handler, while an
+	// UNSOLICITED message on a handler-less connection was a real libxpc defect (it invoked a NULL
+	// handler, measured: rdi=0 inside dispatch_mach_handler) which this rung fixed.
+	xpc_connection_set_event_handler(conn, ^(xpc_object_t object) {
+		xpc_type_t type = xpc_get_type(object);
+		if (type != XPC_TYPE_DICTIONARY) {
+			printf("FCD-HANDLER non-dictionary type=%ld\n", (long) type);
+			fflush(stdout);
+			return;
+		}
+		uint64_t mtype = xpc_dictionary_get_uint64(object, "type");
+		printf("FCD-HANDLER message type=%llu\n", (unsigned long long) mtype);
+		fflush(stdout);
+		if (mtype == 8 /* DaemonMessageTypePresenterNotification */) {
+			xpc_object_t notifications = xpc_dictionary_get_value(object, "notifications");
+			xpc_object_t presenterReply = xpc_dictionary_create_reply(object);
+			if (presenterReply == NULL) {
+				printf("FCD-HANDLER presenter notification carries no reply port\n");
+				fflush(stdout);
+				return;
+			}
+			xpc_object_t responses = xpc_array_create(NULL, 0);
+			xpc_array_apply(notifications, ^bool(size_t index, xpc_object_t notification) {
+				(void) index;
+				xpc_object_t item = xpc_dictionary_create(NULL, NULL, 0);
+				xpc_dictionary_set_uint64(item, "notification-type",
+					xpc_dictionary_get_uint64(notification, "notification-type"));
+				xpc_dictionary_set_uint64(item, "result", 1 /* DaemonPresenterReplyItemResultOk */);
+				xpc_array_append_value(responses, item);
+				xpc_release(item);
+				return true;
+			});
+			xpc_dictionary_set_uint64(presenterReply, "type", 9 /* PresenterReply */);
+			xpc_dictionary_set_value(presenterReply, "responses", responses);
+			xpc_release(responses);
+			xpc_connection_send_message(conn, presenterReply);
+			xpc_release(presenterReply);
+			printf("FCD-HANDLER presenter-notification answered\n");
+			fflush(stdout);
+		}
+	});
+
 	// Phase 2: a WELL-FORMED intent, the shape NSFileCoordinator sends (NSFileCoordinator+Internal.h:
 	// DaemonMessageTypeIntent = 1, keys "path"/"options"/"cancellation-token"/"purpose-identifier").
 	// The client then waits on a semaphore for the daemon's intent reply, so if this parks, the peer's
@@ -114,7 +163,14 @@ int main(void)
 	printf("FCD3 async-intent-send-begin\n");
 	fflush(stdout);
 	in_send = 1;
-	xpc_connection_send_message_with_reply(conn, intent2, dispatch_get_main_queue(), ^(xpc_object_t reply3) {
+	// The reply queue must be one this single-threaded test can actually run. The main queue is serviced
+	// by the main thread, and the main thread is parked in the semaphore wait below, so a reply delivered
+	// to the main queue could never be handled -- a test artifact, not a libxpc defect (NSFileCoordinator
+	// does this from inside a running main queue/run loop). A global queue keeps the shape the phase is
+	// about (async send + reply handler + a semaphore the calling thread waits on forever) and lets the
+	// DELIVERY be measured rather than pre-determined by the test's own structure.
+	dispatch_queue_t replyQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+	xpc_connection_send_message_with_reply(conn, intent2, replyQueue, ^(xpc_object_t reply3) {
 		got = 1;
 		gotResult = reply3 ? xpc_dictionary_get_uint64(reply3, "result") : 0;
 		printf("FCD3 async-reply type=%d result=%llu\n", reply3 ? (int) xpc_get_type(reply3) : -1,
