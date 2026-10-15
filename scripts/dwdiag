@@ -6,7 +6,7 @@
 # resolution and the suite table. Keeping the shim means a stable path for callers and for muscle memory, while the
 # behaviour (and its tests) live in one place with the runner's own machinery.
 #
-# Usage: dwdiag <symbolize|crash|verdict|suite|progress|courier|witness|prefix|core|identity|build|cycle|attach-less capture> [OPTIONS]
+# Usage: dwdiag <symbolize|crash|verdict|suite|progress|courier|witness|prefix|core|identity|build|cycle|mappings|env|attach-less capture> [OPTIONS]
 #        dwdiag <run|capture|darling> [OPTIONS]   # spawn-and-capture modes of the same tool, passed through
 #        dwdiag --help
 set -eu
