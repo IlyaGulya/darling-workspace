@@ -6766,6 +6766,14 @@ fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let script = dir.join("catch.gdb");
+    // ORDER IS THE MEASUREMENT. `info registers rip rsp` / `x/4i $pc` used to run AFTER the python
+    // loop, and that loop switches to every thread and leaves the LAST one selected -- so the
+    // registers printed under "Thread N received signal SIGSEGV" were the last-iterated thread's, not
+    // the stopped one's. MEASURED 2026-10-15: that made a SIGSEGV delivered to a parked libdispatch
+    // worker (stack: __linux_futex -> sem_down -> sys_workq_kernreturn -> _dispatch_worker_thread2)
+    // read as a fault in a host Vulkan worker (glibc __futex_abstimed_wait_cancelable64), which sent
+    // the investigation at the wrong process component. Capture them while the signal thread is still
+    // the selected one; the per-thread stack images below are unaffected either way.
     let script_text = format!(
         "set pagination off\n\
          set confirm off\n\
@@ -6775,6 +6783,8 @@ fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
          handle SIGCHLD nostop noprint pass\n\
          signal SIGCONT\n\
          continue\n\
+         info registers rip rsp\n\
+         x/4i $pc\n\
          python\n\
          import gdb, os, traceback\n\
          try:\n\
@@ -6788,8 +6798,6 @@ fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
          except Exception:\n\
          \x20   open(os.path.join(d, 'python-error.txt'), 'w').write(traceback.format_exc())\n\
          end\n\
-         info registers rip rsp\n\
-         x/4i $pc\n\
          thread apply all bt\n",
         // A comma-separated list, because the measured failure delivers two signals: the guest
         // takes SIGILL and then dies of SIGSEGV, and arming only the second one leaves the first to
