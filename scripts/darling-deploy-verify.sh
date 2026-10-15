@@ -13,7 +13,7 @@
 #
 # Usage:
 #   darling-deploy-verify.sh --prefix PATH --build DIR [--component NAME]...
-#   components: mldr dyld libsystem_kernel libxpc corefoundation foundation objc-trampolines oah mobiledevice coresimulator darlingserver shellspawn vchroot launchd
+#   components: mldr dyld libsystem_kernel libunwind libxpc corefoundation foundation objc-trampolines oah mobiledevice coresimulator darlingserver shellspawn vchroot launchd
 #   (default: mldr dyld libsystem_kernel darlingserver shellspawn vchroot launchd -- the rest are opt-in)
 #
 # The build directory is expected to be a Darling build tree; each component is looked up at its known output
@@ -53,6 +53,7 @@ built_path() {
 		mldr)              echo "$BUILD/src/startup/mldr/mldr" ;;
 		dyld)              echo "$BUILD/src/external/dyld/dyld" ;;
 		libsystem_kernel)  echo "$BUILD/src/external/xnu/darling/src/libsystem_kernel/libsystem_kernel.dylib" ;;
+		libunwind)         echo "$BUILD/src/external/libunwind/libunwind.dylib" ;;
 		libxpc)            echo "$BUILD/src/external/libxpc/libxpc.dylib" ;;
 		corefoundation)    echo "$BUILD/src/external/corefoundation/CoreFoundation" ;;
 		foundation)        echo "$BUILD/src/external/foundation/Foundation" ;;
@@ -73,6 +74,10 @@ dest_paths() {
 		mldr)              echo "libexec/darling/usr/libexec/darling/mldr"; echo "usr/libexec/darling/mldr" ;;
 		dyld)              echo "usr/lib/dyld"; echo "libexec/darling/usr/lib/dyld" ;;
 		libsystem_kernel)  echo "usr/lib/system/libsystem_kernel.dylib"; echo "libexec/darling/usr/lib/system/libsystem_kernel.dylib" ;;
+		# The unwinder is a Darling-built component (src/external/libunwind) and has the same two runtime
+		# copies as libsystem_kernel: a guest process that unwinds loads whichever the loader resolved, so
+		# deploying only the "obvious" one leaves the other stale and the run unmeasured.
+		libunwind)         echo "usr/lib/system/libunwind.dylib"; echo "libexec/darling/usr/lib/system/libunwind.dylib" ;;
 		libxpc)            echo "usr/lib/system/libxpc.dylib"; echo "libexec/darling/usr/lib/system/libxpc.dylib" ;;
 		corefoundation)    echo "System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"
 		                   echo "libexec/darling/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation" ;;
