@@ -905,6 +905,13 @@ Every item is a row of the bundle's `MANIFEST`: `PRESENT <path>` or `MISSING <re
 Contracts: `tests/run-run-bundle-contract.sh` (offline, stub launcher: the announcements, a `MISSING` row's reason,
 the whole >512-byte abort line, launchd's lines quoted, the refusal of a dirty bundle directory).
 
+**A run of this kind is archived** so the claim is reproducible rather than asserted:
+`evidence/instrument-auto-bundle-2026-10-15/` holds one bundle from the current ladder workload
+(`probe-arms3.sh minproj-bare-t`, `VERDICT: PASS`) with its console, `MANIFEST` (11 announced captures, 14 child
+records, the census naming 29 silent instruments, both `MISSING` rows with their reasons), the launchd log's
+look-up lines, the run's server-log **delta**, and `SHA256SUMS`. The README there says which bytes the bundle held
+that are deliberately not archived (the two 36 MB server-log copies) and why.
+
 ### Reading foreign memory without killing the process being measured (xtrace)
 
 An instrument that reads the traced programme's memory cannot be allowed to fault: MEASURED, a descriptor's
