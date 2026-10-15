@@ -544,6 +544,27 @@ if(EXISTS "${_nsoperationqueue_runloop_poll_guest}")
     "DARLING_GUEST_CFLAGS=--sysroot /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -x objective-c -fblocks -framework Foundation")
 endif()
 
+# The MACH_SEND_TIMEOUT semantics oracle: what Darling returns when a receive right is never received on, what
+# a port-set send target returns, and whether a receive ON A SET delivers a message sent to one of its MEMBERS
+# -- the exact shape the parked arm was measured in (its own receive right, a send right to itself in the same
+# name, that port as a member of the set its run loop receives on, and 18 sends to the member that returned
+# MACH_SEND_TIMED_OUT). Keeping "the request was never consumed" from resting on an assumption.
+#
+# WEAK SPOT: the queue depth of a fresh receive right is measured, not assumed, and is reported per run.
+set(_mach_send_timeout_semantics_guest
+  "${_workspace_root}/tests/mach_send_timeout_semantics_guest.c")
+if(EXISTS "${_mach_send_timeout_semantics_guest}")
+  add_compat_test(
+    NAME       mach_send_timeout_semantics_guest
+    SOURCE     "${_mach_send_timeout_semantics_guest}"
+    ENVS       darling
+    BEAD       dar-xcodebuild-ideinitialize-park-u196
+    SUBMODULES xnu
+    TIMEOUT    90
+    OK_MARKER  "MACH_SEND_TIMEOUT_SEMANTICS_DONE"
+  )
+endif()
+
 set(_fork_checkin_signal_storm_guest
   "${_workspace_root}/tests/fork_checkin_signal_storm_guest.c")
 if(EXISTS "${_fork_checkin_signal_storm_guest}")
