@@ -83,14 +83,24 @@ PLUG_INS="ci"
 # com.apple.dt.IDEXCBuildSupportCore skipped xcodebuild reports "This project is configured to use Xcode's
 # new build system, but the new build system is not available" BY DESIGN, so such a run cannot be evidence
 # about the build at all. The canonical CI configuration therefore never skips a plug-in the selected build
-# needs; the historical three-name set survives as an explicitly named diagnostic configuration.
-#   ci         (default) skip only what this image cannot load AND the selected target does not use
-#   diagnostic           the historical set, INCLUDING the build-system plug-in (ladder archaeology only)
+# needs; it skips exactly the plug-ins THIS IMAGE cannot load and the selected target does not use, and it
+# says which:
+#   IDESimulatorFoundation   needs /System/Library/PrivateFrameworks/DiskImages2.framework (absent); its
+#                            failure is fatal to the run (measured: rc 70 with no skip set at all).
+#   IDESwiftPackageCore      loads SwiftPM, which needs the CryptoKit symbol
+#                            _$s9CryptoKit13SecureEnclaveO4P256O7SigningO10PrivateKeyV06publicH0AaDOAFO06PublicH0Vvg,
+#                            which this image's CryptoKit does not export; MEASURED 2026-10-16, with only the
+#                            simulator plug-in skipped the run dies on that plug-in's assertion at
+#                            DVTFoundation DVTPlugIn.m:444 (guest rc 132, no CompileC). It is not required
+#                            for a macOS command-line tool target.
+#   IDEXCBuildSupportCore    NEVER skipped in this configuration: it IS the selected build's build system.
+#   ci         (default) the two unloadable, non-required plug-ins above
+#   diagnostic           the historical three-name set, INCLUDING the build-system plug-in (ladder archaeology only)
 #   none                 skip nothing (shows what the image itself cannot load)
 # An explicit DVT_PLUG_INS_TO_IGNORE in the environment still wins, and the run says so.
 plug_in_skip() {
 	case "$1" in
-		ci)         printf '%s' "com.apple.dt.IDESimulatorFoundation" ;;
+		ci)         printf '%s' "com.apple.dt.IDESimulatorFoundation:com.apple.dt.IDE.IDESwiftPackageCore" ;;
 		diagnostic) printf '%s' "com.apple.dt.IDESimulatorFoundation:com.apple.dt.IDESwiftPackageCore:com.apple.dt.IDEXCBuildSupportCore" ;;
 		none)       printf '%s' "" ;;
 		*)          return 1 ;;
