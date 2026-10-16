@@ -31,6 +31,7 @@
 // The whole fixture is bounded by alarm(90), and every read is non-blocking with a bounded retry loop.
 
 #include <errno.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
@@ -313,6 +314,47 @@ static void spawn_and_hold(const char* tag, const char* path)
 	close(p_out[0]);
 }
 
+// f38: the GUEST's own view, before and after loading a heavy dynamically linked closure. The loader-side dumps
+// produced nothing for the service image, and the host's /proc view is the loader's mid-startup table, so this
+// asks the guest directly: report our own descriptors (in-guest readlink, which the ladder proved works), then
+// dlopen the same heavy Swift framework stack the service links against, then report again. If the closure moves
+// stdio, the guest's own view shows it; if it does not, the guest's view survives and the fd question moves on.
+static void self_fd_report(const char* moment)
+{
+	char line[512];
+	printf("FIR psfa self-report %s pid=%d", moment, (int)getpid());
+	for (int fd = 0; fd < 16; fd++) {
+		if (fcntl(fd, F_GETFD) < 0) {
+			continue;
+		}
+		char path[32];
+		char tgt[256];
+		snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+		ssize_t r = readlink(path, tgt, sizeof(tgt) - 1);
+		if (r > 0) {
+			tgt[r] = '\0';
+		} else {
+			snprintf(tgt, sizeof(tgt), "?");
+		}
+		int n = snprintf(line, sizeof(line), " fd%d=%s", fd, tgt);
+		if (n > 0) {
+			printf("%s", line);
+		}
+	}
+	printf("\n");
+	fflush(stdout);
+}
+
+static void dlopen_heavy_case(void)
+{
+	self_fd_report("before-dlopen");
+	void* h = dlopen("/Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/"
+		"SharedFrameworks/SwiftBuild.framework/Versions/A/SwiftBuild", RTLD_NOW);
+	printf("FIR psfa dlopen-heavy result=%p err=%s\n", h, h ? "-" : dlerror());
+	fflush(stdout);
+	self_fd_report("after-dlopen");
+}
+
 int main(int argc, char** argv)
 {
 	alarm(240);
@@ -352,6 +394,9 @@ int main(int argc, char** argv)
 	}
 	printf("FIR psfa start self=%s\n", self);
 	fflush(stdout);
+
+	// f38: the guest's own view of its descriptors, and whether a heavy dynamically linked closure moves them.
+	dlopen_heavy_case();
 
 	// A BUNDLE-LIKE EXEC TARGET: the service is not a loose binary but
 	// `…/SWBBuildService.bundle/Contents/MacOS/SWBBuildService`, so the ladder runs one case against a copy of
