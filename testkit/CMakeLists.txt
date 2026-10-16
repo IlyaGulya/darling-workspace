@@ -1071,5 +1071,32 @@ else()
     "workspace missing ${_uttype_family_guest}; skipping dar-liaq UTType family oracle")
 endif()
 
+# ---------------------------------------------------------------------------
+# Startup stream purity (dar-m90y). MEASURED 2026-10-16 (evidence/ios-ci-rung): the runtime's in-path
+# diagnostics wrote into the GUEST PROCESS'S OWN descriptors. The pthread registration record used
+# __simple_printf (fd 1), so `cat > contents.xcworkspacedata <<EOF` installed a `[reg pid=...]` line
+# ahead of the XML and Xcode's project loader refused the file; the open/openat/open-path/cancelation
+# probes (fd 2) and the create/exit marks (fd 1) were unconditional as well, leaving 170 diagnostic
+# lines in the redirected stderr of a single `cat`. All of them are compile-time gated off now, and
+# this fixture is the behaviour that keeps them off: a freshly EXEC'd guest child with fd 1 and fd 2
+# redirected to files must leave stdout exactly its own bytes and stderr EMPTY. RED before the gates
+# (stderr carried the open probes), GREEN after; the marker is printed only when both hold.
+# ---------------------------------------------------------------------------
+set(_startup_stream_purity_guest "${_workspace_root}/tests/startup_stream_purity_guest.c")
+if(EXISTS "${_startup_stream_purity_guest}")
+  add_compat_test(
+    NAME       startup_stream_purity_guest
+    SOURCE     "${_startup_stream_purity_guest}"
+    ENVS       darling
+    BEAD       dar-m90y
+    SUBMODULES darling
+    TIMEOUT    120
+    OK_MARKER  "SSP_DONE"
+  )
+else()
+  message(WARNING
+    "workspace missing ${_startup_stream_purity_guest}; skipping the dar-m90y startup stream purity regression")
+endif()
+
 # Run after every source-owned registration and caller property override.
 darling_install_native_bundle()

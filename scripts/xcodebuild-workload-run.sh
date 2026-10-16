@@ -54,7 +54,11 @@
 #
 # Usage:
 #   xcodebuild-workload-run.sh --prefix PREFIX [--workload minproj|iosapp|both]
+#                              [--plug-ins ci|diagnostic|none]
 #                              [--xcode-app PATH] [--wait SECONDS] [--log-dir DIR]
+# --plug-ins defaults to `ci`, which enables the build-system plug-in; `diagnostic` restores the
+# historical three-name skip set, under which the new build system is unavailable BY DESIGN and the run
+# is archaeology rather than build evidence. The run prints PLUGIN-CONFIG on every workload.
 # For each workload this prints, labelled: the guest's own XCB_RC, the harness VERDICT, whether an
 # artifact was produced (host path and size, or "none") and the loader stop line when the workload
 # stopped inside dyld. Exit 0 only when every workload produced its artifact -- a harness verdict is
@@ -73,6 +77,25 @@ WORKLOADS="both"
 WAIT="300"
 LOG_DIR=""
 XB_REL="Contents/Developer/usr/bin/xcodebuild"
+PLUG_INS="ci"
+
+# PLUG-IN CONFIGURATION. A skipped plug-in is a STATEMENT ABOUT THE BUILD, not a neutral option: with
+# com.apple.dt.IDEXCBuildSupportCore skipped xcodebuild reports "This project is configured to use Xcode's
+# new build system, but the new build system is not available" BY DESIGN, so such a run cannot be evidence
+# about the build at all. The canonical CI configuration therefore never skips a plug-in the selected build
+# needs; the historical three-name set survives as an explicitly named diagnostic configuration.
+#   ci         (default) skip only what this image cannot load AND the selected target does not use
+#   diagnostic           the historical set, INCLUDING the build-system plug-in (ladder archaeology only)
+#   none                 skip nothing (shows what the image itself cannot load)
+# An explicit DVT_PLUG_INS_TO_IGNORE in the environment still wins, and the run says so.
+plug_in_skip() {
+	case "$1" in
+		ci)         printf '%s' "com.apple.dt.IDESimulatorFoundation" ;;
+		diagnostic) printf '%s' "com.apple.dt.IDESimulatorFoundation:com.apple.dt.IDESwiftPackageCore:com.apple.dt.IDEXCBuildSupportCore" ;;
+		none)       printf '%s' "" ;;
+		*)          return 1 ;;
+	esac
+}
 
 usage() {
 	sed -n '2,/^$/p' "$0" >&2
@@ -84,6 +107,7 @@ while [ $# -gt 0 ]; do
 		--prefix) PREFIX="$2"; shift 2 ;;
 		--xcode-app) XCODE_APP="$2"; shift 2 ;;
 		--workload) WORKLOADS="$2"; shift 2 ;;
+		--plug-ins) PLUG_INS="$2"; shift 2 ;;
 		--wait) WAIT="$2"; shift 2 ;;
 		--log-dir) LOG_DIR="$2"; shift 2 ;;
 		-h|--help) usage ;;
@@ -95,6 +119,20 @@ done
 [ -x "$PREFIX/bin/darling" ] || { echo "xcodebuild-workloads: --prefix must name a booted Darling prefix (no $PREFIX/bin/darling)" >&2; exit 2; }
 [ -x "$XCODE_APP/$XB_REL" ] || { echo "xcodebuild-workloads: no xcodebuild under $XCODE_APP ($XB_REL)" >&2; exit 2; }
 case "$WORKLOADS" in minproj|iosapp|both) ;; *) echo "xcodebuild-workloads: --workload takes minproj, iosapp or both" >&2; exit 2 ;; esac
+CONFIG_SKIP=$(plug_in_skip "$PLUG_INS") || { echo "xcodebuild-workloads: --plug-ins takes ci, diagnostic or none (got '$PLUG_INS')" >&2; exit 2; }
+# An explicit environment value wins, and is announced: the run must never be read as the canonical
+# configuration when the caller changed it.
+EFFECTIVE_SKIP="${DVT_PLUG_INS_TO_IGNORE:-$CONFIG_SKIP}"
+SKIP_SOURCE=configuration
+if [ -n "${DVT_PLUG_INS_TO_IGNORE:-}" ] && [ "$DVT_PLUG_INS_TO_IGNORE" != "$CONFIG_SKIP" ]; then
+	SKIP_SOURCE=environment-override
+fi
+case "$EFFECTIVE_SKIP" in
+	*IDEXCBuildSupportCore*)
+		PLUGIN_VERDICT="build-system-disabled (this run CANNOT be evidence about the build)" ;;
+	*)
+		PLUGIN_VERDICT="build-system-enabled" ;;
+esac
 
 # The prefix maps the host root at /Volumes/SystemRoot (SYSTEM_ROOT in Darling's config), so a host
 # path is named to the guest by prefixing that. Paths already inside the guest namespace pass through.
@@ -153,15 +191,11 @@ for name in $list; do
 
 	# The probe carries the exact argv above; it prints the workload's own status as XCB_RC=<n>.
 	#
-	# THE DOCUMENTED PLUG-IN SKIP SET. The ladder's own probes run this argv with
-	# DVT_PLUG_INS_TO_IGNORE=com.apple.dt.IDESimulatorFoundation:com.apple.dt.IDEXCBuildSupportCore:com.apple.dt.IDE.IDESwiftPackageCore
-	# (evidence/project-read-wall-rung/README.md and the rungs after it: the simulator plug-in needs
-	# /System/Library/PrivateFrameworks/DiskImages2.framework, which this image does not carry, and it is
-	# fatal). This script did NOT set it, so the "recorded" command it runs was not the recorded
-	# environment: measured 2026-10-16, the run without it stops in DVTPlugInLoading on
-	# IDESimulatorFoundation instead of reaching the workload. An existing value is honoured, so a caller
-	# can still ask for the unskipped set (the ladder's own `-xcb` variant) without editing this script.
-	DVT_PLUG_INS_TO_IGNORE="${DVT_PLUG_INS_TO_IGNORE:-com.apple.dt.IDESimulatorFoundation:com.apple.dt.IDEXCBuildSupportCore:com.apple.dt.IDE.IDESwiftPackageCore}"
+	# THE PLUG-IN CONFIGURATION IS PART OF THE MEASUREMENT (see plug_in_skip above). Skipping
+	# com.apple.dt.IDEXCBuildSupportCore makes xcodebuild report that the project's new build system is
+	# unavailable BY DESIGN, so a run in that configuration is ladder archaeology, not build evidence: this
+	# script used to bake exactly that skip set in and thereby hid the build system it was measuring.
+	DVT_PLUG_INS_TO_IGNORE="$EFFECTIVE_SKIP"
 	export DVT_PLUG_INS_TO_IGNORE
 	cat >"$probe_host" <<PROBE
 #!/bin/bash
@@ -182,7 +216,8 @@ PROBE
 	echo "=== workload $name ==="
 	echo "command (guest cwd $guest_dir):"
 	echo "  \"$guest_xcode/$XB_REL\" $argv"
-	echo "plug-in skip set: $DVT_PLUG_INS_TO_IGNORE"
+	echo "plug-in skip set: $DVT_PLUG_INS_TO_IGNORE  (config=$PLUG_INS source=$SKIP_SOURCE)"
+	echo "PLUGIN-CONFIG $PLUGIN_VERDICT skip=${DVT_PLUG_INS_TO_IGNORE:-<none>}"
 	echo "probe: /private/var/tmp/$(basename "$probe_host")  output: $guest_out"
 	echo "running through $BOOT_RUN ..."
 
