@@ -285,6 +285,21 @@ static void spawn_and_hold(const char* tag, const char* path)
 	posix_spawnattr_destroy(&attr);
 	printf("FIR psfa %s SERVICE-SPAWN rc=%d pid=%d parent=%d path=%s\n", tag, rc, (int)pid, (int)getpid(), path);
 	fflush(stdout);
+	// PUBLISH THE PIDS INTO THE PREFIX (f36): the run's own state directory and its harness.log are
+	// teardown-time artifacts (measured in f35), so a host sampler that polls them sees nothing during the hold.
+	// /private/var/tmp is the prefix's own tmp and is live and host-readable the whole time.
+	{
+		int pf = open("/private/var/tmp/psfa-pids.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
+		if (pf >= 0) {
+			char b[160];
+			int n = snprintf(b, sizeof(b), "self=%d service=%d rc=%d held_seconds=30 t=%ld\n",
+				(int)getpid(), (int)pid, rc, (long)time(NULL));
+			if (n > 0) {
+				write(pf, b, n);
+			}
+			close(pf);
+		}
+	}
 	if (rc != 0) return;
 	close(p_in[0]);
 	close(p_out[1]);
