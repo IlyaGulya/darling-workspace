@@ -249,6 +249,55 @@ static void run_case(const char* tag, const char* path, unsigned int acts, unsig
 	fflush(stdout);
 }
 
+// f35: spawn the REAL build service with the service's own five actions and four attributes, WITHOUT waiting for
+// it (it never exits on its own), so the HOST can sample the child's fd table while it is alive. This decides
+// whether the trigger of the fd-0-/dev/null state belongs to the child image or to the arm as parent.
+static void spawn_and_hold(const char* tag, const char* path)
+{
+	int p_in[2] = {-1, -1}, p_out[2] = {-1, -1};
+	if (pipe(p_in) != 0 || pipe(p_out) != 0) {
+		printf("FIR psfa %s PIPEFAIL errno=%d\n", tag, errno);
+		fflush(stdout);
+		return;
+	}
+	posix_spawn_file_actions_t fa;
+	posix_spawn_file_actions_init(&fa);
+	posix_spawn_file_actions_addclose(&fa, 0);
+	posix_spawn_file_actions_adddup2(&fa, p_in[0], 0);
+	posix_spawn_file_actions_addclose(&fa, 1);
+	posix_spawn_file_actions_adddup2(&fa, p_out[1], 1);
+	posix_spawn_file_actions_addchdir_np(&fa, "/private/var/tmp");
+
+	posix_spawnattr_t attr;
+	posix_spawnattr_init(&attr);
+	posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK |
+		POSIX_SPAWN_CLOEXEC_DEFAULT);
+	posix_spawnattr_setpgroup(&attr, 0);
+	sigset_t empty;
+	sigemptyset(&empty);
+	posix_spawnattr_setsigmask(&attr, &empty);
+	posix_spawnattr_setsigdefault(&attr, &empty);
+
+	char* argv[] = {(char*)path, NULL};
+	pid_t pid = -1;
+	int rc = posix_spawn(&pid, path, &fa, &attr, argv, environ);
+	posix_spawn_file_actions_destroy(&fa);
+	posix_spawnattr_destroy(&attr);
+	printf("FIR psfa %s SERVICE-SPAWN rc=%d pid=%d parent=%d path=%s\n", tag, rc, (int)pid, (int)getpid(), path);
+	fflush(stdout);
+	if (rc != 0) return;
+	close(p_in[0]);
+	close(p_out[1]);
+	// hold the pipes (and therefore the child) here while the host samples: the service waits for a request
+	// forever, so no waitpid is used and the child is left to the harness's teardown.
+	struct timespec ts = {30, 0};
+	nanosleep(&ts, NULL);
+	printf("FIR psfa %s SERVICE-HOLD-DONE pid=%d\n", tag, (int)pid);
+	fflush(stdout);
+	close(p_in[1]);
+	close(p_out[0]);
+}
+
 int main(int argc, char** argv)
 {
 	alarm(240);
@@ -261,6 +310,22 @@ int main(int argc, char** argv)
 
 	if (argc >= 3 && strcmp(argv[1], "child") == 0) {
 		return child_role(argv[2], -1);
+	}
+
+	// f35: announce the pid FIRST (the host sampler needs it) and run the real-service case before the ladder, so
+	// the host has the whole 30-second hold to sample the SERVICE child's fd table with targets and flags.
+	printf("FIR psfa SELF-PID=%d\n", (int)getpid());
+	fflush(stdout);
+	{
+		const char* svc = "/Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/"
+			"SharedFrameworks/SwiftBuild.framework/Versions/A/PlugIns/SWBBuildService.bundle/Contents/MacOS/"
+			"SWBBuildService";
+		if (access(svc, X_OK) == 0) {
+			spawn_and_hold("real-service", svc);
+		} else {
+			printf("FIR psfa real-service SKIPPED path-not-executable errno=%d\n", errno);
+			fflush(stdout);
+		}
 	}
 
 	char self[4096];
