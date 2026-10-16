@@ -132,7 +132,20 @@ struct case_result {
 	char parent_text[4096];
 };
 
-static void run_case(const char* tag, const char* path, int with_actions, struct case_result* out)
+// Attribute ladder: the service passes SETPGROUP|SETSIGDEF|SETSIGMASK|CLOEXEC_DEFAULT, the plain fixture passed
+// CLOEXEC_DEFAULT alone. Each bit can be dropped, which is the bisect.
+#define A_SETPGROUP   (1u << 0)
+#define A_SETSIGDEF   (1u << 1)
+#define A_SETSIGMASK  (1u << 2)
+#define A_CLOEXEC     (1u << 3)
+#define A_ALL         (A_SETPGROUP | A_SETSIGDEF | A_SETSIGMASK | A_CLOEXEC)
+
+// Action ladder: the service passes close(0), dup2(pin,0), close(1), dup2(pout,1), chdir(<dir>).
+#define ACT_DUP2   (1u << 0)
+#define ACT_CHDIR  (1u << 1)
+#define ACT_ALL    (ACT_DUP2 | ACT_CHDIR)
+
+static void run_case(const char* tag, const char* path, unsigned int acts, unsigned int attrs, const char* chdir_to)
 {
 	int p_in[2] = {-1, -1};   // parent -> child
 	int p_out[2] = {-1, -1};  // child -> parent
@@ -144,28 +157,48 @@ static void run_case(const char* tag, const char* path, int with_actions, struct
 
 	posix_spawn_file_actions_t fa;
 	posix_spawn_file_actions_init(&fa);
-	if (with_actions) {
+	if (acts & ACT_DUP2) {
 		posix_spawn_file_actions_addclose(&fa, 0);
 		posix_spawn_file_actions_adddup2(&fa, p_in[0], 0);
 		posix_spawn_file_actions_addclose(&fa, 1);
 		posix_spawn_file_actions_adddup2(&fa, p_out[1], 1);
 	}
+	if ((acts & ACT_CHDIR) && chdir_to != NULL) {
+		posix_spawn_file_actions_addchdir_np(&fa, chdir_to);
+	}
 
 	posix_spawnattr_t attr;
 	posix_spawnattr_init(&attr);
-	short flags = POSIX_SPAWN_CLOEXEC_DEFAULT;
+	short flags = 0;
+	if (attrs & A_SETPGROUP) flags |= POSIX_SPAWN_SETPGROUP;
+	if (attrs & A_SETSIGDEF) flags |= POSIX_SPAWN_SETSIGDEF;
+	if (attrs & A_SETSIGMASK) flags |= POSIX_SPAWN_SETSIGMASK;
+	if (attrs & A_CLOEXEC) flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
 	posix_spawnattr_setflags(&attr, flags);
+	if (attrs & A_SETPGROUP) {
+		posix_spawnattr_setpgroup(&attr, 0);
+	}
+	sigset_t empty;
+	sigemptyset(&empty);
+	if (attrs & A_SETSIGMASK) {
+		posix_spawnattr_setsigmask(&attr, &empty);
+	}
+	if (attrs & A_SETSIGDEF) {
+		posix_spawnattr_setsigdefault(&attr, &empty);
+	}
 
 	char* argv[] = {(char*)path, (char*)"child", (char*)tag, NULL};
 	pid_t pid = -1;
-	out->spawn_rc = posix_spawn(&pid, path, &fa, &attr, argv, environ);
+	struct case_result r;
+	memset(&r, 0, sizeof(r));
+	int spawn_rc = posix_spawn(&pid, path, &fa, &attr, argv, environ);
 	posix_spawn_file_actions_destroy(&fa);
 	posix_spawnattr_destroy(&attr);
 
-	printf("FIR psfa %s spawn rc=%d pid=%d with_actions=%d flags=CLOEXEC_DEFAULT path=%s\n", tag,
-		out->spawn_rc, (int)pid, with_actions, path);
+	printf("FIR psfa %s spawn rc=%d pid=%d acts=0x%x attrs=0x%x chdir=%s path=%s\n", tag, spawn_rc, (int)pid,
+		acts, attrs, chdir_to ? chdir_to : "-", path);
 	fflush(stdout);
-	if (out->spawn_rc != 0) return;
+	if (spawn_rc != 0) return;
 
 	// what the CHILD's own descriptor table says, from the guest side: /proc is the host's, and guest pids are
 	// the host pids here, so this is the same question the harness asked of SWBBuildService
@@ -175,9 +208,9 @@ static void run_case(const char* tag, const char* path, int with_actions, struct
 	for (int fd = 0; fd <= 3; fd++) {
 		char link[128], tgt[512];
 		snprintf(link, sizeof(link), "/proc/%d/fd/%d", (int)pid, fd);
-		ssize_t r = readlink(link, tgt, sizeof(tgt) - 1);
-		if (r < 0) { used += snprintf(fdsnap + used, sizeof(fdsnap) - used, "%d=absent ", fd); }
-		else { tgt[r] = 0; used += snprintf(fdsnap + used, sizeof(fdsnap) - used, "%d=%s ", fd, tgt); }
+		ssize_t rr = readlink(link, tgt, sizeof(tgt) - 1);
+		if (rr < 0) { used += snprintf(fdsnap + used, sizeof(fdsnap) - used, "%d=absent ", fd); }
+		else { tgt[rr] = 0; used += snprintf(fdsnap + used, sizeof(fdsnap) - used, "%d=%s ", fd, tgt); }
 	}
 	printf("FIR psfa %s child_fd_targets=[%s]\n", tag, fdsnap);
 	fflush(stdout);
@@ -194,12 +227,12 @@ static void run_case(const char* tag, const char* path, int with_actions, struct
 	// drain the reply pipe completely (the first version read one chunk and lost the child's own report, which
 	// had to share the pipe with the loader's startup records)
 	fcntl(p_out[0], F_SETFL, fcntl(p_out[0], F_GETFL, 0) | O_NONBLOCK);
-	out->parent_read = 0;
-	memset(out->parent_text, 0, sizeof(out->parent_text));
+	r.parent_read = 0;
+	memset(r.parent_text, 0, sizeof(r.parent_text));
 	for (int i = 0; i < 600; i++) {
-		ssize_t got = read(p_out[0], out->parent_text + out->parent_read,
-			sizeof(out->parent_text) - 1 - out->parent_read);
-		if (got > 0) { out->parent_read += (long)got; if (out->parent_read >= (long)sizeof(out->parent_text) - 1) break; continue; }
+		ssize_t got = read(p_out[0], r.parent_text + r.parent_read,
+			sizeof(r.parent_text) - 1 - r.parent_read);
+		if (got > 0) { r.parent_read += (long)got; if (r.parent_read >= (long)sizeof(r.parent_text) - 1) break; continue; }
 		if (got == 0) break;  // EOF: every writer closed, the run is done
 		if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) break;
 		struct timespec ts = {0, 5 * 1000 * 1000};
@@ -209,16 +242,16 @@ static void run_case(const char* tag, const char* path, int with_actions, struct
 
 	int status = 0;
 	waitpid(pid, &status, 0);
-	out->child_status = status;
+	r.child_status = status;
 
-	printf("FIR psfa %s parent_read=%ld child_status=%d pipe_text=\"%s\"\n", tag, out->parent_read,
-		out->child_status, out->parent_text);
+	printf("FIR psfa %s parent_read=%ld child_status=%d pipe_text=\"%.300s\"\n", tag, r.parent_read,
+		r.child_status, r.parent_text);
 	fflush(stdout);
 }
 
 int main(int argc, char** argv)
 {
-	alarm(90);
+	alarm(240);
 	// The control case spawns a child that CANNOT receive the ping (no actions), so the parent's write to the
 	// pipe may find no reader: that is a legitimate observed outcome ("the child cannot be reached"), not a
 	// reason for the fixture to die before the remaining cases run (measured in the v3 run: SIGPIPE killed it
@@ -240,17 +273,52 @@ int main(int argc, char** argv)
 	printf("FIR psfa start self=%s\n", self);
 	fflush(stdout);
 
-	char alt[4096];
-	snprintf(alt, sizeof(alt), "/Volumes/SystemRoot%s", self);
-	printf("FIR psfa start altname=%s\n", alt);
+	// A BUNDLE-LIKE EXEC TARGET: the service is not a loose binary but
+	// `…/SWBBuildService.bundle/Contents/MacOS/SWBBuildService`, so the ladder runs one case against a copy of
+	// this fixture staged at that shape. Built in-guest with plain read/write, bounded (one copy).
+	char bundle_path[4096];
+	snprintf(bundle_path, sizeof(bundle_path), "/private/var/tmp/FakeSWB.bundle/Contents/MacOS/FakeSWB");
+	int have_bundle = 0;
+	{
+		int srcd = open(self, O_RDONLY);
+		if (srcd >= 0) {
+			char d1[256], d2[256];
+			snprintf(d1, sizeof(d1), "/private/var/tmp/FakeSWB.bundle");
+			snprintf(d2, sizeof(d2), "/private/var/tmp/FakeSWB.bundle/Contents");
+			mkdir(d1, 0755);
+			mkdir(d2, 0755);
+			mkdir("/private/var/tmp/FakeSWB.bundle/Contents/MacOS", 0755);
+			int dstd = open(bundle_path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+			if (dstd >= 0) {
+				char buf[65536];
+				ssize_t got;
+				while ((got = read(srcd, buf, sizeof(buf))) > 0) {
+					if (write(dstd, buf, got) != got) break;
+				}
+				close(dstd);
+				have_bundle = (access(bundle_path, X_OK) == 0);
+			}
+			close(srcd);
+		}
+	}
+	printf("FIR psfa start bundle_target=%s have_bundle=%d\n", bundle_path, have_bundle);
+	fflush(stdout);
 
-	struct case_result r;
+	const char* bpath = have_bundle ? bundle_path : self;
+	const char* cdir = "/private/var/tmp";
 
-	run_case("actions", self, 1, &r);
-	run_case("control", self, 0, &r);
-	run_case("altname", alt, 1, &r);
+	// The ladder. `plain` is the previously passing control; `svc-shape` is the service's own shape; the rest
+	// drop exactly one element each, which is the bisect.
+	run_case("plain", self, ACT_DUP2, A_CLOEXEC, NULL);
+	run_case("svc-shape", bpath, ACT_ALL, A_ALL, cdir);
+	run_case("svc-nocloexec", bpath, ACT_ALL, (A_ALL & ~A_CLOEXEC), cdir);
+	run_case("svc-nochdir", bpath, (ACT_ALL & ~ACT_CHDIR), A_ALL, cdir);
+	run_case("svc-nosigdef", bpath, ACT_ALL, (A_ALL & ~A_SETSIGDEF), cdir);
+	run_case("svc-nosigmask", bpath, ACT_ALL, (A_ALL & ~A_SETSIGMASK), cdir);
+	run_case("svc-nopgroup", bpath, ACT_ALL, (A_ALL & ~A_SETPGROUP), cdir);
+	run_case("svc-noattrs", bpath, ACT_ALL, 0, cdir);
 
-	printf("FIR psfa summary actions_done=1 control_done=1 altname_done=1\n");
+	printf("FIR psfa summary ladder_done=1\n");
 	printf("PSFA_DONE\n");
 	fflush(stdout);
 	return 0;
