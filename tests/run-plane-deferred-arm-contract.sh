@@ -97,6 +97,10 @@ done
 
 case "$expect" in red|green) ;; *) echo "plane-deferred-arm: --expect red|green" >&2; exit 2 ;; esac
 case "$oracle" in existing|product) ;; *) echo "plane-deferred-arm: --oracle existing|product" >&2; exit 2 ;; esac
+if [ "$expect" = green ] && [ "$oracle" != product ]; then
+	echo "plane-deferred-arm: INVALID: GREEN acceptance requires --oracle product: an absent diagnostic must never be read as zero violations" >&2
+	exit 2
+fi
 case "$repeats" in ''|*[!0-9]*) echo "plane-deferred-arm: --repeat must be a positive integer" >&2; exit 2 ;; esac
 [ "$repeats" -ge 1 ] || { echo "plane-deferred-arm: --repeat must be >= 1" >&2; exit 2; }
 
@@ -213,6 +217,14 @@ fi
 mkdir -p "$run_dir"
 
 deployed_sha="$(sha256sum "$prefix/bin/darlingserver" 2>/dev/null | cut -d' ' -f1)"
+if [ "$oracle" = product ]; then
+	for witness in plane-call-disarmed plane-call-unowned; do
+		if ! strings -a "$prefix/bin/darlingserver" 2>/dev/null | grep -q "$witness"; then
+			echo "PLANE-DEFERRED-ARM: INVALID: the deployed darlingserver carries no '$witness' literal: the product oracle cannot be evaluated, and an absent instrument is not a zero" >&2
+			exit 2
+		fi
+	done
+fi
 if [ -n "$expected_sha" ] && [ "$deployed_sha" != "$expected_sha" ]; then
 	echo "PLANE-DEFERRED-ARM: INVALID: deployed darlingserver sha256=$deployed_sha, expected $expected_sha: the runtime changed since the RED claim was established" >&2
 	exit 2
@@ -263,10 +275,23 @@ run_arm() { # <mode> <tag>
 
 	local harness_ok=0
 	grep -aq 'VERDICT: PASS' "$run_dir/$tag.harness" && harness_ok=1
+	if [ "$harness_ok" -ne 1 ]; then
+		if grep -aqE 'VERDICT: FAIL|VERDICT: INVALID' "$run_dir/$tag.harness"; then
+			arm_invalid="the harness did not complete successfully (VERDICT: PASS absent; see $run_dir/$tag.harness)"
+		else
+			arm_invalid="the harness never emitted a verdict (run truncated; see $run_dir/$tag.harness)"
+		fi
+		return 0
+	fi
 
 	# Provenance: the run must be served by the prefix we named.
 	if ! grep -aq "RUN-ENV prefix=$prefix" "$run_dir/$tag.harness"; then
 		arm_invalid="per-run server provenance: the harness did not name $prefix in RUN-ENV"
+		return 0
+	fi
+	grep -a 'RUN-ENV' "$run_dir/$tag.harness" | head -1 > "$run_dir/$tag.run-env" 2>/dev/null || true
+	if [ ! -s "$run_dir/$tag.run-env" ]; then
+		arm_invalid="per-run provenance: the arm has no RUN-ENV record of its own"
 		return 0
 	fi
 	if [ ! -f "$bundle/server.pre.log" ] || [ ! -f "$bundle/server.post.log" ]; then
@@ -337,6 +362,12 @@ for i in $(seq 1 "$repeats"); do
 	status="$(sed -n 's/.*PDA status=\([0-9-]*\).*/\1/p' "$run_dir/$tag.log" | tail -1)"
 	if [ "$status" != "0" ]; then
 		echo "PLANE-DEFERRED-ARM: FAIL: $tag guest status=${status:-absent} ($arm_status): the fixture did not complete with both opens succeeding" >&2
+		exit 1
+	fi
+	opens1="$(grep -acE '^PDA open1 fd=' "$run_dir/$tag.log" || true)"
+	opens2="$(grep -acE '^PDA open2 fd=' "$run_dir/$tag.log" || true)"
+	if [ "${opens1:-0}" -ne 1 ] || [ "${opens2:-0}" -ne 1 ]; then
+		echo "PLANE-DEFERRED-ARM: FAIL: $tag: the two requests did not each produce exactly one outcome (open1=$opens1 open2=$opens2): exactly-once is not established" >&2
 		exit 1
 	fi
 	pid="$(cat "$run_dir/$tag.pid")"
