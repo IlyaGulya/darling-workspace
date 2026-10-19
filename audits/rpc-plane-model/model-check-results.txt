@@ -1,0 +1,57 @@
+config           Arm      Gen      Ext      Reclaim  | invariant                  
+
+guarded              FALSE    TRUE     TRUE     FALSE    FALSE   
+    Inv2NoWrongGeneration        OK
+    Inv3NoSilentLoss             OK
+    Inv4NoDuplicateApply         OK
+    Inv5NoForeignReply           OK
+    Inv6NoInternalCycle          OK
+    Inv7QueuedCallHasOwner       OK
+
+unowned-arm          TRUE     TRUE     TRUE     FALSE    FALSE   
+    Inv2NoWrongGeneration        OK
+    Inv3NoSilentLoss             VIOLATED
+    Inv4NoDuplicateApply         VIOLATED
+    Inv5NoForeignReply           OK
+    Inv6NoInternalCycle          OK
+    Inv7QueuedCallHasOwner       OK
+
+no-gen-guard         TRUE     FALSE    TRUE     TRUE     FALSE   
+    Inv2NoWrongGeneration        VIOLATED
+    Inv3NoSilentLoss             VIOLATED
+    Inv4NoDuplicateApply         VIOLATED
+    Inv5NoForeignReply           OK
+    Inv6NoInternalCycle          OK
+    Inv7QueuedCallHasOwner       OK
+
+reclaim-race         FALSE    TRUE     TRUE     TRUE     FALSE   
+    Inv2NoWrongGeneration        OK
+    Inv3NoSilentLoss             OK
+    Inv4NoDuplicateApply         VIOLATED
+    Inv5NoForeignReply           OK
+    Inv6NoInternalCycle          OK
+    Inv7QueuedCallHasOwner       OK
+
+internal-cycle       FALSE    TRUE     FALSE    FALSE    FALSE   
+    Inv2NoWrongGeneration        OK
+    Inv3NoSilentLoss             OK
+    Inv4NoDuplicateApply         OK
+    Inv5NoForeignReply           OK
+    Inv6NoInternalCycle          VIOLATED
+    Inv7QueuedCallHasOwner       OK
+
+real-console-defer   TRUE     TRUE     TRUE     TRUE     FALSE   
+    Inv2NoWrongGeneration        OK
+    Inv3NoSilentLoss             VIOLATED
+    Inv4NoDuplicateApply         VIOLATED
+    Inv5NoForeignReply           OK
+    Inv6NoInternalCycle          OK
+    Inv7QueuedCallHasOwner       OK
+
+arm-after-queue      FALSE    TRUE     TRUE     FALSE    TRUE    
+    Inv2NoWrongGeneration        OK
+    Inv3NoSilentLoss             VIOLATED
+    Inv4NoDuplicateApply         VIOLATED
+    Inv5NoForeignReply           OK
+    Inv6NoInternalCycle          OK
+    Inv7QueuedCallHasOwner       VIOLATED
