@@ -153,6 +153,9 @@ int main(int argc, char **argv)
 	printf("PDA result mode=%s open1=%d open2=%d mach=%d verdict=%s\n",
 	       mode, g_open[0].fd, g_open[1].fd, msg_res,
 	       ok ? "both-open" : "open-failed");
+	/* machine-readable guest status for the harness's --status-marker: 0 only when
+	 * the workload completed and both opens succeeded. */
+	printf("PDA status=%d\n", ok ? 0 : 1);
 	printf("PDA end\n");
 	return ok ? 0 : 1;
 }

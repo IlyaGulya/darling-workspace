@@ -501,7 +501,9 @@ re-publications (`pending=1`), the deferral at the next dispatch — with no
 (`evidence/plane-deferred-arm/README.md`). The RED run is against the deployed binary
 (`sha256 90e4eee4…`); the active Xcode workstream has since put the disarm for P0-1 in the
 working tree (uncommitted, `src/thread.cpp`), so `--expect green` is the same gate to run
-after that change is built and deployed, by that workstream. The arm-after-queue window (Slice 1) is model-checked, not yet run
+after that change is built and deployed, by that workstream. The corrected phase oracle,
+its test-safety rules and the requested product diagnostics are in
+`audits/plane-deferred-arm-handoff.md`. The arm-after-queue window (Slice 1) is model-checked, not yet run
 against a live server; `Inv7QueuedCallHasOwner` is its acceptance predicate.
 
 ---
