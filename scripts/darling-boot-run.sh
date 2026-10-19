@@ -271,6 +271,27 @@ owned_pids() {
 		# ("Killed" printed by the script itself). A subshell has a different PID but the same cmdline, so the
 		# guard is on the script name, not on the PID.
 		case "$cmd" in *"$SELF_NAME"*) continue ;; esac
+		# The process that SERVES the prefix's own layer is not a prefix-owned runtime process. When the prefix
+		# is itself a mount (an isolation lane's fuse-overlayfs view), that daemon names the prefix in its
+		# -o upperdir=/workdir= and in its mountpoint argument, so the cmdline arm below killed it -- which
+		# unmounted the prefix and made every later command fail with ENOTCONN. MEASURED 2026-10-18: that is
+		# how the first isolation-lane boot died. Identity is the program AND the prefix's own device:inode,
+		# not the program name, so a fixture that merely runs fuse-overlayfs under the prefix is still swept.
+		case "$exe_base" in
+		fuse-overlayfs)
+			layer=0
+			if [ -n "$prefix_id" ]; then
+				for a in $cmd; do
+					case "$a" in /*) ;; *) continue ;; esac
+					if [ "$(stat -Lc '%d:%i' "$a" 2>/dev/null)" = "$prefix_id" ]; then layer=1; break; fi
+				done
+			fi
+			if [ "$layer" = 1 ]; then
+				witness "SKIP pid=$pid arm=layer reason=serves-the-prefix-mountpoint"
+				continue
+			fi
+			;;
+		esac
 		case "$cmd" in
 			*"$PREFIX"*) witness "OWNED pid=$pid arm=cmdline ancestor=no ppid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $2}') pgid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $3}') sid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $4}') cmd=$(echo "$cmd" | cut -c1-120)"; echo "$pid" ;;
 		esac
@@ -799,6 +820,16 @@ else
 	HATCH_ENV=""
 fi
 : > "$LOG"
+# A RUN'S LOG MUST SAY WHICH PREFIX IT BELONGS TO. `dwdiag` resolves the SERVER log from a `prefix=` field in the
+# run log itself (resolve_prefix in tools/darling-debug-runner reads the first `prefix=` token and trims `]`), and
+# a `--prefix` on the command line does NOT override it for that purpose. Without this line every log-only tool fell
+# back to a DEFAULT path and read ANOTHER prefix's dserver.log -- the same failure class as "a run served by another
+# prefix's live runtime", and it is silent. MEASURED 2026-10-19: `dwdiag progress --log <run log> --prefix <P>`
+# printed `SERVER-LOG-PATH /tmp/dr-on-matched/private/var/log/dserver.log (from DEFAULT ...)` and dropped every
+# server-side fact while the prefix was known. The shape below is the one the tools already parse
+# (`[dwdiag-env prefix=<path> ...]`), so ONE line makes the log self-describing for progress, verdict, crash and
+# scripts/darling-stop-reason.sh. It is the first line, because the guest's own output is appended after it.
+echo "[dwdiag-env prefix=$PREFIX log=$LOG bundle=$BUNDLE_DIR wait=$WAIT]" >> "$LOG"
 # shellcheck disable=SC2086
 # THE SHELL VERB, NOT exec. MEASURED: `--rootless shell /bin/sh -c ...` runs the command INSIDE the guest (a
 # run on /tmp/dr-on-matched produced mldr-seed attach/seeded, dring-adopt and the command's own output, 5803
@@ -847,6 +878,8 @@ echo "waited ${_waited}s of at most ${WAIT}s" | tee -a "$LOG"
 
 STAGE=verdict; echo "== verdict =="
 verdict=0
+# The workload's own status, kept for the STOP-REASON classifier below: 132 is a SIGILL, not a number to read.
+LAST_STATUS_VALUE=""
 # THE WORKLOAD'S OWN STATUS (dar-u4mk). A declaration that names a VALUE -- `--status-marker FIELD=`, a `--marker`
 # ending in `=`, or a caller-supplied `--poll` ending in `=` -- asserts success only by an integer 0. The old rule
 # tested presence with grep and never parsed the value, so `--marker 'XCB_RC='` was satisfied by the SUBSTRING in
@@ -883,6 +916,7 @@ check_status() { # DECL -> records the workload's own status; PASS only for the 
 		return 0
 	fi
 	v=$(status_value "$st")
+	LAST_STATUS_VALUE="$v"
 	if [ -z "$v" ]; then
 		echo "STATUS MISS $st: no log line carries an integer immediately after it"
 		verdict=1
@@ -935,6 +969,33 @@ STAGE=bundle
 bundle_finish
 bundle_report
 
+# STOP-REASON: the run's OWN evidence names the stop, in one line, before anyone greps for it.
+# MEASURED 2026-10-19: an xcodebuild workload died with rc=132 (SIGILL) and no artifact; the missing Swift
+# symbol, its referrer and the image that should have supplied it were ALREADY inside this bundle's captures/,
+# and the cause was still found by hand-grepping 27 KB -- because the bundle was reported, not read. The
+# classifier reads the log plus the bundle's captures/abort text; a passing run prints kind=none, which is a
+# statement about the evidence, never about the verdict.
+STAGE=stop-reason
+if [ -x "$SCRIPT_DIR/darling-stop-reason.sh" ]; then
+	_sr_extra=""
+	[ -n "$BUNDLE_DIR" ] && [ -d "$BUNDLE_DIR" ] && _sr_extra="$_sr_extra --bundle=$BUNDLE_DIR"
+	[ -n "$LAST_STATUS_VALUE" ] && _sr_extra="$_sr_extra --rc=$LAST_STATUS_VALUE"
+	# RUN SCOPING. The prefix's captures and its server log are CUMULATIVE: they hold earlier runs' records, and a
+	# matching prefix is not run identity. The classifier admits a capture only when it is at or after this run's
+	# own start stamp, counts what it excluded, and says so.
+	[ -n "$BUNDLE_STAMP" ] && [ -f "$BUNDLE_STAMP" ] && _sr_extra="$_sr_extra --run-start=$(stat -c %Y "$BUNDLE_STAMP" 2>/dev/null || echo 0)"
+	_sr_extra="$_sr_extra --run-id=$(basename "$LOG")"
+	# The workspace paths carry no spaces (documented in that script), so splitting _sr_extra is safe here.
+	_stop=$("$SCRIPT_DIR/darling-stop-reason.sh" --log="$LOG" $_sr_extra 2>/dev/null) || true
+	if [ -n "$_stop" ]; then
+		printf '%s\n' "$_stop"
+		printf '%s\n' "$_stop" >> "$LOG"
+		[ -n "$BUNDLE_DIR" ] && [ -d "$BUNDLE_DIR" ] && printf '%s\n' "$_stop" > "$BUNDLE_DIR/stop-reason.txt"
+	fi
+else
+	echo "STOP-REASON kind=unknown note=no $SCRIPT_DIR/darling-stop-reason.sh"
+fi
+
 if [ "${FREEZE_ON_FAIL:-0}" -eq 1 ] && [ "$verdict" -ne 0 ]; then
 	STAGE=freeze; echo "== freeze-on-fail (diagnostic) =="
 	echo "FREEZE-ON-FAIL prefix=$PREFIX log=$LOG verdict=$verdict"
@@ -971,10 +1032,16 @@ done
 # another lane's overlay instance names this prefix in its lowerdir
 # (.west-prefix-instances/probe1/merged lowerdir=<prefix>), which is not a mount under the prefix, yet
 # it made every run print "mounts: 1" and clean up as VERDICT: FAIL while the guest verdict was PASS.
-mounts=$(mount 2>/dev/null | awk -v p="$PREFIX" '$3 == p || index($3, p "/") == 1' | wc -l)
+# A mount AT the prefix path is excluded only when it is a FUSE overlay: that is the isolation layer the
+# run looks THROUGH (an isolation lane, or a fixture's own instance), not residue the run left behind.
+# MEASURED 2026-10-18: counting it made every lane run report "mounts: 1" and VERDICT: FAIL with a PASSing
+# guest. A kernel `overlay` at the prefix stays counted: in the privileged runtime THAT is the server's own
+# bring-up mount, and leaving one behind after shutdown is real residue.
+mounts=$(mount 2>/dev/null | awk -v p="$PREFIX" 'index($3, p "/") == 1 || ($3 == p && $5 != "fuse.fuse-overlayfs")' | wc -l)
+layer_mounts=$(mount 2>/dev/null | awk -v p="$PREFIX" '$3 == p && $5 == "fuse.fuse-overlayfs"' | wc -l)
 # Same rule after the run: leave the prefix as a *bootable* clean state, not merely a process-free one.
 clear_stale_runtime_files
-echo "prefix processes after: $final, mounts: $mounts"
+echo "prefix processes after: $final, mounts: $mounts (plus $layer_mounts prefix layer mount(s))"
 if [ "$final" -gt 0 ] || [ "$mounts" -gt 0 ]; then
 	echo "cleanup FAILED" >&2
 	verdict=1

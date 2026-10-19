@@ -28,6 +28,10 @@ CONTRACTS = (
     "tests/run-identity-contract.sh",
     "tests/run-process-control-slot-ownership-contract.sh",
     "tests/run-truthful-nofile-contract.sh",
+    # scripts/darling-stop-reason.sh + the missing-SYMBOL form of scripts/rung-driver.py stop. Pure text
+    # fixtures over real stop shapes: no prefix, no boot, no runner driven (it calls one tool, and asserts on
+    # what that tool prints), so it holds the default worker weight.
+    "tests/run-darling-stop-reason-contract.sh",
     "tests/run-bnns-random-generator-contract.sh",
     "tests/run-dtape-kqchan-modify-context-contract.sh",
     "tests/run-west-patch-stack-materialize-contract.sh",
@@ -179,6 +183,10 @@ EXPLICIT_CONTRACTS = (
     ("dev-start", "tests/west_test_contracts/dev_start_contract.py", True),
     ("dev-status", "tests/west_test_contracts/dev_status_contract.py", True),
     ("fresh-prefix", "tests/west_test_contracts/fresh_prefix_contract.py", True),
+    # The isolation-lane mechanism is what lets two experiments run at once without sharing a
+    # prefix, a state root or a process tree, so its contract mounts real lanes and observes the
+    # bytes in both layers rather than modelling either.
+    ("isolation-lane", "tests/west_test_contracts/lane_contract.py", True),
     ("host-tier", "tests/west_test_contracts/host_tier_contract.py", True),
     ("patch-check-exit", "tests/west_test_contracts/patch_check_exit_contract.py", True),
     (
@@ -393,6 +401,22 @@ EXCLUDED_CONTRACTS = {
         "DPREFIX) to prove the guest Darwin-syscall tracer preserves the guest, actually traces, and "
         "does not trace its own output. The host tier has no prefix lifecycle and no guest runtime, so "
         "it is exercised by the prefix-backed lane that owns the Ring/plane work instead",
+    "tests/run-darling-lane-concurrency-contract.sh":
+        "guest-runtime gate: its subject is two Real Darling runtimes booting and running at the same "
+        "time in two isolation lanes, one of them deploying an experimental launcher and then being "
+        "stopped mid-flight while the other still passes. It needs a bootstrapped rootless prefix and "
+        "two concurrent prefix lifecycles, neither of which the host tier has. Its mechanism-level "
+        "contract (isolation-lane) is registered and runs in the tier; this one is run by the operator, "
+        "through scripts/west-job.sh, with --base <a bootstrapped prefix>",
+    "tests/run-darling-lane-test-lane-contract.sh":
+        "prefix-backed interface gate: it drives the existing `west test` runner twice, at once, in two "
+        "isolation lanes, so it needs a bootstrapped rootless prefix, fuse-overlayfs, a `systemd --user` "
+        "scope and two concurrent prefix lifecycles - none of which the host tier has. Its offline mode "
+        "runs the runner's own prefix lifecycle concurrently and repeatedly; its `--guest-profile` mode "
+        "adds two concurrent profile guest selections and needs that profile's staged immutable mirrors "
+        "(`source-bundles/<profile>/*.bundle`), which this tree does not carry. Its mechanism contract "
+        "(isolation-lane) is registered and runs in the tier; this one is run by the operator through "
+        "scripts/west-job.sh with --base <a bootstrapped prefix>",
     "tests/west_test_contracts/a0_typed_wake_fault_hook_contract.py":
         "argparse tool, not a self-running contract: it needs --source, the materialized "
         "darlingserver source root an operator selects",

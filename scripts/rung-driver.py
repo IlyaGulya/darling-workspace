@@ -40,6 +40,18 @@ import closure_analyze as ca  # noqa: E402
 LOADER_STOP_RE = re.compile(
     r"Library not loaded:\s*(\S+)\s*\n\s*Referenced from:\s*(\S+)\s*\n\s*Reason:\s*([^\n)]*)")
 LOADER_STOP_LOOSE_RE = re.compile(r"Library not loaded:\s*(\S+)")
+# The OTHER dyld stop form: an image loaded (or dlopened) whose import is absent. MEASURED 2026-10-19, the iOS
+# lane: xcodebuild died with rc=132 (SIGILL) and this tool answered "the run did not stop in dyld" -- it was
+# wrong, because only the missing-IMAGE form was parsed. The three lines dyld prints are:
+#   Symbol not found: _<sym>
+#     Referenced from: <image> (which was built for Mac OS X <ver>)
+#     Expected in: <image>
+# The image named by "Expected in:" is the one that must supply the symbol, so it takes the install-name slot
+# and the demand the next rung is built from is unchanged; the symbol itself is kept in the reason text,
+# because a missing SYMBOL and a missing IMAGE are different defects (a substitute symbol vs a whole image).
+LOADER_SYMBOL_RE = re.compile(
+    r"Symbol not found:\s*(\S+)\s*\n\s*Referenced from:\s*([^\n]*?)\s*(?:\(which was built for[^\n]*\))?\s*\n"
+    r"\s*Expected in:\s*(\S+)")
 
 
 def parse_loader_stop(text):
@@ -48,7 +60,8 @@ def parse_loader_stop(text):
     The strict shape is dyld's own: the three lines "Library not loaded:", "Referenced from:" and
     "Reason:".  A log that carries only the first line still names the install name, and that is
     reported with an empty referrer rather than dropped, because the install name is the fact the
-    next rung is built from.
+    next rung is built from.  A missing SYMBOL inside a loaded image is the sibling form and is
+    reported the same way, with the image named by "Expected in:" as the install name.
     """
     stops = []
     for m in LOADER_STOP_RE.finditer(text):
@@ -56,6 +69,9 @@ def parse_loader_stop(text):
     if not stops:
         for m in LOADER_STOP_LOOSE_RE.finditer(text):
             stops.append((m.group(1), "", ""))
+    if not stops:
+        for m in LOADER_SYMBOL_RE.finditer(text):
+            stops.append((m.group(3), m.group(2), f"Symbol not found: {m.group(1)}"))
     return stops
 
 
@@ -216,7 +232,8 @@ def cmd_stop(args):
     text = open(args.log, encoding="utf-8", errors="replace").read()
     stops = parse_loader_stop(text)
     if not stops:
-        print(f"rung-driver: no 'Library not loaded' line in {args.log} -- the run did not stop in dyld")
+        print(f"rung-driver: no 'Library not loaded' and no 'Symbol not found' line in {args.log} -- the run "
+              f"did not stop in dyld with either form")
         print("  (that is a fact about the run, not a driver failure: a PASS run prints none)")
         return 1
     print(f"rung-driver stop -- the current load-time rung")
