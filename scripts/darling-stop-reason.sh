@@ -46,6 +46,8 @@ BUNDLE=""
 RC=""
 RUN_START=""
 RUN_ID=""
+ORACLES=""
+RUNNER_RC=""
 JSON=0
 
 while [ $# -gt 0 ]; do
@@ -55,11 +57,15 @@ while [ $# -gt 0 ]; do
 		--rc) RC="$2"; shift 2 ;;
 		--run-start) RUN_START="$2"; shift 2 ;;
 		--run-id) RUN_ID="$2"; shift 2 ;;
+		--oracle) ORACLES="$ORACLES|$2"; shift 2 ;;
+		--runner-rc) RUNNER_RC="$2"; shift 2 ;;
 		--log=*) LOG="${1#*=}"; shift ;;
 		--bundle=*) BUNDLE="${1#*=}"; shift ;;
 		--rc=*) RC="${1#*=}"; shift ;;
 		--run-start=*) RUN_START="${1#*=}"; shift ;;
 		--run-id=*) RUN_ID="${1#*=}"; shift ;;
+		--oracle=*) ORACLES="$ORACLES|${1#*=}"; shift ;;
+		--runner-rc=*) RUNNER_RC="${1#*=}"; shift ;;
 		--json) JSON=1; shift ;;
 		-h|--help) sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		*) echo "darling-stop-reason: unknown argument: $1" >&2; exit 2 ;;
@@ -105,7 +111,7 @@ if [ -n "$BUNDLE" ] && [ -d "$BUNDLE" ]; then
 fi
 [ -n "$EVID" ] || {
 	if [ "$JSON" = 1 ]; then
-		printf '{"kind":"none","note":"no-evidence","path":"%s","product_verdict":"PASS"}\n' "$LOG"
+		printf '{"kind":"none","note":"no-evidence","path":"%s","product_verdict":"INCONCLUSIVE"}\n' "$LOG"
 	else
 		echo "STOP-REASON kind=none note=no-evidence path=$LOG"
 	fi
@@ -279,13 +285,38 @@ fi
 
 # --------------------------------------------------------------------------- the run record and the verdict
 # THE PRODUCT VERDICT IS NOT THE HARNESS'S. The harness judges ITS declarations (a probe that completed is a
-# completed probe); the product's own status says whether the thing under test worked. Both are printed, and the
-# harness's value is carried here so a reader never has to reconcile two tools by hand.
-PRODUCT=PASS
+# completed probe); the product's own status says whether the thing under test worked. Both are printed.
+#
+# ABSENCE OF EVIDENCE IS NOT SUCCESS. A run whose harness status AND guest status are both absent, with no
+# explicit success oracle the caller declared, has produced NO evidence either way: it is INCONCLUSIVE, not
+# PASS. MEASURED 2026-10-19 (canonical `--plug-ins ci` minproj): `XCB_RC=absent`, harness `HARNESS_RC=absent`,
+# `kind=none` -- and an earlier revision of this tool called that PASS. Inventing success from a missing
+# status is how a dead workload reads as a green one.
+ORACLE_HIT=0
+if [ -n "$ORACLES" ]; then
+	# The oracles are `|`-joined, and they may contain spaces, so they are read line by line from a heredoc rather
+	# than split by changing IFS: MEASURED 2026-10-19, setting IFS='|' around the call made egrep_a expand $EVID
+	# with that IFS and hand grep a path with a leading space, so a present oracle read as absent.
+	while IFS= read -r _o; do
+		[ -n "$_o" ] || continue
+		if egrep_a -q -F -- "$_o"; then ORACLE_HIT=1; fi
+	done <<ORACLE_LIST_EOF
+$(printf '%s\n' "$ORACLES" | tr '|' '\n')
+ORACLE_LIST_EOF
+fi
+
+PRODUCT=INCONCLUSIVE
 case "$GUEST_RC" in
-	''|absent) [ "$KIND" = none ] || PRODUCT=FAIL ;;
-	*[!0-9]*) PRODUCT=FAIL ;;
-	0) [ "$KIND" = none ] || PRODUCT=FAIL ;;
+	''|absent)
+		# No guest status. A declared stop is a failure; a declared oracle that fired is success; otherwise the
+		# run tells us nothing about the product.
+		case "$KIND" in
+			none) if [ "$ORACLE_HIT" = 1 ]; then PRODUCT=PASS; else PRODUCT=INCONCLUSIVE; fi ;;
+			*)    PRODUCT=FAIL ;;
+		esac
+		;;
+	*[!0-9]*) PRODUCT=INCONCLUSIVE ;;
+	0) PRODUCT=PASS ;;
 	*) PRODUCT=FAIL ;;
 esac
 [ "$KIND" = watchdog-timeout ] && PRODUCT=FAIL
@@ -304,8 +335,8 @@ if [ "$JSON" = 1 ]; then
 	[ -n "$POLLUTED" ] && printf ',"pollution":"1"'
 	printf ',"run":"%s","started":"%s","ended":"%s","harness_rc":"%s","guest_xcb_rc":"%s"' \
 		"$RUN_ID" "$_started" "$_ended" "${RC:-absent}" "$GUEST_RC"
-	printf ',"product_verdict":"%s","captures":"%s","capture_count":"%s","excluded":"%s","pids":"%s"}\n' \
-		"$PRODUCT" "$CAPTURES" "$CAPTURE_COUNT" "$EXCLUDED" "$PIDS"
+	printf ',"product_verdict":"%s","runner_rc":"%s","oracle":"%s","captures":"%s","capture_count":"%s","excluded":"%s","pids":"%s"}\n' \
+		"$PRODUCT" "${RUNNER_RC:-absent}" "$ORACLE_HIT" "$CAPTURES" "$CAPTURE_COUNT" "$EXCLUDED" "$PIDS"
 else
 	printf 'RUN-RECORD run=%s started=%s ended=%s prefix=%s harness_rc=%s captures=%s capture_count=%s excluded=%s pids=%s\n' \
 		"$RUN_ID" "$_started" "$_ended" "${PREFIX_HINT:-unknown}" "${RC:-absent}" "${CAPTURES:-none}" \
@@ -316,8 +347,8 @@ else
 			*) printf 'RUN-RECORD-WARNING capture-prefix=%s run-prefix=%s -- a capture naming another prefix is not run-scoped evidence\n' \
 				"$capture_prefixes" "$PREFIX_HINT" ;;
 		esac
-	printf 'PRODUCT-VERDICT PRODUCT_VERDICT=%s HARNESS_RC=%s GUEST_XCB_RC=%s stop=%s run=%s prefix=%s\n' \
-		"$PRODUCT" "${RC:-absent}" "$GUEST_RC" "$KIND" "$RUN_ID" "${PREFIX_HINT:-unknown}"
+	printf 'PRODUCT-VERDICT PRODUCT_VERDICT=%s HARNESS_RC=%s GUEST_XCB_RC=%s RUNNER_RC=%s oracle=%s stop=%s run=%s prefix=%s\n' \
+		"$PRODUCT" "${RC:-absent}" "$GUEST_RC" "${RUNNER_RC:-absent}" "$ORACLE_HIT" "$KIND" "$RUN_ID" "${PREFIX_HINT:-unknown}"
 fi
 
 [ "$KIND" = none ] && exit 3

@@ -985,6 +985,15 @@ if [ -x "$SCRIPT_DIR/darling-stop-reason.sh" ]; then
 	# own start stamp, counts what it excluded, and says so.
 	[ -n "$BUNDLE_STAMP" ] && [ -f "$BUNDLE_STAMP" ] && _sr_extra="$_sr_extra --run-start=$(stat -c %Y "$BUNDLE_STAMP" 2>/dev/null || echo 0)"
 	_sr_extra="$_sr_extra --run-id=$(basename "$LOG")"
+	# A caller-declared PRESENCE marker is an explicit success oracle: without one, a run whose statuses are both
+	# absent is INCONCLUSIVE and must not be called a pass. A `FIELD=` marker is a status declaration judged on
+	# its own above, so it is not passed here as an oracle.
+	_sr_old_ifs=$IFS; IFS='|'
+	for _m in $MARKERS; do
+		[ -n "$_m" ] || continue
+		case "$_m" in *=) ;; *) _sr_extra="$_sr_extra --oracle=$_m" ;; esac
+	done
+	IFS=$_sr_old_ifs
 	# The workspace paths carry no spaces (documented in that script), so splitting _sr_extra is safe here.
 	_stop=$("$SCRIPT_DIR/darling-stop-reason.sh" --log="$LOG" $_sr_extra 2>/dev/null) || true
 	if [ -n "$_stop" ]; then

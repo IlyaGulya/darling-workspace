@@ -90,7 +90,7 @@ grep -F -q "kind=none" <<<"$log_only"
 
 # 7. evidence with no recognizable stop is NOT a failure claim: kind=none, exit 3
 printf 'VERDICT: PASS\nMARKER ok HELLO=1\nwaited 60s of at most 300s\n' >"$tmp/pass.log"
-out="$("$run" --log "$tmp/pass.log")" && rc=0 || rc=$?
+out="$("$run" --log "$tmp/pass.log" --oracle='MARKER ok HELLO=1')" && rc=0 || rc=$?
 printf '%s\n' "$out"
 [ "$rc" -eq 3 ]
 grep -F -q "kind=none" <<<"$out"
@@ -169,6 +169,32 @@ printf '[dwdiag-env prefix=/tmp/pfx log=%s wait=60]\nwaited 60s of at most 300s\
 out="$("$run" --log "$tmp/c2/current.log" --bundle "$tmp/c2/bundle" --run-start="$(date +%s)" --run-id=run-c2 || true)"
 printf '%s\n' "$out"
 grep -F -q "RUN-RECORD-WARNING capture-prefix=/tmp/other-prefix run-prefix=/tmp/pfx" <<<"$out"
+
+# E. ABSENCE OF EVIDENCE IS NOT SUCCESS. Both the harness status and the guest status absent, and no explicit
+#    success oracle: the product verdict must be INCONCLUSIVE, never PASS. An earlier revision of this tool
+#    called exactly this shape `PRODUCT_VERDICT=PASS` (the XCB_RC=absent canonical run), which invents success
+#    from a missing status. `RUNNER_RC` is preserved separately when the caller knows it.
+printf '[dwdiag-env prefix=/tmp/pfx log=x wait=300]\n' >"$tmp/e.log"
+printf 'plain line\nwaited 60s of at most 300s\n' >>"$tmp/e.log"
+out="$("$run" --log "$tmp/e.log" --run-id=run-e || true)"
+printf '%s\n' "$out"
+grep -F -q "PRODUCT_VERDICT=INCONCLUSIVE" <<<"$out"
+! grep -F -q "PRODUCT_VERDICT=PASS" <<<"$out"
+grep -F -q "HARNESS_RC=absent" <<<"$out"
+grep -F -q "GUEST_XCB_RC=absent" <<<"$out"
+grep -F -q "RUNNER_RC=absent" <<<"$out"
+grep -F -q "oracle=0" <<<"$out"
+# a declared oracle that is present makes PASS legitimate; one that is absent does not
+printf 'BUILD_OK=1\n' >>"$tmp/e.log"
+out="$("$run" --log "$tmp/e.log" --oracle='BUILD_OK=1' --runner-rc=0 || true)"
+printf '%s\n' "$out"
+grep -F -q "PRODUCT_VERDICT=PASS" <<<"$out"
+grep -F -q "oracle=1" <<<"$out"
+grep -F -q "RUNNER_RC=0" <<<"$out"
+out="$("$run" --log "$tmp/e.log" --oracle='NEVER_PRINTED=1' || true)"
+grep -F -q "PRODUCT_VERDICT=INCONCLUSIVE" <<<"$out"
+json="$("$run" --log "$tmp/e.log" --json || true)"
+python3 -B -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["product_verdict"]=="INCONCLUSIVE", d' "$json"
 
 # D. run identity, timestamps and exact capture paths are preserved
 out="$("$run" --log "$tmp/c/current.log" --bundle "$tmp/c/bundle" --run-start="$now" --run-id=run-c || true)"
