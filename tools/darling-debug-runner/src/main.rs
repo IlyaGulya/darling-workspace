@@ -77,6 +77,16 @@ struct CommonArgs {
     gdb_ex: Vec<String>,
     #[arg(long)]
     capture_pattern: Option<String>,
+    /// Also require the matched process's /proc/PID/exe basename to equal this. The Darling launcher
+    /// carries the guest argv too and `exec`s the loader in the SAME pid, so a cmdline-only match
+    /// attaches to the launcher and the attach is lost at exec (MEASURED). `mldr` selects the loader.
+    #[arg(long)]
+    capture_exe: Option<String>,
+    /// Also require /proc/PID/comm to equal this. Every guest process is the same host loader binary,
+    /// so an exe check cannot tell the guest program from a guest shell; comm carries the guest name
+    /// for a normal guest program and the shell's own name for a shell (MEASURED).
+    #[arg(long)]
+    capture_comm: Option<String>,
     /// Record the out-of-band futex trace for THIS run into this file, with the probe the reader expects
     /// (`probes/futex.bt`, embedded in the binary). It needs root: `sudo -n bpftrace` must work without a password.
     /// The trace is what makes "who woke whom" answerable at all -- a /proc syscall snapshot is one instant.
@@ -94,6 +104,13 @@ struct CommonArgs {
     /// twenty seconds", which is what a hang looks like from outside and cannot be seen in a log.
     #[arg(long)]
     capture_on_state: Option<String>,
+    /// Attach the debugger as soon as the capture pattern matches and KEEP it attached, so a fatal
+    /// signal (SIGILL/SIGSEGV/SIGABRT/SIGBUS) is caught where it happens. All other capture triggers
+    /// are evaluated after a stall or after the workload exits; a process killed by a signal is
+    /// already gone at that point, which is exactly the case this exists for (MEASURED: XCB_RC=132,
+    /// "Illegal instruction (core dumped)", and no stack from any post-mortem path).
+    #[arg(long)]
+    capture_on_fatal: bool,
     #[arg(long, default_value_t = 2)]
     capture_snapshots: usize,
     #[arg(long, default_value_t = 3)]
@@ -363,7 +380,7 @@ fn find_pid(pid: Option<u32>, pattern: Option<&str>) -> Result<u32> {
         .with_context(|| format!("no process matched {pattern:?}"))
 }
 
-fn find_pid_in_tree(root: u32, pattern: &str) -> Result<u32> {
+fn find_pid_in_tree(root: u32, pattern: &str, exe: Option<&str>, comm: Option<&str>) -> Result<u32> {
     let pattern = Regex::new(pattern).context("invalid process pattern")?;
     process_tree(root)
         .into_iter()
@@ -375,9 +392,81 @@ fn find_pid_in_tree(root: u32, pattern: &str) -> Result<u32> {
         .filter(|(_, cmdline)| {
             pattern.is_match(&String::from_utf8_lossy(cmdline).replace('\0', " "))
         })
+        .filter(|(pid, _)| match comm {
+            None => true,
+            Some(name) => fs::read_to_string(format!("/proc/{pid}/comm"))
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .is_some_and(|value| value == name),
+        })
+        .filter(|(pid, _)| match exe {
+            None => true,
+            Some(name) => fs::read_link(format!("/proc/{pid}/exe"))
+                .ok()
+                .and_then(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .is_some_and(|base| base == name),
+        })
         .min_by_key(|(_, cmdline)| cmdline.len())
         .map(|(pid, _)| pid)
         .with_context(|| format!("no process in tree rooted at {root} matched {pattern:?}"))
+}
+
+/// Every process in the tree matching the pattern (and the optional exe/comm filters). The single-pid
+/// resolver picks the shortest cmdline, which is the WRONG process when the loader and a guest shell
+/// share the guest command line (MEASURED: the fatal attach landed on a guest bash twice). A fatal-signal
+/// capture can afford to hold all candidates: the one that faults prints the stack and the others:
+/// detach when the run ends.
+fn find_pids_in_tree(root: u32, pattern: &str, exe: Option<&str>, comm: Option<&str>) -> Result<Vec<u32>> {
+    let pattern = Regex::new(pattern).context("invalid process pattern")?;
+    Ok(process_tree(root)
+        .into_iter()
+        .filter_map(|pid| {
+            fs::read(format!("/proc/{pid}/cmdline"))
+                .ok()
+                .map(|cmdline| (pid, cmdline))
+        })
+        .filter(|(_, cmdline)| {
+            pattern.is_match(&String::from_utf8_lossy(cmdline).replace('\0', " "))
+        })
+        .filter(|(pid, _)| match comm {
+            None => true,
+            Some(name) => fs::read_to_string(format!("/proc/{pid}/comm"))
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .is_some_and(|value| value == name),
+        })
+        .filter(|(pid, _)| match exe {
+            None => true,
+            Some(name) => fs::read_link(format!("/proc/{pid}/exe"))
+                .ok()
+                .and_then(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .is_some_and(|base| base == name),
+        })
+        .map(|(pid, _)| pid)
+        .collect())
+}
+
+fn arm_fatal_gdb(
+    args: &CommonArgs,
+    bundle: &Path,
+    root: u32,
+    armed: &mut Vec<(u32, std::process::Child)>,
+) -> Result<()> {
+    let pattern = args.capture_pattern.as_deref().unwrap_or("");
+    let pids = find_pids_in_tree(root, pattern, args.capture_exe.as_deref(), args.capture_comm.as_deref())?;
+    for pid in pids {
+        if armed.iter().any(|(existing, _)| *existing == pid) {
+            continue;
+        }
+        let out = bundle.join(format!("gdb-fatal-{pid}.txt"));
+        match spawn_fatal_gdb(pid, &out, args.gdb_namespace, args.gdb_executable.as_deref(), args.gdb_cwd.as_deref(), &args.gdb_ex) {
+            Ok(child) => armed.push((pid, child)),
+            Err(error) => {
+                let _ = fs::write(bundle.join("fatal-attach-error.txt"), format!("pid {pid}: {error}\n"));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn command_to_file(mut command: Command, output: &Path) {
@@ -565,6 +654,56 @@ fn namespace_pid(pid: u32) -> Option<u32> {
         .next_back()?
         .parse()
         .ok()
+}
+
+/// Hold the target with the debugger and let it run: `continue` returns only when a fatal signal
+/// arrives, and the batch then prints every thread's stack. Attached before the fault, which is the
+/// only moment a stack is still obtainable.
+fn spawn_fatal_gdb(
+    pid: u32,
+    output: &Path,
+    gdb_namespace: bool,
+    executable: Option<&Path>,
+    cwd: Option<&Path>,
+    expressions: &[String],
+) -> Result<std::process::Child> {
+    let mut command = Command::new("sudo");
+    command.arg("-n");
+    if gdb_namespace {
+        let namespace_pid = namespace_pid(pid).unwrap_or(pid);
+        command
+            .args([
+                "nsenter",
+                "--target",
+                &namespace_pid.to_string(),
+                "--pid",
+                "--mount",
+                "--",
+            ])
+            .args(["gdb", "-q"]);
+    } else {
+        command.args(["gdb", "-q"]);
+    }
+    if let Some(cwd) = cwd {
+        command.current_dir(expand_home(cwd));
+    }
+    if let Some(executable) = executable {
+        command.arg(expand_home(executable));
+    }
+    command.args(["-p", &pid.to_string(), "-batch", "-ex", "set pagination off"]);
+    for signal in ["SIGILL", "SIGSEGV", "SIGABRT", "SIGBUS", "SIGFPE"] {
+        command.args(["-ex", &format!("handle {signal} stop print nopass")]);
+    }
+    command.args(["-ex", "continue", "-ex", "info threads", "-ex", "thread apply all bt full"]);
+    for expression in expressions {
+        command.args(["-ex", expression]);
+    }
+    let file = File::create(output)?;
+    command
+        .stdout(Stdio::from(file.try_clone()?))
+        .stderr(Stdio::from(file))
+        .spawn()
+        .context("failed to start the pre-attached debugger")
 }
 
 fn gdb_command(
@@ -812,7 +951,7 @@ impl StraceAttacher {
             let log = bundle.join("rpctrace.log");
             let status = bundle.join("attach-strace.txt");
             while !stop_t.load(Ordering::Relaxed) && Instant::now() < deadline {
-                let found = find_pid_in_tree(root_pid, &pattern).ok();
+                let found = find_pid_in_tree(root_pid, &pattern, None, None).ok();
                 if let Some(pid) = found {
                     let mut command = Command::new("sudo");
                     command
@@ -955,6 +1094,12 @@ fn run_experiment(
     {
         bail!("--gdb-namespace/--gdb-executable/--gdb-cwd/--gdb-ex were given without --capture-gdb, so they would be ignored; add --capture-gdb or drop them");
     }
+    if args.capture_on_fatal && !args.capture_gdb {
+        bail!("--capture-on-fatal needs --capture-gdb: the fatal-signal catch IS the debugger attach");
+    }
+    if args.capture_on_fatal && args.capture_pattern.is_none() {
+        bail!("--capture-on-fatal needs --capture-pattern so the debugger knows which process to hold");
+    }
     if args.capture_on_line.is_some() && args.stall_log.is_none() {
         println!("NOTE --capture-on-line watches the workload's stdout and stderr (no --stall-log named)");
     }
@@ -1013,6 +1158,8 @@ fn run_experiment(
     // watched the wrapping shell instead -- a real capture fired on the wrong process and looked
     // plausible. Resolve per poll, and say when the pattern matches nothing.
     let mut target_note: Option<String> = None;
+    let mut fatal_gdb: Vec<(u32, std::process::Child)> = Vec::new();
+    let mut marker_pattern_armed = false;
 
     loop {
         if let Some(status) = child.try_wait()? {
@@ -1026,7 +1173,7 @@ fn run_experiment(
             break;
         }
         let state_target = match args.capture_pattern.as_deref() {
-            Some(pattern) => match find_pid_in_tree(child.id(), pattern) {
+            Some(pattern) => match find_pid_in_tree(child.id(), pattern, args.capture_exe.as_deref(), args.capture_comm.as_deref()) {
                 Ok(pid) => {
                     target_note = None;
                     pid
@@ -1041,6 +1188,9 @@ fn run_experiment(
             },
             None => child.id(),
         };
+        if args.capture_on_fatal && args.capture_on_line.is_none() && target_note.is_none() {
+            arm_fatal_gdb(&args, &bundle, child.id(), &mut fatal_gdb)?;
+        }
         if let Some(expr) = &state_expr {
             // STATE IS A BETTER TRIGGER THAN TEXT for a hang: a workload that stops working may print
             // nothing at all, and its state is readable from /proc without touching the measured path.
@@ -1081,8 +1231,18 @@ fn run_experiment(
                         marker_offset = file.stream_position().unwrap_or(marker_offset);
                         if pattern.is_match(&text) {
                             fs::write(bundle.join("marker.txt"), "capture requested by --capture-on-line\n")?;
-                            result = "marker";
-                            break;
+                            if args.capture_on_fatal {
+                                // The marker is the point where the target is the loader, not the
+                                // launcher that exec'd it in the same pid. Attaching here avoids the
+                                // exec race entirely (MEASURED: an early attach saw
+                                // "executing new program: mldr" and lost the inferior).
+                                arm_fatal_gdb(&args, &bundle, child.id(), &mut fatal_gdb)?;
+                                marker_pattern_armed = true;
+                            }
+                            if !(args.capture_on_fatal && marker_pattern_armed) {
+                                result = "marker";
+                                break;
+                            }
                         }
                     }
                 }
@@ -1137,6 +1297,19 @@ fn run_experiment(
         strace.detach();
     }
 
+    {
+        // The workload is over. If a debugger already stopped on a signal its dump is complete; the
+        // others attached to processes that never faulted, and those processes are going away with the
+        // run anyway.
+        let mut armed: Vec<u32> = Vec::new();
+        for (pid, mut child) in fatal_gdb.drain(..) {
+            let _ = child.kill();
+            let _ = child.wait();
+            armed.push(pid);
+        }
+        let _ = fs::write(bundle.join("fatal-targets.txt"),
+            armed.iter().map(u32::to_string).collect::<Vec<_>>().join("\n") + "\n");
+    }
     if !matches!(result, "exited" | "failed") {
         if let Some(stall_log) = &args.stall_log {
             let stall_log = expand_home(stall_log);
@@ -1161,7 +1334,7 @@ fn run_experiment(
             let capture_pid = args
                 .capture_pattern
                 .as_deref()
-                .and_then(|pattern| find_pid_in_tree(child.id(), pattern).ok())
+                .and_then(|pattern| find_pid_in_tree(child.id(), pattern, None, None).ok())
                 .unwrap_or(child.id());
             if args.capture_tree {
                 capture_process_tree(
