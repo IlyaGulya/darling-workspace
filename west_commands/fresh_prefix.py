@@ -15,6 +15,7 @@ from test_prefix import cleanup_rootless_prefix_processes, cleanup_rootless_runt
 
 
 _PREFIX_NAME = "darling-fresh-prefix-"
+_PREFIX_STATE_FILENAME = ".darling-prefix-state-v2"
 _FICLONE = 0x40049409
 _REFLINK_UNAVAILABLE = frozenset(
     {errno.EINVAL, errno.EOPNOTSUPP, errno.ENOTTY, errno.EXDEV}
@@ -32,7 +33,7 @@ class FreshPrefixResult:
         return not self.problems
 
 
-def disposable_prefix_path(path: Path, *, temp_root: Path = Path("/tmp")) -> Path:
+def disposable_prefix_path(path: Path, *, temp_root: Path) -> Path:
     """Validate a narrowly-scoped disposable prefix path."""
 
     root = temp_root.resolve()
@@ -179,7 +180,7 @@ def create_fresh_prefix(
     baseline: Path,
     *,
     destination: Path | None = None,
-    temp_root: Path = Path("/tmp"),
+    temp_root: Path,
     reserve_bytes: int = 8 * 1024**3,
 ) -> FreshPrefixResult:
     """Copy a baseline prefix into a disposable path after an honest space check."""
@@ -214,6 +215,23 @@ def create_fresh_prefix(
     except (OSError, shutil.Error) as error:
         shutil.rmtree(target, ignore_errors=True)
         return FreshPrefixResult(problems=[f"failed to copy baseline {source}: {error}"])
+    # A COPY OF A PREFIX IS A DIFFERENT PREFIX. The lifecycle record binds the prefix to the
+    # device/inode of the directory it describes; carrying the source's numbers into the copy makes
+    # the launcher refuse it ("runtime prefix state belongs to another prefix: recreation required"),
+    # which is a 30 s watchdog timeout in a run, not a diagnosable error. Rebind exactly as a lane does.
+    state_path = target / _PREFIX_STATE_FILENAME
+    if state_path.exists():
+        try:
+            from lane import rebind_prefix_state
+            stat = target.stat()
+            state_path.write_text(
+                rebind_prefix_state(state_path.read_text(), stat.st_dev, stat.st_ino,
+                                    (os.getuid(), os.getgid()))
+            )
+            os.chmod(state_path, 0o600)
+        except Exception as error:  # the copy is unusable if its identity cannot be rebound
+            shutil.rmtree(target, ignore_errors=True)
+            return FreshPrefixResult(problems=[f"cannot rebind the prefix lifecycle record: {error}"])
     strategy = "reflink" if reflink else f"byte-copy (reflink unavailable: {reflink_detail})"
     result = FreshPrefixResult(
         path=target,
@@ -228,7 +246,7 @@ def create_fresh_prefix(
     return result
 
 
-def remove_fresh_prefix(path: Path, *, temp_root: Path = Path("/tmp")) -> FreshPrefixResult:
+def remove_fresh_prefix(path: Path, *, temp_root: Path) -> FreshPrefixResult:
     """Remove a completed disposable prefix after lifecycle cleanup proves ownership."""
 
     target = disposable_prefix_path(path, temp_root=temp_root)

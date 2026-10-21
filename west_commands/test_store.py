@@ -60,6 +60,28 @@ def state_root(environ: Mapping[str, str] | None = None) -> Path | None:
     return Path(value).expanduser().resolve()
 
 
+DURABLE_STATE_DIR = ".west-state"
+
+
+def durable_root(topdir: str | os.PathLike[str], environ: Mapping[str, str] | None = None) -> Path:
+    """The durable workspace state root: ``DW_STATE_ROOT`` or ``<topdir>/.west-state``.
+
+    Prefixes, lanes and run state live here, NOT under ``/tmp``: the host's tmpfiles rule
+    recreates ``/tmp`` and takes every prefix with it (measured 2026-10-21, a whole
+    working prefix and two lanes vanished mid-session).
+    """
+    declared = state_root(environ)
+    if declared is not None:
+        return declared
+    return Path(topdir).expanduser().resolve() / DURABLE_STATE_DIR
+
+
+def durable_subdir(topdir: str | os.PathLike[str], name: str,
+                   environ: Mapping[str, str] | None = None) -> Path:
+    """A named directory beneath :func:`durable_root` (created on demand by the caller)."""
+    return durable_root(topdir, environ) / name
+
+
 def state_subdir(name: str, environ: Mapping[str, str] | None = None) -> Path | None:
     """A named directory beneath the declared state root, or None when undeclared."""
 

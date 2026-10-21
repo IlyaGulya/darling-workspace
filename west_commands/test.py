@@ -73,6 +73,23 @@ from test_descriptor_transport import (
 )
 from test_execution import process_output_text, run_bounded
 from fresh_prefix import create_fresh_prefix, remove_fresh_prefix
+from lane import (
+    SCOPE_ACTIVE_ENV,
+    LaneError,
+    claim_scope,
+    env_argv,
+    lane_env,
+    lane_path,
+    lane_root,
+    read_record,
+    record_problems,
+    require_scope,
+    scope_description,
+    scope_unit,
+    scope_wrap,
+    validate_lane_name,
+    west_command_argv,
+)
 from test_guest_execution import (
     failure_phase_from_output,
     # Kept in this namespace on purpose: focused contracts patch and read the
@@ -141,6 +158,7 @@ from test_runtime import (
 from test_worktrees import prunable_west_temp_worktrees, prune_stale_west_temp_worktrees
 from test_store import (
     STATE_ROOT_ENV,
+    durable_subdir,
     inside_state_root,
     scratch_owner,
     state_root,
@@ -250,6 +268,14 @@ class DarlingTest(
             "--fresh-prefix-from",
             metavar="BASELINE",
             help="copy BASELINE into an isolated disposable prefix for this test run",
+        )
+        parser.add_argument(
+            "--lane",
+            metavar="NAME",
+            help=(
+                "run inside isolation lane NAME: its own copy-on-write prefix, "
+                "state root, temporary directories and cgroup ownership"
+            ),
         )
         add_profile_argument(
             parser,
@@ -4491,7 +4517,9 @@ class DarlingTest(
             return
         if args.prefix or args.prefix_profile:
             self.die("--fresh-prefix-from cannot be combined with --prefix or --prefix-profile")
-        result = create_fresh_prefix(Path(baseline))
+        fresh_root = durable_subdir(self.topdir, "prefixes")
+        fresh_root.mkdir(parents=True, exist_ok=True)
+        result = create_fresh_prefix(Path(baseline), temp_root=fresh_root)
         for message in result.changed:
             self.inf(f"fresh prefix: {message}")
         if not result.success or result.path is None:
@@ -4500,7 +4528,7 @@ class DarlingTest(
         try:
             yield
         finally:
-            cleanup = remove_fresh_prefix(result.path)
+            cleanup = remove_fresh_prefix(result.path, temp_root=fresh_root)
             for message in cleanup.changed:
                 self.inf(f"fresh prefix: {message}")
             for message in cleanup.problems:
@@ -4508,9 +4536,82 @@ class DarlingTest(
             if not cleanup.success:
                 self._prefix_cleanup_failed = True
 
+    @contextmanager
+    def _lane_context(self, args):
+        """Run this invocation inside one isolation lane when one is named.
+
+        This is a mode of the existing runner, not a second runner: the command
+        line, the test selection and the acceptance semantics are unchanged.
+        What changes is *where* the run happens - the lane's own copy-on-write
+        prefix, state root, temporary directory and runtime directory - and
+        *who owns its processes*: the whole tree joins the lane's own
+        `systemd --user` scope, so stopping one lane cannot reach another.
+        """
+
+        name = getattr(args, "lane", None)
+        if not name:
+            yield
+            return
+        if args.prefix or args.prefix_profile or getattr(args, "fresh_prefix_from", None):
+            self.die(
+                "--lane cannot be combined with --prefix, --prefix-profile or "
+                "--fresh-prefix-from"
+            )
+        environ = dict(os.environ)
+        root = lane_root(environ, Path(self.topdir).resolve())
+        try:
+            lane = lane_path(root, validate_lane_name(name))
+        except LaneError as error:
+            self.die(str(error))
+        record = read_record(lane)
+        if record is None:
+            self.die(
+                f"no lane '{name}' under {root}; create it with "
+                f"'west dev lane create {name} --base <prefix>'"
+            )
+        problems = record_problems(lane, record)
+        if problems:
+            self.die(f"lane '{name}' is not usable: " + "; ".join(problems))
+
+        environment = lane_env(lane, record)
+        unit = scope_unit(lane)
+        if environ.get(SCOPE_ACTIVE_ENV) != str(lane):
+            # Fail closed. A lane run without its own cgroup is a run whose cleanup can miss a guest
+            # that scrubbed its environment, and `--lane` exists for parallel agents.
+            try:
+                require_scope()
+                claim = claim_scope(unit, lane=lane)
+            except LaneError as error:
+                self.die(str(error))
+            for message in claim.changed:
+                self.inf(f"lane '{name}': {message}")
+            environment[SCOPE_ACTIVE_ENV] = str(lane)
+            argv = scope_wrap(
+                unit,
+                env_argv(environment, [*west_command_argv(), *sys.argv[1:]]),
+                description=scope_description(lane),
+            )
+            self.inf(f"lane '{name}': re-entering under cgroup {unit}")
+            try:
+                os.execvp(argv[0], argv)
+            except OSError as error:
+                self.die(f"cannot re-enter lane '{name}' under {unit}: {error}")
+
+        for key, value in environment.items():
+            os.environ[key] = value
+        # The lane's temporary directory must be seen by every later lookup,
+        # including one that already cached the host default.
+        tempfile.tempdir = None
+        args.prefix = environment["DPREFIX"]
+        self.inf(
+            f"lane '{name}': prefix={args.prefix} state_root={environment['DW_STATE_ROOT']}"
+        )
+        yield
+
     def do_run(self, args, unknown):
-        with self._fresh_prefix_context(args):
-            return self._do_run(args, unknown)
+        with self._lane_context(args):
+            with self._fresh_prefix_context(args):
+                return self._do_run(args, unknown)
 
     def _do_run(self, args, unknown):
         self._prefix = self._resolve_prefix(args)

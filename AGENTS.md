@@ -148,7 +148,7 @@ refs, and agent handoff.
 - Guest/runtime measurement has its own tooling; use it instead of ad-hoc shell.
   The tools are `scripts/darling-boot-run.sh` (one measured run: clean start,
   unique log, the workload's own duration, markers plus counters, cleanup, one
-  `VERDICT`), `scripts/darling-deploy-verify.sh` (sha256 over EVERY runtime copy
+  `VERDICT`), `west darling-build --deploy-only --deploy-component NAME` (sha256 over EVERY runtime copy; `scripts/darling-deploy-verify.sh` is its wrapper)
   of a component), `scripts/darling-artifact-manifest.sh` (content baseline
   without git history, and probe-tag presence), `scripts/darling-describe-artifact.sh`
   (LC_MAIN, symbol and tag location, and whether the loaded copy is the built
@@ -522,6 +522,16 @@ refs, and agent handoff.
   points outside it, naming the root it refused to leave, because reaching
   another lane's state is silent until something is already gone. Undeclared
   keeps the previous defaults, so existing callers are unchanged.
+- Nothing that must survive lives under `/tmp`. The host's `systemd-tmpfiles` recreates
+  `/tmp` (`D /tmp ...`), and that removes EVERY prefix, lane and job directory under it at
+  once (measured 2026-10-21: a working base prefix and two lanes disappeared mid-session
+  while the disk had 76 GiB free). Durable state lives in the workspace state root:
+  `DW_STATE_ROOT` when declared, otherwise `<topdir>/.west-state/` (`prefixes/`, `lanes/`,
+  `bundles/`, `scratch/`, `evidence/`, `jobs/`). Lanes default to `<topdir>/.darling-lanes`;
+  `west test --fresh-prefix-from`, `west darling-fresh-prefix` and the dev-check smoke prefix
+  all resolve beneath the state root. `/tmp` remains acceptable only for throwaway compiler
+  scratch and for guest-internal paths, never for a prefix, a lane or run evidence.
+
 - GC collects only what it can prove it owns, and a name is never ownership. A
   retained runtime-evidence unit is identified by its manifest, an in-flight one
   by its unit marker and its released flock, a published unit interrupted before
@@ -628,13 +638,20 @@ derived from, the prerequisite it must agree with - and leave the value itself
 to the gate that recomputes it (`--check` for a derived registry). A stale
 receipt is what the digest check catches; a literal only reports that the
 derivation ran.
-- Name the supported command for the situation, not the tool. Four situations
+- Name the supported command for the situation, not the tool. Five situations
   agents keep hand-rolling, and what to run instead:
   - An isolated authoring checkout: `west dev start --source SRC --destination
     DEST --base BASE --branch BRANCH --bead BEAD --module MODULE --evidence
     PATH`. It clones every repository in the gitlink closure, so `--dry-run`
     first if the source is large; it writes no discovery record yet, so record
     the destination yourself and remove it with `rm -rf DEST` when done.
+  - Two experiments at the same time, without sharing a prefix, a state root or a process tree:
+    `west dev lane create NAME --base PREFIX`, then `west dev lane exec NAME -- <command>`, or
+    add `--lane NAME` to any `west test` invocation. A lane is a rootless copy-on-write layer over
+    an inert base prefix, with its own state root, `TMPDIR`, `XDG_RUNTIME_DIR`, logs and
+    `systemd --user` scope, so `west dev lane destroy NAME` reaches exactly that lane. The base is
+    never written; `west dev lane verify NAME` proves it. Rules, layout and the things a lane does
+    NOT isolate: `docs/lane-isolation.md`.
   - Where a guest run stopped (without grepping its two logs): `scripts/dwdiag progress --log RUN_LOG
   [--guest-log MLDR_DIAG_LOG] [--mode M]` prints whether the workload spoke, the guest loader's last stage, the op it
   published and the last plane op the server serviced; `dwdiag verdict` prints the same summary as `VERDICT-STAGE` on

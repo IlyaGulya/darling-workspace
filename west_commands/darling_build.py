@@ -39,11 +39,13 @@ from west.commands import WestCommand
 try:
     from .deploy_receipt import build_receipt, receipt_path, write_receipt
     from .deploy_transaction import DeploymentTransaction, DeploymentTransactionError
+    from .runtime_artifacts import COMPONENTS as RUNTIME_COMPONENTS, install_and_verify
     from .prefix_repair import prefix_mount_targets
     from .test_prefix import rootless_prefix_process_snapshot
 except ImportError:
     from deploy_receipt import build_receipt, receipt_path, write_receipt
     from deploy_transaction import DeploymentTransaction, DeploymentTransactionError
+    from runtime_artifacts import COMPONENTS as RUNTIME_COMPONENTS, install_and_verify
     from prefix_repair import prefix_mount_targets
     from test_prefix import rootless_prefix_process_snapshot
 
@@ -122,6 +124,14 @@ class DarlingBuild(WestCommand):
                             "default: <prefix>/.darling-deploy-txn/<utc>-<pid>.json)")
         p.add_argument("--restore-deploy", metavar="PATH",
                        help="restore one deploy manifest without building")
+        p.add_argument("--deploy-component", action="append", default=[], metavar="NAME",
+                       choices=sorted(RUNTIME_COMPONENTS),
+                       help="with --deploy, also install these built runtime components into "
+                            "EVERY copy the loader uses (CoreFoundation, Foundation, "
+                            "libsystem_kernel, ...); repeatable")
+        p.add_argument("--deploy-only", action="store_true",
+                       help="skip doctor, build and provenance; only install --deploy-component "
+                            "(requires --deploy-component)")
         p.add_argument("--deploy-extra-prefix", action="append", default=[], metavar="PREFIX",
                        help="with --deploy, also copy closure dylibs into this additional prefix root (repeatable)")
         p.add_argument("--deploy-closure-names", nargs="*", default=None, metavar="BASENAME",
@@ -162,6 +172,15 @@ class DarlingBuild(WestCommand):
         build_dir = Path(args.build_dir)
         prefix = Path(args.prefix)
 
+        if args.deploy_only:
+            if not args.deploy_component:
+                self.die("--deploy-only requires --deploy-component")
+            rc = install_and_verify(prefix, build_dir, args.deploy_component)
+            if rc != 0:
+                raise SystemExit(rc)
+            return
+        if args.deploy_component and not args.deploy:
+            self.die("--deploy-component requires --deploy (or --deploy-only)")
         if args.deploy and args.restore_deploy:
             self.die("--deploy and --restore-deploy are mutually exclusive")
         if args.deploy_manifest and not args.deploy:
@@ -285,6 +304,11 @@ class DarlingBuild(WestCommand):
                     extra_prefixes=extra_prefixes,
                     transaction=transaction,
                 )
+                if args.deploy_component:
+                    self.inf("== deploy native components ==")
+                    rc = install_and_verify(prefix, build_dir, args.deploy_component)
+                    if rc != 0:
+                        raise SystemExit(rc)
                 # Record what was deployed BEFORE the post-deploy doctor runs:
                 # the doctor's default receipt mode verifies the deployed bytes
                 # against this deploy, not against the historical baseline.

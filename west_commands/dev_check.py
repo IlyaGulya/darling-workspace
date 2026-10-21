@@ -1255,7 +1255,7 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
                 "GIT_CONFIG_NOSYSTEM": "1",
                 "GIT_TERMINAL_PROMPT": "0",
                 "HOME": str(scratch / "home" / name),
-                "TMPDIR": "/tmp",
+                "TMPDIR": str(scratch / "tmp" / name),
                 "XDG_CACHE_HOME": str(scratch / "cache" / name),
                 "XDG_CONFIG_HOME": str(scratch / "config" / name),
             }
@@ -1288,8 +1288,8 @@ def _check_steps(inputs: dict[str, Any], transaction_id: str) -> list[dict[str, 
     workspace_identity = hashlib.sha256(
         str(manifest_repo.resolve()).encode("utf-8")
     ).hexdigest()[:12]
-    guest_env["DARLING_SMOKE_PREFIX"] = (
-        f"/tmp/darling-rootless-smoke-{workspace_identity}-{profile}"
+    guest_env["DARLING_SMOKE_PREFIX"] = str(
+        checkpoint_root / "prefixes" / f"darling-rootless-smoke-{workspace_identity}-{profile}"
     )
     final_host_env = stage_env("final-host")
     final_host_env["CCACHE_DIR"] = str(checkpoint_root / "host-ccache-v1")

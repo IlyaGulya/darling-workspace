@@ -172,6 +172,7 @@ CONTRACTS = (
 EXPLICIT_CONTRACTS = (
     # Uncached on purpose: cached host evidence must not bypass a current
     # metadata and applicability review.
+    ("runtime-artifacts", "tests/west_test_contracts/runtime_artifacts_contract.py", True),
     ("native-inventory", "tests/run-native-inventory-contract.sh", False),
     ("native-artifact", "tests/west_test_contracts/native_artifact_contract.py", True),
     ("native-transport", "tests/west_test_contracts/native_transport_contract.py", True),
