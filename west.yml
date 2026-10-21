@@ -43,7 +43,7 @@ manifest:
     # This is a scoped source checkpoint: later semantic candidates (signal
     # 6f6f1fb, raw-ulock 572ecca, darlingserver 1081c82/fa203ed/21f8a0ca) stay OUT
     # of the pin until a focused implementation regression passes.
-    revision: ae92bd81338791083b61361c8fbf975c70c94abc
+    revision: cd5c1fa789e05a3c133eb2d1f918772511dfdf9d
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -411,7 +411,7 @@ manifest:
     repo-path: darling-corefoundation
     path: darling/src/external/corefoundation
     remote: darling
-    revision: 7b5e0ce1ac312f73157f4f0120dc24b97b399549
+    revision: f95ce34ee56d870c1b105499d6520bf74cfa29c4
     userdata:
       kind: darling-source
       upstream-repository: darling-corefoundation
@@ -509,7 +509,7 @@ manifest:
     # it reports pass=1 reason=call_retval_freshness (VERDICT PASS). T4 then advances to a
     # SIGSEGV with two threads queued in ulock_wait -- a separate, still-open defect.
     # Parent is the psynch ring-classification pin bce5bf9.
-    revision: 26c07780af01027785777ffedf005531b98a7b28
+    revision: 6549be427cf307308ac8fca27dbb8522abc30235
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
@@ -602,7 +602,7 @@ manifest:
     repo-path: darling-foundation
     path: darling/src/external/foundation
     remote: darling
-    revision: 5866910c245bdee9c255ee708b709a9da83fe805
+    revision: f4fcb8a051a94d5183641f20d700fd2779f10fb3
     userdata:
       kind: darling-source
       upstream-repository: darling-foundation
@@ -714,7 +714,7 @@ manifest:
     repo-path: darling-Libc
     path: darling/src/external/libc
     remote: darling
-    revision: 5a38c8dabf9e76b39407c24bc13134e33e5594e6
+    revision: 417a8e6f9ff3550c03202b32316aa7e5da041e3a
     userdata:
       kind: darling-source
       upstream-repository: darling-Libc
@@ -754,7 +754,7 @@ manifest:
     repo-path: darling-libdispatch
     path: darling/src/external/libdispatch
     remote: darling
-    revision: 380f03c180b80d940134fb35783ddc714784a53a
+    revision: 4b2efa16e43c7c37abd4f6f27c14dcb94080dc74
     userdata:
       kind: darling-source
       upstream-repository: darling-libdispatch
@@ -903,7 +903,7 @@ manifest:
     repo-path: darling-Libsystem
     path: darling/src/external/libsystem
     remote: darling
-    revision: 08df454b6eb0df9400aa4c39839a7efd6efd2c3c
+    revision: 449326b12bb1d2965f593c40e8968beb7bd0317d
     userdata:
       kind: darling-source
       upstream-repository: darling-Libsystem
@@ -927,7 +927,7 @@ manifest:
     repo-path: darling-libunwind
     path: darling/src/external/libunwind
     remote: darling
-    revision: d5fbc8180ea2e06efa693ee03a768e532a98671f
+    revision: 2b44abbef86662d7f531cdcdab5385d9bc2ca886
     userdata:
       kind: darling-source
       upstream-repository: darling-libunwind
@@ -951,7 +951,7 @@ manifest:
     repo-path: darling-libxpc
     path: darling/src/external/libxpc
     remote: darling
-    revision: a7bc346027c3433b79f13793f48ac44522c80f8c
+    revision: 6cc6faf6fc9ff6db14b5e06eaffc873051aee6cd
     userdata:
       kind: darling-source
       upstream-repository: darling-libxpc
@@ -1266,7 +1266,7 @@ manifest:
     repo-path: darling-swift
     path: darling/src/external/swift
     remote: darling
-    revision: ab0a7a081d9995041fcff4f84ec50dbd2c74f7d9
+    revision: d8576875136864284eff9ff5449d3085c71a48b2
     userdata:
       kind: darling-source
       upstream-repository: darling-swift
@@ -1371,7 +1371,7 @@ manifest:
     # part is the first event `clang --version` needed: without it the trap hit the retired
     # per-thread socket, was denied and aborted the guest. Parent is the pin f3e71f3; bcc5595
     # is the same guest-side change on that parent, replayed here on top of the ulock commits.
-    revision: 215e302843f8c28492025038d74325c2cbbffbc0
+    revision: 730d78c277618ead643e377a4aa73e9a83e7bde5
     userdata:
       kind: darling-source
       upstream-repository: darling-xnu
