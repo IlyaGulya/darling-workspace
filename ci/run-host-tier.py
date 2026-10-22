@@ -176,6 +176,7 @@ EXPLICIT_CONTRACTS = (
     ("native-inventory", "tests/run-native-inventory-contract.sh", False),
     ("native-artifact", "tests/west_test_contracts/native_artifact_contract.py", True),
     ("native-transport", "tests/west_test_contracts/native_transport_contract.py", True),
+    ("dwdiag-roster", "tests/west_test_contracts/dwdiag_roster_contract.py", True),
     # Recovered: these contracts passed on this checkout and no entrypoint ran
     # them. Each was run before it was registered here. They need the
     # interpreter that runs this tier, which carries PyYAML, as the shell
