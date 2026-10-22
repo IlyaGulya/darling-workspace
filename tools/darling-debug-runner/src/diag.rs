@@ -7002,6 +7002,27 @@ fn resolve_in_prefix(prefix: &std::path::Path, image: &str) -> Option<PathBuf> {
     walk(prefix, image, 8)
 }
 
+/// The word gdb wants after `handle`: a bare signal NAME.
+///
+/// `--catch SIGSEGV` is what a reader writes, and the first version turned it into `SIGSIGSEGV`, which gdb
+/// rejects with "Unrecognized or ambiguous flag word" -- a measurement that reports nothing about the guest.
+/// Accept the name with or without its `SIG` prefix, and pass a signal NUMBER through unchanged, because gdb
+/// understands both spellings but not a doubled one.
+fn gdb_signal_word(name: &str) -> String {
+    let t = name.trim();
+    if !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()) {
+        return t.to_string();
+    }
+    let upper = t.to_ascii_uppercase();
+    // gdb's `handle` accepts a NUMBER or a name WITH the `SIG` prefix: a bare `SEGV` is rejected as
+    // "Unrecognized or ambiguous flag word", measured. So the prefix is ensured, not stripped.
+    if upper.starts_with("SIG") {
+        upper
+    } else {
+        format!("SIG{upper}")
+    }
+}
+
 fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
     let sudo = sudo_prefix();
     // The catch has to answer a guest question, and gdb cannot walk a guest frame. What gdb CAN do
@@ -7050,7 +7071,7 @@ fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
         // gdb's default behaviour rather than to a decision we stated.
         handles = signal
             .split(',')
-            .map(|s| format!("handle SIG{} stop print nopass", s.trim()))
+            .map(|s| format!("handle {} stop print nopass", gdb_signal_word(s)))
             .collect::<Vec<_>>()
             .join("\n         "),
         dir = dir.display(),
@@ -7072,7 +7093,7 @@ fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
     // stack images and its tail is printed, because "gdb_exit=Some(1)" and nothing else is exactly
     // the kind of silence that costs another full run to explain.
     let _ = std::fs::write(dir.join("gdb.out"), format!("{text}\n=== stderr ===\n{err}"));
-    crate::say(&format!("CATCH pid={pid} signal=SIG{signal} gdb_exit={:?}", out.status.code()));
+    crate::say(&format!("CATCH pid={pid} signal={} gdb_exit={:?}", gdb_signal_word(signal), out.status.code()));
     for line in text.lines().chain(err.lines()) {
         let t = line.trim_end();
         if t.contains("Program received signal")
@@ -9501,6 +9522,15 @@ mod core_identity_tests {
     }
 
     #[test]
+    /// `--catch SIGSEGV` is the spelling a reader writes; it must not become `SIGSIGSEGV`.
+    #[test]
+    fn the_armed_signal_word_keeps_one_sig_prefix() {
+        assert_eq!(gdb_signal_word("SIGSEGV"), "SIGSEGV");
+        assert_eq!(gdb_signal_word("segv"), "SIGSEGV");
+        assert_eq!(gdb_signal_word(" SIGILL "), "SIGILL");
+        assert_eq!(gdb_signal_word("11"), "11");
+    }
+
     fn the_signal_label_is_a_name_a_reader_recognises() {
         assert_eq!(sig_label(4), "SIGILL");
         assert_eq!(sig_label(11), "SIGSEGV");
