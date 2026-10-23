@@ -45,6 +45,13 @@ COMPONENTS: dict[str, Component] = {
         "src/external/dyld/dyld",
         ("usr/lib/dyld", "libexec/darling/usr/lib/dyld"),
     ),
+    # Like libobjc, this dylib had no component, so a libmalloc change could not be installed by tooling.
+    "libsystem_malloc": Component(
+        "libsystem_malloc",
+        "src/external/libmalloc/libsystem_malloc.dylib",
+        ("usr/lib/system/libsystem_malloc.dylib",
+         "libexec/darling/usr/lib/system/libsystem_malloc.dylib"),
+    ),
     "libsystem_kernel": Component(
         "libsystem_kernel",
         "src/external/xnu/darling/src/libsystem_kernel/libsystem_kernel.dylib",
