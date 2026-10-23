@@ -154,8 +154,14 @@ to_guest() {
 }
 guest_xcode=$(to_guest "$XCODE_APP")
 
-[ -n "$LOG_DIR" ] || LOG_DIR="${DW_STATE_ROOT:-${TMPDIR:-/tmp}}/xcodebuild-workloads-$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$LOG_DIR"
+# EVIDENCE IS DURABLE STATE. A run's log directory is its only record of what the guest did, and /tmp is never
+# an evidence archive (docs/environment.md). The default lives under the owned state root; an explicit tmp path is
+# accepted but announced, because a run whose evidence evaporates cannot be re-read.
+case "$LOG_DIR" in
+	/tmp/*|/var/tmp/*) echo "xcodebuild-workloads: --log-dir under tmp; this run's evidence is DISPOSABLE (stated, not hidden)" >&2 ;;
+esac
+[ -n "$LOG_DIR" ] || LOG_DIR="${DW_STATE_ROOT:-$(cd "$REPO_ROOT/.." && pwd)/.west-state}/xcodebuild-workloads-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$LOG_DIR" || { echo "xcodebuild-workloads: cannot create log dir $LOG_DIR" >&2; exit 2; }
 
 echo "prefix:      $PREFIX"
 echo "xcode:       $XCODE_APP  (guest: $guest_xcode)"
@@ -164,6 +170,7 @@ echo "log dir:     $LOG_DIR"
 echo
 
 summary=""
+workload_verdicts=""
 
 case "$WORKLOADS" in
 	both) list="minproj iosapp" ;;
@@ -236,7 +243,9 @@ PROBE
 	harness_out=$(bash "$BOOT_RUN" --prefix "$PREFIX" --wait "$WAIT" \
 		--poll 'XCB_RC=' --status-marker 'XCB_RC=' --marker 'XCB_PROBE_DONE=1' --log "$log" \
 		--cmd "/bin/bash /private/var/tmp/$(basename "$probe_host")" 2>&1)
+	harness_rc=$?
 	printf '%s\n' "$harness_out" | sed 's/^/  /'
+	printf '%s\n' "$harness_out" >"$LOG_DIR/$name.harness.txt"
 
 	verdict=$(printf '%s\n' "$harness_out" | grep -a -m1 '^VERDICT:' || true)
 	guest_rc=$(grep -ao 'XCB_RC=[0-9]*' "$log" 2>/dev/null | tail -1 || true)
@@ -270,27 +279,65 @@ PROBE
 		fi
 	done
 
+	# FAILURE REASONS, NOT A SINGLE ARTIFACT TEST. MEASURED 2026-10-23: this summary used to call a run successful
+	# when the artifact existed, even with a non-zero guest status or a FAILing harness -- the artifact of a build
+	# that died after linking is still an artifact. A PASS needs the guest's own status, the harness verdict AND its
+	# exit status, the prefix cleanup it reported, the build steps themselves, and a product of the expected kind.
+	reasons=""
+	case "$guest_rc" in XCB_RC=0) ;; *) reasons="$reasons guest_rc=${guest_rc#XCB_RC=}" ;; esac
+	case "$verdict" in "VERDICT: PASS") ;; *) reasons="$reasons harness=${verdict:-absent}" ;; esac
+	[ "$harness_rc" -eq 0 ] || reasons="$reasons harness_rc=$harness_rc"
+	procs=$(printf '%s\n' "$harness_out" | sed -n 's/^prefix processes after: \([0-9][0-9]*\),.*/\1/p' | tail -1)
+	mounts=$(printf '%s\n' "$harness_out" | sed -n 's/^prefix processes after: [0-9][0-9]*, mounts: \([0-9][0-9]*\).*/\1/p' | tail -1)
+	[ -n "$procs" ] || reasons="$reasons cleanup=unreported"
+	[ "${procs:-0}" = 0 ] || reasons="$reasons prefix_processes=$procs"
+	[ "${mounts:-0}" = 0 ] || reasons="$reasons prefix_mounts=$mounts"
+	if [ "$name" = iosapp ]; then
+		for marker in 'CompileC ' 'Ld ' '** BUILD SUCCEEDED **'; do
+			grep -aqF "$marker" "$host_out" 2>/dev/null || reasons="$reasons missing:${marker% }"
+		done
+		if [ -f "$artifact/iosapp" ]; then
+			kind=$(file -b "$artifact/iosapp" 2>/dev/null || true)
+			case "$kind" in *"Mach-O 64-bit arm64"*) ;; *) reasons="$reasons product_kind=$kind" ;; esac
+		else
+			reasons="$reasons product_missing"
+		fi
+	else
+		[ -x "$artifact" ] || reasons="$reasons product_missing"
+	fi
+
 	echo "  guest exit code:   $guest_rc"
-	echo "  harness verdict:   ${verdict:-VERDICT: absent}"
+	echo "  harness verdict:   ${verdict:-VERDICT: absent} (rc=$harness_rc)"
+	echo "  prefix cleanup:    processes=${procs:-?} mounts=${mounts:-?}"
 	echo "  artifact:          $artifact_line"
 	if [ -n "$stop" ]; then
 		echo "  loader stop (from $stop_src):"
 		printf '%s\n' "$stop"
 	fi
-	summary="$summary$name guest_rc=${guest_rc#XCB_RC=} harness=${verdict:-absent} artifact=$artifact_line
+	if [ -n "$reasons" ]; then
+		echo "  WORKLOAD $name: FAIL --$reasons"
+		workload_verdicts="$workload_verdicts FAIL"
+		summary="$summary$name FAIL guest_rc=${guest_rc#XCB_RC=} harness=${verdict:-absent} cleanup(procs=${procs:-?},mounts=${mounts:-?})$reasons artifact=$artifact_line
 "
+	else
+		echo "  WORKLOAD $name: PASS"
+		workload_verdicts="$workload_verdicts PASS"
+		summary="$summary$name PASS guest_rc=0 harness=PASS cleanup(procs=0,mounts=0) artifact=$artifact_line
+"
+	fi
 	echo
 done
 
 echo "== summary =="
 printf '%s' "$summary"
-fail_artifacts=0
-case "$summary" in
-	*"artifact=none"*) fail_artifacts=1 ;;
-esac
-if [ "$fail_artifacts" = 1 ]; then
-	echo "RESULT: at least one workload produced no artifact (the loader stop above is the fact; this is not a harness bug)"
+fail=0
+for v in $workload_verdicts; do
+	[ "$v" = PASS ] || fail=1
+done
+if [ "$fail" = 1 ]; then
+	echo "RESULT: FAIL -- at least one workload did not pass every condition (guest status, harness verdict and exit,"
+	echo "        prefix cleanup, build steps, product kind); the per-workload reasons above are the fact"
 	exit 1
 fi
-echo "RESULT: every workload produced its artifact"
+echo "RESULT: PASS -- every workload passed every condition"
 exit 0
