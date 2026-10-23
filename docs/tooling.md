@@ -161,6 +161,34 @@ version quietly did less than it claimed:
 When you find another, fix the tool, add the rule here, and record the incident in
 the architecture document.
 
+## In-process diagnostics: one switch, `DARLING_DIAG`
+
+Some facts can only be measured INSIDE a guest process: which block a faulting pointer belonged to, when a CFURL
+was released and by which caller, whether an NSURL wrapper outlived its CFURL. Those hooks live in libmalloc,
+CoreFoundation and Foundation, and they are enabled through ONE variable:
+
+| token | library | what it enables |
+|---|---|---|
+| `alloc` | libsystem_malloc | the allocation ring: last 1M alloc/free events plus, on SIGSEGV/SIGABRT/SIGTRAP, the faulting receiver's whole history (and any `_darl_trace_note` the CF layer attached to it) |
+| `url-free` | CoreFoundation | `[cfurl-free] url=… releaser=…` for every CFURL deallocation, where `releaser` is the caller that asked for the LAST release |
+| `url-life` | Foundation | `[nsurl] retain/release self=… cls=… cfurl=… cftype=… rc=…` for every Foundation NSURL |
+| `url-cache` | CoreFoundation | re-enable the URL resource-info cache, which is off by default (see CLASS-D evidence section 64) |
+
+`DARLING_DIAG=alloc,url-life` is the normal spelling; the per-knob variables (`MALLOC_TRACE_RING`,
+`CFURL_FREE_TRACE`, `NSURL_TRACE`, `CF_URL_RESOURCE_CACHE`) are still honoured so older recipes keep working.
+
+Rules that came from using them:
+
+* they are OUT-OF-PROCESS-SAFE but IN-PROCESS-ONLY: no `dwdiag` subcommand can produce them, so a session that
+  needs them must name the token in the run's environment, not add a sixth ad-hoc variable;
+* the ring is 1M entries on purpose: with 8192 the receiver of a real run (millions of allocations) is never in it;
+* a recorder installed from a constructor broke guest startup, so installation is lazy, on the first allocator
+  entry; `__builtin_return_address` deeper than frame 2 also broke runs, so the ring records one caller;
+* every dump is BOUNDED per process (first N lines then silence): a diagnostic that floods a log hides the record
+  it was meant to preserve.
+
+The instruments print on the guest's own fd 1, so they appear in the run's capture, not in the harness log.
+
 
 ## The diagnostics are ONE tool: `dwdiag`
 

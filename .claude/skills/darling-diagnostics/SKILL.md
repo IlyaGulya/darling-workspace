@@ -44,6 +44,7 @@ Canonical sources live in the selected manifest repository:
 | `scripts/dwdiag trap` | read the HOST kernel's report of where a guest died (`dmesg`: process, reason, image, load base, instruction pointer) and symbolize the address inside a prefix. It parses BOTH shapes the kernel writes -- `traps: ... ip:HEX` and `NAME[PID]: segfault at HEX ip HEX` -- because a parser for one silently drops the other. Read `off` as the fact and the symbol as a hint: `symbolize` returns the nearest symbol at or below the address. A guest fault is delivered by the host, so this works when no core is kept |
 | `scripts/dwdiag waits` | per ulock object: who waits, who owns, and whether a wake was EVER issued for it -- separating "nobody asked to wake it" from "a wake was issued and the server found nobody". It reads the LOG, so each stall line carries `proc=present|absent`, matched by the record's thread ids (a bare pid is not evidence: this host HAS /proc/100), and an all-absent set is reported as history rather than a current stall |
 | `scripts/dwdiag unwind` | guest frames, which host gdb cannot walk: per-thread `rsp` from the debugger, the words above it, filtered to guest images and symbolized, ORDERED BY DEPTH. Sorting those words orders them by code address and turns a call chain into a set -- that was a real bug, and a unit test now pins the order. Frames come from the FRAME-POINTER chain when it validates (`frames_via=fp`) and from the word scan only otherwise (`frames_via=scan`), which is a set of plausible frames rather than a chain. With `--catch SIGNAL` it attaches to a stopped target, arms a stop on that signal, resumes it, and reports the signal, the registers, the instruction at `$pc`, and the frames resolved from the stack images gdb dumps while the target is stopped |
+| `DARLING_DIAG` (in-process) | the facts only the runtime can see -- allocation history for a faulting pointer (`alloc`), CFURL release and its releaser (`url-free`), NSURL identity/refcount (`url-life`), the URL resource cache (`url-cache`). One comma-separated variable; registry in `docs/tooling.md`. The per-knob variables still work. They print on the guest's fd 1, so read the run's capture, and pass them as the token in the run's environment rather than adding another variable. |
 
 ## Rules the tools enforce, each from a measured failure
 
@@ -206,6 +207,15 @@ Therefore:
 * When you do filter, filter only whole-line instrument shapes you have confirmed,
   and print what you removed -- a filter that reports nothing about its own
   discards is how a real diagnostic gets read as "the run said nothing".
+
+## In-process instruments live behind one switch
+
+Some facts exist only inside the guest: which block a faulting pointer belonged to, which caller released a CFURL,
+whether an NSURL wrapper outlived its CFURL. Those hooks live in libmalloc, CoreFoundation and Foundation and are
+enabled by ONE variable, `DARLING_DIAG` (`alloc`, `url-free`, `url-life`, `url-cache`; registry in
+`docs/tooling.md`). Measured rules for adding another: an instrument not reachable from that variable is a fifth
+variable no later session will find; a recorder installed from a constructor made every guest run fail; and
+`__builtin_return_address` deeper than frame 2 failed 12/12 runs.
 
 ## Tooling work is not done when the tool runs once
 
