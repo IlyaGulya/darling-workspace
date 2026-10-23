@@ -73,6 +73,14 @@ COMPONENTS: dict[str, Component] = {
         ("System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
          "libexec/darling/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation"),
     ),
+    # libobjc.A.dylib was absent from this table, so an objc4 change could not be deployed by any
+    # tooling path (`west darling-build --deploy` does not carry it either): the prefix kept whatever
+    # copy an earlier bootstrap had installed, and a measured objc4 fix could read as "no effect".
+    "libobjc": Component(
+        "libobjc",
+        "src/external/objc4/runtime/libobjc.A.dylib",
+        ("usr/lib/libobjc.A.dylib", "libexec/darling/usr/lib/libobjc.A.dylib"),
+    ),
     "objc-trampolines": Component(
         "objc-trampolines",
         "src/external/objc4/runtime/libobjc-trampolines.dylib",
