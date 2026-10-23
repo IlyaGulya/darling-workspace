@@ -509,7 +509,7 @@ manifest:
     # it reports pass=1 reason=call_retval_freshness (VERDICT PASS). T4 then advances to a
     # SIGSEGV with two threads queued in ulock_wait -- a separate, still-open defect.
     # Parent is the psynch ring-classification pin bce5bf9.
-    revision: 79792d6417b6c04ea9029fdc9bfa02cdd3693d88
+    revision: 3ae654a0d619c541b962abbe1a480520a07e0ee2
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
