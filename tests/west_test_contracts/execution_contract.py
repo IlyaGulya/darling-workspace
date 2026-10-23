@@ -233,4 +233,68 @@ time.sleep(30)
                 finally:
                     os.close(cancellation_fd)
 
+with tempfile.TemporaryDirectory() as temp:
+    # A surviving DESCENDANT must not be killed by the capture. The leader exits
+    # 0, the descendant waits for a handshake that only happens AFTER run_bounded
+    # returned, then restores the default SIGPIPE disposition and writes to the
+    # stderr descriptor it inherited. With a pipe capture the read end is closed
+    # at leader exit (test_execution.py used to do exactly that) and this write is
+    # a delivered SIGPIPE -- MEASURED as leader rc 0 / descendant signal 13.
+    import ctypes
+    import socket
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+        raise AssertionError(f"prctl(PR_SET_CHILD_SUBREAPER) failed: {ctypes.get_errno()}")
+
+    descendant_code = (
+        "import os, signal, socket, sys\n"
+        "pid = os.fork()\n"
+        "if pid:\n"
+        "    print('leader-line', flush=True)\n"
+        "    os._exit(0)\n"
+        "s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+        "s.connect(sys.argv[1])\n"
+        "s.sendall((str(os.getpid()) + chr(10)).encode())\n"
+        "s.recv(1)\n"
+        "signal.signal(signal.SIGPIPE, signal.SIG_DFL)\n"
+        "os.write(2, b'descendant-after-handshake\\n')\n"
+        "os._exit(0)\n"
+    )
+
+    for live_capture in (False, True):
+        root = Path(temp) / ("live" if live_capture else "plain")
+        root.mkdir()
+        lines: list[tuple[str, str]] = []
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+            control = str(root / "control.sock")
+            listener.bind(control)
+            listener.listen(1)
+            listener.settimeout(10)
+            result = run_bounded(
+                [sys.executable, "-B", "-c", descendant_code, control],
+                cwd=root,
+                env=os.environ.copy(),
+                timeout_seconds=10,
+                capture_output=True,
+                output_line=(lambda stream, line: lines.append((stream, line))) if live_capture else None,
+            )
+            conn, _ = listener.accept()
+            with conn:
+                conn.settimeout(10)
+                with conn.makefile("rb") as reader:
+                    pid = int(reader.readline(128))
+                    conn.sendall(b"G")
+                _, status = os.waitpid(pid, 0)
+        assert result.returncode == 0, (live_capture, result)
+        assert not result.timed_out, (live_capture, result)
+        assert os.WIFEXITED(status), (live_capture, status)
+        assert os.WEXITSTATUS(status) == 0, (
+            f"descendant died instead of exiting 0 (live_capture={live_capture}): {status}"
+        )
+        assert os.WIFSIGNALED(status) is False, (live_capture, status)
+        assert "leader-line" in result.stdout, (live_capture, result.stdout)
+
+    assert any("leader-line" in line for _, line in lines), lines
+
 print("PASS west-test-execution-contract")

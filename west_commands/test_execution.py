@@ -61,111 +61,71 @@ def _run_with_live_capture(
     heartbeat: Callable[[float], None] | None,
     output_line: Callable[[str, str], None],
 ) -> ProcessResult:
-    """Capture output while forwarding complete lines to a diagnostic sink."""
+    """Forward live output from FILE-BACKED captures, never from a pipe.
 
-    selector = selectors.DefaultSelector()
-    registered = set()
+    A supervised command can leave a descendant behind, and that descendant
+    inherits whatever the leader was given for stdout/stderr. With pipes, the
+    reader has to be closed when the leader exits -- and then the descendant's
+    next write is EPIPE/SIGPIPE. MEASURED on this host with a real descendant:
+    leader rc 0, descendant killed by signal 13, on the output_line path only.
+
+    A file has no reader to close. The descendant keeps writing into a file
+    nobody is reading any more, which is harmless, and ``pread`` reads new bytes
+    by offset without touching a file position the child also holds. The
+    deadline and the heartbeat are unchanged, and the call still returns as soon
+    as the leader has produced its status.
+    """
+
+    streams = (("stdout", capture_streams[0]), ("stderr", capture_streams[1]))
+    offsets = {"stdout": 0, "stderr": 0}
     pending = {"stdout": b"", "stderr": b""}
-    streams = {
-        "stdout": (process.stdout, capture_streams[0]),
-        "stderr": (process.stderr, capture_streams[1]),
-    }
-    for name, (stream, _) in streams.items():
-        assert stream is not None
-        selector.register(stream, selectors.EVENT_READ, name)
-        registered.add(stream)
+    descriptors = {name: stream.fileno() for name, stream in streams}
 
-    started_at = time.monotonic()
-    next_heartbeat = heartbeat_seconds or timeout_seconds
-    try:
-        while selector.get_map():
-            elapsed = time.monotonic() - started_at
-            remaining = timeout_seconds - elapsed
-            if remaining <= 0:
-                raise subprocess.TimeoutExpired(list(process.args), timeout_seconds)
-            if process.poll() is not None:
-                for name, data in pending.items():
-                    if data:
-                        output_line(name, data.decode(errors="replace"))
-                        pending[name] = b""
-                for stream in list(registered):
-                    selector.unregister(stream)
-                    registered.discard(stream)
-                    stream.close()
-                break
-            wait_for = min(remaining, 0.25, max(0.0, next_heartbeat - elapsed))
-            events = selector.select(wait_for)
-            if not events:
-                elapsed = time.monotonic() - started_at
-                if heartbeat is not None and elapsed >= next_heartbeat:
-                    heartbeat(time.monotonic() - started_at)
-                    next_heartbeat += heartbeat_seconds or timeout_seconds
-                continue
-
-            for key, _ in events:
-                name = key.data
-                stream, capture = streams[name]
-                assert stream is not None
-                chunk = os.read(stream.fileno(), 65536)
+    def pump(final: bool) -> None:
+        for name, _ in streams:
+            while True:
+                try:
+                    chunk = os.pread(descriptors[name], 65536, offsets[name])
+                except OSError:
+                    break
                 if not chunk:
-                    if pending[name]:
-                        output_line(name, pending[name].decode(errors="replace"))
-                        pending[name] = b""
-                    selector.unregister(stream)
-                    registered.discard(stream)
-                    stream.close()
-                    continue
-                capture.write(chunk)
+                    break
+                offsets[name] += len(chunk)
                 pending[name] += chunk
                 lines = pending[name].split(b"\n")
                 pending[name] = lines.pop()
                 for line in lines:
                     output_line(name, line.decode(errors="replace"))
+        if final:
+            for name in pending:
+                if pending[name]:
+                    output_line(name, pending[name].decode(errors="replace"))
+                    pending[name] = b""
 
-            if heartbeat is not None and time.monotonic() - started_at >= next_heartbeat:
-                heartbeat(time.monotonic() - started_at)
-                next_heartbeat += heartbeat_seconds or timeout_seconds
+    started_at = time.monotonic()
+    next_heartbeat = heartbeat_seconds or timeout_seconds
+    while True:
+        elapsed = time.monotonic() - started_at
+        remaining = timeout_seconds - elapsed
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(list(process.args), timeout_seconds)
+        if process.poll() is not None:
+            # Prompt return: the leader is done. One last pump takes what it wrote;
+            # anything a descendant writes later stays in the file.
+            pump(final=True)
+            break
+        time.sleep(min(remaining, 0.25))
+        pump(final=False)
+        elapsed = time.monotonic() - started_at
+        if heartbeat is not None and elapsed >= next_heartbeat:
+            heartbeat(elapsed)
+            next_heartbeat += heartbeat_seconds or timeout_seconds
 
-            # Do not wait for an escaped descendant to close inherited pipes after
-            # the supervised command has already produced its exit status.
-            if process.poll() is not None:
-                for name, data in pending.items():
-                    if data:
-                        output_line(name, data.decode(errors="replace"))
-                        pending[name] = b""
-                for stream in list(registered):
-                    selector.unregister(stream)
-                    registered.discard(stream)
-                    stream.close()
-                break
-
-        return ProcessResult(
-            process.wait(),
-            stdout=_read_capture(capture_streams[0], text=text),
-            stderr=_read_capture(capture_streams[1], text=text),
-        )
-    except subprocess.TimeoutExpired:
-        _kill_process_group(process)
-        try:
-            process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-        return ProcessResult(
-            124,
-            timed_out=True,
-            stdout=_read_capture(capture_streams[0], text=text),
-            stderr=_read_capture(capture_streams[1], text=text),
-        )
-    except KeyboardInterrupt:
-        # The outer execution owner forwards cancellation and waits for cleanup.
-        raise
-    except BaseException:
-        _kill_process_group(process)
-        process.wait()
-        raise
-    finally:
-        selector.close()
+    return ProcessResult(
+        process.wait(),
+        stdout=_read_capture(capture_streams[0], text=text),
+        stderr=_read_capture(capture_streams[1], text=text),
+    )
 
 
 def run_bounded(
@@ -208,12 +168,19 @@ def run_bounded(
         capture_streams = (tempfile.TemporaryFile(), tempfile.TemporaryFile())
         stdout, stderr = capture_streams
 
+    if output_line is not None:
+        # FILE-BACKED, not piped: the descriptor a surviving descendant inherits
+        # must not have a reader this process can close (see _run_with_live_capture).
+        assert capture_streams is not None
+        child_stdout, child_stderr = capture_streams
+    else:
+        child_stdout, child_stderr = stdout, stderr
     process = subprocess.Popen(
         list(args),
         cwd=cwd,
         env=env,
-        stdout=subprocess.PIPE if output_line is not None else stdout,
-        stderr=subprocess.PIPE if output_line is not None else stderr,
+        stdout=child_stdout,
+        stderr=child_stderr,
         stdin=subprocess.PIPE if input_data is not None else None,
         text=False if output_line is not None else text,
         start_new_session=True,
