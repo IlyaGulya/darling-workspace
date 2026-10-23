@@ -28,6 +28,9 @@ not new incident narratives in this skill.
 | One build/deploy/run iteration or a workload set? | `dwdiag build` + `cycle`; `verdict` / `suite` for workload-owned acceptance |
 | A loader image/symbol gap? | `closure_analyze.py --sweep` / `--cover` / `--order`; `rung-driver.py stop` / `verify` |
 | Live server belief about one thread? | `darling-debug` or LLDB glue; [debugger guide](../../../docs/darling-debugger.md) |
+| Why was a syscall, RPC or Mach call refused? | `scripts/dwdiag denials` -- one row per distinct denial with the caller already symbolized, plus the post-fork context; it reads the guest capture, not the harness log |
+| Which transport carried a message, and did the descriptor courier lose it? | `scripts/dwdiag courier` (packets per transport, endpoint purity) |
+| Is the prefix or its process set stale, and what owns it? | `scripts/dwdiag processes`, `prefix`; `west dev status --json` for jobs/worktrees |
 
 Read `darling-boot` before any prefix-backed command; read `darling-testing`
 when designing a regression gate. Never reimplement a core parser, symbolizer,
