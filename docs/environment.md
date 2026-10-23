@@ -25,6 +25,79 @@ Build paths:
                                       Discard through the framework.
     build/toolchain                   the iOS toolchain build (configured, reusable).
 
+## Host tools and agent activation
+
+`mise.toml` is the canonical host CLI environment. Review it, then run
+`$HOME/.local/bin/mise trust` and `mise install` from the manifest. From the West
+root use `mise -C darling-workspace trust|install`. Do not install another copy
+of a tool merely because the project environment is not active.
+
+Use `mise run dw ...` for managed orchestration and `mise run west ...` for West
+commands. From the West root add `-C darling-workspace`. Bare West commands in
+documentation are shorthand for that task. Put `--` after the task name when
+forwarding opaque arguments or a literal `:::`; otherwise mise parses task
+separation. Do not depend on globally selected shims or user-global uv/west.
+
+If tools are absent from PATH, check `$HOME/.local/bin/{mise,west,br}` first.
+Beads needs `br` on PATH even through the West alias; use
+`PATH="$HOME/.local/bin:$PATH" "$HOME/.local/bin/mise" run west dw beads ...`.
+Create isolated Python environments with `mise exec -- uv venv PATH` and
+`mise exec -- uv pip install --python PATH/bin/python ...`, not system pip,
+`python3 -m venv` or ensurepip. For an isolated West install use the version
+pinned by `mise.toml` (currently `west==1.5.0`).
+
+Portable skills live in `.agents/skills/`; `.claude/skills` is the relative
+compatibility symlink `../.agents/skills`. `mise run dw setup-local` exposes that
+same source to the product checkout and installs its instruction template and
+local excludes. It preserves differing instructions and refuses conflicting
+skill paths without overwriting them. See [agent setup](../README.md#agent-skills-and-local-guardrails)
+for activation. After skill edits, resolve active `skill://` aliases to physical
+files and synchronize only genuinely separate installed copies, preserving local
+additions. Do not search conversation archives for installation copies.
+
+Issue operations use `mise run west dw beads ...`; comments use `comment ID TEXT`.
+`create` uses `--labels`, but `list` filters with `--label`. Safely quote free
+text: shell backticks in descriptions/comments execute commands before Beads
+receives them. Verify the returned ID.
+
+Use the active harness's dedicated file/search/edit tools. With command-only
+transports, bound forest searches using `scripts/west-search.py PATTERN ROOT...`.
+RTK transports need `rtk proxy find` for compound find and `rtk bash -c` for shell
+syntax; keep quoted text within that interface's argument/environment contract.
+
+## Durable state and cleanup
+
+Declare one owned `DW_STATE_ROOT` per task/lane. Without an override, durable
+runtime state lives under `<topdir>/.west-state/`: prefixes, bundles, scratch,
+evidence and jobs; lane storage defaults to `<topdir>/.darling-lanes`.
+`west test --fresh-prefix-from`, `west darling-fresh-prefix` and dev-check smoke
+prefixes resolve beneath the state root. `/tmp` is only disposable compiler
+scratch or guest-internal storage, never a prefix, lane, job or evidence archive.
+
+Two concurrent experiments use `west dev lane create NAME --base PREFIX` and
+`west dev lane exec NAME -- COMMAND`, or `west test --lane NAME`. Check the
+current lane command help first. Each lane has its own prefix, state, TMPDIR,
+XDG_RUNTIME_DIR and process scope; the inert base is never written.
+Use `lane verify` and `lane destroy`, not copied cleanup recipes.
+`west dev status --json` reports jobs/worktrees and doctor sections; named
+`west dev context NAME --prefix PATH` selects local runtime configuration.
+
+Never run GC unattended. Inspect `--dry-run`, snapshot affected paths, and copy
+required evidence outside GC-managed roots with a SHA-256 manifest first.
+GC must prove ownership, not infer it from a name. Unknown directories remain
+untouched. Never manually remove runtime-build-cache entries: they are registered
+Git worktrees; discard through the framework. Read
+[GC scope](test-infra.md#diagnostic-execution-tiers) before any maintenance.
+With `DW_STATE_ROOT`, maintenance roots must stay inside that owner's root.
+`--proof-scratch-root` does not scope runtime evidence: fixture GC must also pass
+`--runtime-evidence-root`. Never keep the sole acceptance archive in a GC root.
+If only a digest/verdict remains, record that limit and rerun the gate.
+
+For isolated source authoring use `west dev start --source SRC --destination DEST
+--base BASE --branch BRANCH --bead BEAD --module MODULE --evidence PATH`, with
+`--dry-run` first. It clones the gitlink closure and creates no discovery record;
+record the destination and remove only that owned disposable checkout when done.
+
 ## iOS experiment area
 
     source workspace   /home/ilyagulya/work/wr-fresh

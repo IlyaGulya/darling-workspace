@@ -34,6 +34,23 @@ hang or kill launchd/server processes by guessed PID or broad name patterns.
 Do not overwrite or delete runtime binaries while the prefix is live; use
 West's owning shutdown/deployment transaction and retain its failure evidence.
 
+Noisy/long RED proofs, full guest CTest selections and contracts that invoke
+`west test` internally use the same supervisor. In particular,
+`tests/run-west-test-metadata-contract.sh` requires the explicit `west-job`
+transport context under `CODEX_CI`. Stay attached with `follow`; observer
+timeout does not cancel a job and a detached handle does not mean completion.
+Use `status` only for interruption recovery, never a polling loop; agent
+transports use `follow`, not low-level `wait`. Do not start another run on the
+same prefix before final rc and cleanup.
+
+Cleanup/leak assertions run as a separate final phase after all commands that
+create temporary worktrees/prefixes have exited. Never parallelize
+`tests/run-west-test-metadata-contract.sh`,
+`tests/run-west-test-prefix-cleanup-contract.sh` or manual scratch leak checks
+with `west test`, RED proof or source materialization. A failure observed during
+such overlap requires sequential
+execution before a leak claim.
+
 ### Bootstrap a fresh prefix before a prefix-backed run
 
 `--prefix PATH` only resolves a path; it does not create, boot or provision a
@@ -492,7 +509,7 @@ relax admission checks for populated or mode-mismatched prefixes.
 
 ```sh
 export DARLING_CLT_PACKAGE=/absolute/path/Command_Line_Tools_for_Xcode_13.2.pkg
-mise run dw dev context homebrew --prefix /tmp/dar-hb
+mise run dw dev context homebrew --prefix /home/ilyagulya/work/wr-fresh/.west-state/prefixes/hb
 mise run dw dev run homebrew-prepare
 mise run dw dev run homebrew-preflight
 mise run dw dev run exact-capture
@@ -623,6 +640,38 @@ interfaces.
   normal committed regressions.
 - Use `west test` selectors and metadata to identify the proof for a patch.
 
+### Behavioral evidence and proof ownership
+
+Choose the smallest test that executes the changed contract, then retain the
+actual workload's smoke/oracle. Source matching is an audit, never a substitute
+for behavior or a reason to relabel evidence as host/compile/runtime. Report
+an unexecutable behavior change as source-only evidence with a blocking task
+naming the deferred behavioral owner.
+
+For build changes, exercise the changed CMake target/build path, not an
+alternate manual/autotools compile. Do not inject the fixed flag through test
+metadata into the bad tree. Current test assets may be copied to the bad tree;
+RED must fail because of old behavior, not a missing asset.
+
+Resolve destinations against the intended repository root; use absolute paths
+outside the manifest and keep workspace-owned assets here. Product fixtures and
+their CMake registrations remain with their owning source project. Keep test
+inputs available independently of the old implementation being exercised.
+Runtime RED/GREEN proof must preserve required boot/lifecycle dependencies;
+an incompatible server's startup failure is not regression evidence. Record
+exact source/build composition conflicts as blockers.
+
+An empty `west test` selection is fatal. Never narrow a selection to hide a
+failure. Declare deployment dependencies separately from CTest selection.
+
+For real-prefix `libsystem_kernel` validation, deploy dyld with
+`libsystem_kernel.dylib`: dyld's static emulation path otherwise serves stale
+syscall behavior. A focused `darlingserver` build uses
+`mise run west darling-build --targets darlingserver --deploy --deploy-darlingserver`;
+this also deploys dyld/closure, which must be recorded in experiment scope.
+Use a verified server-only path if isolation is required. Confirm deployed
+artifact identity through [diagnostic tooling](tooling.md), not just build success.
+
 E-UNION host behavior has its own CTest path. `testkit/CMakeLists.txt` builds
 the production XNU sources and the workspace harness as a CTest target, while
 the fixture setup is a CTest fixture prepared by
@@ -637,68 +686,38 @@ checkout before runtime-profile deployment.
 
 ### What the contract census credits
 
-`ci/run-host-tier.py` refuses to start when a contract is neither registered
-(`CONTRACTS`, `EXPLICIT_CONTRACTS`) nor excluded with a reason
-(`EXCLUDED_CONTRACTS`). The transitive part of that rule is deliberately narrow:
-a contract is credited only when a source the tier already reaches invokes it
-**by path**. Four ways of naming a contract prove nothing, and all of them were
-found in the tree:
+Register every `tests/run-*-contract*.sh` in `CONTRACTS` and every
+`tests/west_test_contracts/*contract*.py` in `EXPLICIT_CONTRACTS` in
+`ci/run-host-tier.py`, or use `EXCLUDED_CONTRACTS` with a reason. The tier refuses
+unaccounted contracts. Transitive credit requires a reachable invocation **by
+path**: variable assignments, probe-only calls, comments, and synthesized
+declarations alone do not execute a contract.
 
-- a variable assignment that stores the path for a call made elsewhere:
-  `tests/run-west-job-contract.sh` assigned
-  `tests/run-west-test-metadata-contract.sh` to a variable and called it only
-  with `--transport-gate-probe`, which prints a marker and returns before the
-  body. The chain, and the eleven python contracts it drives, were counted as
-  covered while nothing executed them; two of the eleven had rotted to
-  `AttributeError` unseen.
-- a line that only passes a probe flag. Probes are the convention
-  (`--transport-gate-probe`, `--self-contract-probe`,
-  `--metadata-display-contract-probe`); a probe is a gate test, not an
-  execution of the contract behind it.
-- a comment. While this rule was being written, a comment naming the chain in
-  the runner was itself enough to keep it "covered".
+Register contracts a chain actually drives. The metadata chain requires the
+immutable mirror, so its eleven Python contracts are registered individually
+and the chain is excluded with that reason; mirror failures must be bounded,
+non-interactive and explicit, not silently treated as a pass.
 
-The eleven contracts that chain owns are registered individually in
-`EXPLICIT_CONTRACTS` now, so they execute in about 1.6 seconds together. The
-chain runner itself stays in `EXCLUDED_CONTRACTS` with its reason: its west
-steps need the immutable mirror. That fetch is bounded and
-non-interactive, so it now fails closed with a named unreachable-mirror error
-instead of hanging for twenty minutes, but a workstation without mirror access
-still cannot run the chain to the end. Registering the chain is what finishes the
-job where the mirror is reachable.
+A resolved metadata `ctest:` label may be pinned to an exact CTest index.
+Compare the selected cases, not a literal `-L` spelling in a command listing.
+Never pin derived trees, generated-file digests or replay boundaries to literal
+values: bind assertions to their authoritative inputs and use the deriving
+gate's `--check` mode.
 
-One stale assertion in that chain was repaired rather than excused. It grepped
-the `west test --list` output for `ctest .* -L bead:dar-gwn.5`, but a metadata
-`ctest:` reference that resolves is pinned as the exact index it resolved to,
-so the listing carries `-I 28,28,1`. The step now parses the guarded payload
-and compares what the label and the resolved selection actually select, which
-is a stronger oracle than the string it replaced - and it is the same
-distinction the display matcher's own contract covers with its fixtures.
+After editing reviewed namespace-writer candidate sources, run
+`scripts/generate_namespace_writer_registry.py --check` and regenerate the
+anchored registry before a tier: source SHA drift invalidates that audit.
 
 ### Scheduling the host tier by weight
 
-The tier runs its commands with a slot budget rather than one slot per process.
-A contract that drives other runners or a nested tier declares its cost in
-`CONTRACT_WEIGHTS`, each entry with the measured reason (42 runner invocations
-for the metadata chain, 11 for the testkit root, 34 subprocess sites in
-`dev_check_contract.py`). Commands holding more than one slot cannot be
-scheduled beside a peer that leaves them no room, light commands are submitted
-first so a waiting heavy command does not block them, and a weight keyed on a
-command that does not exist fails the tier instead of being ignored. The
-motivation is that a load failure and a regression look identical in the
-result: `run-west-extension-help-contract.sh` and `dev_check_contract.py` both
-failed inside the tier and passed alone. The answer is scheduling, never a
-retry.
+Contracts that drive other runners declare their measured slot cost in
+`CONTRACT_WEIGHTS` in `ci/run-host-tier.py`. Preserve weighted scheduling rather
+than treating every process as one worker; fix oversubscription, never mask it
+with retries.
 
-The tier's own wiring contract stopped executing the tier to check it.
-`tests/run-ci-test-tiers-contract.sh` copies `ci/run-host-tier.py` and
-`ci/run-test-tier.sh` into a mirror repository, reads the registered contract
-paths out of the copied runner, writes a stub for each, and runs the mirror
-tier for real - so the census, the weighted scheduling and the command
-construction all execute, while the ~90 contracts are stubs that record their
-invocation. It runs in about two seconds, is registered in the tier it checks,
-and still fails when a tier command line changes (verified by mutating the
-wget-residual sweep argv and a guest-toolchain command line).
+A contract that tests tier wiring must stub registered contract paths in a
+throwaway mirror and assert captured commands, not recursively run the real
+tier. `tests/run-ci-test-tiers-contract.sh` implements that pattern.
 
 ### Test metadata and runners
 
@@ -951,6 +970,45 @@ planning code owns build-target de-duplication, deploy-plan display, and mapping
 guest-visible deploy paths to the prefix files that must be swapped. The
 side-effecting build/deploy/restore sequence stays in `west test` until the
 runtime lifecycle can be split further without changing behavior.
+
+### Cache identity and fresh acceptance
+
+Caches accelerate iteration, not acceptance claims. Never widen identity
+matching or consume an entry without its completion marker.
+
+| Store (under `<manifest>/.west-test/`) | Controls | Required identity/integrity |
+| --- | --- | --- |
+| `stock-stack-cache` | `WEST_STOCK_STACK_CACHE_DIR`, `WEST_STOCK_STACK_CACHE=off`, `WEST_STOCK_STACK_CACHE_MAX_BYTES` (default 12 GiB, enforced before capture) | Pinned brew/core revisions and input digests, resolved formula versions, verified guest CLT, deployed runtime, layout schema, host architecture |
+| Guest verdicts | `WEST_TEST_VERDICT_CACHE=off` forces execution | Asset bytes, declaration, runner/args, timeout/oracles, runtime, consumed stock snapshot, workload parameters, guest toolchain, host architecture |
+
+Stock captures are built at temporary paths and published with completion
+markers. Missing markers, corrupt archives, SHA-256 mismatches or missing
+formula source receipts are misses, never partially trusted restores. A miss
+stages pinned resources and rebuilds; an already installed stack is adopted
+instead because staging refuses that prefix. Replay tests declare `homebrew-lz4`
+and receive restore, adoption or staging in that order.
+
+When the test measures the source build, set `WEST_STOCK_STACK_RESTORE=off` in
+its own `env-vars` so it stages and builds rather than restoring. Leave the
+store enabled to capture the completed stack for later replay, or disable the
+whole stock cache explicitly for acceptance that requires it and retain the
+reported decision. Cache controls use invocation environment overlaid on host
+environment. Source-build measurements always execute: their verdicts are
+never reused (`skipped-source`), because receipts cannot distinguish a genuine
+fresh build from restored/skipped work.
+
+The stock wget-repeat workload reinstalls wget from source **twelve times**.
+`WEST_STOCK_WGET_ITERATIONS` is iteration-only: shortened runs print
+`STOCK_WGET_REPEAT iterations=N acceptance=0` and are not acceptance evidence.
+Do not put a compile cache in front of the guest compiler; the source build is
+the measured workload and receipts cannot detect a cached compile.
+
+Only zero guest verdicts may be reused; announce identity digest and original
+run time. Nonzero verdicts re-execute. A reused pass cannot detect flakes:
+acceptance requires fresh execution on the current identity, with verdict reuse
+disabled. Smaller load-smoke workloads (concurrent guest CLT compile/link,
+fork/exec storms, descriptor churn) are regression signals, not substitutes
+for full stock acceptance.
 
 ### RPC descriptor-transport windows
 
@@ -1259,6 +1317,42 @@ contract. Do not add large embedded-Python heredocs to those wrappers; if a
 contract needs reusable logic, move it into a module and keep shell only for
 CLI integration setup.
 
+### Framework ownership and focused contracts
+
+Keep `west_commands/test.py` as the side-effecting orchestrator, not another
+implementation of helper logic:
+
+| Owner | Contract |
+| --- | --- |
+| `west_commands/test_guest_c.py` | Metadata guest-C generation/execution; `DarlingTest._run_guest_c_fixture()` stays a thin facade |
+| `west_commands/test_runtime.py` | Pure runtime RED artifact plan/display/target mapping |
+| `west_commands/test_prefix.py` | Pure process-tree matching and stale init-pid decisions; orchestration owns shutdown, mounts, locks and signals |
+| `west_commands/test_ctest.py` | CTest label/list/passthrough construction and submodule normalization |
+| `west_commands/test_cmake.py` | Source CMake superproject shims, fallback registration, compiler logs and required options |
+| `west_commands/test_resources.py` | Shared typed runtime setup, with provider ordering/selection contracts |
+
+Update the matching focused contract when changing these interfaces (all
+entrypoints below are under `tests/`):
+
+| Interface | Focused contract |
+| --- | --- |
+| Testkit registration / top-level selectors | `run-west-test-testkit-contract.sh` |
+| `add_compat_test()` launch, argv, labels, prefix environment | `run-west-test-add-compat-cmake-contract.sh` |
+| `DARLING_TEST_EXECUTOR`, bundle roots, timeout wrapping | `run-west-test-guarded-timeout-contract.sh` |
+| Guest-command environment, timeout, result matching | `run-west-test-guest-command-contract.sh` |
+| Guest-C source transport, compile/run/verdict | `run-darling-c-test-contract.sh` |
+| Runtime source/build deadline forwarding | `run-west-test-runtime-build-contract.sh` |
+| GC, proof scratch naming, dry-run pruning | `run-west-test-gc-contract.sh` |
+
+Both metadata and CTest guest-C paths route low-level `launcher shell` through
+`testkit/scripts/darling-guest-shell.sh`, which owns prefix environment and the
+watchdog. Metadata owns namespace retry, trace/stat resources and diagnostic
+dumps around that shared transport.
+
+For a requested working-tree Python syntax check, use
+`python3 -B scripts/check_python_syntax.py <paths...>`, not `python -m py_compile`,
+which leaves ignored `__pycache__` artifacts.
+
 Use `ctest` once the test is discoverable through the CTest registry. This is a
 runnable selector: `west test` configures/builds the local compatibility suite
 or source fixture and executes `ctest -L <label>`.
@@ -1433,6 +1527,24 @@ Ordinary `west test --gc` never deletes those units. Removal is deliberate:
 `west test --gc --gc-runtime-evidence` applies the configured proof-scratch
 age/count policy and first removes only the worktrees listed by that unit's
 manifest. A path is reported as preserved only after this manifest exists.
+
+GC requires ownership, not just a matching name. Runtime evidence is owned by
+its manifest or an in-flight unit marker with released flock; manifests are
+written while hidden and then atomically published. Debug bundles use timestamp
+names; scratch and job state require `.west-test-scratch.json`, created through
+`test_store.owned_scratch_dir` before population. Unmarked name matches,
+including guest-runner outputs, are reported with path/size and preserved.
+Announce unit deletion before and after removal.
+
+For GC fixtures, pass **both** `--runtime-evidence-root DIR` and
+`--proof-scratch-root DIR`: the latter scopes only scratch/guest-runner passes,
+not the default `<topdir>/.west-test/runtime-evidence` store. Inspect `--dry-run`
+and snapshot affected paths before mutation. Preserve required acceptance
+archives outside GC roots with a SHA-256 manifest; a surviving hash/verdict
+alone is not independently re-verifiable evidence and requires a new gate run.
+Use one declared `DW_STATE_ROOT` per lane/task; maintenance must refuse root
+overrides outside it. Durable prefixes, lanes, jobs and evidence do not belong
+under host `/tmp`; see [state ownership](environment.md).
 
 Long configure/build commands use the same bounded process runner, forwarding
 configure output and throttled Ninja progress milestones live while retaining

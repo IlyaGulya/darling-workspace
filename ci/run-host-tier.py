@@ -107,6 +107,7 @@ CONTRACTS = (
     "tests/run-lifecycle-operation-boundary-contract.sh",
     "tests/run-dwdiag-runner-tests-contract.sh",
     "tests/run-manifest-source-mode-contract.sh",
+    "tests/run-dw-setup-local-contract.sh",
     "tests/run-darling-bootstrap-contract.sh",
     "tests/run-lifecycle-trace-contract.sh",
     # Documented in AGENTS.md as focused contracts but invoked by no entrypoint.

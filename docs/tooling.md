@@ -140,6 +140,42 @@ the hypothesis that a regression then pins.
    cross-check, and records the disagreement (`binds_disagreement`), which
    `rung-driver.py` prints next to the referrer it belongs to.
 
+## Agent workflow and instrumentation safety
+
+Load the canonical `.agents/skills/darling-diagnostics/SKILL.md` before measuring;
+the root instruction file routes tasks here instead of duplicating the command
+reference. `scripts/dwdiag-roster.py --write|--check` owns only the marked roster
+in this document, not `AGENTS.md`.
+
+For traced memory, use xtrace's guarded raw `process_vm_readv` reader in
+`src/xtrace/safe_read.cpp`. Never dereference an untrusted descriptor address
+while formatting diagnostics: a length cap cannot make a stale base safe.
+Report short/unmapped reads, clamp descriptor walks to declared `msgh_size`
+and emit DECODE-STOPPED on truncation. The 32-bit image must not read out-of-line
+payloads unless the guard is supported there. Preserve declared record lengths
+and explicitly report any output cap; retain complete abort/terminate text.
+
+`cycle --fresh` (implied by `--probe`) requires a FRESHNESS witness from the
+run's own workload lines; it is not a guest environment override or a verdict
+cache switch. The cycle path does not invoke west test's verdict cache.
+A log without execution evidence must fail, not look like a reused success.
+Prefer the fixture's raw-Linux `host_pid=` declaration to guessed shell/loader
+matches or emulated Darwin pids. The managed ring fixture is installed at
+`/private/var/tmp/ring_mach_msg_test`, not host `/usr/bin`.
+
+For namespace-aware live fault capture, use the supported top-level runner:
+
+```sh
+scripts/dwdiag run --name NAME --capture-gdb --capture-tree --gdb-namespace \
+  --capture-pattern HANDLE --gdb-ex 'handle SIGSEGV stop print nopass' \
+  --timeout-seconds 280 --env KEY=VALUE -- LAUNCHER COMMAND
+```
+
+Use the observable loader handle for HANDLE, not a guest argv absent from host
+cmdline. Read the announced bundle; do not recreate namespace descriptors or
+hand-roll gdb/nsenter discovery loops. The prefix must be in a supported stable
+lifecycle state; read the boot skill before launching it.
+
 ## Why these exist
 
 Each tool was written, used, and corrected at least once, because the first

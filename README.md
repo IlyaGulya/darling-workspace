@@ -93,10 +93,11 @@ results and summary counts. Exit status is 0 only for `healthy`, 1 for
 diagnosed problems or an operational failure, and 2 for invalid command-line
 usage.
 
-## Claude Code guardrails (hooks + skills)
+## Agent skills and local guardrails
 
-The workspace tracks Claude Code guardrails and procedures so they are
-available after `west init` on another machine.
+Portable agent procedures live canonically in `.agents/skills/`.
+The manifest's `.claude/skills -> ../.agents/skills` relative symlink exposes
+the same procedures to Claude Code without maintaining duplicate copies.
 
 - `hooks/pretooluse-build-gate.sh` — a `PreToolUse` (Bash) hook. Before any
   command that looks like a Darling build/deploy/boot (`ninja`, `west
@@ -107,24 +108,39 @@ available after `west init` on another machine.
   if the manifest repo is uncommitted, the independent runner is dirty, or a
   tracked source worktree is dirty, and blocks the stop once so the
   work isn't silently abandoned. It respects `stop_hook_active` (no loop).
-- `.claude/skills/darling-boot/` — managed context/run/follow/cancel workflow,
+- `.agents/skills/darling-boot/` — managed context/run/follow/cancel workflow,
   prefix-owned shutdown and ownership-checked cleanup.
-- `.claude/skills/darling-durability/` — triage → rescue onto `fix/*` → commit
-  manifest → `west dw handoff` → verify.
+- `.agents/skills/darling-diagnostics/` — guest tracing, artifact identity and
+  deployment verification.
+- `.agents/skills/darling-testing/` — test selection, verdicts and regression
+  proof.
+- `.agents/skills/darling-durability/` — dirty-work triage, source ownership and
+  durable handoff.
 
-Activation is per-checkout and lives OUTSIDE the manifest repo (the workspace
-root is not a git repo):
+Install local agent routing in the selected Darling checkout (the workspace
+root itself is not a Git repository):
 
 ```bash
 # from the workspace root
 mise -C darling-workspace run dw setup-local
 ```
 
-`setup-local` installs the source instruction template and Git excludes.
-Install project hooks from `.claude/settings.sample.json`, replacing its
-workspace paths. Resolve active skill locations and synchronize separate copies
-from `.claude/skills/`. Preserve local additions when an installed instruction
-file differs from its template.
+`setup-local` installs `source/AGENTS.md` only if the selected checkout has no
+instruction file, preserving differing local instructions. It links that
+checkout's `.agents/skills` to this manifest's canonical skills and installs
+`.claude/skills -> ../.agents/skills`. Matching links are retained on repeat
+invocation. Conflicting files, directories, dangling links or wrong links cause
+a clear failure without replacement; reconcile those paths explicitly, keeping
+any local additions. Custom instruction files, including existing instruction
+symlinks, are never overwritten.
+
+The command adds local Git excludes for instructions, Beads and the installed
+skill paths through Git's resolved `info/exclude` (including gitfile-based
+checkouts); it does not change the product's tracked `.gitignore`. Select a
+non-default source checkout through `DW_DARLING_SRC` in the local
+`workspace.env` or command environment. Install optional Claude Code hooks from
+`.claude/settings.sample.json`, replacing its workspace paths. Skills remain
+linked rather than copied; edit their canonical manifest sources.
 
 `west dw handoff` exports Beads, refreshes manifests, and creates Git bundles
 for every local branch except an unchanged `main`/`master`. This includes

@@ -165,22 +165,49 @@ forall() {
 
 setup_local() {
   require_source
-  local exclude source_agents target_agents pattern
-  exclude="$DW_DARLING_SRC/.git/info/exclude"
+  local exclude source_agents target_agents canonical_skills directory path pattern
+  exclude="$(git -C "$DW_DARLING_SRC" rev-parse --path-format=absolute --git-path info/exclude)"
   source_agents="$DW_ROOT/source/AGENTS.md"
   target_agents="$DW_DARLING_SRC/AGENTS.md"
+  canonical_skills="$DW_ROOT/.agents/skills"
+
+  [[ -d "$canonical_skills" ]] || die "canonical skills not found at $canonical_skills"
+  # Check every skill destination before installing anything. Never traverse a
+  # user-owned parent link or replace a conflicting file, directory or link.
+  for directory in "$DW_DARLING_SRC/.agents" "$DW_DARLING_SRC/.claude"; do
+    if [[ -L "$directory" || ( -e "$directory" && ! -d "$directory" ) ]]; then
+      die "kept conflicting skill parent $directory; move it explicitly before setup-local"
+    fi
+  done
+  path="$DW_DARLING_SRC/.agents/skills"
+  if [[ -e "$path" || -L "$path" ]]; then
+    [[ -L "$path" && "$path" -ef "$canonical_skills" ]] ||
+      die "kept conflicting skill path $path; move it explicitly before setup-local"
+  fi
+  path="$DW_DARLING_SRC/.claude/skills"
+  if [[ -e "$path" || -L "$path" ]]; then
+    [[ -L "$path" && "$(readlink "$path")" == '../.agents/skills' ]] ||
+      die "kept conflicting skill path $path; move it explicitly before setup-local"
+  fi
 
   mkdir -p "$(dirname "$exclude")"
-  for pattern in '.beads/' 'AGENTS.md' '.bv/'; do
+  for pattern in '.beads/' 'AGENTS.md' '.bv/' '/.agents/skills' '/.claude/skills'; do
     grep -Fqx "$pattern" "$exclude" 2>/dev/null ||
       printf '%s\n' "$pattern" >>"$exclude"
   done
 
-  if [[ ! -e "$target_agents" ]]; then
+  if [[ ! -e "$target_agents" && ! -L "$target_agents" ]]; then
     cp "$source_agents" "$target_agents"
     printf 'installed %s\n' "$target_agents"
   elif ! cmp -s "$source_agents" "$target_agents"; then
     printf 'kept existing %s (differs from control copy)\n' "$target_agents"
+  fi
+  mkdir -p "$DW_DARLING_SRC/.agents" "$DW_DARLING_SRC/.claude"
+  if [[ ! -L "$DW_DARLING_SRC/.agents/skills" ]]; then
+    ln -s "$canonical_skills" "$DW_DARLING_SRC/.agents/skills"
+  fi
+  if [[ ! -L "$DW_DARLING_SRC/.claude/skills" ]]; then
+    ln -s ../.agents/skills "$DW_DARLING_SRC/.claude/skills"
   fi
   printf 'updated %s\n' "$exclude"
 }
@@ -206,7 +233,7 @@ Commands:
   handoff [--dry-run] [--json] [--allow-dirty]
                     Transactionally refresh Beads, manifests, state, and bundles
   doctor            Validate paths and Beads state
-  setup-local       Install local agent instructions and Git excludes
+  setup-local       Link canonical skills and install local instructions/excludes
   env               Print resolved workspace paths
 EOF
 }
