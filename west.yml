@@ -43,7 +43,7 @@ manifest:
     # This is a scoped source checkpoint: later semantic candidates (signal
     # 6f6f1fb, raw-ulock 572ecca, darlingserver 1081c82/fa203ed/21f8a0ca) stay OUT
     # of the pin until a focused implementation regression passes.
-    revision: b2b559335a19396e5fe46af4251e132e88d27631
+    revision: 4827c81effd26d04c0e8789f24f4e0d7b9e5f08f
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -509,7 +509,7 @@ manifest:
     # it reports pass=1 reason=call_retval_freshness (VERDICT PASS). T4 then advances to a
     # SIGSEGV with two threads queued in ulock_wait -- a separate, still-open defect.
     # Parent is the psynch ring-classification pin bce5bf9.
-    revision: ca51b99da8913e3318ece4dabd4667ab6b44d0a9
+    revision: 6d203b4e172c76b5e681bce549a415cbbcf0e325
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
