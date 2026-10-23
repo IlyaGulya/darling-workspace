@@ -55,16 +55,14 @@ execution before a leak claim.
 
 `--prefix PATH` only resolves a path; it does not create, boot or provision a
 prefix. A selection that needs a prefix therefore runs against a directory that
-is not usable until the bootstrap-only provider has run, and `west test` now
-names that exact command instead of leaving the operator to find it from a
-downstream failure. The recipe is two steps, and the first one is its own
-invocation:
+is not usable until the bootstrap-only provider has run, and `west test`
+names the required command instead of leaving the operator to find it from a
+downstream failure. For CTest selections that compile inside Darling, provision
+the guest toolchain first, then run the selection as a separate invocation:
 
 ```sh
 mise run west test --prefix /absolute/path/to/owned-prefix \
-  --bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal
-mise run west test --prefix /absolute/path/to/owned-prefix \
-  --bootstrap-runtime-profile homebrew-guest-toolchain-provisioning
+  --bootstrap-runtime-profile manifest-ring-on
 mise run west test --prefix /absolute/path/to/owned-prefix --env darling
 ```
 
@@ -78,16 +76,20 @@ is refused together with the CTest selectors
 `--list`, `--with-runtime-profile`, `--reuse-prefix-runtime` and raw CTest
 passthrough arguments. It runs `darling-doctor --scope workspace`, builds and
 deploys the declared provider, proves it with a bounded guest smoke and the
-runtime doctor scope, and only then retains it. The two bootstrap-capable
-profiles differ in what they provision:
+runtime doctor scope, and only then retains it. Both recommended providers use
+sources from the current West manifest (`source-mode: manifest`):
 
-| profile | provisions |
+| provider | provisions |
 | --- | --- |
-| `homebrew-rootless-bootstrap-minimal` | the rootless E-UNION baseline, including the launcher at `<prefix>/bin/darling`, and no guest CommandLineTools |
-| `homebrew-guest-toolchain-provisioning` | the same baseline plus the reviewed guest CommandLineTools package set, installed through the guest `installer` |
+| `manifest-ring-baseline` | the rootless E-UNION Ring baseline, including the launcher at `<prefix>/bin/darling`, and no guest CommandLineTools |
+| `manifest-ring-on` | the same baseline plus the reviewed guest CommandLineTools package set, installed through the guest `installer` |
+
+For runtime-only workloads that do not compile inside the guest, choose
+`manifest-ring-baseline` instead. Run only one bootstrap for an absent/empty
+prefix; these are alternatives, not sequential setup steps.
 
 Both write the retained provider marker `<prefix>/.west-runtime-profile.json`
-(schema, profile, source profile, guest toolchain, launcher/build fingerprint),
+(provider identity, guest toolchain and launcher/build fingerprint),
 which `--reuse-prefix-runtime`, the retained-prefix identity checks and the
 stock-stack and verdict caches verify. A bootstrapped prefix is distinguishable
 from a fresh one without running anything:

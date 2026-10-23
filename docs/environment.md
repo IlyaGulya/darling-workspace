@@ -152,8 +152,8 @@ Do not modify the Xcode tree in place and do not scatter copies into `/tmp`.
 How to create a fresh prefix (its own invocation, not combined with a test selection):
 
     cd /home/ilyagulya/work/wr-fresh/darling-workspace
-    mise run west test --prefix /absolute/path --bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal
-    # or ...-guest-toolchain-provisioning to also install the reviewed guest CommandLineTools
+    mise run west test --prefix /absolute/path --bootstrap-runtime-profile manifest-ring-baseline
+    # Choose manifest-ring-on instead when guest compilation needs the reviewed CommandLineTools.
     mise run west -- darling-prefix-repair --prefix /absolute/path   # if prerequisites are reported missing
 
 Long runs are owned by a job, never by an external `timeout`/kill: use `scripts/west-job.sh

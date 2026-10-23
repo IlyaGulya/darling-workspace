@@ -28,8 +28,9 @@ correct stale instructions rather than following copied paths or hashes.
   to change a normal rootless installation.
 - `--prefix` only selects a path. Bootstrap an absent/empty prefix in a standalone
   invocation before any selection; see [bootstrap](../../../docs/test-infra.md#bootstrap-a-fresh-prefix-before-a-prefix-backed-run).
-  Baseline profile: `homebrew-rootless-bootstrap-minimal`; guest compiler profile:
-  `homebrew-guest-toolchain-provisioning`. Do not combine bootstrap and CTest selectors.
+  Baseline provider: `manifest-ring-baseline`; guest compiler/SDK provider:
+  `manifest-ring-on`. Both use sources from the current West manifest.
+  Choose one bootstrap; do not combine bootstrap and CTest selectors.
 - Guest CTest compiles inside Darling. Declare
   `guest-toolchain: darling-command-line-tools`; let the provisioner install the
   reviewed CLT via the guest installer. Never commit CLT packages or snapshots.
