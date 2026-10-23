@@ -270,6 +270,12 @@ class BootstrapRuntimeProfileMixin:
             or definition["bootstrap-smoke-timeout-seconds"]
         )
         command_prefix = self._bootstrap_diagnostic_command_prefix("bootstrap")
+        trace_dir = getattr(self, "_bootstrap_syscall_trace", None)
+        stack_sample_dir = None
+        if trace_dir is None and getattr(self, "_bootstrap_stack_sample", None) is not None:
+            stack_sample_dir = self._resolve_bootstrap_diagnostic_dir(
+                self._bootstrap_stack_sample
+            )
         with self._prefix_resource_context(True):
             Path(prefix_text).mkdir(parents=True, exist_ok=True)
             with self._runtime_profile_deployment_context(
