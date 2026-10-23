@@ -2206,9 +2206,17 @@ class DarlingTest(
             # The failure path tears the prefix (and its server log) down, so a
             # capture not taken here would record nothing about the hung launch.
             if diagnostic_dir is not None:
-                self._capture_bootstrap_server_trace(
-                    prefix, diagnostic_dir, label="prefix bootstrap toolchain"
-                )
+                # The guest's own failure decides the verdict; a capture error must
+                # be reported and must not replace it.
+                try:
+                    self._capture_bootstrap_server_trace(
+                        prefix, diagnostic_dir, label="prefix bootstrap toolchain"
+                    )
+                except OSError as error:
+                    self.err(
+                        "prefix bootstrap toolchain server capture failed: "
+                        f"{error}"
+                    )
         for item in changed:
             self.inf(f"guest toolchain: {item}")
 

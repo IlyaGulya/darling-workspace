@@ -271,6 +271,11 @@ class BootstrapRuntimeProfileMixin:
         )
         command_prefix = self._bootstrap_diagnostic_command_prefix("bootstrap")
         trace_dir = getattr(self, "_bootstrap_syscall_trace", None)
+        if trace_dir is not None:
+            # The crash/stall readers below open this path; a relative CLI value must
+            # not reach them unresolved just because the capture helper resolved its
+            # own copy.
+            trace_dir = self._resolve_bootstrap_diagnostic_dir(trace_dir)
         stack_sample_dir = None
         if trace_dir is None and getattr(self, "_bootstrap_stack_sample", None) is not None:
             stack_sample_dir = self._resolve_bootstrap_diagnostic_dir(
@@ -334,11 +339,16 @@ class BootstrapRuntimeProfileMixin:
                     )
                 diagnostic_dir = trace_dir or stack_sample_dir
                 if diagnostic_dir is not None:
-                    self._capture_bootstrap_server_trace(
-                        deployment.prefix,
-                        diagnostic_dir,
-                        label="prefix bootstrap",
-                    )
+                    # A capture that fails must never replace the guest's own failure:
+                    # the run's verdict is the workload's, the capture is an observer.
+                    try:
+                        self._capture_bootstrap_server_trace(
+                            deployment.prefix,
+                            diagnostic_dir,
+                            label="prefix bootstrap",
+                        )
+                    except OSError as error:
+                        self.err(f"prefix bootstrap server capture failed: {error}")
                 output = process_output_text(result)
                 bootstrap_command = [
                     deployment.env["DARLING_LAUNCHER"],

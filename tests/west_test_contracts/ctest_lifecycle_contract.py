@@ -577,6 +577,8 @@ with tempfile.TemporaryDirectory() as temp:
     server_trace = prefix / "private/var/log/dserver-rpc-trace.log"
     server_trace.parent.mkdir(parents=True)
     server_trace.write_text("stale trace\n")
+    server_log = prefix / "private/var/log/dserver.log"
+    server_log.write_text("stale log\n")
     test = DarlingTest.__new__(DarlingTest)
     test.topdir = str(root)
     test._prefix = str(prefix)
@@ -631,6 +633,7 @@ with tempfile.TemporaryDirectory() as temp:
         (trace_dir / "bootstrap.perf.data").write_text("perf data\n")
         server_trace.parent.mkdir(parents=True, exist_ok=True)
         server_trace.write_text("rpc.recv number=1 name=mldr_path\n")
+        server_log.write_text("plane-doorbell-sent pid=9 token=1\n")
         (prefix / ".west-rootless-boot.log").write_text(
             "launcher pid=1 waiting-for-shellspawn\n"
         )
@@ -664,6 +667,9 @@ with tempfile.TemporaryDirectory() as temp:
     ], observed_prefixes
     assert (trace_dir / "bootstrap.perf.txt").read_text() == "sampled stack\n"
     assert (trace_dir / "darlingserver-rpc.log").read_text() == "rpc.recv number=1 name=mldr_path\n"
+    # The runtime's own tag log says WHY a request did not complete; the RPC trace
+    # only says that it did not. Both are captured before the prefix is torn down.
+    assert (trace_dir / "darlingserver.log").read_text() == "plane-doorbell-sent pid=9 token=1\n"
     assert len(recorded_failures) == 1, recorded_failures
     failure = recorded_failures[0]
     assert failure["phase"] == "bootstrap", failure
@@ -679,6 +685,7 @@ with tempfile.TemporaryDirectory() as temp:
         trace_dir / "bootstrap.perf.data",
         trace_dir / "bootstrap.perf.txt",
         trace_dir / "darlingserver-rpc.log",
+        trace_dir / "darlingserver.log",
         prefix / ".west-rootless-boot.log",
         prefix / ".west-rootless-guest-fd.log",
     ], failure
@@ -686,7 +693,33 @@ with tempfile.TemporaryDirectory() as temp:
         f"prefix bootstrap stack sample: {trace_dir}",
         "prefix bootstrap phase start: guest login shell (timeout 60s)",
         f"prefix bootstrap server trace: {trace_dir / 'darlingserver-rpc.log'}",
+        f"prefix bootstrap server trace: {trace_dir / 'darlingserver.log'}",
     ], messages
+
+    # A capture that cannot be taken must not replace the guest's own failure:
+    # the verdict is the workload's, the capture is an observer.
+    bootstrap_module.run_guest_shell = timed_out_guest
+    bootstrap_module.run_bounded = completed_command
+    test_module.run_bounded = completed_command
+    for captured in ("darlingserver-rpc.log", "darlingserver.log"):
+        (trace_dir / captured).unlink()
+    # The destination, not the source, is what cannot be written: the prefix's own
+    # log must stay readable so this models a capture error and nothing else.
+    (trace_dir / "darlingserver.log").symlink_to("/nonexistent-capture-dir/dserver.log")
+    recorded_failures.clear()
+    messages.clear()
+    errors = []
+    test.err = errors.append
+    try:
+        test._bootstrap_runtime_profile("homebrew-prefix-baseline")
+        raise AssertionError("bootstrap unexpectedly accepted a timed-out run")
+    except SystemExit as exc:
+        assert str(exc) == (
+            f"prefix bootstrap guest smoke timed out after 60s; stack sample: {trace_dir}"
+        ), exc
+    assert len(recorded_failures) == 1, recorded_failures
+    assert recorded_failures[0]["summary"] == "prefix bootstrap guest smoke timed out after 60s"
+    assert any("server capture failed" in line for line in errors), errors
 
 
 with tempfile.TemporaryDirectory() as temp:
