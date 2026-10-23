@@ -464,6 +464,18 @@ class PrefixLifecycleOwner:
             os.close(descriptor)
 
 
+# The runtime records a failed bootstrap has to hand back, and the name each one is
+# retained under. They are read AFTER the guest is gone: nothing here wraps a guest,
+# changes its stdout/stderr, or runs on the successful path.
+BOOTSTRAP_LOG_SOURCES = (
+    ("private/var/log/dserver-rpc-trace.log", "darlingserver-rpc.log"),
+    ("private/var/log/dserver.log", "darlingserver.log"),
+    (".west-rootless-boot.log", "rootless-boot.log"),
+    ("private/var/tmp/.west-rootless-boot.log", "rootless-boot-guest.log"),
+    (".west-rootless-guest-fd.log", "rootless-guest-fd.log"),
+)
+
+
 class PrefixLifecycleMixin:
 
     def _resolve_prefix(self, args) -> str | None:
@@ -861,6 +873,27 @@ class PrefixLifecycleMixin:
                 return int(definition["bootstrap-smoke-timeout-seconds"])
         return 15
 
+    def _bootstrap_diagnostic_dir(self) -> Path | None:
+        """Where this bootstrap's post-mortem records belong, tracer or not.
+
+        An opt-in trace names its own directory; without one the owned runtime
+        evidence unit already holds the run's identity and lifetime, so its
+        `diagnostics/` subdirectory is the durable place -- the prefix itself is
+        torn down by the failure path.
+        """
+
+        for attribute in ("_bootstrap_syscall_trace", "_bootstrap_stack_sample"):
+            value = getattr(self, attribute, None)
+            if value is not None:
+                return self._resolve_bootstrap_diagnostic_dir(value)
+        evidence = getattr(self, "_active_runtime_evidence", None)
+        directory = getattr(evidence, "directory", None)
+        if directory is None:
+            return None
+        target = Path(directory) / "diagnostics"
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
     def _resolve_bootstrap_diagnostic_dir(self, value: str | Path) -> Path:
         """Resolve diagnostic output like the command's configured working tree."""
 
@@ -963,20 +996,56 @@ class PrefixLifecycleMixin:
         *,
         label: str,
     ) -> None:
-        # Two different server records answer two different questions, and only one
-        # of them survives the teardown otherwise: the RPC trace says which requests
-        # crossed, `dserver.log` carries the runtime's own tags (doorbell routes,
-        # lane attaches, refused/armed plane calls) that name WHY one did not.
-        for source_name, captured_name in (
-            ("dserver-rpc-trace.log", "darlingserver-rpc.log"),
-            ("dserver.log", "darlingserver.log"),
-        ):
-            server_trace = prefix / "private/var/log" / source_name
-            if not server_trace.is_file():
+        """Copy the runtime's own records out of the prefix before teardown.
+
+        Two different server records answer two different questions: the RPC trace says which requests crossed,
+        `dserver.log` carries the runtime's own tags (doorbell routes, lane attaches, refused/armed plane calls)
+        that name WHY one did not. The launcher and guest boot logs say whether a guest was ever started at all.
+        None of them survives the prefix teardown, and taking them is a post-mortem read, not instrumentation:
+        no guest is wrapped, and the workload's stdout/stderr is not touched.
+
+        A source that is not there is REPORTED with its reason (an absent instrument is not a zero), so a
+        retained unit never implies a record it does not hold.
+        """
+
+        for source_name, captured_name in BOOTSTRAP_LOG_SOURCES:
+            source = prefix / source_name
+            captured = diagnostic_dir / captured_name
+            try:
+                if not source.exists():
+                    self.inf(f"{label} {captured_name}: missing ({source_name}: absent)")
+                    continue
+                if source.is_dir():
+                    self.inf(f"{label} {captured_name}: missing ({source_name}: a directory)")
+                    continue
+                if captured.exists():
+                    captured.unlink()
+                shutil.copy2(source, captured)
+            except OSError as error:
+                self.inf(
+                    f"{label} {captured_name}: missing ({source_name}: {error.strerror or error})"
+                )
                 continue
-            captured_server_trace = diagnostic_dir / captured_name
-            shutil.copy2(server_trace, captured_server_trace)
-            self.inf(f"{label} server trace: {captured_server_trace}")
+            self.inf(f"{label} {captured_name}: retained {captured}")
+
+        launchd_dir = prefix / "var/log/com.apple.launchd"
+        if not launchd_dir.is_dir():
+            self.inf(f"{label} launchd logs: missing (var/log/com.apple.launchd: absent)")
+            return
+        for source in sorted(launchd_dir.iterdir()):
+            if not source.is_file():
+                continue
+            captured = diagnostic_dir / f"launchd-{source.name}"
+            try:
+                if captured.exists():
+                    captured.unlink()
+                shutil.copy2(source, captured)
+            except OSError as error:
+                self.inf(
+                    f"{label} {captured.name}: missing ({source.name}: {error.strerror or error})"
+                )
+                continue
+            self.inf(f"{label} {captured.name}: retained {captured}")
 
     def _parse_file_mode(self, invocation, field: str, index: int, value) -> int:
         try:

@@ -2177,14 +2177,7 @@ class DarlingTest(
         toolchain_env.update(self._darling_prefix_env(prefix))
         toolchain_env["DARLING"] = str(launcher)
         toolchain_env["DARLING_LAUNCHER"] = str(launcher)
-        diagnostic_source = getattr(self, "_bootstrap_syscall_trace", None) or getattr(
-            self, "_bootstrap_stack_sample", None
-        )
-        diagnostic_dir = (
-            self._resolve_bootstrap_diagnostic_dir(diagnostic_source)
-            if diagnostic_source is not None
-            else None
-        )
+        diagnostic_dir = self._bootstrap_diagnostic_dir()
         try:
             changed = ensure_command_line_tools(
                 prefix=prefix,
@@ -2893,10 +2886,13 @@ class DarlingTest(
         CommandLineTools that guest C compilation requires.
         """
 
+        # The manifest profiles take their source from the current West pins and never consult the
+        # frozen patch layer (retired by 1996a7bc); the homebrew-* pair is the legacy stack and is
+        # kept only for historical reproduction. Guidance must name the pair that works.
         profile = (
-            "homebrew-guest-toolchain-provisioning"
+            "manifest-ring-on"
             if guest_toolchain
-            else "homebrew-rootless-bootstrap-minimal"
+            else "manifest-ring-baseline"
         )
         return (
             f"bootstrap this prefix first: west test --prefix {prefix} "

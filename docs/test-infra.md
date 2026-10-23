@@ -51,6 +51,16 @@ with `west test`, RED proof or source materialization. A failure observed during
 such overlap requires sequential
 execution before a leak claim.
 
+Two or more agents that need their own prefix at the same time use an isolation
+lane instead of sharing one: `west dev lane create NAME --base <bootstrapped
+prefix>`, then `west test --lane NAME ...` for the run. The lane gives the run
+its own copy-on-write prefix, state root, `TMPDIR`/`XDG_RUNTIME_DIR`, build
+directory and `systemd --user` cgroup, so two lane runs do not serialize on a
+prefix lock and stopping one lane cannot reach another. The mechanism, its
+measurements, its cleanup contract and its own tests are in
+[lane-isolation.md](lane-isolation.md); it is optional and no existing command
+changes behaviour without `--lane`.
+
 ### Bootstrap a fresh prefix before a prefix-backed run
 
 `--prefix PATH` only resolves a path; it does not create, boot or provision a
@@ -1231,6 +1241,22 @@ problem rows are saved under the existing runtime evidence `diagnostics`
 directory before rollback. The fatal message names the relative artifact;
 the surrounding failure handler reports its final retained archive directory.
 
+A failed bootstrap also hands back the runtime's own records, and it does so
+without being asked for a trace: before the prefix is torn down,
+`_capture_bootstrap_server_trace` copies `private/var/log/dserver.log`
+(doorbell, lane, refused/armed plane calls), `dserver-rpc-trace.log`, the
+launcher and guest boot logs, the guest fd log and every file under
+`var/log/com.apple.launchd`. They land in the opt-in trace directory when
+`--bootstrap-syscall-trace`/`--bootstrap-stack-sample` named one, and otherwise
+in the owned runtime evidence unit's `diagnostics/` directory. Every miss is
+printed as `<name>: missing (<source>: <reason>)`, so a retained unit is never
+mistaken for one that holds a record it does not have. Taking these records is
+a post-mortem read: no guest is wrapped, the guest's stdout/stderr is
+unchanged, and the successful path pays nothing. The heavy `strace`/`perf`
+captures stay opt-in, and they are not equivalent instruments: on the iOS
+workload `strace` changed the cold guest smoke into a SIGILL before its
+verdict, so a traced arm's failure is not evidence about an untraced one.
+
 Historical rootless debug prefixes are separate from test scratch and must not
 be removed with a broad `/tmp/darling-rootless-*` glob because that namespace
 also contains source worktrees. Use `west darling-rootless-debug-cleanup --path
@@ -1409,6 +1435,7 @@ explicit exception:
 ```yaml
   test-exception:
     reason: doc-only
+    scope: Comment-only warning; owning component compile contract covers executable changes.
     note: Comment-only warning for code compiled out in all configurations.
 ```
 

@@ -686,14 +686,23 @@ with tempfile.TemporaryDirectory() as temp:
         trace_dir / "bootstrap.perf.txt",
         trace_dir / "darlingserver-rpc.log",
         trace_dir / "darlingserver.log",
+        trace_dir / "rootless-boot.log",
+        trace_dir / "rootless-guest-fd.log",
         prefix / ".west-rootless-boot.log",
         prefix / ".west-rootless-guest-fd.log",
     ], failure
     assert messages == [
         f"prefix bootstrap stack sample: {trace_dir}",
         "prefix bootstrap phase start: guest login shell (timeout 60s)",
-        f"prefix bootstrap server trace: {trace_dir / 'darlingserver-rpc.log'}",
-        f"prefix bootstrap server trace: {trace_dir / 'darlingserver.log'}",
+        f"prefix bootstrap darlingserver-rpc.log: retained {trace_dir / 'darlingserver-rpc.log'}",
+        f"prefix bootstrap darlingserver.log: retained {trace_dir / 'darlingserver.log'}",
+        "prefix bootstrap rootless-boot.log: retained "
+        f"{trace_dir / 'rootless-boot.log'}",
+        "prefix bootstrap rootless-boot-guest.log: missing "
+        "(private/var/tmp/.west-rootless-boot.log: absent)",
+        "prefix bootstrap rootless-guest-fd.log: retained "
+        f"{trace_dir / 'rootless-guest-fd.log'}",
+        "prefix bootstrap launchd logs: missing (var/log/com.apple.launchd: absent)",
     ], messages
 
     # A capture that cannot be taken must not replace the guest's own failure:
@@ -719,7 +728,13 @@ with tempfile.TemporaryDirectory() as temp:
         ), exc
     assert len(recorded_failures) == 1, recorded_failures
     assert recorded_failures[0]["summary"] == "prefix bootstrap guest smoke timed out after 60s"
-    assert any("server capture failed" in line for line in errors), errors
+    # The collector reports the miss with its reason instead of hiding it or
+    # letting it replace the guest's verdict (the caller's OSError guard is the
+    # belt for a failure the per-source loop cannot classify).
+    assert any(
+        "darlingserver.log: missing" in line for line in messages
+    ), messages
+    assert errors == [], errors
 
 
 with tempfile.TemporaryDirectory() as temp:

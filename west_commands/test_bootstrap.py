@@ -337,7 +337,7 @@ class BootstrapRuntimeProfileMixin:
                         sample_name="bootstrap",
                         label="prefix bootstrap",
                     )
-                diagnostic_dir = trace_dir or stack_sample_dir
+                diagnostic_dir = trace_dir or stack_sample_dir or self._bootstrap_diagnostic_dir()
                 if diagnostic_dir is not None:
                     # A capture that fails must never replace the guest's own failure:
                     # the run's verdict is the workload's, the capture is an observer.
