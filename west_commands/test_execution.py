@@ -38,9 +38,26 @@ def process_output_text(result: ProcessResult) -> str:
 
 
 def _read_capture(stream, *, text: bool | None) -> str | bytes:
-    stream.flush()
-    stream.seek(0)
-    value = stream.read()
+    """Collect a capture file WITHOUT touching the file position it shares.
+
+    The child has the same open file description, so `seek(0)+read()` would move
+    the offset the writer uses -- MEASURED on this host: TemporaryFile with "abcdefgh",
+    a dup of the writer, the writer lseek'd to 2, then this function, and the
+    writer's offset came back 8 instead of 2. `pread` reads at an absolute offset
+    and leaves that shared position exactly where the child left it.
+    """
+
+    descriptor = stream.fileno()
+    size = os.fstat(descriptor).st_size
+    chunks = []
+    offset = 0
+    while offset < size:
+        chunk = os.pread(descriptor, min(65536, size - offset), offset)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        offset += len(chunk)
+    value = b"".join(chunks)
     return value.decode(errors="replace") if text is not False else value
 
 
@@ -82,20 +99,44 @@ def _run_with_live_capture(
     descriptors = {name: stream.fileno() for name, stream in streams}
 
     def pump(final: bool) -> None:
+        """Forward at most one fixed budget, so the caller gets control back.
+
+        A capture is a live file that a descendant may keep growing at any rate.
+        A drain bounded only by the size seen at entry still never returns: one
+        call can copy gigabytes and the deadline lives in the loop that cannot
+        run. MEASURED (this exact edge test, before the budget): one pump kept a
+        7.6 GiB unlinked capture growing while the caller never reached its own
+        timeout. The budget below is per call; the loop re-checks the deadline
+        between calls. A read error is a COLLECTION failure -- re-raised, never
+        reported as "this stream had no output" inside a successful result.
+        """
+
+        budget = 256 * 1024
         for name, _ in streams:
-            while True:
-                try:
-                    chunk = os.pread(descriptors[name], 65536, offsets[name])
-                except OSError:
-                    break
+            try:
+                limit = os.fstat(descriptors[name]).st_size
+            except OSError:
+                raise
+            while budget > 0 and offsets[name] < limit:
+                chunk = os.pread(
+                    descriptors[name],
+                    min(65536, limit - offsets[name], budget),
+                    offsets[name],
+                )
                 if not chunk:
                     break
+                budget -= len(chunk)
                 offsets[name] += len(chunk)
                 pending[name] += chunk
                 lines = pending[name].split(b"\n")
                 pending[name] = lines.pop()
                 for line in lines:
                     output_line(name, line.decode(errors="replace"))
+                # A writer that never emits a newline must not make this buffer grow
+                # without bound (each split of it is linear in its size).
+                if len(pending[name]) >= 65536:
+                    output_line(name, pending[name].decode(errors="replace"))
+                    pending[name] = b""
         if final:
             for name in pending:
                 if pending[name]:
@@ -117,6 +158,9 @@ def _run_with_live_capture(
         time.sleep(min(remaining, 0.25))
         pump(final=False)
         elapsed = time.monotonic() - started_at
+        if elapsed >= timeout_seconds:
+            # A pump can consume real time on a large capture; the deadline wins.
+            raise subprocess.TimeoutExpired(list(process.args), timeout_seconds)
         if heartbeat is not None and elapsed >= next_heartbeat:
             heartbeat(elapsed)
             next_heartbeat += heartbeat_seconds or timeout_seconds

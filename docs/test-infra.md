@@ -390,6 +390,20 @@ skip must come from the source-owned CTest verdict contract.
 
 ### Preserve the complete execution and verdict contract
 
+Every direct runner goes through `west_commands/test_execution.py:run_bounded`.
+With `output_line` set, the child's stdout/stderr are FILES, never pipes: a
+supervised command may leave a descendant behind, that descendant inherits the
+capture descriptors, and closing a pipe reader when the leader exits turns the
+descendant's next write into a delivered SIGPIPE (measured on this host: leader
+rc 0, descendant signal 13; the same workload without `output_line` exited 0).
+Live lines are read from those files with `pread` at absolute offsets, so the
+reader never moves the file position the child shares. One `pump` call forwards
+a fixed byte budget and a growing stream therefore cannot hold the deadline or
+the heartbeat loop hostage, and a read error is reported as a collection
+failure rather than as an empty stream inside a successful result. The
+behavioural form of all three properties lives in
+`tests/run-west-test-execution-contract.sh`.
+
 The installed native bundle preserves final CTest arguments, environment,
 working directory, resources, properties and per-case timeout.
 `darling_install_native_bundle()` exports registrations after all source scopes

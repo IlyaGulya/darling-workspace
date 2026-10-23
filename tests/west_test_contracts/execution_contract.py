@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from west_commands.test_execution import run_bounded
+from west_commands.test_execution import _read_capture, run_bounded
 
 
 with tempfile.TemporaryDirectory() as temp:
@@ -296,5 +296,73 @@ with tempfile.TemporaryDirectory() as temp:
         assert "leader-line" in result.stdout, (live_capture, result.stdout)
 
     assert any("leader-line" in line for _, line in lines), lines
+
+with tempfile.TemporaryDirectory() as temp:
+    # COLLECTION must not disturb the writer's file position: the child shares the
+    # same open file description. MEASURED invariant: write "abcdefgh", dup the
+    # descriptor, lseek the dup to 2, collect, and the dup's offset must still be 2.
+    import io
+
+    tempdir = Path(temp)
+    stream = tempfile.TemporaryFile()
+    try:
+        stream.write(b"abcdefgh")
+        stream.flush()
+        writer = os.dup(stream.fileno())
+        try:
+            os.lseek(writer, 2, os.SEEK_SET)
+            assert _read_capture(stream, text=False) == b"abcdefgh"
+            assert os.lseek(writer, 0, os.SEEK_CUR) == 2, "collection moved the shared file position"
+        finally:
+            os.close(writer)
+    finally:
+        stream.close()
+
+with tempfile.TemporaryDirectory() as temp:
+    # A capture that keeps GROWING must not hold the loop hostage: the deadline has
+    # to win. The leader writes forever and never exits.
+    tempdir = Path(temp)
+    started = time.monotonic()
+    result = run_bounded(
+        # A bounded producer on purpose: this test asserts that the deadline wins over
+        # a capture that keeps growing, not how fast this host can fill a disk.
+        [sys.executable, "-B", "-c", "import sys, time\nwhile True:\n    sys.stdout.write('x' * 4096)\n    sys.stdout.flush()\n    time.sleep(0.02)\n"],
+        cwd=tempdir,
+        env=None,
+        timeout_seconds=1,
+        capture_output=True,
+        output_line=lambda stream, line: None,
+    )
+    elapsed = time.monotonic() - started
+    assert result.timed_out and result.returncode == 124, result
+    assert elapsed < 10, elapsed
+
+with tempfile.TemporaryDirectory() as temp:
+    # A READ ERROR during collection is a failure, not "this stream ended": the
+    # caller must not receive a successful result built out of a broken capture.
+    import west_commands.test_execution as execution
+
+    tempdir = Path(temp)
+    original_pread = execution.os.pread
+
+    def broken_pread(*_args, **_kwargs):
+        raise OSError(5, "EIO")
+
+    execution.os.pread = broken_pread
+    try:
+        try:
+            run_bounded(
+                [sys.executable, "-B", "-c", "print('hello')"],
+                cwd=tempdir,
+                env=None,
+                timeout_seconds=10,
+                capture_output=True,
+                output_line=lambda stream, line: None,
+            )
+            raise AssertionError("a broken capture was reported as a successful run")
+        except OSError as error:
+            assert error.errno == 5, error
+    finally:
+        execution.os.pread = original_pread
 
 print("PASS west-test-execution-contract")
