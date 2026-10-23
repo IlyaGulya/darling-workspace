@@ -10,9 +10,10 @@ description: >-
 
 Canonical source: `.agents/skills/darling-durability/SKILL.md` in the manifest;
 `.claude/skills` is only its compatibility alias. Resolve installed aliases to
-physical files; synchronize separate active copies without overwriting local
-additions. Installed guidance and named dev contexts are not portable runtime
-configuration. Verify current CLI help and repository ownership before acting.
+physical files; preserve local additions when synchronizing genuinely separate
+copies. Installed guidance and named contexts are not portable runtime artifacts.
+Verify current CLI, implementation and repository ownership before acting;
+preservation requirements below are not automatic tool guarantees.
 
 ## 1. Identify and protect ownership
 
@@ -27,22 +28,24 @@ configuration. Verify current CLI help and repository ownership before acting.
   disposable worktrees. A branch does not preserve uncommitted files.
 - Workspace metadata, Beads, manifests and handoff belong in the manifest, never
   Darling source repositories. Keep test assets with their declared owner.
-- Independently inventory any changed runner/tool repository, including a sibling
-  `darling-debug-runner` when used. A forest handoff does not cover it merely
-  because a scenario invokes it. Executable/target directories do not preserve
-  source; retain its actual source tip and executor provenance.
+- Resolve the runner actually used. The workspace `dwdiag` shim prefers vendored
+  `tools/darling-debug-runner`; a separately used sibling is independently owned.
+  A forest handoff does not cover that sibling merely because a scenario invokes
+  it. Retain the actual source tip and executor provenance, not only its binary.
 - Keep host-local prefixes, contexts, CLT caches and diagnostic archives outside
   product source. Preserve configuration declarations and reviewed package
   integrity metadata, not invented cache stamps or SDK identities.
 
 ## 2. Finish active work through its owner
 
-Retain the printed JOB and BUNDLE paths. Follow/cancel via `mise run dw dev
-follow JOB` / `cancel JOB`, or the supported `scripts/west-job.sh` owner for
-advanced runs. Observer timeout is not cancellation. An active job needs an
-explicit receiving owner; otherwise finish/cancel it and follow to final rc
-and prefix cleanup before changing the runtime. Never globally kill processes.
-Read `darling-boot` for launch/cleanup and exact-capture semantics.
+Retain the actual owner's job path and any published bundle/evidence paths;
+their formats and retention differ. Existing dev jobs support `mise run dw dev
+follow JOB` / `cancel JOB`; other supervised runs use `scripts/west-job.sh
+follow|cancel --state-dir JOB`. Observer timeout is not cancellation, and a
+cancel request alone is not cleanup evidence. An active job needs an explicit
+receiving owner; otherwise follow/cancel through final rc and verified prefix
+cleanup before changing the runtime. Never globally kill processes.
+Read `darling-boot` for source selection, launch/cleanup and exact-capture rules.
 
 Preserve full command, rc, timeout, stdout/stderr, structured doctor problems,
 artifact identities and archive paths, not console excerpts alone. A scoped
@@ -51,9 +54,12 @@ Diagnostic PASS and archive `exact_complete` are separate facts. Preserve
 unreadable mappings/warnings rather than upgrading evidence completeness.
 
 Keep at least one acceptance-evidence copy outside GC-managed roots with a
-SHA-256 manifest. Follow [state ownership and cleanup](../../../docs/environment.md#durable-state-and-cleanup).
-A path in a handoff note does not transfer its bytes. If only a hash/verdict
-survives, say so and rerun the gate rather than citing a destroyed archive.
+SHA-256 manifest. Copy required symlink targets too; PRESENT paths or directory
+listings do not prove the bytes were transferred. Write checksums to a separate
+file after finalizing evidence, exclude the checksum file itself, and verify with
+`sha256sum -c`. Follow [state ownership and cleanup](../../../docs/environment.md#durable-state-and-cleanup).
+If only a hash/verdict survives, say so and rerun the gate rather than citing a
+destroyed archive.
 
 ## 3. Retain only accepted, owned changes
 
@@ -75,11 +81,14 @@ hard fork has no upstream publication or pull requests.
 
 ## 4. Handoff only when portable archival is needed
 
-`mise run west dw handoff` is optional for explicit local-only state that cannot
-or should not be published normally. It is not mandatory for every Beads edit
-or local branch, and not a product milestone. Do not initialize unrelated
-recursive submodules to make it run. A rejected branch needs no keeper bundle
-once reason, SHA and evidence are durable in Beads/diagnostics.
+`mise run west dw handoff` is optional for explicit local-only state needing
+portable archival, not a prerequisite for every Beads edit or branch. Inspect
+`--dry-run` or `--json` first: these plan without publishing, but can refuse an
+incomplete source closure or unsafe/interrupted transaction. Do not initialize
+unrelated submodules merely to satisfy it. Bundles retain selected committed
+refs, not dirty/untracked files; `--allow-dirty` permits omission, not backup.
+Preserve uncommitted bytes separately before any checkout/update. A rejected
+branch needs no keeper bundle once reason, SHA and evidence are durably recorded.
 
 Before handoff inspect the current implementation and existing dirty/staged
 paths. Afterward identify exactly which files it changed; stage only those

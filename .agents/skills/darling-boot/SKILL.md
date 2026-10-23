@@ -16,107 +16,171 @@ correct stale instructions rather than following copied paths or hashes.
 ## 1. Resolve ownership and prerequisites
 
 - Read [environment](../../../docs/environment.md) before choosing source, build,
-  install prefix, guest prefix, launcher or state root. Install and guest prefixes
-  may differ. Keep short socket paths, but never put a prefix or job under `/tmp`.
-  Expanded AF_UNIX paths must fit the 108-byte `sun_path`, including NUL; do not
-  weaken the guard or change guest temporary-directory semantics to bypass it.
-- Establish that no other run owns the prefix. Use supported locks and process
-  identity, not names alone. Each concurrent experiment needs its own lane:
-  [state ownership and lane safety](../../../docs/environment.md#durable-state-and-cleanup). Never write the inert base.
-- Rootless is the launcher default. Privileged/rootfull mode is retired and
-  requires `DARLING_FORCE_ROOTFULL_MODE=1`; a setuid-root complaint is not a reason
-  to change a normal rootless installation.
-- `--prefix` only selects a path. Bootstrap an absent/empty prefix in a standalone
-  invocation before any selection; see [bootstrap](../../../docs/test-infra.md#bootstrap-a-fresh-prefix-before-a-prefix-backed-run).
-  Baseline provider: `manifest-ring-baseline`; guest compiler/SDK provider:
-  `manifest-ring-on`. Both use sources from the current West manifest.
-  Choose one bootstrap; do not combine bootstrap and CTest selectors.
-- Guest CTest compiles inside Darling. Declare
-  `guest-toolchain: darling-command-line-tools`; let the provisioner install the
-  reviewed CLT via the guest installer. Never commit CLT packages or snapshots.
-- Before installation, require size/XAR-boundary checks, compressed-TOC SHA-1 and
-  independently reviewed whole-file SHA-256. Catalog SHA-1 is NOT whole-file SHA-1.
-  Publisher authentication is separate from local hashing. A separately selected
-  `DARLING_CLT_PACKAGE` also needs its reviewed SHA-256. Never weaken verification.
+  install prefix, guest prefix, launcher or state root. Declare an absolute owned
+  `DW_STATE_ROOT`; place explicit prefix, bundle, evidence and job paths beneath
+  it. The variable does not relocate arbitrary explicit paths or every legacy
+  default. Never create prefixes, lanes, jobs or evidence archives under `/tmp`.
+  Use short socket paths: pathname AF_UNIX addresses must fit `sun_path`,
+  including NUL. Do not bypass guards or change guest temporary-directory semantics.
+- Establish that no other run owns the prefix. Use supported locks and
+  prefix/process identity, not names alone. Each concurrent experiment needs its
+  own lane: [state ownership and lane safety](../../../docs/environment.md#durable-state-and-cleanup).
+  Never write the inert base; a job supervisor is not a prefix-ownership lock.
+- Rootless is the launcher default and needs host support for unprivileged user,
+  mount and PID namespaces. A namespace denial is a host prerequisite failure,
+  not evidence of prefix corruption. Privileged/rootfull mode is retired and
+  gated by `DARLING_FORCE_ROOTFULL_MODE=1`; do not change setuid permissions to
+  repair an ordinary rootless installation.
+- Managed commands export the selected guest prefix. On a necessary direct
+  launcher invocation, set `DPREFIX` explicitly: the path to `bin/darling` alone
+  does not select its guest prefix, and the launcher otherwise defaults to
+  `~/.darling`. `DARLING_PREFIX` alone is not the launcher's selector.
+- Guest C/C++ CTest fixtures compile inside Darling. Declare
+  `guest-toolchain: darling-command-line-tools` where required and let the
+  provisioner install reviewed CLT through the guest `installer`. Never commit
+  CLT packages or snapshots; a runtime-only smoke does not prove a compiler/SDK.
+- Catalog packages are checked for size and XAR boundaries, compressed-TOC SHA-1
+  and pinned whole-file SHA-256 before installation. Catalog SHA-1 is NOT
+  whole-file SHA-1. `DARLING_CLT_PACKAGE` instead selects the one pinned local
+  CLT 13.2 package: its whole-file SHA-256 is checked both before staging and on
+  the staged copy. It is not an arbitrary-package override. Neither path's local
+  hash verification establishes publisher authentication; never weaken it.
 - Derive SDK/runtime identity and compatibility from authoritative metadata and
-  installed contents. No fabricated versions, links or package-manager bypasses.
-  Homebrew's native CLT 13.2 selection and older CLT 9.2/SDK 10.13 are not
-  interchangeable. Record incompatibilities in the owning Bead.
+  installed contents. The mirrored package set and selected CLT 13.2 are not
+  interchangeable. No fabricated versions, links or package-manager bypasses;
+  retain incompatibilities in the owning Bead.
 
 ## 2. Select the supported owner
 
-From the manifest, use `mise run dw dev context NAME --prefix /absolute/path`,
-then `mise run dw dev run SCENARIO`. Scenarios: `homebrew-prepare`,
-`homebrew-preflight`, `homebrew-source`, `exact-capture`; do not run all four
-unless the task calls for them. Homebrew scenarios use `homebrew-lz4-source`.
-Contexts live in local West configuration, not portable runtime artifacts.
-`--context` and explicit run overrides do not rewrite the active context.
+Run from the manifest with the pinned `mise run west ...` / `mise run dw ...`
+environment; add `$HOME/.local/bin` to PATH if needed. `--prefix` only selects
+a path. Bootstrap an absent/empty owned prefix in a separate invocation before
+any prefix-backed selection; see [bootstrap](../../../docs/test-infra.md#bootstrap-a-fresh-prefix-before-a-prefix-backed-run).
 
-Read `mise run dw dev run --help` for executor, profile, prefix and bundle
-options. Without an explicit executor the checked-out runner builds incrementally
-in release mode; an explicit executor requires provenance verification.
-`--dry-run` prints the underlying command without building, booting or creating
-a job. Real runs attach by default; `--detach` is explicit.
+The canonical runtime-setup providers are `manifest-ring-baseline` (runtime
+only, no CLT) and `manifest-ring-on` (runtime plus reviewed guest compiler/SDK).
+These are runtime providers, not patch/source profiles. Both declare
+`source-mode: manifest`: all managed project HEADs must match their manifest
+revisions, the selected product modules must have no tracked modifications or
+untracked source overrides, and the manifest repository must have no tracked
+modifications. Preserve foreign changes and coordinate with their owner instead
+of resetting, stashing or bypassing this gate. Legacy internals still exist;
+their presence is not permission to use them for canonical setup.
 
-Retain the printed job path. Reconnect with `mise run dw dev follow JOB`;
-cancel with `mise run dw dev cancel JOB`, then follow to final status.
-
-For tests without a registered scenario, read `darling-testing` and use the
-supervised interface, with paths beneath the owned durable state root:
+For a long run, use the existing supervisor. Replace every example path with an
+absolute owned path and use a fresh, nonexistent job directory per invocation:
 
 ```bash
-scripts/west-job.sh start --state-dir /absolute/owned/job -- mise run west test ...
-scripts/west-job.sh follow --state-dir /absolute/owned/job
+export DW_STATE_ROOT=/absolute/owned/state
+scripts/west-job.sh start --state-dir "$DW_STATE_ROOT/jobs/bootstrap" -- \
+  mise run west test --prefix "$DW_STATE_ROOT/prefix" \
+  --bootstrap-runtime-profile manifest-ring-baseline
+scripts/west-job.sh follow --state-dir "$DW_STATE_ROOT/jobs/bootstrap"
 ```
 
+Choose `manifest-ring-on` instead when guest compilation is required; these are
+alternatives, not sequential setup steps. To select the reviewed local CLT 13.2,
+export `DARLING_CLT_PACKAGE=/absolute/path/to/reviewed.pkg` **before** starting
+that provisioning job. Use a fresh prefix if the older SDK layout conflicts;
+do not remove its SDK directory to force an in-place upgrade. Do not combine
+bootstrap with CTest selectors, `--list`, extra runtime providers or passthrough
+arguments. Read `darling-testing` before the subsequent test selection.
+
+`darling-bootstrap --prefix ABS --build-dir ABS` is a separate explicit,
+already-configured-build route. Its plan checks build defines and a matching
+`CMAKE_INSTALL_PREFIX`; it builds/deploys and smokes that tree, but does not
+enforce the provider's full clean manifest-source gate, provision CLT or write
+the retained provider marker. Do not substitute it for canonical provider setup
+or infer source provenance from its smoke. Its prefix parent must already exist;
+the prefix itself must not be a symlink.
+
+Do not use named Homebrew dev scenarios as the manifest-native setup/workload
+route: their current dispatch still selects legacy source/patch metadata.
+There is no manifest-native Homebrew scenario in that facade. Named contexts
+are local West configuration, not portable runtime artifacts; inspecting
+`mise run dw dev run --help` does not establish canonical source selection.
+Its `--dry-run` prints a command without building or creating a job, whereas
+`west test --dry-run` is GC-only and is not a launch preview.
+
+Retain the job path. Reconnect with `scripts/west-job.sh follow --state-dir JOB`;
+cancel with `scripts/west-job.sh cancel --state-dir JOB`, then follow to final
+status. Existing dev jobs also support `mise run dw dev follow JOB` / `cancel JOB`.
+Cancellation first requests cooperative cleanup; its escalation fallback can
+interrupt cleanup, so cancellation alone never proves an idle prefix.
+
 No manual nohup/setsid/PID/rc-file recipes, follow filters, sleep-polling loops,
-or external timeout/kill wrappers. Observer timeout is not cancellation;
-a detached handle is not completion. Use one-shot `status` only for recovery
+or external timeout/kill wrappers. Observer timeout is not cancellation; a
+detached handle is not completion. Use one-shot `status` only for recovery
 following interruption. Do not start the next prefix-backed run until final rc
-AND cleanup of the previous one. Separate lanes may run concurrently.
+AND prefix cleanup. Separate lanes may run concurrently.
 
 ## 3. Run once and inspect evidence
 
-- Bootstrap runs doctor workspace scope before build/deploy and mandatory runtime
-  scope after guest smoke; `all` is the ordinary combined audit. Read current
-  `darling-doctor --help`: `--prefix` is install prefix, `--extra-prefix` adds a
-  runtime prefix. Do not present a scoped pass as a full audit or waive drift.
-- On failure read retained doctor JSON, stdout/stderr, command, rc and timeout
-  under the reported evidence archive. A restored prefix after rollback is a
-  different state and cannot explain the failed deployment by itself.
-- Runner `BUNDLE` is published at creation, stdout/stderr are registered live,
-  and Homebrew build-log directories register automatically. `--activity-log`
-  is for additional logs; `--forward-output` is post-execution replay, not live
-  streaming. Log silence, observed phase and last-write age do not prove a hang.
+- Provider bootstrap runs doctor workspace scope before build/deploy and runtime
+  scope after guest smoke, before optional CLT provisioning. A doctor pass is
+  not the installer verdict or completion of the enclosing job. `all` combines
+  workspace and runtime checks; scoped passes are not full audits.
+- Read `mise run west darling-doctor --help`. For an ordinary current-runtime
+  audit, pass the actual `--prefix` (install prefix baked into the launcher)
+  and prefix-matched `--build-dir`; `--extra-prefix` compares an additional
+  runtime prefix's critical closure. Defaults are not workspace discovery.
+  Current receipt checks are distinct from historical baseline mode;
+  `--no-baseline-file` selects historical mode too. Do not waive unexplained drift.
+  Doctor does not boot by default; `--boot-smoke` is an explicit guest launch
+  requiring ownership, not a read-only audit option.
+- On provider-bootstrap failure, read retained doctor JSON, stdout/stderr,
+  command, rc and timeout in the reported evidence archive. A restored prefix
+  after rollback is a different state, not the failed deployment's evidence.
+  The explicit-build bootstrap reports doctors in its command output instead;
+  post-smoke doctor/receipt failure can leave its deployment retained.
+- When a diagnostic runner is used, retain its printed `BUNDLE` path and verify
+  executor provenance. Its stdout/stderr are registered for live job observation;
+  `--activity-log` adds other logs. `--forward-output` is post-execution replay,
+  not live streaming. Log silence, phase and last-write age do not prove a hang.
 - Require the workload's own readiness/completion oracle. A process or socket,
-  an intermediate diagnostic or a timeout is not a successful guest operation.
+  an intermediate diagnostic or a timeout is not successful guest execution.
   Use `darling-diagnostics` for artifact identity and interpretation.
-- Native-tools preflight is not Homebrew from-source acceptance. Exact capture
-  deliberately times out the payload: success requires verified guest Mach-O,
-  matching structurally valid ELF core, registers and cleanup. Report diagnostic
-  PASS separately from archive `exact_complete`; preserve unreadable-mapping
-  warnings such as Linux vsyscall pages.
+- Native-tools preflight is not Homebrew from-source acceptance. Exact-capture
+  diagnostic acceptance deliberately reaches a payload timeout, then requires
+  captured guest Mach-O, a structurally valid core for that process, registers
+  and prefix cleanup. Report its diagnostic PASS separately from archive
+  `exact_complete`; preserve unreadable-mapping warnings.
 
 ## 4. Finish, repair or retain a blocker
 
 1. Request graceful shutdown through the run's prefix-scoped lifecycle owner;
-   verify remaining processes and mounts even when shutdown exits zero.
+   verify remaining processes and mounts even when shutdown exits zero. After
+   the previous owner has stopped, standalone cleanup is
+   `mise run west test --prefix ABS --cleanup-prefix`, without test selectors or
+   `--keep-prefix-running`. This stops/cleans runtime state; it does not delete
+   the prefix tree.
 2. Let that owner terminate verified leftovers. Never globally pkill/killall
    darlingserver, mldr, launchd or vchroot. Tie each process to the selected
    prefix/namespace; unknown ownership means stop and retain evidence.
 3. Do not boot over half-dead state or retry in a kill loop. Preserve failure
    diagnostics and finish teardown before another attempt. `--keep-prefix-running`
-   is only deliberate owned local iteration, never a cleanup workaround.
-4. Missing tmp/CLT prerequisites: use `mise run west darling-prefix-repair
-   --prefix PATH` (inspect `--check` first), not undocumented mkdir/ln repairs.
-   Stale mounts: confirm no Darling processes remain, then use the same command
-   with `--cleanup-mounts`. A remaining process or mount keeps the run failed.
-5. For completed debug prefixes, use `darling-rootless-debug-cleanup --path PATH
-   --dry-run` before removal; add `--sudo` only for a reported ownership failure.
-   Never glob-delete `/tmp/darling-rootless-*`: source worktrees also use the name.
-6. Deployment/restore belongs to the supported transaction. No in-place overwrite
-   of executing binaries, guessed baseline reset or writes into another owner's
-   prefix. Atomic rename does not waive lifecycle ownership. Runtime RED proof
-   must back up/restore every declared artifact and verify fixed-runtime return.
+   is only deliberate owned local iteration, never acceptance or a cleanup workaround.
+4. For repairable tmp/CLT-link prerequisites, inspect
+   `mise run west darling-prefix-repair --prefix ABS --check`, then repair only
+   the owned prefix. Repair does not install a missing CLT package or manufacture
+   its identity. For stale mounts, first stop the lifecycle owner, then inspect
+   `--check --cleanup-mounts` before using `--cleanup-mounts`. That operation
+   can unmount and terminate identified Darling mount holders; it is not just
+   file repair. A remaining process or mount keeps cleanup incomplete.
+5. For lanes use their supported verify/destroy lifecycle. The
+   `darling-rootless-debug-cleanup` command currently accepts only recognized
+   disposable trees directly under `/tmp`, not canonical durable-state prefixes.
+   It is not a general deletion tool and does not justify new `/tmp` prefixes.
+   For an existing legacy tree inspect `mise run west
+   darling-rootless-debug-cleanup --path ABS --dry-run`; it refuses detected
+   live processes/mounts. Use `--sudo` only for its reported ownership failure.
+   Never glob-delete prefixes or source worktrees.
+6. Select the deployment path deliberately. `--deploy-only` and the
+   deploy-verify wrapper copy/hash components without lifecycle locking or
+   rollback; they are not the full build/deploy transaction. Stop the owning
+   runtime first and verify every intended path. No in-place overwrite of
+   executing binaries, guessed baseline reset or writes into another owner's
+   prefix. Runtime RED proof must back up/restore every declared artifact and
+   verify fixed-runtime return. A receipt or rollback alone is not guest readiness.
 7. Record final command status, guest-visible verdict, evidence paths and cleanup.
    Use `darling-durability` to retain results; do not reset unrelated prefixes.
