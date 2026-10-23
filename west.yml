@@ -1371,7 +1371,7 @@ manifest:
     # part is the first event `clang --version` needed: without it the trap hit the retired
     # per-thread socket, was denied and aborted the guest. Parent is the pin f3e71f3; bcc5595
     # is the same guest-side change on that parent, replayed here on top of the ulock commits.
-    revision: 44375f9a30645772fe8b931d7f91500ba9eba6b7
+    revision: 7985bcfbc976d9b42ae4867e4af70f6afee85295
     userdata:
       kind: darling-source
       upstream-repository: darling-xnu
