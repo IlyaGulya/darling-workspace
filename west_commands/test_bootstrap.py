@@ -269,33 +269,7 @@ class BootstrapRuntimeProfileMixin:
             getattr(self, "_bootstrap_timeout_seconds", None)
             or definition["bootstrap-smoke-timeout-seconds"]
         )
-        trace_dir = getattr(self, "_bootstrap_syscall_trace", None)
-        stack_sample_dir = getattr(self, "_bootstrap_stack_sample", None)
-        command_prefix: tuple[str, ...] = ()
-        if trace_dir is not None:
-            if shutil.which("strace") is None:
-                self.die("--bootstrap-syscall-trace requires strace on the host")
-            trace_dir = self._resolve_bootstrap_diagnostic_dir(trace_dir)
-            trace_dir.mkdir(parents=True, exist_ok=True)
-            command_prefix = (
-                "strace",
-                "-D",
-                "-ff",
-                "-i",
-                "-tt",
-                "-v",
-                "-s",
-                "160",
-                "-o",
-                str(trace_dir / "bootstrap"),
-            )
-            self.inf(f"prefix bootstrap syscall trace: {trace_dir}")
-        elif stack_sample_dir is not None:
-            command_prefix = self._bootstrap_stack_sample_command(
-                stack_sample_dir,
-                sample_name="bootstrap",
-                label="prefix bootstrap",
-            )
+        command_prefix = self._bootstrap_diagnostic_command_prefix("bootstrap")
         with self._prefix_resource_context(True):
             Path(prefix_text).mkdir(parents=True, exist_ok=True)
             with self._runtime_profile_deployment_context(

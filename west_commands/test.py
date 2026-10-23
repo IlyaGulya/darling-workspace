@@ -2177,16 +2177,38 @@ class DarlingTest(
         toolchain_env.update(self._darling_prefix_env(prefix))
         toolchain_env["DARLING"] = str(launcher)
         toolchain_env["DARLING_LAUNCHER"] = str(launcher)
-        changed = ensure_command_line_tools(
-            prefix=prefix,
-            launcher=str(launcher),
-            cwd=Path(self.topdir),
-            env=toolchain_env,
-            timeout_seconds=int(
-                os.environ.get("WEST_GUEST_TOOLCHAIN_TIMEOUT_SECONDS", "900")
-            ),
-            log=self.inf,
+        diagnostic_source = getattr(self, "_bootstrap_syscall_trace", None) or getattr(
+            self, "_bootstrap_stack_sample", None
         )
+        diagnostic_dir = (
+            self._resolve_bootstrap_diagnostic_dir(diagnostic_source)
+            if diagnostic_source is not None
+            else None
+        )
+        try:
+            changed = ensure_command_line_tools(
+                prefix=prefix,
+                launcher=str(launcher),
+                cwd=Path(self.topdir),
+                env=toolchain_env,
+                timeout_seconds=int(
+                    os.environ.get("WEST_GUEST_TOOLCHAIN_TIMEOUT_SECONDS", "900")
+                ),
+                log=self.inf,
+                # The installer is a SECOND launch of the same runtime and the only one
+                # observed to hang: without this the syscall/stack capture named on the
+                # command line records the login shell and never the hung launch.
+                command_prefix=self._bootstrap_diagnostic_command_prefix(
+                    "bootstrap-toolchain"
+                ),
+            )
+        finally:
+            # The failure path tears the prefix (and its server log) down, so a
+            # capture not taken here would record nothing about the hung launch.
+            if diagnostic_dir is not None:
+                self._capture_bootstrap_server_trace(
+                    prefix, diagnostic_dir, label="prefix bootstrap toolchain"
+                )
         for item in changed:
             self.inf(f"guest toolchain: {item}")
 

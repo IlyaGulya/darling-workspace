@@ -869,6 +869,48 @@ class PrefixLifecycleMixin:
             path = Path(getattr(self, "topdir", Path.cwd())) / path
         return path.resolve()
 
+    def _bootstrap_diagnostic_command_prefix(
+        self, sample_name: str
+    ) -> tuple[str, ...]:
+        """The capture prefix EVERY bootstrap guest phase runs under, or ().
+
+        The login shell and the guest toolchain installer are two launches of the
+        same runtime, and only the second one was ever observed to hang. A capture
+        wired into the first phase therefore records the wrong launch; this method
+        is the single construction both phases use, and ``sample_name`` keeps their
+        captures apart (``strace -ff`` appends the tid, so one base name per phase
+        keeps each launch's files readable on their own).
+        """
+
+        trace_dir = getattr(self, "_bootstrap_syscall_trace", None)
+        if trace_dir is not None:
+            if shutil.which("strace") is None:
+                self.die("--bootstrap-syscall-trace requires strace on the host")
+            trace_dir = self._resolve_bootstrap_diagnostic_dir(trace_dir)
+            trace_dir.mkdir(parents=True, exist_ok=True)
+            self.inf(f"prefix bootstrap syscall trace: {trace_dir}")
+            return (
+                "strace",
+                "-D",
+                "-ff",
+                "-i",
+                "-tt",
+                "-v",
+                "-s",
+                "160",
+                "-o",
+                str(trace_dir / sample_name),
+            )
+        stack_sample_dir = getattr(self, "_bootstrap_stack_sample", None)
+        if stack_sample_dir is not None:
+            sample_dir = self._resolve_bootstrap_diagnostic_dir(stack_sample_dir)
+            return self._bootstrap_stack_sample_command(
+                sample_dir,
+                sample_name=sample_name,
+                label="prefix bootstrap",
+            )
+        return ()
+
     def _bootstrap_stack_sample_command(
         self,
         sample_dir: Path,
@@ -921,12 +963,20 @@ class PrefixLifecycleMixin:
         *,
         label: str,
     ) -> None:
-        server_trace = prefix / "private/var/log/dserver-rpc-trace.log"
-        if not server_trace.is_file():
-            return
-        captured_server_trace = diagnostic_dir / "darlingserver-rpc.log"
-        shutil.copy2(server_trace, captured_server_trace)
-        self.inf(f"{label} server trace: {captured_server_trace}")
+        # Two different server records answer two different questions, and only one
+        # of them survives the teardown otherwise: the RPC trace says which requests
+        # crossed, `dserver.log` carries the runtime's own tags (doorbell routes,
+        # lane attaches, refused/armed plane calls) that name WHY one did not.
+        for source_name, captured_name in (
+            ("dserver-rpc-trace.log", "darlingserver-rpc.log"),
+            ("dserver.log", "darlingserver.log"),
+        ):
+            server_trace = prefix / "private/var/log" / source_name
+            if not server_trace.is_file():
+                continue
+            captured_server_trace = diagnostic_dir / captured_name
+            shutil.copy2(server_trace, captured_server_trace)
+            self.inf(f"{label} server trace: {captured_server_trace}")
 
     def _parse_file_mode(self, invocation, field: str, index: int, value) -> int:
         try:

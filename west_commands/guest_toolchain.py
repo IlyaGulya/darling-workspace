@@ -12,7 +12,7 @@ import tempfile
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Sequence
 
 try:
     from .prefix_repair import (
@@ -407,6 +407,7 @@ def _ensure_selected_command_line_tools(
     timeout_seconds: int,
     guest_runner: Callable[..., ProcessResult],
     log: Callable[[str], None],
+    command_prefix: Sequence[str] = (),
 ) -> list[str]:
     # Authenticate even on reuse, before repair, staging, or receipt mutation.
     _verify_selected_package(package)
@@ -459,6 +460,7 @@ def _ensure_selected_command_line_tools(
             ("/usr/bin/installer", "-pkg", f"/private/var/tmp/{staged.name}", "-target", "/"),
             cwd=cwd, env=env, timeout_seconds=timeout_seconds,
             capture_output=True, heartbeat_seconds=30,
+            command_prefix=command_prefix,
             output_line=lambda stream, line: log(f"guest installer {stream}: {line}"),
         )
         if result.returncode != 0 or result.timed_out:
@@ -508,6 +510,7 @@ def ensure_command_line_tools(
     opener: Callable[..., object] = urllib.request.urlopen,
     guest_runner: Callable[..., ProcessResult] = run_guest_shell_argv,
     log: Callable[[str], None] = print,
+    command_prefix: Sequence[str] = (),
 ) -> list[str]:
     """Make the default guest C compiler and SDK available in *prefix*.
 
@@ -527,6 +530,7 @@ def ensure_command_line_tools(
             Path(selected).expanduser(),
             prefix=prefix, launcher=launcher, cwd=cwd, env=env,
             timeout_seconds=timeout_seconds, guest_runner=guest_runner, log=log,
+            command_prefix=command_prefix,
         )
 
     missing = guest_c_fixture_prerequisite_problems(
@@ -565,6 +569,7 @@ def ensure_command_line_tools(
                 timeout_seconds=timeout_seconds,
                 capture_output=True,
                 heartbeat_seconds=30,
+                command_prefix=command_prefix,
                 output_line=lambda stream, line: log(
                     f"guest installer {stream}: {line}"
                 ),
