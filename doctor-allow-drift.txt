@@ -29,4 +29,7 @@ darling-src-external-libdispatch     # T4/dar-94dn: bounded markers at the apply
 darling-src-external-libc            # dar-ohgj: libc 417a8e6f holds the real identity matrix (the exported constant was an all-zero matrix; measured RED->GREEN); ahead of manifest until reconciled
 darling-src-external-libsystem                              # dar-bns9: fork-hook records in darling/src/dummy.c (empty-on-purpose hooks explained); ahead of manifest until reconciled
 darling-src-external-libxpc          # dar-liaq: a synchronous XPC send activates the connection and refuses an unconnected channel (the ladder's unbounded pre-connect receive); ahead of manifest until reconciled
-darling-src-external-xnu             # perf/shmem-ring-guest — does NOT boot; use manifest-rev for deployable builds
+darling-src-external-libplatform       # ahead of manifest: dev workstream. Declared 2026-10-18 for the same bootstrap reason.
+darling-src-external-libtrace          # ahead of manifest: dev workstream. Declared 2026-10-18 for the same bootstrap reason.
+darling-src-external-swift             # ahead of manifest (fix/swift-payload-ladder-substitutes holds c801372b): dev workstream. Declared 2026-10-18 for the same bootstrap reason.
+darling-src-external-libunwind    # ahead of manifest: dev workstream (auto-declared 2026-10-18 to let a private prefix bootstrap; verify before any product use)
