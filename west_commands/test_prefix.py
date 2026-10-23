@@ -1028,6 +1028,47 @@ class PrefixLifecycleMixin:
                 continue
             self.inf(f"{label} {captured_name}: retained {captured}")
 
+        # The guest's own prerequisites are part of a failure's record: a package
+        # extractor reports "Archive parent is not a directory: /tmp" and the prefix
+        # is torn down before anyone can look. MEASURED need (gate run 1547): the
+        # question "was /tmp absent, a file, or a symlink to a missing target" had
+        # no answer after the run.
+        tmp_report = diagnostic_dir / "prefix-tmp-state.txt"
+        lines = []
+        for rel in ("tmp", "private/tmp", "private/var/tmp", "var/tmp", "var/run"):
+            path = prefix / rel
+            try:
+                status = path.lstat()
+            except FileNotFoundError:
+                lines.append(f"{rel}: absent")
+                continue
+            except OSError as error:
+                lines.append(f"{rel}: unreadable ({error.strerror or error})")
+                continue
+            mode = oct(stat.S_IMODE(status.st_mode))
+            if stat.S_ISLNK(status.st_mode):
+                target = os.readlink(path)
+                try:
+                    resolved = path.resolve(strict=True)
+                    state = "resolves"
+                    resolved_kind = "dir" if resolved.is_dir() else ("file" if resolved.is_file() else "other")
+                except OSError as error:
+                    state = f"BROKEN ({error.strerror or error})"
+                    resolved_kind = "-"
+                lines.append(f"{rel}: symlink -> {target} {state} target_kind={resolved_kind} mode={mode}")
+            elif stat.S_ISDIR(status.st_mode):
+                lines.append(f"{rel}: dir mode={mode}")
+            elif stat.S_ISREG(status.st_mode):
+                lines.append(f"{rel}: FILE mode={mode}")
+            else:
+                lines.append(f"{rel}: other mode={mode}")
+        try:
+            tmp_report.write_text("\n".join(lines) + "\n")
+        except OSError as error:
+            self.inf(f"{label} prefix-tmp-state.txt: missing (write: {error.strerror or error})")
+        else:
+            self.inf(f"{label} prefix-tmp-state.txt: retained {tmp_report}")
+
         launchd_dir = prefix / "var/log/com.apple.launchd"
         if not launchd_dir.is_dir():
             self.inf(f"{label} launchd logs: missing (var/log/com.apple.launchd: absent)")

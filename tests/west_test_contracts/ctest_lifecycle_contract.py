@@ -574,6 +574,8 @@ with tempfile.TemporaryDirectory() as temp:
     trace_dir = root / "trace"
     prefix.mkdir()
     trace_dir.mkdir()
+    # The guest's /tmp as this runtime creates it: a symlink whose target is missing.
+    (prefix / "tmp").symlink_to("private/tmp")
     server_trace = prefix / "private/var/log/dserver-rpc-trace.log"
     server_trace.parent.mkdir(parents=True)
     server_trace.write_text("stale trace\n")
@@ -670,6 +672,9 @@ with tempfile.TemporaryDirectory() as temp:
     # The runtime's own tag log says WHY a request did not complete; the RPC trace
     # only says that it did not. Both are captured before the prefix is torn down.
     assert (trace_dir / "darlingserver.log").read_text() == "plane-doorbell-sent pid=9 token=1\n"
+    tmp_state = (trace_dir / "prefix-tmp-state.txt").read_text()
+    assert "tmp: symlink -> private/tmp BROKEN" in tmp_state, tmp_state
+    assert "private/tmp: absent" in tmp_state, tmp_state
     assert len(recorded_failures) == 1, recorded_failures
     failure = recorded_failures[0]
     assert failure["phase"] == "bootstrap", failure
@@ -686,6 +691,7 @@ with tempfile.TemporaryDirectory() as temp:
         trace_dir / "bootstrap.perf.txt",
         trace_dir / "darlingserver-rpc.log",
         trace_dir / "darlingserver.log",
+        trace_dir / "prefix-tmp-state.txt",
         trace_dir / "rootless-boot.log",
         trace_dir / "rootless-guest-fd.log",
         prefix / ".west-rootless-boot.log",
@@ -702,6 +708,7 @@ with tempfile.TemporaryDirectory() as temp:
         "(private/var/tmp/.west-rootless-boot.log: absent)",
         "prefix bootstrap rootless-guest-fd.log: retained "
         f"{trace_dir / 'rootless-guest-fd.log'}",
+        f"prefix bootstrap prefix-tmp-state.txt: retained {trace_dir / 'prefix-tmp-state.txt'}",
         "prefix bootstrap launchd logs: missing (var/log/com.apple.launchd: absent)",
     ], messages
 
@@ -710,7 +717,7 @@ with tempfile.TemporaryDirectory() as temp:
     bootstrap_module.run_guest_shell = timed_out_guest
     bootstrap_module.run_bounded = completed_command
     test_module.run_bounded = completed_command
-    for captured in ("darlingserver-rpc.log", "darlingserver.log"):
+    for captured in ("darlingserver-rpc.log", "darlingserver.log", "prefix-tmp-state.txt"):
         (trace_dir / captured).unlink()
     # The destination, not the source, is what cannot be written: the prefix's own
     # log must stay readable so this models a capture error and nothing else.
