@@ -294,8 +294,8 @@ run_arm() { # <mode> <tag>
 		arm_invalid="per-run provenance: the arm has no RUN-ENV record of its own"
 		return 0
 	fi
-	if [ ! -f "$bundle/server.pre.log" ] || [ ! -f "$bundle/server.post.log" ]; then
-		arm_invalid="per-run server provenance: no server.pre/post.log pair in $bundle"
+	if ! python3 "$workspace/scripts/darling-evidence.py" cat "$bundle/server.log" > "$run_dir/$tag.server-delta.log"; then
+		arm_invalid="per-run server provenance: unreadable run-scoped server log in $bundle"
 		return 0
 	fi
 
@@ -315,7 +315,7 @@ run_arm() { # <mode> <tag>
 	local status
 	status="$(sed -n 's/.*PDA status=\([0-9-]*\).*/\1/p' "$log" | tail -1)"
 	if [ -z "$status" ]; then
-		if grep -aqE 'dserver-CRASH|duct-tape panic|dserver-TERMINATE|panic backtrace' "$log" "$bundle/server.post.log"; then
+		if grep -aqE 'dserver-CRASH|duct-tape panic|dserver-TERMINATE|panic backtrace' "$log" "$run_dir/$tag.server-delta.log"; then
 			arm_invalid="the server crashed or panicked during the run (unrelated defect); the workload produced no status"
 		else
 			arm_status="$arm_status guest_status=absent"
@@ -324,10 +324,6 @@ run_arm() { # <mode> <tag>
 	fi
 	arm_status="$arm_status guest_status=$status harness_verdict=$harness_ok"
 
-	# The server delta for this run: post minus the pre line count.
-	local pre
-	pre="$(wc -l < "$bundle/server.pre.log")"
-	tail -n "+$((pre + 1))" "$bundle/server.post.log" > "$run_dir/$tag.server-delta.log"
 	if ! grep -aq -- "$pid" "$run_dir/$tag.server-delta.log"; then
 		arm_invalid="the run's server delta carries no record for pid $pid (provenance mismatch)"
 		return 0

@@ -152,32 +152,6 @@ with tempfile.TemporaryDirectory(prefix="west-runtime-diagnostics-") as raw:
         }
     ) == "host\nprovider\n", "each trace must be read once, in declaration order"
 
-# --- _bound_runtime_reuse_store ------------------------------------------
-calls: list[tuple] = []
-original_prune = cache_module.prune
-original_max_bytes = cache_module.max_bytes
-staging = tempfile.TemporaryDirectory(prefix="west-runtime-reuse-")
-pruned_store = Path(staging.name) / "store"
-cache_module.prune = lambda store, max_bytes, protect: (
-    calls.append((store, max_bytes, tuple(protect)))
-    or {"evicted": ["entry"], "evicted_bytes": 2048}
-)
-cache_module.max_bytes = lambda environ: 4096
-try:
-    messages: list[str] = []
-    test = new_test(inf=messages.append)
-    plan = SimpleNamespace(
-        store=pruned_store, source_entry=Path(staging.name) / "entry", build_key="k", source_key="s"
-    )
-    test._bound_runtime_reuse_store(plan)
-    test._bound_runtime_reuse_store(plan)
-finally:
-    cache_module.prune = original_prune
-    cache_module.max_bytes = original_max_bytes
-    staging.cleanup()
-assert calls == [(pruned_store, 4096, (Path(staging.name) / "entry",))], calls
-assert messages == ["  runtime reuse evicted 1 entry(s), 2048 bytes"], messages
-
 # --- _runtime_reuse_plan --------------------------------------------------
 # The reuse key must change when the patch/omission inputs change, and must be
 # stable while they do not: a verdict recorded for one runtime must not be

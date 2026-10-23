@@ -6,7 +6,7 @@ import json
 import os
 import re
 from collections.abc import Callable, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from shlex import quote
@@ -1082,6 +1082,10 @@ class RuntimePlanMixin:
                 f"  runtime reuse evicted {len(pruned['evicted'])} entry(s), "
                 f"{pruned['evicted_bytes']} bytes"
             )
+        for error in pruned["errors"]:
+            self.err(
+                f"  runtime reuse eviction failed: {error['path']}: {error['error']}"
+            )
 
     def _runtime_reuse_plan(
         self,
@@ -1176,15 +1180,23 @@ class RuntimePlanMixin:
         keeps live checkouts and the caller's prefix stable while giving CMake
         one coherent source root.
         """
-        with self._runtime_source_materializer().guest_runtime_source_forest(
-            patch,
-            proof,
-            omit_patch=omit_patch,
-            root=root,
-            evidence_session=evidence_session,
-            reuse_key=reuse_key,
-        ) as source_root:
-            yield source_root
+        # A GC pass must not remove this forest during its build/deploy lifetime.
+        # Use the same sibling lock as cache maintenance, including on a hit.
+        lock = (
+            test_runtime_cache.locked_entry(root)
+            if root is not None and reuse_key is not None
+            else nullcontext()
+        )
+        with lock:
+            with self._runtime_source_materializer().guest_runtime_source_forest(
+                patch,
+                proof,
+                omit_patch=omit_patch,
+                root=root,
+                evidence_session=evidence_session,
+                reuse_key=reuse_key,
+            ) as source_root:
+                yield source_root
 
     def _cmake_cache_value(self, build_dir: Path, key: str) -> str | None:
         from test_runtime_build import RuntimeBuildService
@@ -1207,6 +1219,7 @@ class RuntimePlanMixin:
         allow_failure: bool = False,
         cache: tuple[Path, str] | None = None,
         on_reuse: Callable[[bool], None] | None = None,
+        cache_scope=None,
     ) -> Path:
         from test_runtime_build import RuntimeBuildService
         return RuntimeBuildService(self).build_artifacts(
@@ -1222,6 +1235,7 @@ class RuntimePlanMixin:
             timeout_seconds=getattr(self, "_runtime_build_timeout_seconds", None),
             cache=cache,
             on_reuse=on_reuse,
+            cache_scope=cache_scope,
         )
 
     def _runtime_red_find_build_output(

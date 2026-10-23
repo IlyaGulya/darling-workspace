@@ -758,6 +758,7 @@ class RuntimeBuildService:
         timeout_seconds: int | None = None,
         cache: tuple[Path, str] | None = None,
         on_reuse: Callable[[bool], None] | None = None,
+        cache_scope: contextlib.ExitStack | None = None,
     ) -> Path:
         targets = runtime_build_targets(proof)
         if cache is not None:
@@ -782,10 +783,15 @@ class RuntimeBuildService:
         if timeout <= 0:
             raise ValueError("runtime build timeout must be greater than zero")
         build_environment = self.build_environment(proof, configuration_root)
-        with self._cached_build_root(scratch_root, cache) as (
-            build_root,
-            cache_reused,
-        ):
+        cache_context = self._cached_build_root(scratch_root, cache)
+        # Runtime deployment consumes this path after this method returns. Its
+        # owner can retain the same producer lock until that use has finished.
+        lifetime = (
+            contextlib.nullcontext(cache_scope.enter_context(cache_context))
+            if cache_scope is not None and cache is not None
+            else cache_context
+        )
+        with lifetime as (build_root, cache_reused):
             if on_reuse is not None:
                 on_reuse(cache_reused)
             if cache_reused:

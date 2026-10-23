@@ -1563,13 +1563,34 @@ retention reason; symlinks are deliberately ignored, so cleanup cannot follow
 a matching name into a canonical worktree. Use `--dry-run` to inspect the plan
 without deletion.
 
-A failed runtime source/build is not ordinary scratch. It is retained as one
-manifested unit under `.west-test/runtime-evidence`, with its source tree,
-build directory, failure reason, provider context and owned Git worktrees.
-Ordinary `west test --gc` never deletes those units. Removal is deliberate:
-`west test --gc --gc-runtime-evidence` applies the configured proof-scratch
-age/count policy and first removes only the worktrees listed by that unit's
-manifest. A path is reported as preserved only after this manifest exists.
+A failed runtime execution is retained as one manifested unit under
+`.west-test/runtime-evidence`, with the original failure, provider context and
+closed diagnostics. Finalized payloads are stored as verified `.zst` files when
+effective; readable `evidence-index.json` files preserve logical paths and hashes.
+Manifest-native units retain the source inventory, `CMakeCache.txt`,
+`build-artifacts.json`, produced runtime images and compiler logs/core dumps, then discard reproducible
+build objects/resources. Images remain usable for symbolization. An archival
+failure preserves the remaining raw state and is reported, not treated as success.
+Older units may still carry full build/source trees and owned Git worktrees.
+Ordinary `west test --gc` never deletes these units. Explicit
+`--gc-runtime-evidence` applies the proof-scratch age/count policy and removes only
+the worktrees recorded by the selected unit. A path is reported as preserved only
+after its manifest exists.
+
+Before removing an old full unit, use
+`python3 -B scripts/darling-evidence.py compact-runtime UNIT --archive-root DIR`
+to retain its diagnostics, provenance and content-deduplicated runtime images.
+The archive must be outside GC roots; verify its SHA-256 manifests before GC.
+Generated objects and source worktrees are omitted deliberately, not claimed as
+archived. See [finalized evidence storage](tooling.md#finalized-evidence-storage).
+
+Runtime build-cache maintenance is a separate opt-in:
+`west test --gc --gc-runtime-build-cache --runtime-build-cache-root DIR`.
+Inspect `--dry-run` first. It removes idle entries with valid ownership receipts,
+unregisters nested Git worktrees through the framework and reports actual errors.
+Producer/Git locks, unexpected source edits or commits, unknown directories and
+symlinks are preserved. Source and build-use locks span their consuming context,
+including deployment; ordinary bounded eviction uses the same safe disposal.
 
 GC requires ownership, not just a matching name. Runtime evidence is owned by
 its manifest or an in-flight unit marker with released flock; manifests are

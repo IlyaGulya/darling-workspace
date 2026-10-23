@@ -199,6 +199,8 @@ EXPLICIT_CONTRACTS = (
     ),
     ("runtime-proof-state", "tests/west_test_contracts/runtime_proof_state_contract.py", True),
     ("runtime-source-cache", "tests/west_test_contracts/runtime_source_cache_contract.py", True),
+    ("evidence-storage", "tests/west_test_contracts/evidence_storage_contract.py", True),
+    ("evidence-retention", "tests/west_test_contracts/evidence_retention_contract.py", True),
     ("source-search", "tests/west_test_contracts/source_search_contract.py", True),
     # The applicability review commands and the prefix bootstrap guidance are
     # contracts added when those two defects were repaired; both run through
@@ -313,6 +315,9 @@ EXPLICIT_CONTRACTS = (
 # and the census below fails the tier if a contract is in neither this mapping
 # nor CONTRACTS: an unaccounted contract silently proves nothing.
 EXCLUDED_CONTRACTS = {
+    "tests/run-plane-deferred-arm-contract.sh":
+        "guest-runtime gate requiring the built Darwin fixture and an owned, deployed Darling prefix; "
+        "the host tier supplies neither and must not substitute a host execution for that runtime oracle",
     "tests/run-symbol-ownership-contract.sh":
         "artifact contract: it reads the symbol tables of BUILT or DEPLOYED libraries with llvm-nm and fails when a "
         "public concurrency primitive (os_unfair_lock_lock/unlock/trylock/lock_with_options) has two definers, which is "

@@ -57,7 +57,12 @@ Keep at least one acceptance-evidence copy outside GC-managed roots with a
 SHA-256 manifest. Copy required symlink targets too; PRESENT paths or directory
 listings do not prove the bytes were transferred. Write checksums to a separate
 file after finalizing evidence, exclude the checksum file itself, and verify with
-`sha256sum -c`. Follow [state ownership and cleanup](../../../docs/environment.md#durable-state-and-cleanup).
+`sha256sum -c` for physical snapshots. For logical paths stored as `.zst`, use
+`python3 -B scripts/darling-evidence.py verify ROOT --recursive`; it checks decoded
+digests and old checksum references without hand-written extraction. A closed
+archive can use `verify ROOT --recursive --write-manifest` to create a new
+physical receipt without overwrite or self-inclusion. Follow
+[state ownership and cleanup](../../../docs/environment.md#durable-state-and-cleanup).
 If only a hash/verdict survives, say so and rerun the gate rather than citing a
 destroyed archive.
 

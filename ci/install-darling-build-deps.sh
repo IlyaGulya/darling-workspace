@@ -43,6 +43,7 @@ packages=(
 	ninja-build
 	pkg-config
 	strace
+	zstd
 )
 
 sudo apt-get update

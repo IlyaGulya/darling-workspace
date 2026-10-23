@@ -20,9 +20,9 @@ Run orchestration and West commands from the manifest directory, not the workspa
 
 Build paths:
 
-    .west-test/runtime-build-cache    framework-managed, identity-keyed runtime builds (~9 G).
-                                      Never `rm -rf` it: its entries are registered Git worktrees.
-                                      Discard through the framework.
+    .west-test/runtime-build-cache    framework-managed, identity-keyed runtime builds.
+                                      Never `rm -rf` it: entries may be registered Git worktrees.
+                                      Use explicit ownership-aware build-cache GC below.
     build/toolchain                   the iOS toolchain build (configured, reusable).
 
 ## Host tools and agent activation
@@ -85,8 +85,10 @@ Use `lane verify` and `lane destroy`, not copied cleanup recipes.
 Never run GC unattended. Inspect `--dry-run`, snapshot affected paths, and copy
 required evidence outside GC-managed roots with a SHA-256 manifest first.
 GC must prove ownership, not infer it from a name. Unknown directories remain
-untouched. Never manually remove runtime-build-cache entries: they are registered
-Git worktrees; discard through the framework. Read
+untouched. Never manually remove runtime-build-cache entries: use
+`mise run west -- test --gc --gc-runtime-build-cache --runtime-build-cache-root DIR`
+with `--dry-run` first. It preserves locks, unexpected source edits and unknown
+entries, and unregisters owned worktrees before deletion. Read
 [GC scope](test-infra.md#diagnostic-execution-tiers) before any maintenance.
 With `DW_STATE_ROOT`, maintenance roots must stay inside that owner's root.
 `--proof-scratch-root` does not scope runtime evidence: fixture GC must also pass

@@ -138,6 +138,14 @@ manifest-source bootstrap contract. See the
    never an intermediate diagnostic line. A missing completion is FAIL/HANG.
    Use unique log paths; retain warnings and acceptance counters.
 
+Completed bundles carry a finite `server.log` slice, not full pre/post history.
+Finalized payloads may be `.zst`; `dwdiag` resolves logical raw paths automatically.
+For other readers use `python3 -B scripts/darling-evidence.py cat PATH`, not
+hand-written extraction. Archive only finalized owned diagnostics; preserve
+metadata, unique proof and symlink targets. Read the
+[storage contract](../../../docs/tooling.md#finalized-evidence-storage) before
+bulk compression or compacting runtime evidence ahead of explicit GC.
+
 ## 5. Capture faults through the supported route
 
 Guest instructions execute natively. A fault may bypass syscall instrumentation;

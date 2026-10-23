@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import types
+from contextlib import ExitStack
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -14,6 +15,7 @@ sys.path.insert(0, str(ROOT / "west_commands"))
 
 from test_execution import ProcessResult
 from test_runtime_build import RuntimeBuildService
+from test_runtime_cache import gc
 
 
 west_module = types.ModuleType("west")
@@ -197,7 +199,7 @@ with tempfile.TemporaryDirectory() as temp:
             artifact.chmod(0o755)
         return ProcessResult(0)
 
-    def explicit_build(key: str) -> Path:
+    def explicit_build(key: str, cache_scope: ExitStack | None = None) -> Path:
         return service.build_artifacts(
             root / "source",
             cached_proof,
@@ -211,6 +213,7 @@ with tempfile.TemporaryDirectory() as temp:
             timeout_seconds=7,
             cache=(explicit_store, key),
             on_reuse=reuse_reports.append,
+            cache_scope=cache_scope,
         )
 
     first = explicit_build("a" * 64)
@@ -221,6 +224,17 @@ with tempfile.TemporaryDirectory() as temp:
     explicit_build("b" * 64)
     assert explicit_calls.count("cmake") == 2, explicit_calls
     assert explicit_store.is_dir(), "an explicit cache store must be created"
+
+    # A returned build is still in use while its caller deploys the artifacts.
+    # Keep the actual producer lock rather than acquiring a second, racy lease.
+    with ExitStack() as scope:
+        in_use = explicit_build("a" * 64, scope)
+        result = gc(explicit_store, environ={})
+        assert in_use.is_dir(), result
+        assert any(row["path"] == str(in_use.parent) and "locked" in row["reason"]
+                   for row in result["skipped"]), result
+    result = gc(explicit_store, environ={})
+    assert not in_use.exists() and not result["errors"], result
 assert [kwargs["timeout_seconds"] for _command, kwargs in calls] == [7, 7], calls
 assert calls[1][0][-1] == "darlingserver", calls
 print("PASS runtime-build-contract")

@@ -975,7 +975,7 @@ marker nor its expected output has not executed the workload at all, and that is
 and nobody knew where it was":
 
 ```
-BUNDLE dir=/tmp/demo/harness.log.bundle
+BUNDLE dir=/absolute/owned/state/bundles/demo/harness.log.bundle
 BUNDLE-ITEM guest-capture-prd-minproj-bare-t.trace.3081254 path=.../captures/... note=captured from <prefix>/private/var/tmp/... (3169724 bytes)
 BUNDLE-COUNT guest-captures path=.../captures 10 capture(s) written during this run ...
 BUNDLE-COUNT child-records path=.../children 15 guest process(es) sampled from the HOST while alive ...
@@ -985,9 +985,11 @@ BUNDLE-RUN-ENV RUN-ENV prefix=... mldr=1baff608437b libsystem_kernel.dylib=0ebe7
 BUNDLE-LAUNCHD the services launchd recorded for this run (top 5 by count; ...)
 ```
 
-It holds, and NAMES: **both logs** (the harness's own and the prefix server's, copied pre AND post, because
-`<prefix>/private/var/log/dserver.log` is append-only *across* runs and only the delta is this run's); **every guest
-capture** with its path printed (`*.trace.<pid>` for the traced process, `*.traceg.<pid>` for its children, and the
+It holds, and NAMES: **both logs** (the harness's own and a finite, run-scoped `server.log` slice).
+The collector retains the original server-log descriptor and records its inode, size and boundary fingerprint;
+append capture starts at that boundary, and rename rotation also collects the new inode. It never copies the
+whole accumulated server history before and after a run. **Every guest capture** has its path printed
+(`*.trace.<pid>` for the traced process, `*.traceg.<pid>` for its children, and the
 workload's own redirected `*.out`); the **child's environment and descriptor table read from the HOST** (sampled
 while the child is alive, because a guest cannot read its own `/proc`); **any core** written during the run (symlinked,
 not copied); the **abort/terminate text wherever it landed**, lines copied WHOLE with the longest one's length
@@ -999,8 +1001,9 @@ Every item is a row of the bundle's `MANIFEST`: `PRESENT <path>` or `MISSING <re
 
 * a piece the harness could not collect is **MISSING with the reason**, never silently absent -- including the
   directories that were searched, so the next reader cannot look in the wrong place;
-* **INCOMPLETE** next to the manifest means the harness did not reach the end of the run, and the manifest ends with
-  `BUNDLE-COMPLETE` only when it did;
+* **INCOMPLETE** means collection has a known gap or finalization did not finish. Truncation/regrowth is reported
+  with the available bytes retained; intermediate rotations absent at both boundaries cannot be recovered.
+  The manifest ends with `BUNDLE-COMPLETE` only after successful collection and finalization;
 * a `--bundle DIR` that already holds files is **refused**: a mixed bundle reads as this run's evidence;
 * a silent instrument is NAMED (`BUNDLE-WITNESS silent=[...]`), and `build-declarations.txt` records where the build
   ITSELF says a section is absent, so "silent by build" is distinguished from "silent, and therefore broken";
@@ -1010,6 +1013,38 @@ Every item is a row of the bundle's `MANIFEST`: `PRESENT <path>` or `MISSING <re
 
 Contracts: `tests/run-run-bundle-contract.sh` (offline, stub launcher: the announcements, a `MISSING` row's reason,
 the whole >512-byte abort line, launchd's lines quoted, the refusal of a dirty bundle directory).
+
+### Finalized evidence storage
+
+Completed bundle payloads use zstd level 3 when it saves at least 10% and 4096 bytes. Compression streams with
+bounded memory, verifies the decompressed SHA-256, publishes a durable `evidence-index.json`, and only then removes
+the unchanged raw file. The index maps each logical original basename to its `.zst` path, original/stored sizes
+and digests. Metadata, source files, live writers and symlinks are not compressed. The external live run log stays raw.
+
+`dwdiag` reads raw or `.zst` logs, core files and retained symbolization images; a missing logical path resolves to
+its `.zst` sibling. Seekable cores are decoded into an immediately unlinked temporary file, not a core-sized RAM
+allocation. Other consumers can stream the same logical path through the shared helper:
+
+```bash
+python3 -B scripts/darling-evidence.py cat PATH
+python3 -B scripts/darling-evidence.py compress --recursive evidence
+python3 -B scripts/darling-evidence.py verify evidence --recursive
+```
+
+Recursive archival protects tracked files by default. An explicit `--include-tracked` migration permits only clean
+tracked diagnostic payloads under a finalized evidence subtree; staged or working changes remain untouched.
+Source/build/prefix/cache trees and metadata remain excluded. The host needs `zstd`; if `/proc` hides potential
+writers, an isolated read-only `sudo -n` census is attempted. Unavailable ownership inspection preserves raw files
+and reports the reason rather than guessing that they are idle.
+
+The helper's `compact-runtime UNIT --archive-root DIR` preserves a closed runtime unit's diagnostics, provenance
+and content-deduplicated runtime images before separate West GC. Keep that archive outside GC roots and verify its
+SHA-256 manifests. Generated objects/source forests are deliberately omitted and are not advertised as archived.
+`verify` checks stored and decoded hashes and resolves old logical `SHA256SUMS` references without extraction.
+For a closed archive without a top-level receipt, `--write-manifest` writes a new physical `SHA256SUMS` only after
+verification; it refuses overwrite and never hashes that receipt into itself. Existing invalid receipts are errors,
+not silently re-pinned hashes.
+
 
 **A run of this kind is archived** so the claim is reproducible rather than asserted:
 `evidence/instrument-auto-bundle-2026-10-15/` holds one bundle from the current ladder workload

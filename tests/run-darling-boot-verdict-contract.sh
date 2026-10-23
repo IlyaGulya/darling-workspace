@@ -80,7 +80,7 @@ verdict_of() { printf '%s\n' "$1" | sed -n 's/^VERDICT: //p' | tail -1; }
 # One harness run. stdout: the harness's own console; status: the harness's exit status.
 run_harness() { # args...
 	n=$((n + 1))
-	out="$("$harness" --prefix "$prefix" --log "$tmp/run-$n.log" "$@" 2>&1)"
+	out="$("$harness" --prefix "$prefix" --log "$tmp/run-$n.log" --no-bundle "$@" 2>&1)"
 	rc=$?
 	printf '%s' "$out"
 	return "$rc"

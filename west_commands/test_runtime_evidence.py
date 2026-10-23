@@ -13,6 +13,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Any, Iterator
 
+if __package__:
+    from .evidence_storage import EvidenceError, compress_paths, payload_metadata
+else:
+    from evidence_storage import EvidenceError, compress_paths, payload_metadata
+
 
 # Ownership evidence every unit carries from birth. A published unit is
 # identified by its manifest; this marker distinguishes a unit of ours that
@@ -164,6 +169,28 @@ class RuntimeEvidenceSession:
         }
         if self._diagnostics:
             manifest["diagnostics"] = self._diagnostics
+        compaction_error = None
+        if self._context.get("source-mode") == "manifest" and not self._worktrees and self.build_root.is_dir():
+            try:
+                if __package__:
+                    from .evidence_retention import compact_build_payload
+                else:
+                    from evidence_retention import compact_build_payload
+                compact_build_payload(self._directory)
+                manifest["paths"] = {
+                    "source-manifest": "manifest-source.json",
+                    "build-artifacts": "build-artifacts.json",
+                    "runtime-images": "runtime-images",
+                }
+            except Exception as error:
+                # The compactor preserves build on failure. Publish that full
+                # owned unit, not an invisible inflight orphan, then surface the
+                # error after the evidence lock has been released.
+                compaction_error = error
+                manifest["build-compaction-error"] = {
+                    "type": type(error).__name__,
+                    "message": str(error),
+                }
         # Publish the manifest while the unit is still hidden, then rename. The
         # published name is the ownership signal entries() reads, so a unit must
         # never become visible without it: renaming first and writing the manifest
@@ -187,7 +214,18 @@ class RuntimeEvidenceSession:
             self._directory.rename(target)
         self._directory = target
         self._retained = True
-        self._release_lock()
+        try:
+            # Only the closed, owned diagnostics subtree is finalized.
+            # Source/build worktrees remain replay inputs, never archive targets.
+            diagnostics = self._directory / "diagnostics"
+            if diagnostics.is_dir():
+                for report in compress_paths([diagnostics], recursive=True):
+                    if report["action"] == "error":
+                        raise EvidenceError(report["reason"])
+        finally:
+            self._release_lock()
+        if compaction_error is not None:
+            raise compaction_error
         return target
 
     def _relocate_worktrees(self, target: Path) -> None:
@@ -314,9 +352,8 @@ class RuntimeEvidenceStore:
             if relative.is_absolute() or ".." in relative.parts:
                 raise ValueError(f"unsafe runtime evidence attachment: {relative_text}")
             attachment = entry / relative
-            if not attachment.is_file() or attachment.is_symlink():
-                raise ValueError(f"missing runtime evidence attachment: {relative_text}")
-            checked.append({"path": str(relative), "bytes": attachment.stat().st_size})
+            metadata = payload_metadata(attachment)
+            checked.append({"path": str(relative), **metadata})
         return {
             "unit": entry.name,
             "label": manifest.get("label"),

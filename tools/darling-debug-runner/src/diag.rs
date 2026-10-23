@@ -24,6 +24,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+#[path = "evidence.rs"]
+mod stored_evidence;
+
 // ----------------------------------------------------------------------------------------------------------------
 // shared: symbolization
 // ----------------------------------------------------------------------------------------------------------------
@@ -36,9 +39,10 @@ struct Symbol {
 
 
 fn load_symbols(binary: &Path) -> Result<Vec<Symbol>> {
+    let (input, _materialized) = stored_evidence::for_tool(binary)?;
     let out = Command::new("llvm-nm")
         .arg("-n")
-        .arg(binary)
+        .arg(input.as_os_str())
         .output()
         .with_context(|| format!("running llvm-nm on {}", binary.display()))?;
     if !out.status.success() {
@@ -1606,7 +1610,7 @@ fn fault_mappings(text: &str) -> Vec<(u64, u64, u64, String)> {
 /// The bytes at the faulting instruction, read from the image the mapping names.
 fn fault_bytes(path: &str, offset: u64) -> Option<Vec<u8>> {
     use std::io::{Read, Seek, SeekFrom};
-    let mut f = fs::File::open(path).ok()?;
+    let mut f = stored_evidence::open(Path::new(path)).ok()?;
     f.seek(SeekFrom::Start(offset)).ok()?;
     let mut buf = [0u8; 16];
     let n = f.read(&mut buf).ok()?;
@@ -1661,7 +1665,7 @@ impl MachoSegments {
     /// None for anything that is not a Mach-O this can walk (a non-Mach-O, a truncated header): the caller then falls
     /// back to the image-relative address and says so, rather than inventing a base.
     fn load(path: &str) -> Option<Self> {
-        let raw = fs::read(path).ok()?;
+        let raw = stored_evidence::read(Path::new(path)).ok()?;
         if raw.len() < 32 {
             return None;
         }
@@ -1971,7 +1975,7 @@ struct CoreLink {
 fn core_link(log: Option<&Path>) -> CoreLink {
     let pattern = core_pattern();
     let newest = if pattern.piped { None } else { newest_core_sized(&pattern.dir, &pattern.prefix) };
-    let log_mtime = log.and_then(|p| fs::metadata(p).ok()).and_then(|m| m.modified().ok());
+    let log_mtime = log.and_then(|p| fs::metadata(stored_evidence::resolve(p)).ok()).and_then(|m| m.modified().ok());
     let newer_than_log = match (&newest, log_mtime) {
         (Some((p, _)), Some(t)) => fs::metadata(p).ok().and_then(|m| m.modified().ok()).map(|c| c >= t),
         _ => None,
@@ -2167,13 +2171,14 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
     if let (Some(t), Some(ctx)) = (file_target, Some(args.context)) {
         let lo = t.saturating_sub(ctx);
         let hi = t + ctx;
+        let (input, _materialized) = stored_evidence::for_tool(binary)?;
         let out = Command::new("objdump")
             .args([
                 "-d",
                 &format!("--start-address=0x{lo:x}"),
                 &format!("--stop-address=0x{hi:x}"),
             ])
-            .arg(binary)
+            .arg(input.as_os_str())
             .output()
             .context("running objdump")?;
         for l in String::from_utf8_lossy(&out.stdout).lines() {
@@ -2560,7 +2565,8 @@ fn resolve_prefix(explicit: Option<PathBuf>, log: Option<&std::path::Path>) -> O
 }
 
 fn read_log_lossy(path: &std::path::Path) -> std::io::Result<String> {
-    Ok(String::from_utf8_lossy(&std::fs::read(path)?).into_owned())
+    let bytes = stored_evidence::read(path)?;
+    Ok(String::from_utf8(bytes).unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned()))
 }
 
 fn judge_run_log(text: &str, mode: &str) -> (String, String, Option<i32>) {
@@ -5066,7 +5072,7 @@ impl CoreFile {
                  addressing; this host is {}", std::env::consts::ARCH
             );
         }
-        let mut file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let mut file = stored_evidence::open(path).with_context(|| format!("opening {}", path.display()))?;
         let size = file.metadata().map(|m| m.len()).unwrap_or(0);
         if size < 64 {
             bail!("{} is {size} bytes, shorter than an ELF header (64): nothing here can be a core", path.display());
@@ -5404,11 +5410,11 @@ fn json_object(pairs: Vec<(&str, String)>) -> String {
 /// MEASURED: on a guest core gdb's backtrace is usually useless (`#0 ... in ?? ()`, then pointers) because it has no
 /// symbols or unwind information for the guest's Mach-O images. Seeing that is what the flag is for; the alternative
 /// is a reader assuming the debugger's frames are the answer. Nothing here PARSES gdb's output.
-fn core_gdb_traces(core: &Path) -> Vec<String> {
+fn core_gdb_traces(core: &fs::File) -> Vec<String> {
     let out = Command::new("gdb")
         .args(["-batch", "-nx", "-iex", "set debuginfod enabled off"])
         .arg("-c")
-        .arg(core)
+        .arg(stored_evidence::descriptor_path(core))
         .args(["-ex", "info threads", "-ex", "bt"])
         .output();
     match out {
@@ -5480,7 +5486,7 @@ fn core_pattern() -> CorePattern {
 /// `_os_unfair_lock_unlock_slow + 0x10e`. Both names looked plausible, which is why this is computed from the load
 /// commands instead of assumed equal.
 fn macho_vmaddr_for_fileoff(image: &str, file_off: u64) -> Option<u64> {
-    let data = std::fs::read(image).ok()?;
+    let data = stored_evidence::read(Path::new(image)).ok()?;
     let magic = u32::from_be_bytes(data.get(0..4)?.try_into().ok()?);
     // MEASURED: Darling's dylibs are UNIVERSAL (`cafe babe`, 2 architectures), so a thin-only parser returns None
     // for exactly the images that matter and the conversion silently does not happen. A fat slice's segment file
@@ -5821,7 +5827,7 @@ fn run_core(args: CoreArgs) -> Result<ExitCode> {
             }
         },
     };
-    if !core.exists() { bail!("no such core: {}", core.display()); }
+    if !stored_evidence::resolve(&core).is_file() { bail!("no such core: {}", core.display()); }
 
     let mut c = CoreFile::open(&core)?;
     let prefix_owned = args.prefix.clone().or_else(|| {
@@ -6100,7 +6106,7 @@ fn run_core(args: CoreArgs) -> Result<ExitCode> {
             ]),
             (None, _) => "null".to_string(),
         };
-        let traces = if args.traces { core_gdb_traces(&core) } else { Vec::new() };
+        let traces = if args.traces { core_gdb_traces(&c.file) } else { Vec::new() };
         println!(
             "{}",
             json_object(vec![
@@ -6208,7 +6214,7 @@ fn run_core(args: CoreArgs) -> Result<ExitCode> {
     crate::say(&format!("CORE-STACK-STOP {walk_stop}"));
     if args.traces {
         crate::say("CORE-TRACES-GDB gdb's own view, printed verbatim: on a guest core its unwind is usually useless because it has no symbols or unwind information for the guest's Mach-O images, and seeing that is the point of the flag");
-        for l in core_gdb_traces(&core) {
+        for l in core_gdb_traces(&c.file) {
             crate::say(&format!("CORE-TRACES-GDB {l}"));
         }
     }
@@ -7797,7 +7803,7 @@ pub struct DenialsArgs {
 fn run_denials(args: DenialsArgs) -> Result<ExitCode> {
     let text = read_log_lossy(&args.log).with_context(|| format!("reading {}", args.log.display()))?;
     let syms = match &args.kernel {
-        Some(k) if k.exists() => Some(load_symbols(k)?),
+        Some(k) if stored_evidence::resolve(k).is_file() => Some(load_symbols(k)?),
         Some(k) => {
             crate::say(&format!("DENIALS: kernel image {} does not exist; callers will not be symbolized", k.display()));
             None
@@ -8695,7 +8701,7 @@ fn run_courier(args: CourierArgs) -> Result<ExitCode> {
     };
     let mut artifact_blobs: Vec<Vec<u8>> = Vec::new();
     for a in artifacts {
-        match fs::read(a) {
+        match stored_evidence::read(a) {
             Ok(b) => artifact_blobs.push(b),
             Err(_) => println!("COURIER-WARN cannot read artifact {}", a.display()),
         }
@@ -9363,6 +9369,26 @@ mod core_identity_tests {
     }
 
     #[test]
+    fn archived_core_preserves_registers_and_seekable_memory() {
+        let dir = std::env::temp_dir().join(format!("dwdiag-core-zstd-{}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let (core, _) = synthetic_core(&dir, "archived", 0x1000, 1);
+        let mut raw = CoreFile::open(&core).unwrap();
+        let expected_memory = raw.read_mem(0x10800, 16).unwrap();
+        let compressed = core.with_file_name(format!("{}.zst", core.file_name().unwrap().to_string_lossy()));
+        let output = Command::new("zstd").args(["-q", "-c", "--"]).arg(&core)
+            .stdout(fs::File::create(&compressed).unwrap()).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        fs::remove_file(&core).unwrap();
+        let mut archived = CoreFile::open(&core).unwrap();
+        assert_eq!(archived.threads[0].lwp, raw.threads[0].lwp);
+        assert_eq!(archived.threads[0].regs.rip(), raw.threads[0].regs.rip());
+        assert_eq!(archived.maps, raw.maps);
+        assert_eq!(archived.read_mem(0x10800, 16).unwrap(), expected_memory);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_synthetic_core_is_read_field_by_field() {
         let dir = std::env::temp_dir().join(format!("dwdiag-core-unit-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -9937,7 +9963,7 @@ fn discovery_candidates(prefix: Option<&Path>) -> Vec<PathBuf> {
 }
 
 fn mtime_of(path: &Path) -> Option<std::time::SystemTime> {
-    fs::metadata(path).and_then(|m| m.modified()).ok()
+    fs::metadata(stored_evidence::resolve(path)).and_then(|m| m.modified()).ok()
 }
 
 /// Whether a file's own timestamp places it inside the run's window. With no recorded start, time cannot scope a file
@@ -9954,7 +9980,7 @@ fn inside_window(
 /// Whether a file's bytes hold at least one registered instrument line. Used ONLY to say that evidence exists
 /// somewhere other than this run's window -- never to contribute rows.
 fn holds_instrument_lines(path: &Path) -> bool {
-    match fs::read(path) {
+    match stored_evidence::read(path) {
         Ok(bytes) => {
             let text = String::from_utf8_lossy(&bytes).replace('\u{0}', "\n");
             witness_census(&text).iter().any(|(_, n, _)| *n > 0)
@@ -10012,7 +10038,7 @@ fn select_evidence(state_dir: &Path) -> EvidenceReport {
     let mut out = String::new();
     for (path, offset, kind) in &entries {
         let (path, offset) = (path, *offset);
-        match fs::read(path) {
+        match stored_evidence::read(path) {
             Ok(bytes) => {
                 if *kind == "registered" && offset as usize > bytes.len() {
                     truncated = true;

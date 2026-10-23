@@ -994,8 +994,13 @@ for failing_scope, timed_out in (
         evidence = json.loads((archive / artifact).read_text())
         assert evidence["doctor"] == doctor_report
         assert evidence["timed-out"] is timed_out
-        assert (archive / evidence["streams"]["stdout"]).read_bytes() == stdout
-        assert (archive / evidence["streams"]["stderr"]).read_bytes() == stderr
+        for stream_name, expected_bytes in (("stdout", stdout), ("stderr", stderr)):
+            decoded = subprocess.run(
+                [sys.executable, "-B", str(ROOT / "scripts/darling-evidence.py"),
+                 "cat", str(archive / evidence["streams"][stream_name])],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
+            )
+            assert decoded.stdout == expected_bytes
         manifest = json.loads((archive / "manifest.json").read_text())
         assert manifest["diagnostics"][0]["returncode"] == (124 if timed_out else 1)
 

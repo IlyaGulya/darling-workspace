@@ -137,6 +137,7 @@ from test_runtime_build import RuntimeBuildService
 from test_runtime_evidence import RuntimeEvidenceStore
 from test_runtime_source import RuntimeSourceMaterializer
 from test_runtime_identity import runtime_identity
+import test_runtime_cache
 import test_stock_stack_cache
 import test_verdict_cache
 from guest_macho_validation import (
@@ -389,7 +390,7 @@ class DarlingTest(
         parser.add_argument(
             "--gc",
             action="store_true",
-            help="prune old debug bundles (keep-last + size cap) and exit",
+            help="prune owned debug bundles and proof scratch, plus explicitly opted-in caches, and exit",
         )
         parser.add_argument(
             "--cleanup-prefix",
@@ -450,6 +451,18 @@ class DarlingTest(
             "--gc-runtime-evidence",
             action="store_true",
             help="with --gc, explicitly prune durable runtime evidence units using the proof scratch age/count limits",
+        )
+        parser.add_argument(
+            "--gc-runtime-build-cache",
+            action="store_true",
+            help="with --gc, discard all idle owned runtime build-cache entries, "
+            "including source worktrees and legacy builds (independent of scratch retention)",
+        )
+        parser.add_argument(
+            "--runtime-build-cache-root",
+            metavar="DIR",
+            help="with --gc --gc-runtime-build-cache, cache to maintain "
+            "(default WEST_RUNTIME_BUILD_CACHE_DIR, otherwise .west-test/runtime-build-cache)",
         )
         parser.add_argument(
             "--proof-scratch-max-age-hours",
@@ -2080,7 +2093,7 @@ class DarlingTest(
                     evidence_session=evidence,
                     reuse_key=reuse_plan.source_key if reuse_plan is not None else None,
                 )
-            with source_context as source_root:
+            with source_context as source_root, ExitStack() as cache_scope:
                 build_root = self._runtime_red_build_artifacts(
                     source_root,
                     proof,
@@ -2089,6 +2102,7 @@ class DarlingTest(
                     label=f"{label_prefix} {profile_name}",
                     cache=reuse_plan.build_cache if reuse_plan is not None else None,
                     on_reuse=reuse_plan.record_build if reuse_plan is not None else None,
+                    cache_scope=cache_scope,
                 )
                 if reuse_plan is not None:
                     self.inf(
@@ -3407,13 +3421,14 @@ class DarlingTest(
                     omit_patch=False,
                     root=evidence.source_root,
                     evidence_session=evidence,
-                ) as source_root:
+                ) as source_root, ExitStack() as cache_scope:
                     build_root = self._runtime_red_build_artifacts(
                         source_root,
                         proof,
                         prefix,
                         scratch_root,
                         label="GREEN",
+                        cache_scope=cache_scope,
                     )
                     with self._runtime_red_deployed_artifacts(
                         proof,
@@ -3735,7 +3750,7 @@ class DarlingTest(
                 omit_patch=True,
                 root=evidence.source_root,
                 evidence_session=evidence,
-            ) as source_root:
+            ) as source_root, ExitStack() as cache_scope:
                 try:
                     build_root = self._runtime_red_build_artifacts(
                         source_root,
@@ -3744,6 +3759,7 @@ class DarlingTest(
                         scratch_root,
                         label="RED",
                         allow_failure=True,
+                        cache_scope=cache_scope,
                     )
                 except RuntimeBuildFailure as failure:
                     if not machine.validate_red(
@@ -4740,6 +4756,12 @@ class DarlingTest(
                 "start the selected run. Pass --gc to plan a prune, or drop "
                 "--dry-run to run the selection."
             )
+        if getattr(args, "gc_runtime_build_cache", False) and not args.gc:
+            self.die("--gc-runtime-build-cache requires --gc")
+        if getattr(args, "runtime_build_cache_root", None) and not (
+            args.gc and getattr(args, "gc_runtime_build_cache", False)
+        ):
+            self.die("--runtime-build-cache-root requires --gc --gc-runtime-build-cache")
 
         if getattr(args, "cleanup_prefix", False):
             incompatible = []
@@ -4764,17 +4786,40 @@ class DarlingTest(
             # obeyed: reaching another lane's state is the failure the shared
             # roots produced, and it is silent until something is already gone.
             declared = state_root()
-            for label, root in (
+            maintenance_roots = [
                 ("bundle", args.bundle_root),
                 ("proof scratch", args.proof_scratch_root),
                 ("runtime evidence", self._runtime_evidence_root),
-            ):
+            ]
+            runtime_cache_root = None
+            if getattr(args, "gc_runtime_build_cache", False):
+                try:
+                    runtime_cache_root = test_runtime_cache.maintenance_root(
+                        Path(self.manifest.repo_abspath),
+                        os.environ,
+                        getattr(args, "runtime_build_cache_root", None),
+                    )
+                except ValueError as error:
+                    self.die(str(error))
+                maintenance_roots.append(("runtime build cache", runtime_cache_root))
+            for label, root in maintenance_roots:
                 if not inside_state_root(Path(root)):
                     self.die(
                         f"{label} root {Path(root).expanduser()} is outside the declared "
                         f"state root {declared} ({STATE_ROOT_ENV}); a maintenance pass "
                         "only acts inside its own root"
                     )
+            if runtime_cache_root is not None:
+                try:
+                    result = test_runtime_cache.gc(
+                        runtime_cache_root,
+                        dry_run=args.dry_run,
+                        progress=self.inf,
+                    )
+                except (OSError, ValueError, RuntimeError) as error:
+                    self.die(f"runtime build cache GC failed: {error}")
+                if result["errors"]:
+                    self.die("runtime build cache GC failed; see per-entry diagnostics above")
             self._gc_bundles(
                 Path(args.bundle_root), args.keep_last, args.max_bundle_mb,
                 dry_run=args.dry_run,

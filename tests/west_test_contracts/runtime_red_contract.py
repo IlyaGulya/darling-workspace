@@ -1826,7 +1826,8 @@ with tempfile.TemporaryDirectory() as temp:
         yield root / "darling"
 
     def fake_build(
-        source_root, proof, build_prefix, scratch_root, *, label="RED", allow_failure=False
+        source_root, proof, build_prefix, scratch_root, *, label="RED",
+        allow_failure=False, cache_scope=None,
     ):
         assert allow_failure is (label == "RED")
         calls.append(("build", source_root, build_prefix, scratch_root.exists(), label))
@@ -2275,7 +2276,8 @@ with tempfile.TemporaryDirectory() as temp:
         yield root / "darling"
 
     def failing_build(
-        _source_root, _proof, _build_prefix, scratch_root, *, label="RED", allow_failure=False
+        _source_root, _proof, _build_prefix, scratch_root, *, label="RED",
+        allow_failure=False, cache_scope=None,
     ):
         assert label == "RED"
         assert allow_failure is True
