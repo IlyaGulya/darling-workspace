@@ -80,6 +80,13 @@ COMPONENTS: dict[str, Component] = {
         ("System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
          "libexec/darling/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation"),
     ),
+    # The Foundation XPC daemon. The source bootstrap manifest now carries its entrypoint; this
+    # component installs the already-built target into an existing prefix and verifies both copies.
+    "filecoordinationd": Component(
+        "filecoordinationd",
+        "src/external/foundation/services/filecoordinationd/filecoordinationd",
+        ("usr/sbin/filecoordinationd", "libexec/darling/usr/sbin/filecoordinationd"),
+    ),
     # libobjc.A.dylib was absent from this table, so an objc4 change could not be deployed by any
     # tooling path (`west darling-build --deploy` does not carry it either): the prefix kept whatever
     # copy an earlier bootstrap had installed, and a measured objc4 fix could read as "no effect".
