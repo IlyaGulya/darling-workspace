@@ -12,6 +12,7 @@
 #include <unicode/utypes.h>
 #include <unicode/uloc.h>
 #include <unicode/udata.h>
+#include <unicode/putil.h>
 #include <unicode/uversion.h>
 #include <dlfcn.h>
 #include <stdio.h>
@@ -27,19 +28,9 @@ static void print_version(void)
 #ifdef U_ICU_DATA_VERSION
     printf("ICU_HEADER_DATA_VERSION=%s\n", U_ICU_DATA_VERSION);
 #endif
-    const char *data_dir = NULL;
-    void *lib = dlopen("/usr/lib/libicucore.A.dylib", RTLD_NOW | RTLD_LOCAL);
-    if (lib != NULL) {
-        typedef const char *(*get_data_dir_fn)(void);
-        get_data_dir_fn get_data_dir = (get_data_dir_fn)dlsym(lib, "u_getDataDirectory");
-        if (get_data_dir != NULL) {
-            data_dir = get_data_dir();
-        }
-    }
-    printf("ICU_DATA_DIR=%s\n", data_dir ? data_dir : "(null)");
-    if (lib != NULL) {
-        dlclose(lib);
-    }
+    const char *data_dir = u_getDataDirectory();
+    printf("ICU_DATA_DIR='%s' (empty is valid for built-in data)\n",
+           data_dir ? data_dir : "(null)");
     printf("ICU_DEFAULT_LOCALE=%s\n", uloc_getDefault());
 }
 
