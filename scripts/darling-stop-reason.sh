@@ -214,6 +214,29 @@ emit() { # kind FIELDS...
 	fi
 }
 
+# 0. THE XCODE LICENSE GATE IS AN EXPLICIT FATAL REFUSAL and outranks every diagnostic below it. MEASURED
+#    2026-10-23 (canonical minproj): the guest printed FMDB's `error opening!: 14`, the queue line, and then
+#    `You have not agreed to the Xcode license agreements. Please run 'sudo xcodebuild -license' ...`, and
+#    exited 69. The license refusal is the gate; the SQLite line is a startup warning that precedes it and its
+#    causal relation to the exit is NOT established.
+#
+#    THE SQLITE NUMBER IS NOT AN ERRNO. `error opening!: %d` is `sqlite3_open`'s return in
+#    src/external/fmdb/src/fmdb/FMDatabase.m:176-178 (and `sqlite3_open_v2` at 210-212); 14 is SQLITE_CANTOPEN.
+#    The path comes from FMDatabaseQueue.m:91. The old `open-errno` kind called this number errno, which is a
+#    different error domain; it is reported as SQLite context, never as the stop cause.
+SQLITE_CODE=$(egrep_a -o -m1 'error opening!: [0-9]*' 2>/dev/null | head -1 | sed 's/.*: *//')
+SQLITE_PATH=$(egrep_a -o -m1 'Could not create database queue for path [^ ]*' 2>/dev/null | head -1 | sed 's/.*for path //')
+
+if egrep_a -q 'You have not agreed to the Xcode license agreements'; then
+	if [ -n "$SQLITE_CODE" ]; then
+		if [ "$JSON" != 1 ]; then
+			printf 'STOP-CONTEXT kind=sqlite-open-failed code=%s path=%s note=preceding-sqlite-warning-not-the-stop\n' \
+				"$SQLITE_CODE" "${SQLITE_PATH:-unknown}"
+		fi
+		SQLITE_CONTEXT=1
+	fi
+	emit license-required "stage=license" "guest_rc=$GUEST_RC"
+else
 # 1. A missing SYMBOL inside a dlopened image: dyld's own line, and the two lines it names. The most specific
 #    cause dyld prints, so it is checked first -- a missing symbol and a missing image are different defects.
 _sym=$(egrep_a -o -m1 'Symbol not found: [^ ]*' 2>/dev/null | head -1 | sed 's/^Symbol not found: //')
@@ -236,11 +259,11 @@ if egrep_a -q -E 'DVTPlugInExtensionFaulting|_fireExtensionFaultAssertingOnBundl
 	_ext=$(egrep_a -o -m1 "extension '[A-Za-z0-9_.-]*'" 2>/dev/null | head -1 | sed "s/^extension '//; s/'$//")
 	emit extension-fault "plug_in=${_plug:-?}" "extension=${_ext:-?}" "guest_rc=$GUEST_RC" "stage=plugin-load"
 else
-# 4. `error opening!: <errno>` plus the path that errno belongs to.
+# 4. FMDB's SQLite open result plus the path it is about. This is the SQLite error domain: the number is a
+#    SQLite result code (14 = SQLITE_CANTOPEN), not an errno, and the line can be a startup warning rather than
+#    the stop cause. It is named as its own kind, never as `errno`.
 if egrep_a -q 'error opening!:'; then
-	_errno=$(egrep_a -o -m1 'error opening!: [0-9]*' 2>/dev/null | head -1 | sed 's/.*: *//')
-	_path=$(egrep_a -o -m1 'Could not create database queue for path [^ ]*' 2>/dev/null | head -1 | sed 's/.*for path //')
-	emit open-errno "errno=${_errno:-?}" "path=${_path:-unknown}" "guest_rc=$GUEST_RC" "stage=open"
+	emit sqlite-open-failed "code=${SQLITE_CODE:-?}" "path=${SQLITE_PATH:-unknown}" "note=sqlite-result-code-not-errno" "guest_rc=$GUEST_RC" "stage=sqlite-open"
 else
 # 5. The launcher's own bounded wait: the guest never brought the service up.
 if egrep_a -q 'shellspawn did not become ready'; then
@@ -276,6 +299,7 @@ case "$GUEST_RC" in
 		fi
 		;;
 esac
+fi
 fi
 fi
 fi
@@ -333,6 +357,7 @@ if [ "$JSON" = 1 ]; then
 	[ -n "$SIGNAME" ] && printf ',"signal":"%s"' "$SIGNAME"
 	[ -n "$RC" ] && printf ',"rc":"%s"' "$RC"
 	[ -n "$POLLUTED" ] && printf ',"pollution":"1"'
+	[ "${SQLITE_CONTEXT:-0}" = 1 ] && printf ',"context_kind":"sqlite-open-failed","context_code":"%s","context_path":"%s"' "$SQLITE_CODE" "${SQLITE_PATH:-unknown}"
 	printf ',"run":"%s","started":"%s","ended":"%s","harness_rc":"%s","guest_xcb_rc":"%s"' \
 		"$RUN_ID" "$_started" "$_ended" "${RC:-absent}" "$GUEST_RC"
 	printf ',"product_verdict":"%s","runner_rc":"%s","oracle":"%s","captures":"%s","capture_count":"%s","excluded":"%s","pids":"%s"}\n' \

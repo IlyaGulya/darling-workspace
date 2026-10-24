@@ -5,7 +5,8 @@
 # hand-grep before a tool named it:
 #   * the missing-SYMBOL form (2026-10-19): xcodebuild died rc=132 with the cause in the run's own bundle
 #     captures; the harness printed counters and VERDICT and never read what it had collected;
-#   * the errno/path PAIRING: `error opening!: 14` and the path it belongs to are separate messages;
+#   * the SQLITE code/path PAIRING: `error opening!: 14` and the path it belongs to are separate messages,
+#     and 14 is `sqlite3_open`'s result code (SQLITE_CANTOPEN), NOT an errno;
 #   * the CAPTURE-ONLY case: the cause was 0 hits in the harness log and present in the bundle's captures/;
 #   * `rung-driver.py stop` answered "the run did not stop in dyld" for the missing-symbol form.
 #
@@ -52,14 +53,43 @@ assert d["signal"]=="SIGILL", d
 assert d["rc"]=="132", d
 ' "$json"
 
-# 3. the errno and the path it belongs to are reported together
-cat >"$tmp/errno.log" <<'EOF'
+# 3. the SQLite result code and the path it belongs to are reported together, in the SQLite domain.
+#    Source: FMDatabase.m:176-178 (sqlite3_open) and FMDatabaseQueue.m:91; 14 is SQLITE_CANTOPEN, not errno.
+cat >"$tmp/sqlite.log" <<'EOF'
 2026-10-19 08:07:06.912 xcodebuild[2415866:3e8] error opening!: 14
 2026-10-19 08:07:06.913 xcodebuild[2415866:3e8] Could not create database queue for path /private/var/db/launchservices.db
 EOF
-out="$("$run" --log "$tmp/errno.log")"
+out="$("$run" --log "$tmp/sqlite.log")"
 printf '%s\n' "$out"
-grep -F -q "kind=open-errno errno=14 path=/private/var/db/launchservices.db" <<<"$out"
+grep -F -q "kind=sqlite-open-failed code=14 path=/private/var/db/launchservices.db note=sqlite-result-code-not-errno" <<<"$out"
+! grep -F -q "errno=14" <<<"$out"
+! grep -F -q "open-errno" <<<"$out"
+
+# 3b. THE XCODE LICENSE REFUSAL IS THE FATAL GATE and outranks the preceding SQLite warning. The captured
+#     canonical minproj run printed the two FMDB lines and then the license text, exiting 69; the classifier
+#     must name the license, must not call the SQLite code an errno, and must keep the SQLite line visible as
+#     context rather than dropping it.
+cat >"$tmp/license.log" <<'EOF'
+2026-10-23 20:43:39.767 xcodebuild[2103369:3e8] error opening!: 14
+2026-10-23 20:43:39.767 xcodebuild[2103369:3e8] Could not create database queue for path /private/var/db/launchservices.db
+You have not agreed to the Xcode license agreements. Please run 'sudo xcodebuild -license' from within a Terminal window to review and agree to the Xcode and Apple SDKs license agreements.
+XCB_RC=69
+EOF
+out="$("$run" --log "$tmp/license.log" --rc 69)"
+printf '%s\n' "$out"
+grep -F -q "kind=license-required stage=license" <<<"$out"
+grep -F -q "STOP-CONTEXT kind=sqlite-open-failed code=14 path=/private/var/db/launchservices.db" <<<"$out"
+! grep -F -q "open-errno" <<<"$out"
+! grep -F -q "errno=14" <<<"$out"
+json="$("$run" --log "$tmp/license.log" --rc 69 --json)"
+python3 -B -c '
+import json,sys
+d=json.loads(sys.argv[1])
+assert d["kind"]=="license-required", d
+assert d["context_kind"]=="sqlite-open-failed", d
+assert d["context_code"]=="14", d
+assert "errno" not in d, d
+' "$json"
 
 # 4. a missing IMAGE is its own kind (not folded into the symbol rule)
 cat >"$tmp/image.log" <<'EOF'
