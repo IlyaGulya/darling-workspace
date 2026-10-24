@@ -14,10 +14,71 @@
  */
 #import <Foundation/Foundation.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <CommonCrypto/CommonDigest.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
+#include <sys/stat.h>
+#include <errno.h>
 
 static const char *kExpected = "2001-01-01 00:00:00 +0000";
+static const char *kDataPath = "/usr/share/icu/icudt66l.dat";
+static const char *kDataExpectedSha256 =
+    "6b6a6faf4630a9ba0703a5da8ba28905edd3dd5dc790c98126a220e2d549367b";
+static const uint64_t kDataExpectedSize = 29074368;
+
+static int check_data_file(void)
+{
+    FILE *f = fopen(kDataPath, "rb");
+    if (f == NULL) {
+        printf("FCD_DATA_FAIL path=%s reason=open errno=%d\n", kDataPath, errno);
+        return 0;
+    }
+
+    struct stat st;
+    if (fstat(fileno(f), &st) != 0) {
+        printf("FCD_DATA_FAIL path=%s reason=stat errno=%d\n", kDataPath, errno);
+        fclose(f);
+        return 0;
+    }
+
+    CC_SHA256_CTX ctx;
+    CC_SHA256_Init(&ctx);
+    unsigned char buf[65536];
+    uint64_t total = 0;
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+        CC_SHA256_Update(&ctx, buf, (CC_LONG)n);
+        total += n;
+    }
+    if (ferror(f)) {
+        printf("FCD_DATA_FAIL path=%s reason=read errno=%d\n", kDataPath, errno);
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
+
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256_Final(digest, &ctx);
+    char hex[CC_SHA256_DIGEST_LENGTH * 2 + 1];
+    for (size_t i = 0; i < CC_SHA256_DIGEST_LENGTH; i++)
+        snprintf(hex + i * 2, 3, "%02x", digest[i]);
+    hex[CC_SHA256_DIGEST_LENGTH * 2] = '\0';
+
+    printf("FCD_DATA path=%s size=%llu expected_size=%llu sha256=%s expected_sha256=%s\n",
+           kDataPath, (unsigned long long)total,
+           (unsigned long long)kDataExpectedSize, hex, kDataExpectedSha256);
+    fflush(stdout);
+
+    int ok = ((uint64_t)st.st_size == kDataExpectedSize) &&
+             (total == kDataExpectedSize) &&
+             (strcmp(hex, kDataExpectedSha256) == 0);
+    if (!ok) {
+        printf("FCD_DATA_FAIL path=%s reason=mismatch size=%llu sha256=%s\n",
+               kDataPath, (unsigned long long)total, hex);
+    }
+    return ok;
+}
 
 static void locale_name(CFLocaleRef loc, char *buf, size_t cap)
 {
@@ -91,6 +152,8 @@ int main(void)
 {
     int all_ok = 1;
     int current_ok = 0;
+
+    all_ok &= check_data_file();
 
     CFLocaleRef current = CFLocaleCopyCurrent();
     CFLocaleRef system = CFLocaleGetSystem();
