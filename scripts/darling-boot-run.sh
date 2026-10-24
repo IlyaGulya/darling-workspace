@@ -128,6 +128,11 @@ done
 
 [ -n "$PREFIX" ] || { echo "usage: $0 --prefix PATH --wait SECONDS [--marker NAME]..." >&2; exit 2; }
 [ -n "$WAIT" ] || [ "$LIST_OWNED" = 1 ] || { echo "usage: $0 --prefix PATH --wait SECONDS [--marker NAME]..." >&2; exit 2; }
+# Normalize the selected prefix once, after argument validation and before any state is consumed.
+# The launcher now publishes DARLING_PREFIX from its validated directory FD, but harness ownership
+# matching, map checks and capture paths must also see the same absolute identity instead of a
+# caller spelling (e.g. a relative path) that later resolves against a different cwd.
+PREFIX="$(realpath -m -- "$PREFIX")"
 # A status field names a VALUE (`XCB_RC=`), never an expected value: `--status-marker XCB_RC=0` would make the
 # field text itself the needle and read every real line as MISS. Refuse at the front door -- before any state is
 # consumed -- rather than fail closed on a log that never carried the right shape.
