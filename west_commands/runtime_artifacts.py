@@ -123,6 +123,11 @@ COMPONENTS: dict[str, Component] = {
         "src/shellspawn/shellspawn",
         ("usr/libexec/shellspawn", "libexec/darling/usr/libexec/shellspawn"),
     ),
+    "sudo": Component(
+        "sudo",
+        "src/tools/sudo",
+        ("usr/bin/sudo", "libexec/darling/usr/bin/sudo"),
+    ),
     "vchroot": Component(
         "vchroot",
         "src/vchroot/vchroot",

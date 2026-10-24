@@ -61,6 +61,53 @@ measurements, its cleanup contract and its own tests are in
 [lane-isolation.md](lane-isolation.md); it is optional and no existing command
 changes behaviour without `--lane`.
 
+### Xcode build workload license setup
+
+`scripts/xcodebuild-workload-run.sh --workload minproj|iosapp|both` includes license
+preparation before each build. Running these test scenarios authorizes the selected
+Xcode installation's normal license acceptance; obtain the user's agreement to its
+Xcode/SDK terms before invoking them. Other guest tests do not accept licenses.
+
+The shared guest helper, `testkit/scripts/xcode-license.sh`, runs that installation's
+`xcodebuild -license check`. If necessary it runs `-license accept` through
+Darling's bundled guest `sudo -n`, then requires another successful check in the
+ordinary guest context. Existing acceptance skips another accept command. There
+is no host acceptance cache, fabricated plist or synthetic receipt: a fresh prefix
+or a changed Xcode is checked by the real executable again. A failed accept or
+verification prevents the project build from starting.
+
+The prepared runtime must contain Darling's Mach-O `sudo` from `src/tools/sudo.c`,
+built and provisioned with the source-owned rootless toolchain payload. This tool
+changes emulated guest credentials, not Linux host credentials, and preserves
+`DEVELOPER_DIR`. The runner validates and names the prefix's image explicitly
+through `/Volumes/SystemRoot`; it never invokes the Linux host's `sudo` or asks
+for host administrative rights. Missing guest `sudo` stops before boot rather
+than falling back to a host command.
+Rootless launchd must also initialize `/Library/Preferences` with mode `0755`
+before workloads run. Xcode's license writer uses an atomic Foundation file write
+and does not create its parent directory. Keep this prerequisite in launchd's
+shared runtime initialization, not a per-test `mkdir` or fabricated license file.
+
+Use an already prepared, idle prefix and one managed job:
+
+```sh
+scripts/west-job.sh start --state-dir "$DW_STATE_ROOT/jobs/xcode-build" -- \
+  mise exec -- bash scripts/xcodebuild-workload-run.sh \
+  --prefix "$PREFIX" --xcode-app "$XCODE_APP" --workload both
+scripts/west-job.sh follow --state-dir "$DW_STATE_ROOT/jobs/xcode-build"
+```
+
+The setup reports `XCB_LICENSE_RC`; `XCB_RC` remains the actual build's status and
+is absent when setup prevented that build. `XCB_SCENARIO_RC` is the harness's
+completion status, not a replacement for the build/artifact oracle. License
+readiness alone never makes a workload PASS.
+
+Each run preserves preparation logs and status separately under
+`<log-dir>/<workload>.license/`, using verified zstd storage when effective. The
+resolved initial license refusal is not mixed into the build's capture, where it
+would falsely look like the build's terminal stop. Read compressed phase logs with
+`python3 -B scripts/darling-evidence.py cat PATH`.
+
 ### Bootstrap a fresh prefix before a prefix-backed run
 
 `--prefix PATH` only resolves a path; it does not create, boot or provision a

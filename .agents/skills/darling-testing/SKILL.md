@@ -47,6 +47,13 @@ below are policy, not a promise that every runner enforces them.
    RED and GREEN. A filename alone does not prove equivalent scenarios.
    See [selection authority](../../../docs/test-infra.md#authority-identity-and-selection)
    and [CMake/CTest registration](../../../docs/test-infra.md#compatibility-test-registration).
+   Xcode build scenarios use the shared license setup in
+   `scripts/xcodebuild-workload-run.sh`: with user-authorized acceptance it checks
+   the selected Xcode, accepts when necessary through Darling's bundled guest
+   `sudo`, and verifies again as the ordinary guest user. Never use host `sudo`.
+   Preserve its separate phase logs; do not replace acceptance with plist/receipt
+   writes or count license readiness as build success. See
+   [Xcode setup](../../../docs/test-infra.md#xcode-build-workload-license-setup).
 4. **Make RED truthful.** Current-source regression runs must be GREEN.
    RED/GREEN needs the same behavioral oracle against known-bad and fixed
    implementations, failing for the intended reason. Source-base proof redirects

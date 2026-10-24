@@ -266,6 +266,18 @@ EXPLICIT_CONTRACTS = (
         True,
     ),
     (
+        "xcode-license",
+        "tests/west_test_contracts/xcode_license_contract.py",
+        True,
+    ),
+    # Executes the external source forest, which this tier's workspace cache key
+    # does not identify. Always measure the current launchd implementation.
+    (
+        "launchd-runtime-directories",
+        "tests/west_test_contracts/launchd_runtime_directories_contract.py",
+        False,
+    ),
+    (
         "host-trace-failure-phase",
         "tests/west_test_contracts/host_trace_failure_phase_contract.py",
         True,
