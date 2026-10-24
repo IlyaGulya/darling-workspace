@@ -57,6 +57,11 @@ done
 	exit 2
 }
 
+# Existing-prefix ICU data restoration is scoped and preserves the deployed dylib:
+#   cmake --install "$build_dir" --component icu-data
+# The full ICU project entry below installs both the dylib and the declared data
+# file; use it only when the ICU runtime itself is intentionally being replaced.
+#
 # Each entry is the CMake install target of the project that owns the artifact. The comment
 # records the dyld error that asked for it, so the list can be audited against evidence.
 targets=(
