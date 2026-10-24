@@ -38,6 +38,50 @@ struct Symbol {
 }
 
 
+/// Parse one `llvm-nm -n` line. The NAME is the whole remainder after the type character, because an
+/// Objective-C method name contains spaces: `... t -[NSFileCoordinator(Internal) submitIntent:...]`.
+/// Taking a whitespace token truncated it to `-[NSFileCoordinator(Internal)`, and the name-keyed dedup
+/// then dropped every later method of the same category.
+fn parse_nm_line(line: &str) -> Option<(u64, &str)> {
+    let line = line.trim_start();
+    let sep = line.find(char::is_whitespace)?;
+    let addr_text = &line[..sep];
+    if addr_text.is_empty() || !addr_text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let addr = u64::from_str_radix(addr_text, 16).ok()?;
+    let rest = line[sep..].trim_start();
+    let mut chars = rest.chars();
+    chars.next()?; // type character
+    let name = chars.as_str().trim_start();
+    if name.is_empty() {
+        return None;
+    }
+    Some((addr, name))
+}
+
+fn parse_nm_text(text: &str) -> Vec<Symbol> {
+    let mut syms = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for line in text.lines() {
+        let Some((addr, name)) = parse_nm_line(line) else {
+            continue;
+        };
+        // Keep same-named symbols at different addresses. Dedup on the whole (address, name) pair, never on
+        // the name alone: category methods and block helpers legitimately share a name or a truncated
+        // prefix, and dropping the later one made `locate` attribute a frame to the wrong method. The set
+        // borrows the name from `text`; only a unique symbol allocates its owned copy on push.
+        if !seen.insert((addr, name)) {
+            continue;
+        }
+        syms.push(Symbol {
+            addr,
+            name: name.to_owned(),
+        });
+    }
+    syms
+}
+
 fn load_symbols(binary: &Path) -> Result<Vec<Symbol>> {
     let (input, _materialized) = stored_evidence::for_tool(binary)?;
     let out = Command::new("llvm-nm")
@@ -53,25 +97,7 @@ fn load_symbols(binary: &Path) -> Result<Vec<Symbol>> {
         );
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    let mut syms = Vec::new();
-    for line in text.lines() {
-        let mut parts = line.split_whitespace();
-        let (Some(addr), Some(_kind), Some(name)) = (parts.next(), parts.next(), parts.next())
-        else {
-            continue;
-        };
-        if let Ok(addr) = u64::from_str_radix(addr, 16) {
-            // A universal binary lists every name once per slice; the first occurrence is the x86_64 slice that the
-            // deltas in this workspace are measured against, and the caller is told which base answered.
-            if syms.iter().any(|s: &Symbol| s.name == name) {
-                continue;
-            }
-            syms.push(Symbol {
-                addr,
-                name: name.to_string(),
-            });
-        }
-    }
+    let syms = parse_nm_text(&text);
     if syms.is_empty() {
         bail!("no symbols in {}", binary.display());
     }
@@ -87,6 +113,57 @@ fn locate(syms: &[Symbol], target: u64) -> Option<(usize, u64)> {
         }
     }
     best.map(|(i, a)| (i, target - a))
+}
+
+#[cfg(test)]
+mod nm_parser_tests {
+    use super::*;
+
+    // Exact lines from `llvm-nm -n` on the deployed Foundation (default output, measured byte-identical to
+    // --arch=x86_64). The first method and the sibling methods share the truncated prefix that the old
+    // 3rd-whitespace-token parser produced.
+    const NM: &str = r#"
+000000000002e220 t -[NSFileCoordinator(Internal) submitIntent:onQueue:withBlock:]
+000000000002ebc0 t ___62-[NSFileCoordinator(Internal) submitIntent:onQueue:withBlock:]_block_invoke
+000000000002f430 t -[NSFileCoordinator(Internal) submitNotificationForURL:ofType:withDetails:]
+000000000002f5b0 t -[NSFileCoordinator(Internal) submitCancellationWithToken:]
+                 U _CFAbsoluteTimeGetCurrent
+(for architecture x86_64):
+"#;
+
+    #[test]
+    fn full_objc_names_and_category_siblings_survive_parsing() {
+        let syms = parse_nm_text(NM);
+        let intent = syms
+            .iter()
+            .find(|s| s.addr == 0x2e220)
+            .expect("submitIntent symbol");
+        assert_eq!(
+            intent.name,
+            "-[NSFileCoordinator(Internal) submitIntent:onQueue:withBlock:]"
+        );
+        let notification = syms
+            .iter()
+            .find(|s| s.addr == 0x2f430)
+            .expect("sibling method was dropped by name collision");
+        assert_eq!(
+            notification.name,
+            "-[NSFileCoordinator(Internal) submitNotificationForURL:ofType:withDetails:]"
+        );
+
+        // The saved main-thread return address 0x2e89d is the first wait in submitIntent.
+        let (idx, off) = locate(&syms, 0x2e89d).expect("first wait site");
+        assert_eq!(syms[idx].name, intent.name);
+        assert_eq!(off, 0x67d);
+        // The second wait's return address must stay inside the same method.
+        let (idx, off) = locate(&syms, 0x2e9c9).expect("second wait site");
+        assert_eq!(syms[idx].name, intent.name);
+        assert_eq!(off, 0x7a9);
+        // A sibling method after the category prefix is not attributed to submitIntent.
+        let (idx, off) = locate(&syms, 0x2f500).expect("notification method");
+        assert_eq!(syms[idx].name, notification.name);
+        assert_eq!(off, 0xd0);
+    }
 }
 
 /// Minimal but CORRECT JSON string escaping. MEASURED: the disassembly was interpolated with only quote/backslash and
