@@ -1,0 +1,4 @@
+-x objective-c
+-isysroot /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+-framework Foundation
+-framework CoreFoundation

@@ -1,0 +1,6 @@
+-isysroot /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+-I/Volumes/SystemRoot/home/ilyagulya/work/wr-fresh/darling/src/external/icu/icuSources/i18n
+-I/Volumes/SystemRoot/home/ilyagulya/work/wr-fresh/darling/src/external/icu/icuSources/common
+-DU_DISABLE_RENAMING=1
+-framework CoreFoundation
+-licucore
