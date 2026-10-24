@@ -658,7 +658,7 @@ manifest:
     repo-path: darling-icu
     path: darling/src/external/icu
     remote: darling
-    revision: 6b609b2b0ce9a620543f357de4e549f09afec4ea
+    revision: 7197be1c4803d7a7b36402d95d10a2f86f7ecec6
     userdata:
       kind: darling-source
       upstream-repository: darling-icu
