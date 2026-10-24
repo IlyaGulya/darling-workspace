@@ -34,7 +34,13 @@ correct stale instructions rather than following copied paths or hashes.
 - Managed commands export the selected guest prefix. On a necessary direct
   launcher invocation, set `DPREFIX` explicitly: the path to `bin/darling` alone
   does not select its guest prefix, and the launcher otherwise defaults to
-  `~/.darling`. `DARLING_PREFIX` alone is not the launcher's selector.
+  `~/.darling`. `DARLING_PREFIX` alone is not the launcher's selector. The
+  launcher now publishes `DARLING_PREFIX` from the retained validated prefix FD
+  on both cold and warm paths; the harness normalizes `--prefix` after validation.
+  For guest-execution proof use the explicit `shell /bin/bash -c '...'` route
+  with a real guest Mach-O/file operation; a bare `/usr/bin/true` is currently
+  resolved as a host path under `/Volumes/SystemRoot`, so its rc0 is not proof of
+  guest execution.
 - Guest C/C++ CTest fixtures compile inside Darling. Declare
   `guest-toolchain: darling-command-line-tools` where required and let the
   provisioner install reviewed CLT through the guest `installer`. Never commit
