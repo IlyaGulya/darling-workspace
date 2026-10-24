@@ -25,7 +25,8 @@ Darling product source belongs to the surrounding West workspace, not this repo.
 - This is a hard fork: no upstream publication or pull requests. Never push
   branches, tags or updates without approval for that exact action/destination.
 - Keep process state in the owning Bead: `mise run west dw beads ...`;
-  comments use `comment ID TEXT`. Never add Beads, agent state or workspace
+  current CLI comments use `comments add ID TEXT` (also `--file`/`--message`);
+  the older `comment ID TEXT` spelling is rejected. Never add Beads, agent state or workspace
   metadata to product-source commits. Stage explicit owned paths, not `git add -A`.
 - Durable state belongs beneath the owned `DW_STATE_ROOT` or workspace state
   root, never `/tmp`. This includes prefixes, lanes, jobs and run evidence.
