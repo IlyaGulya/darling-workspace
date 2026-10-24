@@ -75,6 +75,24 @@ def test_missing_parent_is_skipped_not_created() -> None:
         assert "skip (no directory)" in out.getvalue()
 
 
+def test_derq_deploys_both_guest_visible_copies() -> None:
+    component = COMPONENTS["derq"]
+    assert component.source == "src/external/security/SecurityTool/macOS/derq"
+    assert component.destinations == ("usr/bin/derq", "libexec/darling/usr/bin/derq")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        build, prefix = root / "build", root / "prefix"
+        build_component(build, "derq", b"derq-bytes")
+        destinations = make_destinations(prefix, "derq")
+
+        out = io.StringIO()
+        rc = install_and_verify(prefix, build, ["derq"], out=out)
+        assert rc == 0, out.getvalue()
+        assert len(destinations) == 2
+        assert all(path.read_bytes() == b"derq-bytes" for path in destinations)
+        assert out.getvalue().count(": ok ") == 2
+
+
 def test_unbuilt_and_unknown_are_errors() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -132,6 +150,7 @@ def main() -> None:
     checks = [
         test_default_path_installs_every_copy,
         test_missing_parent_is_skipped_not_created,
+        test_derq_deploys_both_guest_visible_copies,
         test_unbuilt_and_unknown_are_errors,
         test_install_failure_is_reported,
         test_wrapper_reaches_the_same_implementation,

@@ -87,6 +87,15 @@ COMPONENTS: dict[str, Component] = {
         "src/external/foundation/services/filecoordinationd/filecoordinationd",
         ("usr/sbin/filecoordinationd", "libexec/darling/usr/sbin/filecoordinationd"),
     ),
+    # xcodebuild's ProcessProductPackagingDER invokes /usr/bin/derq. Under the
+    # EUNION/no-overlay canonical boot both the guest-visible usr/bin copy and
+    # the libexec copy must be present; installing only the CMake destination
+    # left the guest path absent. Keep both copies in the typed table.
+    "derq": Component(
+        "derq",
+        "src/external/security/SecurityTool/macOS/derq",
+        ("usr/bin/derq", "libexec/darling/usr/bin/derq"),
+    ),
     # libobjc.A.dylib was absent from this table, so an objc4 change could not be deployed by any
     # tooling path (`west darling-build --deploy` does not carry it either): the prefix kept whatever
     # copy an earlier bootstrap had installed, and a measured objc4 fix could read as "no effect".

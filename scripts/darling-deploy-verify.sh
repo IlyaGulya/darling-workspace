@@ -6,8 +6,8 @@
 #
 # Usage: darling-deploy-verify.sh --prefix PATH --build DIR [--component NAME]...
 #   components: mldr dyld libsystem_kernel libunwind libxpc corefoundation foundation
-#               objc-trampolines mobiledevice coresimulator oah darlingserver shellspawn
-#               vchroot launchd
+#               filecoordinationd derq objc-trampolines mobiledevice coresimulator oah
+#               darlingserver shellspawn vchroot launchd
 #
 # Why every copy: a component is loaded from a path that is not the one that was deployed unless
 # all copies are replaced (the loader takes dyld from <prefix>/libexec/usr/lib/dyld; guest
