@@ -1242,7 +1242,7 @@ manifest:
     repo-path: darling-security
     path: darling/src/external/security
     remote: darling
-    revision: 89ad82d1bb003ceec361147cfd282d4c6416e39b
+    revision: 8c3821714b638f7cc93ecb4a400ea2b2bda3603c
     userdata:
       kind: darling-source
       upstream-repository: darling-security
