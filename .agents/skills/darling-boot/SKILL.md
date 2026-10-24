@@ -36,8 +36,9 @@ correct stale instructions rather than following copied paths or hashes.
   does not select its guest prefix, and the launcher otherwise defaults to
   `~/.darling`. `DARLING_PREFIX` alone is not the launcher's selector. The
   launcher now publishes `DARLING_PREFIX` from the retained validated prefix FD
-  on both cold and warm paths; the harness normalizes `--prefix` after validation.
-  For guest-execution proof use the explicit `shell /bin/bash -c '...'` route
+  on both cold and warm paths. Do not normalize the caller’s `--prefix` before
+  the launcher’s retained-FD/no-follow/`..` checks; that can hide the spelling the
+  guards must reject. For guest-execution proof use the explicit `shell /bin/bash -c '...'` route
   with a real guest Mach-O/file operation; a bare `/usr/bin/true` is currently
   resolved as a host path under `/Volumes/SystemRoot`, so its rc0 is not proof of
   guest execution.
