@@ -2,7 +2,7 @@ manifest:
   projects:
   - name: darling
     url: https://github.com/darlinghq/darling
-    revision: 5f2d7401d878455cf3c3c0865ee5a4290dfa03f0
+    revision: 5d4011d7725e85b4895fe0800c712c48a2ed43e6
     userdata:
       kind: darling-source
       upstream-repository: darling
