@@ -13,7 +13,7 @@
 # What it guarantees, in order:
 #   1. a clean start: shutdown, then every prefix-owned process by /proc/<pid>/exe AND cmdline, then verify zero;
 #   2. a UNIQUE log path per run (never shared, never appended);
-#   3. the workload's real duration: the caller states how long the workload needs, and the harness waits it;
+#   3. a bounded wait for the workload's declared completion, not an unconditional delay;
 #   4. a single VERDICT block at the end: the workload's own STATUS, the presence markers the caller asked for,
 #      plus the counters that matter here (per-thread RPC socket creations, denials, urgent timeouts, courier misses);
 #   5. a RUN BUNDLE, ON BY DEFAULT, with a console block that announces it.
@@ -39,6 +39,8 @@
 # Ambiguity fails closed: a declaration that names a value but not as a plain literal field (no regex
 # metacharacters) is FAIL rather than success. A caller that declares no status field gets the behaviour it
 # always had, and the harness's own default --poll is never a status declaration.
+# Explicit --poll wins. Otherwise --status-marker waits for ALL declared status fields and replaces the
+# fixture's HELLO/FINAL defaults; explicit --marker declarations remain additional required checks.
 #
 # Usage:
 #   darling-boot-run.sh --prefix PATH --wait SECONDS [--marker NAME]... [--status-marker FIELD=] [--poll REGEX] [--hatch] [--cmd 'shell command'] [--bundle DIR|--no-bundle]
@@ -100,8 +102,8 @@ while [ $# -gt 0 ]; do
 		--hatch) HATCH=1; shift ;;
 		--env) EXTRA_ENV="$EXTRA_ENV $2"; shift 2 ;;
 		# The workload's own result line, as a regex: the harness stops as soon as it appears in the
-		# log instead of sleeping out --wait. Default is the original fixture's line, so every
-		# existing caller keeps the exact behaviour it had (see the poll loop below).
+		# log instead of sleeping out --wait. Without an explicit poll, status declarations provide completion;
+		# callers declaring neither keep the original fixture's poll (see the poll loop below).
 		# A CALLER-supplied poll whose text ends with `=` names a VALUE (e.g. `--poll XCB_RC=`) and is
 		# judged as a status field in the verdict block; the harness's own default poll is not.
 		--poll) POLL="$2"; POLL_EXPLICIT=1; shift 2 ;;
@@ -140,8 +142,13 @@ for _sf in $STATUS_MARKERS; do
 	esac
 done
 IFS=$oldIFS; unset _sf
-# Same default the poll loop always used, so an unspecified --poll cannot change any existing run.
-[ -n "$POLL" ] || POLL='RING_MACH_TEST mode=.*pass='
+# Explicit status declarations are sufficient: do not wait for an unrelated fixture's result.
+POLL_STATUS=0
+if [ "$POLL_EXPLICIT" = 0 ] && [ -n "$STATUS_MARKERS" ]; then
+	POLL_STATUS=1
+else
+	[ -n "$POLL" ] || POLL='RING_MACH_TEST mode=.*pass='
+fi
 
 # A run can be served by another prefix's runtime, and then every conclusion drawn from it is about the wrong
 # artifacts -- silently, because the log looks normal. MEASURED: a stale shellspawn from a second prefix was
@@ -167,7 +174,7 @@ if [ "$ASSERT_MAPS" = 1 ]; then
 		exit 1
 	fi
 fi
-[ -n "$MARKERS" ] || MARKERS="|HELLO=1|FINAL=1"
+[ -n "$MARKERS$STATUS_MARKERS" ] || MARKERS="|HELLO=1|FINAL=1"
 [ -x "$PREFIX/bin/darling" ] || { echo "no launcher at $PREFIX/bin/darling" >&2; exit 2; }
 
 [ -n "$LOG" ] || LOG="/tmp/darling-boot-$(date +%H%M%S)-$$.log"
@@ -396,7 +403,7 @@ bundle_begin() {
 		echo "# MISSING means the collector could not obtain it; the detail says why. INCOMPLETE next to this file means"
 		echo "# collection had a known gap or finalization did not finish, so the bundle is a partial one."
 		echo "# File paths are logical originals: after finalization, a missing payload may be stored as PATH.zst."
-		echo "# Each directory's evidence-index.json maps logical basenames to stored paths, byte sizes and SHA256."
+		echo "# Each directory's immutable evidence-index*.json publications map logical basenames to stored paths, byte sizes and SHA256."
 		echo "# Server coverage is bounded by start/finish observations: retained original inode tail plus final current inode."
 		echo "# Intermediate rotations/replacements not present at either boundary cannot be recovered; writes after capture are excluded."
 	} > "$BUNDLE_MANIFEST"
@@ -733,7 +740,7 @@ bundle_finalize() {
 		verdict=1
 		: > "$BUNDLE_DIR/INCOMPLETE"
 		printf 'verdict=%s\n' "$verdict" > "$BUNDLE_DIR/verdict.txt"
-		bundle_missing evidence-storage "compression failed; uncompressed evidence is retained on failure; inspect per-directory evidence-index.json for any successful earlier publications"
+		bundle_missing evidence-storage "compression failed; uncompressed evidence is retained on failure; inspect per-directory evidence-index*.json for any successful earlier publications"
 		printf 'BUNDLE-FINALIZATION-FAILED %s\n' "$(date -Is)" >> "$BUNDLE_MANIFEST"
 		echo "BUNDLE-STORAGE-FAILED dir=$BUNDLE_DIR" >&2
 	fi
@@ -894,19 +901,29 @@ env DPREFIX="$PREFIX" DARLING_PREFIX="$PREFIX" DARLING_ROOTLESS=1 DARLING_NOOVER
 	nohup timeout "$((WAIT + 60))" \
 	"$PREFIX/bin/darling" --rootless shell /bin/bash -c "$CMD" >> "$LOG" 2>&1 9<&- &
 
-# WAIT FOR THE WORKLOAD'S OWN RESULT LINE, NOT FOR A TIMER. MEASURED: `sleep "$WAIT"` made every row cost the full
-# watchdog -- the acceptance suite ran 9 rows at --wait-base 400 and needed about an hour, which is the difference
-# between a measurement you take and one you avoid. The workload prints one machine-readable result line and then
-# exits, so the harness polls for a line that carries `pass=` and stops as soon as it sees it, still bounded by WAIT.
-# Which line that is comes from `--poll` (default: the first fixture's own, unchanged for existing callers).
-# The marker list is deliberately NOT used here: the tool's markers open the window a probe is read in, and exiting on
-# one of them would cut a run short (the value of the run is what happens after the marker).
-STAGE=workload-wait; echo "waiting up to ${WAIT}s for the workload's own result line (poll='$POLL'; diagnostic lines before it are not verdicts)"
+# Wait for explicit --poll, or every explicit status field when no poll was supplied.
+# Ordinary presence markers are not completion: they may open an observation window before the result.
+STAGE=workload-wait
+if [ "$POLL_STATUS" = 1 ]; then
+	echo "waiting up to ${WAIT}s for all declared status fields: ${STATUS_MARKERS#|}"
+else
+	echo "waiting up to ${WAIT}s for the workload's own result line (poll='$POLL'; diagnostic lines before it are not verdicts)"
+fi
 _waited=0
 while [ "$_waited" -lt "$WAIT" ]; do
-	if grep -aq "$POLL" "$LOG" 2>/dev/null; then
-		break
+	if [ "$POLL_STATUS" = 1 ]; then
+		_complete=1
+		_poll_ifs=$IFS; IFS='|'
+		for _field in $STATUS_MARKERS; do
+			[ -n "$_field" ] || continue
+			grep -aFq -- "$_field" "$LOG" 2>/dev/null || _complete=0
+		done
+		IFS=$_poll_ifs
+	else
+		_complete=0
+		grep -aq -- "$POLL" "$LOG" 2>/dev/null && _complete=1
 	fi
+	[ "$_complete" = 0 ] || break
 	# THE HOST-ONLY RECORD, taken while the child is alive. Every second poll (a 2 s resolution) so the sampling
 	# cannot dominate the run. Whatever was missed is reported as a MISSING row with that granularity as the reason.
 	if [ "$BUNDLE" = 1 ] && [ $((_waited % 2)) -eq 0 ]; then
@@ -1023,6 +1040,8 @@ if [ -x "$SCRIPT_DIR/darling-stop-reason.sh" ]; then
 	_sr_extra=""
 	[ -n "$BUNDLE_DIR" ] && [ -d "$BUNDLE_DIR" ] && _sr_extra="$_sr_extra --bundle=$BUNDLE_DIR"
 	[ -n "$LAST_STATUS_VALUE" ] && _sr_extra="$_sr_extra --rc=$LAST_STATUS_VALUE"
+	# A later zero field or presence oracle cannot erase an earlier failed status/check.
+	[ "$verdict" = 0 ] || _sr_extra="$_sr_extra --runner-rc=$verdict"
 	# RUN SCOPING. The prefix's captures and its server log are CUMULATIVE: they hold earlier runs' records, and a
 	# matching prefix is not run identity. The classifier admits a capture only when it is at or after this run's
 	# own start stamp, counts what it excluded, and says so.

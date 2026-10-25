@@ -20,7 +20,9 @@ workspace_root="$(cd "$(dirname "$0")/.." && pwd)"
 harness="$workspace_root/scripts/darling-boot-run.sh"
 [ -x "$harness" ] || { echo "contract: no executable harness at $harness" >&2; exit 2; }
 
-tmp="$(mktemp -d)"
+scratch="$workspace_root/.west-state/supervisor-tooling-20261025"
+mkdir -p "$scratch"
+tmp="$(mktemp -d "$scratch/run-bundle-contract.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 # Exercise shell collection without triggering the Rust build shim. The shared codec is real.
 mkdir -p "$tmp/scripts"
@@ -49,6 +51,8 @@ DIAG
 chmod 755 "$tmp/scripts/dwdiag"
 if [ -x "$workspace_root/scripts/darling-stop-reason.sh" ]; then
 	cp "$workspace_root/scripts/darling-stop-reason.sh" "$tmp/scripts/darling-stop-reason.sh"
+	mkdir -p "$tmp/west_commands"
+	cp "$workspace_root/west_commands/stop_reason.py" "$workspace_root/west_commands/evidence_storage.py" "$tmp/west_commands/"
 fi
 evidence_cat() { python3 "$EVIDENCE_HELPER" cat "$1"; }
 prefix="$tmp/prefix-bundle"

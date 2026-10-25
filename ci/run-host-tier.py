@@ -202,6 +202,7 @@ EXPLICIT_CONTRACTS = (
     ("evidence-storage", "tests/west_test_contracts/evidence_storage_contract.py", True),
     ("evidence-retention", "tests/west_test_contracts/evidence_retention_contract.py", True),
     ("source-search", "tests/west_test_contracts/source_search_contract.py", True),
+    ("macho-inspection", "tests/west_test_contracts/macho_inspection_contract.py", True),
     # The applicability review commands and the prefix bootstrap guidance are
     # contracts added when those two defects were repaired; both run through
     # this interpreter.

@@ -14,7 +14,11 @@
 #
 # Usage:
 #   darling-describe-artifact.sh [--prefix PATH] FILE [SYMBOL]
-#   darling-describe-artifact.sh --prefix PATH --tag '[my-tag]'   # tag presence in every runtime copy
+#   darling-describe-artifact.sh --prefix PATH --tag '[my-tag]' FILE
+#   darling-describe-artifact.sh --pointer VM [--arch x86_64|arm64] [--json] FILE
+#     Resolve an unslid virtual pointer/ObjC selector slot, including chained rebases.
+#     Reports slice/UUID, VM/file offsets, raw encoding, target and bounded C-string.
+#     File-only: no prefix, source or build scan. Unsupported/invalid input exits nonzero.
 #
 # llvm tools are looked up on PATH and in the LLVM install prefix, because llvm-otool is usually NOT on PATH while
 # llvm-nm and llvm-objdump are.
@@ -25,15 +29,57 @@ PREFIX=""
 TAG=""
 FILE=""
 SYMBOL=""
+POINTER=""
+ARCH="x86_64"
+MAX_CSTRING=256
+JSON=0
+POINTER_OPTIONS=0
+
+need_value() {
+	[ "$#" -ge 2 ] && [ -n "$2" ] || { echo "$1 requires a value" >&2; exit 2; }
+}
 
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--prefix) PREFIX="$2"; shift 2 ;;
-		--tag) TAG="$2"; shift 2 ;;
-		-h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+		--prefix) need_value "$@"; PREFIX="$2"; shift 2 ;;
+		--tag) need_value "$@"; TAG="$2"; shift 2 ;;
+		--pointer) need_value "$@"; POINTER="$2"; shift 2 ;;
+		--arch) need_value "$@"; ARCH="$2"; POINTER_OPTIONS=1; shift 2 ;;
+		--max-cstring) need_value "$@"; MAX_CSTRING="$2"; POINTER_OPTIONS=1; shift 2 ;;
+		--json) JSON=1; POINTER_OPTIONS=1; shift ;;
+		-h|--help)
+			cat <<'EOF'
+Usage: darling-describe-artifact.sh [--prefix PATH] [--tag TAG] FILE [SYMBOL]
+       darling-describe-artifact.sh --pointer VM [--arch x86_64|arm64]
+              [--max-cstring BYTES] [--json] FILE
+
+Default: inspect entry point, optional symbol disassembly, tags and prefix copies.
+--pointer VM: resolve an unslid virtual pointer/ObjC selector slot from FILE only.
+  Supports plain 64-bit local pointers and DYLD_CHAINED_PTR_64 / PTR_64_OFFSET rebases.
+  Selects the requested thin/universal slice (default x86_64); reports UUID,
+  slice/VM/file offsets, raw encoding, local target and bounded C-string preview.
+  --max-cstring bounds the preview to 1..4096 bytes (default 256).
+  --json emits the structured result only. Invalid/unsupported input exits nonzero.
+  No prefix, source/build discovery or LLVM tools are needed for this query.
+EOF
+			exit 0 ;;
+		--*) echo "unexpected option: $1" >&2; exit 2 ;;
 		*) if [ -z "$FILE" ]; then FILE="$1"; elif [ -z "$SYMBOL" ]; then SYMBOL="$1"; else echo "unexpected: $1" >&2; exit 2; fi; shift ;;
 	esac
 done
+
+if [ -n "$POINTER" ]; then
+	[ -n "$FILE" ] && [ -f "$FILE" ] || { echo "no such file: ${FILE:-<none>}" >&2; exit 2; }
+	[ -z "$PREFIX$TAG$SYMBOL" ] || {
+		echo "--pointer is file-only; do not combine with --prefix, --tag or SYMBOL" >&2
+		exit 2
+	}
+	SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+	set -- --resolve-pointer "$FILE" --vm-address "$POINTER" --arch "$ARCH" --max-cstring "$MAX_CSTRING"
+	[ "$JSON" = 0 ] || set -- "$@" --json
+	exec python3 -B "$SCRIPT_DIR/closure_analyze.py" "$@"
+fi
+[ "$POINTER_OPTIONS" = 0 ] || { echo "--arch, --max-cstring and --json require --pointer" >&2; exit 2; }
 
 find_tool() {
 	for p in "$1" /usr/lib/llvm-*/bin/"$1" /usr/bin/"$1"; do

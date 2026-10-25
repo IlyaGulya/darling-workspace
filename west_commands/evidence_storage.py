@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import io
 import itertools
 import json
 import os
@@ -20,6 +21,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -286,16 +289,40 @@ def _index_lock(directory: Path) -> Iterator[None]:
         os.close(descriptor)
 
 
-def _load_index(directory: Path) -> dict[str, Any]:
-    path = directory / INDEX_NAME
-    if not path.exists():
-        if path.is_symlink():
-            raise EvidenceError(f"symlink evidence index: {path}")
-        return {"schema": 1, "files": {}}
-    index = _read_json(path)
-    if not isinstance(index, dict) or index.get("schema") != 1 or not isinstance(index.get("files"), dict):
-        raise EvidenceError(f"unsupported evidence index: {path}")
-    return index
+def index_paths(directory: Path) -> tuple[Path, ...]:
+    """List legacy and immutable addition indexes, including unsafe symlinks."""
+    paths = set(directory.glob("evidence-index.*.json"))
+    base = directory / INDEX_NAME
+    if os.path.lexists(base):
+        paths.add(base)
+    return tuple(sorted(paths))
+
+
+def load_index(directory: Path) -> dict[str, Any]:
+    """Merge immutable index publications without accepting ambiguous mappings."""
+    files: dict[str, Any] = {}
+    stored_names: dict[str, str] = {}
+    for path in index_paths(directory):
+        index = _read_json(path)
+        if not isinstance(index, dict) or index.get("schema") != 1 or not isinstance(index.get("files"), dict):
+            raise EvidenceError(f"unsupported evidence index: {path}")
+        for logical, record in index["files"].items():
+            if (not isinstance(logical, str) or logical in {"", ".", ".."}
+                    or Path(logical).name != logical or not isinstance(record, dict)
+                    or record.get("stored_path") != logical + ".zst"):
+                raise EvidenceError(f"invalid logical evidence index entry: {path}: {logical}")
+            stored = record["stored_path"]
+            if logical in files or stored in stored_names:
+                raise EvidenceError(f"conflicting logical evidence index entries: {path}: {logical}")
+            for field in ("original_bytes", "stored_bytes"):
+                if type(record.get(field)) is not int or record[field] < 0:
+                    raise EvidenceError(f"invalid {field} in evidence index: {path}: {logical}")
+            for field in ("sha256", "stored_sha256"):
+                if not isinstance(record.get(field), str) or not re.fullmatch(r"[0-9a-fA-F]{64}", record[field]):
+                    raise EvidenceError(f"invalid {field} in evidence index: {path}: {logical}")
+            files[logical] = record
+            stored_names[stored] = logical
+    return {"schema": 1, "files": files}
 
 
 @dataclass
@@ -322,6 +349,9 @@ def _prepare_file(path: Path, *, explicit: bool, writers: _WriterSnapshot | None
     _no_symlinks(path)
     if _blocked(path) or not _eligible(path, explicit=explicit):
         return {**result, "reason": "not a diagnostic payload"}
+    if not path.exists() and os.path.lexists(path.with_name(path.name + ".zst")):
+        metadata = payload_metadata(path)
+        return {**result, **metadata, "reason": "already compressed"}
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     temporary: Path | None = None
     prepared = None
@@ -390,13 +420,14 @@ def _publish_directory(items: list[_PreparedPayload], *, dry_run: bool, include_
         return [{**item.report, "action": "would-compress"} for item in items]
     with _index_lock(directory):
         _check_prepared(items, _writer_snapshot(targets))
-        index = _load_index(directory)
+        index = load_index(directory)
         for item in items:
             if item.path.name in index["files"] or os.path.lexists(item.stored):
                 raise EvidenceError(f"stored destination or logical index entry already exists: {item.path}")
+        additions: dict[str, Any] = {"schema": 1, "files": {}}
         for item in items:
             os.link(item.temporary, item.stored)
-            index["files"][item.path.name] = {
+            additions["files"][item.path.name] = {
                 "stored_path": item.stored.name,
                 "original_bytes": item.original.st_size,
                 "stored_bytes": item.report["stored_bytes"],
@@ -404,9 +435,12 @@ def _publish_directory(items: list[_PreparedPayload], *, dry_run: bool, include_
                 "stored_sha256": item.stored_sha256,
             }
         _fsync_directory(directory)
-        # One durable index update per bounded directory group. On any failure
-        # all raw originals remain, even if some verified frames were published.
-        _atomic_json(directory / INDEX_NAME, index)
+        # Never rewrite metadata: an earlier physical seal may hash any index.
+        # A fresh immutable addition carries only this bounded publication.
+        index_path = directory / INDEX_NAME
+        if os.path.lexists(index_path):
+            index_path = directory / f"evidence-index.{uuid.uuid4().hex}.json"
+        _atomic_json(index_path, additions, replace=False)
         if include_tracked is not None:
             for item in items:
                 if _tracked(item.path, include_tracked=include_tracked):
@@ -564,6 +598,18 @@ def compress_paths(paths: list[Path], *, recursive: bool = False, dry_run: bool 
 def resolve_payload(path: Path) -> Path:
     path = _absolute(path)
     _no_symlinks(path)
+    index = load_index(path.parent)
+    logical = path.name[:-4] if path.name.endswith(".zst") else path.name
+    record = index["files"].get(logical)
+    if record is not None:
+        stored = path.parent / record["stored_path"]
+        _no_symlinks(stored)
+        if not stored.is_file():
+            raise EvidenceError(f"missing indexed evidence payload: {stored}")
+        if path.name == logical and path.is_file():
+            if path.stat().st_size != record["original_bytes"] or _hash_path(path) != record["sha256"]:
+                raise EvidenceError(f"raw evidence conflicts with logical index: {path}")
+        return stored
     if path.is_file():
         return path
     stored = path.with_name(path.name + ".zst")
@@ -577,9 +623,10 @@ def payload_metadata(path: Path) -> dict[str, Any]:
     """Validate a logical reference; report the original size for old manifests."""
     path = _absolute(path)
     stored = resolve_payload(path)
-    if stored == path:
+    logical = path.name[:-4] if path.name.endswith(".zst") else path.name
+    record = load_index(path.parent)["files"].get(logical)
+    if stored == path and record is None:
         return {"bytes": stored.stat().st_size}
-    record = _load_index(path.parent)["files"].get(path.name)
     if not isinstance(record, dict) or record.get("stored_path") != stored.name:
         raise EvidenceError(f"missing logical evidence index entry: {path}")
     expected_size, expected_hash = record.get("original_bytes"), record.get("sha256")
@@ -591,14 +638,76 @@ def payload_metadata(path: Path) -> dict[str, Any]:
     return {"bytes": expected_size, "stored_bytes": stored.stat().st_size, "stored_path": stored.name, "sha256": expected_hash}
 
 
-def stream_payload(path: Path, destination: BinaryIO) -> None:
+class _DecodedReader(io.RawIOBase):
+    def __init__(self, source: BinaryIO) -> None:
+        super().__init__()
+        self.source = source
+        self.digest = hashlib.sha256()
+        self.size = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        count = self.source.readinto(buffer)
+        if count:
+            self.digest.update(memoryview(buffer)[:count])
+            self.size += count
+        return count
+
+
+@contextmanager
+def open_payload(path: Path) -> Iterator[BinaryIO]:
+    """Stream a logical payload, verifying indexed stored and decoded bytes."""
+    path = _absolute(path)
     stored = resolve_payload(path)
+    logical = path.name[:-4] if path.name.endswith(".zst") else path.name
+    record = load_index(path.parent)["files"].get(logical)
+    if record is not None:
+        if stored.stat().st_size != record["stored_bytes"] or _hash_path(stored) != record["stored_sha256"]:
+            raise EvidenceError(f"stored evidence digest/size differs from index: {stored}")
     with stored.open("rb") as source:
-        if stored.suffix == ".zst":
-            _run_zstd([ZSTD, "-q", "-d", "-c"], source=source, destination=destination)
-        else:
-            while chunk := source.read(CHUNK):
-                destination.write(chunk)
+        if stored.suffix != ".zst":
+            yield source
+            return
+        process = subprocess.Popen([ZSTD, "-q", "-d", "-c"], stdin=source, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        assert process.stdout is not None and process.stderr is not None
+        errors = bytearray()
+
+        def drain_errors() -> None:
+            # Drain concurrently even after the diagnostic bound, so a failing
+            # decoder cannot deadlock on stderr or allocate unbounded memory.
+            while chunk := process.stderr.read(8192):
+                errors.extend(chunk[:max(0, 8192 - len(errors))])
+
+        collector = threading.Thread(target=drain_errors)
+        decoded = _DecodedReader(process.stdout)
+        try:
+            collector.start()
+            with io.BufferedReader(decoded) as reader:
+                yield reader
+                while reader.read(CHUNK):
+                    pass
+            status = process.wait()
+            collector.join()
+            if status:
+                raise EvidenceError(f"zstd decode failed for {stored}: {errors.decode(errors='replace')}")
+            if record is not None and (decoded.size != record["original_bytes"] or decoded.digest.hexdigest() != record["sha256"]):
+                raise EvidenceError(f"decoded evidence digest/size differs from index: {stored}")
+        finally:
+            process.stdout.close()
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            if collector.ident is not None:
+                collector.join()
+            process.stderr.close()
+
+
+def stream_payload(path: Path, destination: BinaryIO) -> None:
+    with open_payload(path) as source:
+        while chunk := source.read(CHUNK):
+            destination.write(chunk)
 
 
 def _source_path(source: Path) -> Path:

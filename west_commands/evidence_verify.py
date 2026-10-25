@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from pathlib import Path
 from typing import Any
 
 if __package__:
-    from .evidence_storage import EvidenceError, payload_metadata, verify_stored
+    from .evidence_storage import EvidenceError, index_paths, load_index, payload_metadata, verify_stored
 else:
-    from evidence_storage import EvidenceError, payload_metadata, verify_stored
+    from evidence_storage import EvidenceError, index_paths, load_index, payload_metadata, verify_stored
 
 
 def _hash(path: Path) -> str:
@@ -48,29 +47,24 @@ def verify_archive(root: Path, *, recursive: bool, write_manifest: bool = False)
     if root.is_symlink() or not root.is_dir():
         raise EvidenceError(f"verification requires a real evidence directory: {root}")
     files = []
+    index_directories = []
     for directory, dirs, names in os.walk(root, followlinks=False):
+        if index_paths(Path(directory)):
+            index_directories.append(Path(directory))
         dirs[:] = [name for name in dirs if name not in {".git", "__pycache__"} and not (Path(directory) / name).is_symlink()]
         if not recursive:
             dirs[:] = []
         files.extend(Path(directory) / name for name in names if (Path(directory) / name).is_file() and not (Path(directory) / name).is_symlink())
     payloads = checksums = 0
     errors = []
-    for index_path in (path for path in files if path.name == "evidence-index.json"):
+    for directory in index_directories:
         try:
-            index = json.loads(index_path.read_text())
-            if index.get("schema") != 1 or not isinstance(index.get("files"), dict):
-                raise EvidenceError("invalid evidence index schema")
-            for logical, record in index["files"].items():
-                stored_name = record["stored_path"]
-                if Path(stored_name).name != stored_name or Path(logical).name != logical:
-                    raise EvidenceError("index payload escapes its directory")
-                stored = index_path.parent / stored_name
-                if stored.is_symlink() or stored.stat().st_size != record["stored_bytes"] or _hash(stored) != record["stored_sha256"]:
-                    raise EvidenceError(f"stored digest/size mismatch: {stored}")
-                verify_stored(stored, record["sha256"], record["original_bytes"])
+            index = load_index(directory)
+            for logical in index["files"]:
+                payload_metadata(directory / logical)
                 payloads += 1
         except (EvidenceError, OSError, ValueError, KeyError, TypeError) as error:
-            errors.append({"path": str(index_path), "error": str(error)})
+            errors.append({"path": str(directory), "error": str(error)})
     for manifest in (path for path in files if path.name == "SHA256SUMS"):
         try:
             for line in manifest.read_text().splitlines():

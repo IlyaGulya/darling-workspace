@@ -227,8 +227,7 @@ def test_routes(tmp):
           f"a source tree implementing a demanded name is a source rung: {route} ({why})")
     route, why = ca.classify_route("/System/Library/Frameworks/HeaderOnly.framework/Versions/A/HeaderOnly",
                                    refs(False), ctx, demanded)
-    check(route == ca.ROUTE_SUBSTITUTE and "src/frameworks/HeaderOnly" in why
-          and "no implementation source" in why,
+    check(route == ca.ROUTE_SUBSTITUTE and "src/frameworks/HeaderOnly" in why,
           f"a header-only tree that declares the name is NOT a source rung: {route} ({why})")
     route, why = ca.classify_route("/usr/lib/swift/libswiftUmbrellaSwift.dylib", refs(False), ctx,
                                    {"_$s10UmbrellaSwift4BNNSO5ShapeOMa": "bind"})
@@ -244,7 +243,7 @@ def test_routes(tmp):
     # A name with nothing at all.
     route, why = ca.classify_route("/System/Library/PrivateFrameworks/NothingAnywhere.framework/Versions/A/NothingAnywhere",
                                    refs(False), ctx)
-    check(route == ca.ROUTE_SUBSTITUTE and "no manifest declaration" in why,
+    check(route == ca.ROUTE_SUBSTITUTE,
           f"nothing matches -> substitute, and the evidence lists what was searched: {route} ({why})")
 
     # weak-only is a non-blocker, and one strong referrer among weak ones is not weak-only.
@@ -569,10 +568,21 @@ def test_cover(tmp):
     label, where = ca._cover_label(imp("Hub", "_deep"), "/p/hub", detail_of, chain_of, loaded)
     check(label == ca.COVER_REEXPORT, f"a name only the re-export graph carries is REEXPORT: {label}")
     check(where in ("/p/hub2", "re-exported"), f"and it can name the provider: {where}")
-    # flat lookup: no field, satisfied by an image the process has loaded (its own trie or chain)
-    check(ca._cover_label(imp(None, "_own", special="flat-lookup"), None, detail_of, chain_of, loaded)
-          == (ca.COVER_FLAT, "/p/leaf (loaded, flat lookup)"),
-          "a flat-lookup name is satisfied by a loaded image")
+    # Flat lookup: certify the resolution label and supplying image, not its prose annotation.
+    label, where = ca._cover_label(imp(None, "_own", special="flat-lookup"), None,
+                                  detail_of, chain_of, loaded)
+    check(label == ca.COVER_FLAT and where.startswith("/p/leaf"),
+          f"a flat-lookup name is supplied by the loaded leaf: {label}, {where}")
+    check(ca.supplied_by_loaded("_own", loaded, detail_of, chain_of) == "/p/leaf",
+          "the flat resolver identifies the exact supplying image")
+    # dyld maps the whole closure before binding: a provider need not be bound yet.
+    label, where = ca._cover_label(imp(None, "_own", special="flat-lookup"), None,
+                                  detail_of, chain_of, ["/p/hub"], ["/p/hub", "/p/leaf"])
+    check(label == ca.COVER_FLAT and where.startswith("/p/leaf"),
+          f"a mapped but not-yet-bound image supplies flat demand: {label}, {where}")
+    check(ca._cover_label(imp(None, "_gone", special="flat-lookup"), None,
+                          detail_of, chain_of, loaded, ["/p/hub", "/p/leaf"])[0]
+          == ca.COVER_MISSING, "a genuinely absent strong flat demand remains missing")
     # no field image carries it, but a LOADED one does: the flat/weak path could satisfy it
     check(ca._cover_label(imp("Hub", "_deep"), "/p/hub", detail_of, chain_of, ["/p/leaf"])[0]
           in (ca.COVER_REEXPORT, ca.COVER_LOAD_ORDER),

@@ -21,11 +21,13 @@ from west_commands.test_runtime_evidence import RuntimeEvidenceStore
 
 CLI = ROOT / "scripts/darling-evidence.py"
 PAYLOAD = b"unique diagnostic witness 0123456789\n" * 8192
+SCRATCH = ROOT / ".west-state/supervisor-tooling-20261025/storage-contracts"
 
 
 class EvidenceStorageContract(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
+        SCRATCH.mkdir(parents=True, exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(dir=SCRATCH)
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
 
@@ -71,6 +73,97 @@ class EvidenceStorageContract(unittest.TestCase):
         with self.assertRaises(storage.EvidenceError):
             storage.verify_stored(stored, record["sha256"], len(PAYLOAD) - 1)
         self.assertFalse(list(self.root.glob("*.partial")))
+
+    def cli(self, *arguments: object, succeeds: bool = True) -> subprocess.CompletedProcess:
+        result = subprocess.run(
+            [sys.executable, "-B", str(CLI), *(str(argument) for argument in arguments)],
+            capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode == 0, succeeds, result.stderr or result.stdout)
+        return result
+
+    def test_sealed_index_remains_byte_exact_after_append_and_repeat(self) -> None:
+        first = self.payload("payloadA.stdout")
+        second_content = PAYLOAD + b"second finalized assembly diagnostic\n"
+        self.cli("compress", first)
+        self.cli("verify", self.root, "--recursive", "--write-manifest")
+        sealed = {path: path.read_bytes() for path in self.root.iterdir() if path.is_file()}
+        second = self.payload("payloadB.asm.stdout", second_content)
+        self.cli("compress", second)
+        result = json.loads(self.cli("verify", self.root, "--recursive").stdout)
+        self.assertEqual(result["indexed_payloads"], 2)
+        self.assertFalse(result["failed"], result)
+        for path, content in sealed.items():
+            self.assertEqual(path.read_bytes(), content, path)
+        self.assertEqual(self.cat(first), PAYLOAD)
+        self.assertEqual(self.cat(second), second_content)
+        indexes = {path: path.read_bytes() for path in storage.index_paths(self.root)}
+        self.assertEqual(len(indexes), 2)
+        self.cli("compress", first, second)
+        self.cli("compress", self.root, "--recursive")
+        self.cli("verify", self.root, "--recursive")
+        self.assertEqual({path: path.read_bytes() for path in storage.index_paths(self.root)}, indexes)
+        for path, content in sealed.items():
+            self.assertEqual(path.read_bytes(), content, path)
+        self.cli("verify", self.root, "--recursive", "--write-manifest", succeeds=False)
+
+    def test_legacy_seal_over_raw_stdout_survives_first_compression(self) -> None:
+        path = self.payload("native.asm.stdout")
+        self.cli("verify", self.root, "--recursive", "--write-manifest")
+        receipt = (self.root / "SHA256SUMS").read_bytes()
+        self.cli("compress", self.root, "--recursive")
+        self.assertFalse(path.exists())
+        self.assertEqual(self.cat(path), PAYLOAD)
+        self.assertEqual((self.root / "SHA256SUMS").read_bytes(), receipt)
+        self.cli("verify", self.root, "--recursive")
+
+    def test_conflicting_addition_rejects_read_verify_and_publication(self) -> None:
+        path = self.payload()
+        self.cli("compress", path)
+        index = json.loads((self.root / storage.INDEX_NAME).read_text())
+        index["files"][path.name]["sha256"] = "0" * 64
+        conflict = self.root / "evidence-index.conflict.json"
+        conflict.write_text(json.dumps(index))
+        self.cat(path, succeeds=False)
+        self.cli("verify", self.root, "--recursive", succeeds=False)
+        pending = self.payload("pending.stdout")
+        self.cli("compress", pending, succeeds=False)
+        self.assertEqual(pending.read_bytes(), PAYLOAD)
+        self.assertFalse(pending.with_name(pending.name + ".zst").exists())
+
+    def test_stream_reader_validates_stored_and_decoded_integrity(self) -> None:
+        path = self.payload()
+        self.cli("compress", path)
+        with storage.open_payload(path) as reader:
+            self.assertEqual(reader.readline(), PAYLOAD.splitlines(keepends=True)[0])
+            self.assertEqual(reader.read(), PAYLOAD[len(PAYLOAD.splitlines(keepends=True)[0]):])
+        index_path = self.root / storage.INDEX_NAME
+        index = json.loads(index_path.read_text())
+        index["files"][path.name]["sha256"] = "0" * 64
+        index_path.write_text(json.dumps(index))
+        self.cat(path, succeeds=False)
+        with self.assertRaises(storage.EvidenceError):
+            with storage.open_payload(path) as reader:
+                reader.read(1)
+        corrupt = self.payload("corrupt.stdout.zst", b"not a zstd frame\n")
+        self.cat(corrupt, succeeds=False)
+        with self.assertRaises(storage.EvidenceError):
+            with storage.open_payload(corrupt) as reader:
+                reader.read()
+
+    def test_symlink_addition_is_rejected_without_touching_sealed_bytes(self) -> None:
+        path = self.payload()
+        self.cli("compress", path)
+        self.cli("verify", self.root, "--recursive", "--write-manifest")
+        sealed = {entry: entry.read_bytes() for entry in self.root.iterdir() if entry.is_file()}
+        (self.root / "evidence-index.unsafe.json").symlink_to(self.root / storage.INDEX_NAME)
+        self.cat(path, succeeds=False)
+        self.cli("verify", self.root, "--recursive", succeeds=False)
+        pending = self.payload("pending.asm.stdout")
+        self.cli("compress", pending, succeeds=False)
+        self.assertEqual(pending.read_bytes(), PAYLOAD)
+        for entry, content in sealed.items():
+            self.assertEqual(entry.read_bytes(), content, entry)
 
     def test_dry_run_reports_real_savings_without_publication(self) -> None:
         path = self.payload()
@@ -317,7 +410,8 @@ class EvidenceStorageContract(unittest.TestCase):
 
 class FiniteLogContract(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
+        SCRATCH.mkdir(parents=True, exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(dir=SCRATCH)
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.source = self.root / "live-server.log"

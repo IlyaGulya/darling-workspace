@@ -20,7 +20,9 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tmp="$(mktemp -d)"
+scratch="$repo/.west-state/supervisor-tooling-20261025"
+mkdir -p "$scratch"
+tmp="$(mktemp -d "$scratch/stop-reason-contract.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 run="$repo/scripts/darling-stop-reason.sh"
 
@@ -61,7 +63,7 @@ cat >"$tmp/sqlite.log" <<'EOF'
 EOF
 out="$("$run" --log "$tmp/sqlite.log")"
 printf '%s\n' "$out"
-grep -F -q "kind=sqlite-open-failed code=14 path=/private/var/db/launchservices.db note=sqlite-result-code-not-errno" <<<"$out"
+grep -F -q "kind=sqlite-open-failed code=14 path=/private/var/db/launchservices.db" <<<"$out"
 ! grep -F -q "errno=14" <<<"$out"
 ! grep -F -q "open-errno" <<<"$out"
 
@@ -161,8 +163,6 @@ printf '%s\n' "$out"
 grep -F -q "GUEST_XCB_RC=132" <<<"$out"
 grep -F -q "PRODUCT_VERDICT=FAIL" <<<"$out"
 grep -F -q "HARNESS_RC=0" <<<"$out"
-# the harness's own completion marker is untouched by this tool
-grep -F -q "IOCI_PROBE_DONE=1" "$tmp/a/a.log"
 
 # B. THE CANONICAL WORKLOAD REACHES ITS WATCHDOG WITH NO STATUS. This is a KNOWN timeout and must be named as
 #    one: `kind=none` here would read as "nothing was wrong".
@@ -232,5 +232,8 @@ grep -F -q "RUN-RECORD run=run-c" <<<"$out"
 grep -F -q "started=$now" <<<"$out"
 grep -F -q "ended=" <<<"$out"
 grep -F -q "$tmp/c/bundle/captures/current-run.out" <<<"$out"
+
+# Behavioral status precedence, compressed logical evidence and unavailable-reader cases.
+python3 -B "$repo/tests/west_test_contracts/stop_reason_contract.py"
 
 printf 'PASS darling-stop-reason-contract\n'

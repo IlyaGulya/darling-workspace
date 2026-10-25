@@ -153,6 +153,34 @@ check "arm 11: an expected value in --status-marker is a usage error" 2 "$rc"
 check "arm 11: the usage error is stated" yes "$(contains "$out" "--status-marker FIELD=")"
 check "arm 11: no boot happens on a usage error" no "$(contains "$out" "== run ==")"
 
+# 12. A typed status is sufficient: custom workloads need neither fixture markers nor an explicit poll.
+out="$(run_harness --wait 15 --status-marker 'COMPILE_RC=' --cmd 'echo COMPILE_RC=0')"; rc=$?
+check "arm 12: status-only completion passes without fixture output" PASS "$(verdict_of "$out")"
+check "arm 12: status-only completion exits zero" 0 "$rc"
+check "arm 12: the product report agrees with successful guest completion" yes "$(contains "$out" "PRODUCT_VERDICT=PASS")"
+
+# 13. Completion requires every declared field, not just the first early success.
+out="$(run_harness --wait 15 --status-marker 'BUILD_RC=' --status-marker 'RUN_RC=' --cmd 'echo BUILD_RC=0; sleep 2; echo RUN_RC=0')"; rc=$?
+check "arm 13: delayed final status is awaited" PASS "$(verdict_of "$out")"
+check "arm 13: all successful statuses exit zero" 0 "$rc"
+
+# 14. A later zero cannot erase an earlier failed status in either verdict.
+out="$(run_harness --wait 15 --status-marker 'BUILD_RC=' --status-marker 'RUN_RC=' --cmd 'echo BUILD_RC=9; echo RUN_RC=0')"; rc=$?
+check "arm 14: any failed declared status fails the workload" FAIL "$(verdict_of "$out")"
+check_nonzero "arm 14: earlier failure exits nonzero" "$rc"
+check "arm 14: product report retains the earlier failure" yes "$(contains "$out" "PRODUCT_VERDICT=FAIL")"
+
+# 15. Explicit presence checks remain required alongside a successful status.
+out="$(run_harness --wait 15 --status-marker 'COMPILE_RC=' --marker 'REQUIRED-END' --cmd 'echo COMPILE_RC=0')"; rc=$?
+check "arm 15: a missing additional oracle is not replaced by status zero" FAIL "$(verdict_of "$out")"
+check_nonzero "arm 15: missing additional oracle exits nonzero" "$rc"
+check "arm 15: product report retains the missing oracle failure" yes "$(contains "$out" "PRODUCT_VERDICT=FAIL")"
+
+# 16. An explicit poll owns the completion boundary even when a status appears earlier.
+out="$(run_harness --wait 15 --poll 'WORK-DONE' --status-marker 'COMPILE_RC=' --marker 'WORK-DONE' --cmd 'echo COMPILE_RC=0; sleep 2; echo WORK-DONE')"; rc=$?
+check "arm 16: explicit completion poll takes precedence" PASS "$(verdict_of "$out")"
+check "arm 16: explicit completion poll exits zero" 0 "$rc"
+
 if [ "$fail" -eq 0 ]; then
 	echo "darling-boot-verdict: PASS"
 else

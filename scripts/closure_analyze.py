@@ -22,32 +22,18 @@ WHAT THIS REPORTS, per component:
     component's own column name -- never when the symbol text merely contains a similar name);
   * implementation status against the tree, decided mechanically from the built artifact.
 
-IMPLEMENTATION STATUS.  Loading successfully is NOT implementing an API, and no component here may
-be called fully supported.  A component that loads satisfies a load command; what the client gets
-when it uses the image is a separate fact, and this script measures that fact:
+STATIC IMPLEMENTATION SHAPES. Loading, export coverage and runtime behavior are independent.
+This report never executes an API and cannot certify correct absence, headless behavior,
+constant values, marker classes or useful work merely from a call instruction.
 
-  REAL            the walk wrote a real implementation (source added by the ladder's commits) whose
-                  demanded symbols have behaviour (they call into something).
-  EXISTING        the ladder's commits did not write implementation source for this component; the
-                  tree already had a real implementation and the walk only deployed/declared it.
-  DELIBERATE      the walk wrote implementation source and every demanded symbol it answers is a
-                  truthful headless answer: a data symbol, a function whose body makes no call and
-                  returns absence (zero) or nothing at all, or an Objective-C class whose method
-                  list is EMPTY.  Truthful is not a stub: a placeholder stands in for work that does
-                  not exist, whereas "no GPU, so no device" is the truth about this guest.
-  STUB            the deployment is a stub or is incomplete, i.e. any of: a demanded symbol is not
-                  exported by the built artifact; a demanded symbol is named in a printed
-                  "STUB: <name> called" string; a demanded Objective-C class is a forwarding stub
-                  (its method list is exactly -methodSignatureForSelector:/-forwardInvocation:); or
-                  the artifact exports no symbol at all (a load-name-only placeholder image).
+  STATIC_CALLING       a demanded function attributed to changed source contains a call/tail jump
+  STATIC_NONCALLING    attributed demanded symbols have noncalling/data/method-free shapes
+  STATIC_UNATTRIBUTED  no such demanded shape was attributed to the ladder's changed source
+  STUB                an explicit stub marker/forwarding shape or an incomplete export surface
 
-Every signal behind a class is printed, so the class is reproducible from this script's own output
-rather than from memory.  One limit is stated rather than hidden: the tree also contains SILENT
-stubs -- a body that neither prints "STUB:" nor calls anything but hands back a made-up constant
-(AppleSystemInfo's ASI_NumberOfCPUs returns 1 with a "// stub" comment).  Those are reported as
-"value: no call but returns a value, not absence" and are not counted as deliberate headless
-behaviour, but the script cannot tell a made-up constant from a genuine one; it can only refuse to
-call it absence.
+All classes have evidence_tier=static and runtime_status=unverified. Zero returns, constants,
+data symbols and empty classes are observations, not proven bugs or truthful absence providers.
+Source attribution is a name-match heuristic, not proof of implementation provenance.
 
 WHERE THE DEPLOYMENT DECLARATIONS COME FROM (no hand-written list anywhere in this file):
   * the generated manifest (<build>/darling-rootless-toolchain.json) is the DECLARATION SOURCE
@@ -76,7 +62,7 @@ analyzer already knows the whole load-command closure and every install name it 
   payload          the payload carries it, or an overlay recipe in the overlay checkout builds it
   source           an open-source tree exists here, holds an implementation of a demanded name,
                    and nothing builds or declares it
-  substitute       no source anywhere -- a truthful substitute is the only honest answer
+  substitute       no provider matched the scanned indexes; further source/API research required
 
 Supplying a wave and re-running the ladder once replaces several rung-by-rung turns.  Every row prints
 the install name, the referrers with weak/strong, the demanded symbol count, and the evidence the
@@ -163,25 +149,24 @@ LOCK_TARGETS = [
 GUEST_XCODE_MOUNT_MARK = "Xcode.app/Contents"
 
 CLASS_SHORT = {
-    "REAL": "REAL        ",
-    "EXISTING": "EXISTING    ",
-    "DELIBERATE": "DELIBERATE  ",
+    "STATIC_CALLING": "STATIC_CALLING",
+    "STATIC_NONCALLING": "STATIC_NONCALLING",
+    "STATIC_UNATTRIBUTED": "STATIC_UNATTRIBUTED",
     "STUB": "STUB/INCOMPL",
 }
 CLASS_LEGEND = [
-    ("REAL", "REAL implementation"),
-    ("EXISTING", "EXISTING implementation newly deployed"),
-    ("DELIBERATE", "DELIBERATE truthful headless behaviour"),
-    ("STUB", "STUB-or-incomplete"),
+    ("STATIC_CALLING", "attributed demanded function contains a call/tail jump"),
+    ("STATIC_NONCALLING", "attributed noncalling/data/method-free shape"),
+    ("STATIC_UNATTRIBUTED", "no demanded shape attributed to changed source"),
+    ("STUB", "explicit stub marker/forwarding shape or export gap"),
 ]
 CLASS_CRITERIA = [
-    "STUB         any demanded symbol absent from the deployed artifact / named in a printed",
-    "             \"STUB: <name> called\" string / a demanded ObjC class that is a forwarding stub",
-    "             (method list = methodSignatureForSelector:+forwardInvocation:) / no exports at all",
-    "DELIBERATE   the walk wrote the source and every demanded symbol it answers is absence-shaped",
-    "             (returns zero, or a void body, or a data symbol, or a method-free class)",
-    "REAL         the walk wrote the source and a demanded symbol it answers returns a value or calls",
-    "EXISTING     the walk wrote no source answering a demanded symbol; declaration only",
+    "All classes are static observations; runtime_status=unverified.",
+    "STUB: missing demanded exports, printed stub names, forwarding-only class or no exports.",
+    "STATIC_CALLING: a source-attributed demanded function contains a call/tail jump.",
+    "STATIC_NONCALLING: source-attributed noncalling function, data or method-free class.",
+    "STATIC_UNATTRIBUTED: neither shape attributed by the changed-source name heuristic.",
+    "Constants, zero returns and empty classes are neither certified absence nor proven bugs.",
 ]
 
 
@@ -622,7 +607,7 @@ ROUTE_HEADLINE = {
     ROUTE_DECL: "DECLARATION -- the tree already builds it; declare/deploy (no new source)",
     ROUTE_PAYLOAD: "PAYLOAD DEPLOY -- the payload carries it or an overlay recipe builds it",
     ROUTE_SOURCE: "BUILD FROM SOURCE -- an open-source tree here implements it; nothing builds it yet",
-    ROUTE_SUBSTITUTE: "TRUTHFUL SUBSTITUTE ONLY -- no source for it anywhere in this workspace",
+    ROUTE_SUBSTITUTE: "UNRESOLVED PROVIDER -- no match in scanned indexes; research required",
 }
 
 
@@ -763,13 +748,11 @@ def classify_route(install_name, refs, ctx, demanded=None):
     if same_named:
         c, rel = same_named[0]
         return ROUTE_SUBSTITUTE, (
-            "no manifest declaration, no CMake build target, no payload artifact or overlay "
-            f"recipe; the same-named directory {rel} (matched candidate '{c}') holds no "
-            "implementation source defining a demanded name (headers only, or another image's "
-            "umbrella)")
-    return ROUTE_SUBSTITUTE, ("no manifest declaration, no CMake build target, no payload artifact "
-                              "or overlay recipe, no source directory for "
-                              + "/".join(candidates[:3]))
+            "no provider matched the scanned manifest/build/payload indexes; "
+            f"directory {rel} (candidate '{c}') yielded no matching demanded definition "
+            "in the source-name search")
+    return ROUTE_SUBSTITUTE, ("no provider matched the scanned manifest/build/payload/source "
+                              "indexes for candidates " + "/".join(candidates[:3]))
 
 
 def sweep_missing(edges, prefix, ctx):
@@ -831,14 +814,13 @@ def print_sweep(rows, prefix, out=sys.stdout):
     non_gaps = ", ".join(f"{counts[route]} {route}" for route in (ROUTE_XCODE, ROUTE_ORPHAN,
                                                                   ROUTE_WEAK) if counts[route])
     print("wave: " + ", ".join(f"{counts[r]} {r}" for r in ROUTE_ORDER if counts[r]) + ".", file=out)
-    print(f"      {len(blockers)} name(s) a strong referrer demands can be supplied by building or "
-          f"declaring something ({counts[ROUTE_DECL]} declaration, {counts[ROUTE_PAYLOAD]} payload, "
-          f"{counts[ROUTE_SOURCE]} source); {counts[ROUTE_SUBSTITUTE]} more have no source here and "
-          f"only a truthful substitute can answer them.", file=out)
+    print(f"      {len(blockers)} name(s) a strong referrer demands have candidate build/declaration "
+          f"routes ({counts[ROUTE_DECL]} declaration, {counts[ROUTE_PAYLOAD]} payload, "
+          f"{counts[ROUTE_SOURCE]} source); {counts[ROUTE_SUBSTITUTE]} more have no matched provider "
+          "in the scanned indexes.", file=out)
     print(f"      {non_gaps or 'no'} name(s) are not prefix gaps and need no supply.", file=out)
-    print("      A substitute-only name is the one route with no artifact to build, and the "
-          "analyzer's class column exists to keep a truthful headless answer distinct from an "
-          "implementation.", file=out)
+    print("      The substitute route is unresolved research, not proof that no source exists "
+          "or that a constant/absence provider would satisfy the API.", file=out)
     return counts
 
 
@@ -943,29 +925,34 @@ SPECIAL_ORDINALS = {0: "self", -1: "main-executable", -2: "flat-lookup", -3: "we
 
 
 def macho_slices(data):
-    """[(cputype, blob)] for the slices of a Mach-O (thin or universal)."""
+    """Slice records with CPU, physical file bias and bytes, for thin/fat32/fat64."""
     if len(data) < 8:
-        return []
+        raise ValueError("truncated Mach-O header")
     magic = struct.unpack_from(">I", data, 0)[0]
     if magic in (FAT_MAGIC, FAT_MAGIC_64):
-        out = []
         count = struct.unpack_from(">I", data, 4)[0]
-        off = 8
-        for _ in range(count):
-            cpu, _sub, o, size, _align = struct.unpack_from(">iiIII", data, off)
-            off += 20
-            out.append((cpu, data[o:o + size]))
+        fmt = ">iiQQII" if magic == FAT_MAGIC_64 else ">iiIII"
+        stride = struct.calcsize(fmt)
+        if count == 0 or 8 + count * stride > len(data):
+            raise ValueError("invalid universal architecture table")
+        out = []
+        for i in range(count):
+            cpu, sub, offset, size, *_ = struct.unpack_from(fmt, data, 8 + i * stride)
+            if offset < 8 + count * stride or size < 8 or offset + size > len(data):
+                raise ValueError("universal slice outside file")
+            out.append({"cputype": cpu, "cpusubtype": sub, "slice_offset": offset,
+                        "blob": data[offset:offset + size]})
         return out
-    return [(0, data)]
+    return [{"cputype": 0, "cpusubtype": 0, "slice_offset": 0, "blob": data}]
 
 
 def macho_load_commands(path):
     """What the import readers need from an image's load commands (cached per path).
 
-    Returns {"slices": [{"cputype", "dylib_id", "dylibs": [(install_name, weak, reexport)],
-    "rpaths", "chained_fixups": bytes|None, "dyld_info": bytes|None, "exports_trie": bytes|None,
-    "defined": bool}]}: `dylibs` is ordinal order (ordinal 1 is the first entry), which is how a
-    bind's dependency field is named, and each blob is the linkedit data itself.
+    Returns slices with CPU/subtype, UUID, physical slice offset/size, segment VM/file
+    geometry, dylib_id, dylibs (ordinal order), rpaths, chained_fixups, dyld_info and
+    exports_trie blobs. `defined` means the supported little-endian Mach-O64 header
+    was decoded; it is not a runtime support claim.
     """
     if path in _LOAD_COMMANDS_CACHE:
         return _LOAD_COMMANDS_CACHE[path]
@@ -980,27 +967,50 @@ def _read_load_commands(path):
     except OSError:
         return {"slices": []}
     out = []
-    for cputype, blob in macho_slices(data):
-        entry = {"cputype": cputype, "dylibs": [], "rpaths": [], "chained_fixups": None,
+    for slice_ in macho_slices(data):
+        blob = slice_["blob"]
+        entry = {"cputype": slice_["cputype"], "dylibs": [], "rpaths": [], "chained_fixups": None,
                  "dyld_info": None, "exports_trie": None, "defined": False, "dylib_id": None,
-                 "twolevel": True}
+                 "twolevel": True, "slice_offset": slice_["slice_offset"], "slice_size": len(blob),
+                 "segments": [], "uuid": None}
         if len(blob) < 32 or struct.unpack_from("<I", blob, 0)[0] != MH_MAGIC_64:
             out.append(entry)
             continue
         entry["defined"] = True
+        cpu, sub = struct.unpack_from("<ii", blob, 4)
+        if slice_["cputype"] and cpu != slice_["cputype"]:
+            raise ValueError("universal CPU disagrees with Mach-O header")
+        entry.update(cputype=cpu, cpusubtype=sub)
         flags, = struct.unpack_from("<I", blob, 24)
         # MH_TWOLEVEL: without it the image binds by NAME, not by dependency field, so every import
         # of a flat-namespace image is a flat lookup (measured: libunwind, whose --bind rows print
         # "flat-namespace" while its opcodes carry the main-executable special ordinal).
         entry["twolevel"] = bool(flags & 0x80)
-        ncmds, = struct.unpack_from("<I", blob, 16)
+        ncmds, sizeofcmds = struct.unpack_from("<II", blob, 16)
+        command_end = 32 + sizeofcmds
+        if command_end > len(blob):
+            raise ValueError("load commands outside slice")
         off = 32
         for _ in range(ncmds):
-            if off + 8 > len(blob):
-                break
+            if off + 8 > command_end:
+                raise ValueError("truncated load command")
             cmd, cmdsize = struct.unpack_from("<II", blob, off)
-            if cmdsize < 8:
-                break
+            if cmdsize < 8 or off + cmdsize > command_end:
+                raise ValueError("invalid load command size")
+            if cmd == 0x19:  # LC_SEGMENT_64
+                if cmdsize < 72:
+                    raise ValueError("truncated LC_SEGMENT_64")
+                name, vmaddr, vmsize, fileoff, filesize = struct.unpack_from("<16s4Q", blob, off + 8)
+                if fileoff + filesize > len(blob):
+                    raise ValueError("segment file range outside slice")
+                entry["segments"].append({
+                    "name": name.rstrip(b"\0").decode("ascii", "replace"),
+                    "vmaddr": vmaddr, "vmsize": vmsize, "fileoff": fileoff, "filesize": filesize})
+            elif cmd == 0x1B:  # LC_UUID
+                if cmdsize < 24:
+                    raise ValueError("truncated LC_UUID")
+                h = blob[off + 8:off + 24].hex()
+                entry["uuid"] = f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
             if cmd in DYLIB_COMMANDS:
                 nameoff, = struct.unpack_from("<I", blob, off + 8)
                 start = off + nameoff
@@ -1018,9 +1028,13 @@ def _read_load_commands(path):
                 end = blob.find(b"\x00", start)
                 entry["dylib_id"] = blob[start:end].decode("utf-8", "replace")
             elif cmd == LC_DYLD_CHAINED_FIXUPS:
+                if cmdsize < 16:
+                    raise ValueError("truncated LC_DYLD_CHAINED_FIXUPS")
                 doff, dsize = struct.unpack_from("<II", blob, off + 8)
+                if doff + dsize > len(blob):
+                    raise ValueError("chained fixups outside slice")
                 entry["chained_fixups"] = blob[doff:doff + dsize]
-            elif cmd == LC_DYLD_INFO_ONLY:
+            elif cmd in (LC_DYLD_INFO_ONLY, LC_DYLD_INFO_ONLY & ~LC_REQ_DYLD):
                 _ro, _rs, bind_off, bind_size, weak_off, weak_size, lazy_off, lazy_size = \
                     struct.unpack_from("<8I", blob, off + 8)
                 entry["dyld_info"] = {
@@ -1032,8 +1046,193 @@ def _read_load_commands(path):
                 doff, dsize = struct.unpack_from("<II", blob, off + 8)
                 entry["exports_trie"] = blob[doff:doff + dsize]
             off += cmdsize
+        if off != command_end:
+            raise ValueError("load command count disagrees with sizeofcmds")
         out.append(entry)
     return {"slices": out}
+
+
+ARCH_CPUS = {"x86_64": 0x01000007, "arm64": 0x0100000C}
+CHAINED_PTR_NAMES = {2: "DYLD_CHAINED_PTR_64", 6: "DYLD_CHAINED_PTR_64_OFFSET"}
+
+
+def vm_file_location(slice_, address, size=1):
+    """Map a file-backed VM range, retaining both slice-relative and physical offsets."""
+    matches = [seg for seg in slice_["segments"]
+               if seg["vmaddr"] <= address and
+               address + size <= seg["vmaddr"] + min(seg["vmsize"], seg["filesize"])]
+    if address < 0 or size < 1 or len(matches) != 1:
+        raise ValueError(f"VM range 0x{address:x}+0x{size:x} is not uniquely file-backed")
+    seg = matches[0]
+    offset = seg["fileoff"] + address - seg["vmaddr"]
+    return {"segment": seg["name"], "slice_file_offset": offset,
+            "file_offset": slice_["slice_offset"] + offset}, seg
+
+
+def _chain_unpack(blob, fmt, offset):
+    if offset < 0 or offset + struct.calcsize(fmt) > len(blob):
+        raise ValueError("truncated chained fixups metadata")
+    return struct.unpack_from(fmt, blob, offset)
+
+
+def chained_pointer_format(slice_, address, image_base, read_pointer):
+    """Prove membership by walking the selected page's chains, not guessing from raw bits.
+
+    Layout/stride: vendored dyld include/mach-o/fixup-chains.h and
+    MachOLoaded::forEachFixupInSegmentChains / walkChain.
+    """
+    blob = slice_["chained_fixups"]
+    version, starts, *_ = _chain_unpack(blob, "<7I", 0)
+    if version != 0:
+        raise ValueError(f"unsupported chained fixups version {version}")
+    if starts < 28:
+        raise ValueError("invalid chained starts offset")
+    count, = _chain_unpack(blob, "<I", starts)
+    if count > len(slice_["segments"]):
+        raise ValueError("chained segment count exceeds load-command segments")
+    offsets = _chain_unpack(blob, f"<{count}I", starts + 4)
+    _, wanted_segment = vm_file_location(slice_, address, 8)
+    segment_index = slice_["segments"].index(wanted_segment)
+    if segment_index >= count or offsets[segment_index] == 0:
+        raise ValueError("VM slot is not a chained fixup (no segment starts)")
+    info = starts + offsets[segment_index]
+    if info < starts + 4 + count * 4:
+        raise ValueError("chained segment starts overlap image starts table")
+    size, page_size, fmt, segment_offset, _max_pointer, page_count = \
+        _chain_unpack(blob, "<IHHQIH", info)
+    if size < 22 + 2 * page_count or info + size > len(blob) or size % 2:
+        raise ValueError("invalid chained segment starts size")
+    if page_size not in (0x1000, 0x4000):
+        raise ValueError(f"unsupported chained page size 0x{page_size:x}")
+    if fmt not in CHAINED_PTR_NAMES:
+        raise ValueError(f"unsupported chained pointer format {fmt}")
+    segment_vm = image_base + segment_offset
+    if segment_vm != wanted_segment["vmaddr"]:
+        raise ValueError("chained segment VM offset disagrees with load command")
+    page_index = (address - segment_vm) // page_size
+    if page_index >= page_count:
+        raise ValueError("VM slot is not a chained fixup (outside page starts)")
+    table_count = (size - 22) // 2
+    table = _chain_unpack(blob, f"<{table_count}H", info + 22)
+    start = table[page_index]
+    if start == 0xFFFF:
+        raise ValueError("VM slot is not a chained fixup (page has no starts)")
+    chain_starts = []
+    if start & 0x8000:
+        index = start & 0x7FFF
+        if index < page_count:
+            raise ValueError("invalid chained multi-start index")
+        while True:
+            if index >= len(table):
+                raise ValueError("unterminated chained multi-start list")
+            value = table[index]
+            chain_starts.append(value & 0x7FFF)
+            index += 1
+            if value & 0x8000:
+                break
+    else:
+        chain_starts.append(start)
+    page_vm = segment_vm + page_index * page_size
+    found = False
+    visited = set()
+    for start in chain_starts:
+        if start % 4 or start + 8 > page_size:
+            raise ValueError("invalid chained page start")
+        current = page_vm + start
+        while True:
+            if current in visited or current + 8 > page_vm + page_size:
+                raise ValueError("overlapping chain or chained next outside page")
+            visited.add(current)
+            raw = read_pointer(current)
+            if current == address:
+                found = True
+            # Both generic64 formats have a 12-bit next field and a FOUR-byte stride.
+            next_ = (raw >> 51) & 0xFFF
+            if next_ == 0:
+                break
+            current += next_ * 4
+    if not found:
+        raise ValueError("VM slot is not a member of this page's chained fixups")
+    return fmt
+
+
+def resolve_pointer(path, address, arch="x86_64", max_cstring=256):
+    """Resolve one on-disk local pointer. This is static file evidence, not guest memory."""
+    if not 1 <= max_cstring <= 4096:
+        raise ValueError("max-cstring must be between 1 and 4096")
+    slices = macho_load_commands(path)["slices"]
+    candidates = [s for s in slices if s["defined"] and s["cputype"] == ARCH_CPUS[arch]]
+    if len(candidates) != 1:
+        raise ValueError(f"expected one supported {arch} slice, found {len(candidates)}")
+    slice_ = candidates[0]
+    headers = [s for s in slice_["segments"] if s["fileoff"] == 0 and s["filesize"] >= 32]
+    if len(headers) != 1:
+        raise ValueError("cannot identify unique image base segment")
+    image_base = headers[0]["vmaddr"]
+    slot, _ = vm_file_location(slice_, address, 8)
+    with open(path, "rb") as stream:
+        def read_pointer(vm):
+            location, _ = vm_file_location(slice_, vm, 8)
+            stream.seek(location["file_offset"])
+            data = stream.read(8)
+            if len(data) != 8:
+                raise ValueError("short read of pointer slot")
+            return struct.unpack("<Q", data)[0]
+
+        fmt = None
+        if slice_["chained_fixups"] is not None:
+            fmt = chained_pointer_format(slice_, address, image_base, read_pointer)
+        elif slice_["dyld_info"] is not None:
+            raise ValueError("unsupported dyld-info pointer relocation; use a chained or plain image")
+        raw = read_pointer(address)
+        if fmt is not None:
+            if raw >> 63:
+                raise ValueError("unsupported external chained bind; no local target")
+            if (raw >> 44) & 0x7F:
+                raise ValueError("invalid reserved bits in chained rebase")
+            target = (raw & ((1 << 36) - 1)) | (((raw >> 36) & 0xFF) << 56)
+            if fmt == 6:
+                target += image_base
+        else:
+            target = raw
+        if target > 0xFFFFFFFFFFFFFFFF:
+            raise ValueError("chained rebase target overflows address space")
+        target_location, target_segment = vm_file_location(slice_, target)
+        remaining = min(target_segment["vmsize"], target_segment["filesize"]) - \
+            (target - target_segment["vmaddr"])
+        stream.seek(target_location["file_offset"])
+        data = stream.read(min(max_cstring, remaining))
+        end = data.find(b"\0")
+        cstring = {"status": "unterminated", "limit": max_cstring,
+                   "bytes_read": len(data), "preview_hex": data.hex()}
+        if end >= 0:
+            try:
+                cstring = {"status": "utf8", "value": data[:end].decode("utf-8"),
+                           "bytes_read": end + 1, "limit": max_cstring}
+            except UnicodeDecodeError:
+                cstring["status"] = "not-utf8"
+    return {"file": os.path.abspath(path), "evidence_tier": "static",
+            "arch": arch, "cputype": slice_["cputype"], "cpusubtype": slice_["cpusubtype"],
+            "uuid": slice_["uuid"], "slice_offset": slice_["slice_offset"],
+            "slice_size": slice_["slice_size"], "image_base": image_base,
+            "slot": {"vm_address": address, **slot, "raw_encoding": raw},
+            "pointer_format": CHAINED_PTR_NAMES.get(fmt, "plain-64"),
+            "target": {"vm_address": target, **target_location}, "cstring": cstring}
+
+
+def print_pointer(result):
+    print(f"artifact: {result['file']}")
+    print(f"arch: {result['arch']} CPU=0x{result['cputype']:x} "
+          f"subtype=0x{result['cpusubtype']:x} UUID: {result['uuid'] or '(no LC_UUID)'}")
+    print(f"slice: file+0x{result['slice_offset']:x} size=0x{result['slice_size']:x} "
+          f"image-base=0x{result['image_base']:x} (static file evidence)")
+    for name in ("slot", "target"):
+        row = result[name]
+        print(f"{name}: VM 0x{row['vm_address']:x} -> file+0x{row['file_offset']:x} "
+              f"(slice+0x{row['slice_file_offset']:x}, {row['segment']})")
+    print(f"encoding: 0x{result['slot']['raw_encoding']:016x} {result['pointer_format']}")
+    string = result["cstring"]
+    print(f"C-string: {json.dumps(string, ensure_ascii=True)}")
 
 
 def chained_fixup_imports(blob):
@@ -1179,9 +1378,10 @@ def guest_slice(path):
     dependency field is misattributed.
     """
     slices = macho_load_commands(path)["slices"]
-    for candidate in slices:
-        if candidate["defined"]:
-            return candidate
+    for cpu in (0x01000007, 0x0100000C):
+        for candidate in slices:
+            if candidate["defined"] and candidate["cputype"] == cpu:
+                return candidate
     return slices[0] if slices else None
 
 
@@ -1541,11 +1741,7 @@ def disassemble_symbol(artifact, symbol):
 
 
 def has_behaviour(body):
-    """A call, or a jump that leaves this function (a tail call into another symbol).
-
-    An unconditional jump to a plain address is an internal branch -- a truthful function that
-    returns a value from a table has one -- and is not behaviour.
-    """
+    """Static x86 call/tail-jump heuristic; no semantic runtime behavior is established."""
     for mnemonic, operand in body:
         if mnemonic.startswith("call"):
             return True
@@ -1555,13 +1751,9 @@ def has_behaviour(body):
 
 
 def return_shape(body):
-    """What a body with no call answers with: True = absence (zero), False = a value, None = void.
+    """Static x86 return-register shape: True=zero, False=other write, None=no write seen.
 
-    This separates "there is no device, so here is nothing" (a truth about a headless guest) from a
-    body that hands back a made-up constant.  The tree contains both, and only the first is
-    deliberate headless behaviour: AppleSystemInfo's ASI_NumberOfCPUs returns 1 with no call and no
-    printed notice, and ASI_CopyComputerModelName returns an @"UNIMPLEMENTED" literal -- silent stubs
-    that a "no call" test alone would call truthful.
+    This does not establish a function's ABI return type or the correctness of its answer.
     """
     last = None
     for mnemonic, operand in body:
@@ -1818,11 +2010,13 @@ def analyze_component(target, decl, manifest, darling, base, referrers):
         "exported": set(),
         "missing": [],
         "stub_attributed": [],
-        "truthful": [],
-        "behavioural": [],
+        "noncalling": [],
+        "calling": [],
         "unknown": [],
-        "walk_truthful": [],
-        "walk_behavioural": [],
+        "walk_noncalling": [],
+        "walk_calling": [],
+        "evidence_tier": "static",
+        "runtime_status": "unverified",
         "class_notes": [],
         "walk_source_changes": [],
         "column": column_key(install_name),
@@ -1865,11 +2059,11 @@ def analyze_component(target, decl, manifest, darling, base, referrers):
             if cls not in classes:
                 status = "unknown: class symbol exported, no metadata"
             elif classes[cls] is None:
-                status = "absence: method-free class"
+                status = "noncalling: method-free class"
             elif classes[cls] == {"methodSignatureForSelector:", "forwardInvocation:"}:
                 status = "stub: ObjC forwarding"
             else:
-                status = "real: class has methods"
+                status = "unknown: class methods present; bodies not classified"
         else:
             cname = sym[1:] if sym.startswith("_") else sym
             if cname in ev["stub_names"]:
@@ -1880,26 +2074,26 @@ def analyze_component(target, decl, manifest, darling, base, referrers):
                     status = "unknown: not in the symbol table"
                 elif t in "Tt":
                     body = disassemble_symbol(artifact, sym)
-                    if body is None:
+                    if not body:
                         status = "unknown: not disassemblable"
                     elif has_behaviour(body):
-                        status = "real: function body calls"
+                        status = "calling: function body contains call/tail jump"
                     else:
                         shape = return_shape(body)
                         if shape is None:
-                            status = "absence: void body, no call"
+                            status = "noncalling: no return-register write recognized"
                         elif shape:
-                            status = "absence: returns zero, no call"
+                            status = "noncalling: zero return-register shape"
                         else:
-                            status = "value: no call but returns a value, not absence"
+                            status = "noncalling: nonzero/other return-register shape"
                 else:
-                    status = "absence: data symbol"
+                    status = "noncalling: data symbol"
         if status.startswith("stub"):
             result["stub_attributed"].append((sym, status))
-        elif status.startswith("absence"):
-            result["truthful"].append((sym, status))
-        elif status.startswith("real") or status.startswith("value"):
-            result["behavioural"].append((sym, status))
+        elif status.startswith("noncalling"):
+            result["noncalling"].append((sym, status))
+        elif status.startswith("calling"):
+            result["calling"].append((sym, status))
         else:
             result["unknown"].append((sym, status))
 
@@ -1912,7 +2106,8 @@ def analyze_component(target, decl, manifest, darling, base, referrers):
     walk_text = {}
     for f in changes:
         try:
-            walk_text[f] = open(f, encoding="utf-8", errors="replace").read()
+            with open(f, encoding="utf-8", errors="replace") as source:
+                walk_text[f] = source.read()
         except OSError:
             walk_text[f] = ""
 
@@ -1920,12 +2115,10 @@ def analyze_component(target, decl, manifest, darling, base, referrers):
         name = symbol_source_name(sym)
         return any(name in text for text in walk_text.values())
 
-    truthful_syms = {s for s, _ in result["truthful"]}
-    walk_truthful = [s for s in truthful_syms if walk_attributed(s)]
-    walk_value = [s for s, _ in result["behavioural"] if walk_attributed(s)]
-    walk_behavioural = walk_value
-    result["walk_truthful"] = walk_truthful
-    result["walk_behavioural"] = walk_behavioural
+    walk_noncalling = [s for s, _ in result["noncalling"] if walk_attributed(s)]
+    walk_calling = [s for s, _ in result["calling"] if walk_attributed(s)]
+    result["walk_noncalling"] = walk_noncalling
+    result["walk_calling"] = walk_calling
 
     empty_surface = len(exported) == 0
     if result["missing_fatal"] or result["missing_lazy"]:
@@ -1942,23 +2135,20 @@ def analyze_component(target, decl, manifest, darling, base, referrers):
     elif empty_surface:
         result["klass"] = "STUB"
         result["class_notes"].append("load-name-only: artifact exports no symbols")
-    elif walk_behavioural:
-        result["klass"] = "REAL"
+    elif walk_calling:
+        result["klass"] = "STATIC_CALLING"
         result["class_notes"].append(
-            "walk wrote source; its demanded symbol(s) answer with behaviour, not absence: "
-            + ", ".join(walk_behavioural[:4]))
-    elif walk_truthful:
-        result["klass"] = "DELIBERATE"
+            "changed-source name match; demanded function contains call/tail jump: "
+            + ", ".join(walk_calling[:4]))
+    elif walk_noncalling:
+        result["klass"] = "STATIC_NONCALLING"
         result["class_notes"].append(
-            "walk wrote source; its demanded symbol(s) answer with absence or are method-free "
-            "classes, with no stub marker: " + ", ".join(walk_truthful[:4]))
+            "changed-source name match; noncalling/data/method-free shape: "
+            + ", ".join(walk_noncalling[:4]))
     else:
-        result["klass"] = "EXISTING"
-        result["class_notes"].append("walk wrote no demanded implementation source; declaration only")
-    if result["truthful"] and result["behavioural"] and result["klass"] in ("DELIBERATE", "REAL"):
-        result["class_notes"].append(
-            f"component also exports {len(result['behavioural'])} demanded symbol(s) of pre-existing "
-            "real behaviour")
+        result["klass"] = "STATIC_UNATTRIBUTED"
+        result["class_notes"].append("no demanded shape attributed by changed-source name match")
+    result["class_notes"].append("static evidence only; runtime behavior and absence unverified")
     return result
 
 
@@ -2121,7 +2311,7 @@ def supply_route(field_install_name, field_path, prefix, xcode, ctx):
         return "deploy it from the payload or an overlay recipe"
     if route == ROUTE_SOURCE:
         return "build it from source"
-    return "truthful substitute (no source for it in this workspace)"
+    return "research provider/API contract (no match in scanned indexes)"
 
 
 def guest_resolver(prefix, xcode=None):
@@ -2619,6 +2809,14 @@ def resolve_field(install_name, referrer, prefix, xcode):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--resolve-pointer", metavar="FILE",
+                    help="file-only local VM pointer/ObjC selector-slot query; no workspace scan")
+    ap.add_argument("--vm-address", type=lambda s: int(s, 0), metavar="VM",
+                    help="unslid virtual address of the pointer slot (e.g. 0x29b60)")
+    ap.add_argument("--arch", choices=tuple(ARCH_CPUS), default="x86_64",
+                    help="pointer-query architecture (default: x86_64)")
+    ap.add_argument("--max-cstring", type=int, default=256, metavar="BYTES",
+                    help="bounded target C-string preview, 1..4096 bytes (default: 256)")
     ap.add_argument("--darling", default=DEFAULTS["darling"])
     ap.add_argument("--build", default=DEFAULTS["build"])
     ap.add_argument("--prefix", default=DEFAULTS["prefix"])
@@ -2661,6 +2859,24 @@ def main():
     ap.add_argument("--without-symbol", action="append", default=[], metavar="SYMBOL",
                     help="treat this symbol as exported by nobody, to reconstruct a past state")
     args = ap.parse_args()
+    if args.resolve_pointer:
+        if args.vm_address is None:
+            ap.error("--resolve-pointer requires --vm-address")
+        if args.declarations or args.sweep or args.cover or args.order or args.entry:
+            ap.error("--resolve-pointer cannot be combined with closure analysis modes")
+        try:
+            result = resolve_pointer(args.resolve_pointer, args.vm_address,
+                                     args.arch, args.max_cstring)
+        except (OSError, ValueError, struct.error) as exc:
+            print(f"closure_analyze.py: pointer resolution failed: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print_pointer(result)
+        return 0
+    if args.vm_address is not None:
+        ap.error("--vm-address requires --resolve-pointer")
 
     global SWIFT_BIN, BUILD_DIR
     SWIFT_BIN = args.swift_bin
@@ -2796,8 +3012,9 @@ def main():
             results.append({"target": t, "install_name": None, "klass": "STUB",
                             "class_notes": ["not declared in the tree's CMakeLists"],
                             "referrers": [], "demanded": {}, "missing": [], "exported": set(),
-                            "stub_attributed": [], "truthful": [], "behavioural": [],
-                            "unknown": [], "walk_truthful": [], "walk_behavioural": [],
+                            "stub_attributed": [], "noncalling": [], "calling": [],
+                            "unknown": [], "walk_noncalling": [], "walk_calling": [],
+                            "evidence_tier": "static", "runtime_status": "unverified",
                             "walk_source_changes": []})
             continue
         if args.referrers == "closure":
@@ -2823,8 +3040,8 @@ def main():
             "ladder_base": base,
             "referrer_mode": args.referrers, "closure_entry": entry,
             "closure_image_count": len(edges),
-            "note": ("loading is NOT implementing; the class describes what a client gets when it "
-                     "uses the image, and no component here may be called fully supported"),
+            "note": ("static shapes and loader coverage only; runtime behavior is unverified "
+                     "for every component, including zero/constant/empty-class providers"),
             "components": [{k: enc(v) for k, v in r.items()} for r in results],
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -2845,8 +3062,8 @@ def main():
           f"({len(edges)} images in the load-command closure of {entry})")
     print(f"  ladder base  : {base}")
     print()
-    print("LOADING IS NOT IMPLEMENTING.  A component below loaded; that says nothing about what it")
-    print("implements.  No component in this table may be called fully supported.")
+    print("LOADING IS NOT IMPLEMENTING. This report measures static artifacts, not API execution.")
+    print("All class runtime_status values are unverified; loader/export coverage is independent.")
     print("A demanded symbol that a strong referrer binds non-lazily but the artifact does not")
     print("export is reported as incomplete; the runtime consequence of that is NOT measured here.")
     print()
@@ -2904,10 +3121,10 @@ def main():
                 print(f"    MISSING   {sym}  [absent; a strong referrer binds it lazily]")
             for sym in r.get("missing_tolerated", []):
                 print(f"    ABSENT-OK {sym}  [absent; only weak-linked referrers demand it]")
-            for sym, why in r.get("truthful", []):
-                print(f"    ABSENCE   {sym}  [{why}]")
-            for sym, why in r.get("behavioural", []):
-                print(f"    BEHAVIOUR {sym}  [{why}]")
+            for sym, why in r.get("noncalling", []):
+                print(f"    NONCALLING {sym}  [{why}; runtime unverified]")
+            for sym, why in r.get("calling", []):
+                print(f"    CALLING   {sym}  [{why}; runtime unverified]")
             for sym, why in r.get("unknown", []):
                 print(f"    UNKNOWN   {sym}  [{why}]")
     return 0
