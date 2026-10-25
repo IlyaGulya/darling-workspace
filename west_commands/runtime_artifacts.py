@@ -85,6 +85,12 @@ COMPONENTS: dict[str, Component] = {
         ("System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
          "libexec/darling/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation"),
     ),
+    "cfnetwork": Component(
+        "cfnetwork",
+        "src/external/cfnetwork/src/CFNetwork",
+        ("System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork",
+         "libexec/darling/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork"),
+    ),
     # The Foundation XPC daemon. The source bootstrap manifest now carries its entrypoint; this
     # component installs the already-built target into an existing prefix and verifies both copies.
     "filecoordinationd": Component(
