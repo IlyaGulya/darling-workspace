@@ -43,7 +43,7 @@ manifest:
     # This is a scoped source checkpoint: later semantic candidates (signal
     # 6f6f1fb, raw-ulock 572ecca, darlingserver 1081c82/fa203ed/21f8a0ca) stay OUT
     # of the pin until a focused implementation regression passes.
-    revision: 958078d24
+    revision: 1976055df
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -602,7 +602,7 @@ manifest:
     repo-path: darling-foundation
     path: darling/src/external/foundation
     remote: darling
-    revision: 461f7fbb7703d69d2c74039752cb9cb6374b31bd
+    revision: 8cae0d12e5eefe57373a33cf7f41763e86d16427
     userdata:
       kind: darling-source
       upstream-repository: darling-foundation
