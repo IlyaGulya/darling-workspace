@@ -78,6 +78,17 @@ COMPONENTS: dict[str, Component] = {
         "src/external/mDNSResponder/mDNSMacOSX/mdns_objects/libmdns.dylib",
         ("usr/lib/libmdns.dylib", "libexec/darling/usr/lib/libmdns.dylib"),
     ),
+    "installer": Component(
+        "installer",
+        "src/external/installer/installer",
+        ("usr/bin/installer", "libexec/darling/usr/bin/installer"),
+    ),
+    "swift_foundation": Component(
+        "swift_foundation",
+        "src/external/swift/libswiftFoundation.dylib",
+        ("usr/lib/swift/libswiftFoundation.dylib",
+         "libexec/darling/usr/lib/swift/libswiftFoundation.dylib"),
+    ),
     "corefoundation": Component(
         "corefoundation",
         "src/external/corefoundation/CoreFoundation",

@@ -43,7 +43,7 @@ manifest:
     # This is a scoped source checkpoint: later semantic candidates (signal
     # 6f6f1fb, raw-ulock 572ecca, darlingserver 1081c82/fa203ed/21f8a0ca) stay OUT
     # of the pin until a focused implementation regression passes.
-    revision: 0ebdf1413293732e19e893d284588eabd5cce4e3
+    revision: f46a6c6c925e28890d8e04ae4be899fcd6eb4518
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -411,7 +411,7 @@ manifest:
     repo-path: darling-corefoundation
     path: darling/src/external/corefoundation
     remote: darling
-    revision: 0af1ee773ffd97f7687011d2bbd28365e56dd346
+    revision: 49ac300dafec2f1760185b8ab73502c4f15f123a
     userdata:
       kind: darling-source
       upstream-repository: darling-corefoundation
@@ -602,7 +602,7 @@ manifest:
     repo-path: darling-foundation
     path: darling/src/external/foundation
     remote: darling
-    revision: cc361583bcafe6406936d15eb0ee79e8f53b5f4e
+    revision: 217b6cc14d1ccc8a68efb9603c4e2167c0ad6354
     userdata:
       kind: darling-source
       upstream-repository: darling-foundation
@@ -666,7 +666,7 @@ manifest:
     repo-path: darling-installer
     path: darling/src/external/installer
     remote: darling-next
-    revision: c879da37f26c3aee45353a068840ae5d2b444c77
+    revision: 10a74cd73e33caf17ce72cc1a0c559473f015c5f
     userdata:
       kind: darling-source
       upstream-repository: darling-installer
@@ -1266,7 +1266,7 @@ manifest:
     repo-path: darling-swift
     path: darling/src/external/swift
     remote: darling
-    revision: d8576875136864284eff9ff5449d3085c71a48b2
+    revision: 54c6a4c60e5bfb71931fffd513b41e0cd4b7b938
     userdata:
       kind: darling-source
       upstream-repository: darling-swift
