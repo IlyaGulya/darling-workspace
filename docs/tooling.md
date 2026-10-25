@@ -36,8 +36,15 @@ by the existing `NSURLConnection`/CFHTTPStream transport, a shared session worke
 and ordered delegate operations. Verify real response bytes, the supplied
 delegate executor, cancellation and terminal object release; a completion
 callback alone does not prove ownership cleanup. This backend does not supply
-Xcode's private HTTP policies, upload/download task support or the complete
+all of Xcode's private HTTP policies, upload/download task support or the complete
 libmdns dependency closure.
+The mDNS-consumed task host override routes through real CFHost/socket
+properties without rewriting the request URL or HTTP Host. Its address and
+hostname paths are loopback-exercised, including an IPv6 hostname destination,
+replacement/clear ownership and terminal release. The original URL peer is
+plumbed before TLS context creation, but TLS handshake/validation behavior is
+not accepted by those plain-HTTP checks. No ignored policy setter substitutes
+for missing transport support.
 
 ## Rules, each measured
 
