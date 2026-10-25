@@ -5,7 +5,7 @@
 # `west darling-build --deploy --deploy-component NAME` also uses.
 #
 # Usage: darling-deploy-verify.sh --prefix PATH --build DIR [--component NAME]...
-#   components: mldr dyld libsystem_kernel libunwind libxpc corefoundation foundation
+#   components: mldr dyld libsystem_kernel libunwind libxpc libnetwork corefoundation foundation
 #               filecoordinationd derq objc-trampolines mobiledevice coresimulator oah
 #               darlingserver shellspawn vchroot launchd
 #

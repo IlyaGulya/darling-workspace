@@ -97,6 +97,7 @@ _RUNTIME_COMPONENTS = [
     ("libplatform", "src/external/libplatform"),
     ("libdispatch", "src/external/libdispatch"),
     ("libpthread", "src/external/libpthread"),
+    ("libnetwork", "src/external/libnetwork"),
 ]
 
 
