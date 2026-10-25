@@ -89,6 +89,18 @@ COMPONENTS: dict[str, Component] = {
         ("usr/lib/swift/libswiftFoundation.dylib",
          "libexec/darling/usr/lib/swift/libswiftFoundation.dylib"),
     ),
+    "launch": Component(
+        "launch",
+        "src/launchd/liblaunch/liblaunch.dylib",
+        ("usr/lib/system/liblaunch.dylib",
+         "libexec/darling/usr/lib/system/liblaunch.dylib"),
+    ),
+    "service_management": Component(
+        "service_management",
+        "src/frameworks/ServiceManagement/ServiceManagement",
+        ("System/Library/Frameworks/ServiceManagement.framework/Versions/A/ServiceManagement",
+         "libexec/darling/System/Library/Frameworks/ServiceManagement.framework/Versions/A/ServiceManagement"),
+    ),
     "corefoundation": Component(
         "corefoundation",
         "src/external/corefoundation/CoreFoundation",
@@ -122,6 +134,51 @@ COMPONENTS: dict[str, Component] = {
         "derq",
         "src/external/security/SecurityTool/macOS/derq",
         ("usr/bin/derq", "libexec/darling/usr/bin/derq"),
+    ),
+    # Security.framework is loaded from the writable prefix root first, so a
+    # build-tree install into libexec/darling alone leaves the old root copy
+    # shadowing it. Both concrete version paths must carry the built bytes.
+    "security": Component(
+        "security",
+        "src/external/security/OSX/Security_x86_64",
+        ("System/Library/Frameworks/Security.framework/Versions/A/Security",
+         "libexec/darling/System/Library/Frameworks/Security.framework/Versions/A/Security"),
+    ),
+    "codesign": Component(
+        "codesign",
+        "src/external/security/SecurityTool/macOS/codesign",
+        ("usr/bin/codesign", "libexec/darling/usr/bin/codesign"),
+    ),
+    # codesign's default (non-overridden) helper path is /usr/bin/codesign_allocate.
+    # The CLT copy alone leaves that path absent, which forces callers to set
+    # CODESIGN_ALLOCATE and enter the overridden-helper signature check.
+    "codesign_allocate": Component(
+        "codesign_allocate",
+        "src/external/cctools/misc/codesign_allocate",
+        ("usr/bin/codesign_allocate", "libexec/darling/usr/bin/codesign_allocate"),
+    ),
+    "security_info": Component(
+        "security_info",
+        "src/external/security/OSX/Security-Info.plist",
+        ("System/Library/Frameworks/Security.framework/Versions/A/Resources/Info.plist",
+         "libexec/darling/System/Library/Frameworks/Security.framework/Versions/A/Resources/Info.plist"),
+    ),
+    "trustd": Component(
+        "trustd",
+        "src/external/security/trust/trustd/trustd",
+        ("usr/libexec/trustd", "libexec/darling/usr/libexec/trustd"),
+    ),
+    "trustd_launchd": Component(
+        "trustd_launchd",
+        "../../darling/src/external/security/trust/trustd/macOS/com.apple.trustd.plist",
+        ("System/Library/LaunchDaemons/com.apple.trustd.plist",
+         "libexec/darling/System/Library/LaunchDaemons/com.apple.trustd.plist"),
+    ),
+    "trustd_agent": Component(
+        "trustd_agent",
+        "../../darling/src/external/security/trust/trustd/macOS/com.apple.trustd.agent.plist",
+        ("System/Library/LaunchAgents/com.apple.trustd.agent.plist",
+         "libexec/darling/System/Library/LaunchAgents/com.apple.trustd.agent.plist"),
     ),
     # libobjc.A.dylib was absent from this table, so an objc4 change could not be deployed by any
     # tooling path (`west darling-build --deploy` does not carry it either): the prefix kept whatever
