@@ -45,6 +45,17 @@ replacement/clear ownership and terminal release. The original URL peer is
 plumbed before TLS context creation, but TLS handshake/validation behavior is
 not accepted by those plain-HTTP checks. No ignored policy setter substitutes
 for missing transport support.
+Default session configurations are independent values; a session snapshots its
+configuration. Selected nil cookie/cache stores disable both reads and writes,
+including redirects. Ephemeral configurations own separate memory-only stores.
+The private header-suppression setting supports automatic `User-Agent` only,
+case-insensitively, and preserves an explicit header. The reachability switch
+controls the existing socket route checks; it does not implement their stubs.
+Unsupported storage subclasses and nonnil credential stores fail before transport.
+Nil credential storage is not proof of connection-authentication isolation.
+Response cookies without Domain use their real origin URL. The existing cookie
+provider still lacks URL filtering; these checks are not acceptance of complete
+cookie or authentication policy.
 
 ## Rules, each measured
 
