@@ -73,6 +73,11 @@ COMPONENTS: dict[str, Component] = {
         "src/external/libnetwork/libnetwork.dylib",
         ("usr/lib/libnetwork.dylib", "libexec/darling/usr/lib/libnetwork.dylib"),
     ),
+    "libmdns": Component(
+        "libmdns",
+        "src/external/mDNSResponder/mDNSMacOSX/mdns_objects/libmdns.dylib",
+        ("usr/lib/libmdns.dylib", "libexec/darling/usr/lib/libmdns.dylib"),
+    ),
     "corefoundation": Component(
         "corefoundation",
         "src/external/corefoundation/CoreFoundation",
