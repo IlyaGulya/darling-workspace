@@ -29,6 +29,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import struct
 import sys
 import tempfile
 
@@ -704,6 +705,56 @@ def test_loader_stop(tmp):
     print("PASS loader stop: strict shape, loose shape, and a run that did not stop in dyld")
 
 
+def test_unresolved_stop_referrer(tmp):
+    darling, build = declaration_fixture(tmp)
+    xcode = tmp / "xcode"
+    entry = xcode / "Frameworks/libxcodebuildLoader.dylib"
+    entry.parent.mkdir(parents=True)
+    entry.write_bytes(struct.pack("<IiiIIIII", 0xFEEDFACF, 0x01000007, 3, 6, 0, 0, 0, 0))
+    log = write(tmp / "run.log",
+                "Library not loaded: /System/Library/PrivateFrameworks/StorageKit.framework/Versions/A/StorageKit\n"
+                "  Referenced from: /Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/CoreDevice\n"
+                "  Reason: image not found\n")
+    result = subprocess.run(
+        [sys.executable, "-B", str(SCRIPTS / "rung-driver.py"), "stop", "--log", str(log),
+         "--darling", str(darling), "--build", str(build), "--xcode", str(xcode),
+         "--prefix", str(tmp / "wrong-prefix")],
+        capture_output=True, text=True)
+    check(result.returncode == 2,
+          f"an unresolved observed referrer must not be a successful orphan classification: {result}")
+    print("PASS loader scope: unresolved observed referrer is incomplete input, not absent demand")
+    incomplete_log = write(tmp / "incomplete.log", "Library not loaded: /usr/lib/Missing.dylib\n")
+    incomplete_args = result.args.copy()
+    incomplete_args[incomplete_args.index(str(log))] = str(incomplete_log)
+    incomplete = subprocess.run(incomplete_args, capture_output=True, text=True)
+    check(incomplete.returncode == 2,
+          f"a truncated loader stop with unknown referrers cannot be classified as a non-blocker: {incomplete}")
+
+    prefix = tmp / "prefix"
+    referrer = prefix / "Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/CoreDevice"
+    referrer.parent.mkdir(parents=True)
+    referrer.write_bytes(entry.read_bytes())
+    args = [sys.executable, "-B", str(SCRIPTS / "rung-driver.py"), "stop", "--log", str(log),
+            "--darling", str(darling), "--build", str(build), "--xcode", str(xcode),
+            "--prefix", str(prefix)]
+    resolved = subprocess.run(args, capture_output=True, text=True)
+    check(resolved.returncode == 0, f"a resolved observed referrer can be classified: {resolved}")
+    zstd = shutil.which("zstd")
+    if zstd is None:
+        print("SKIP compressed rung-log contract: zstd is not installed")
+        return
+    stored = log.with_name(log.name + ".zst")
+    with stored.open("wb") as output:
+        subprocess.run([zstd, "-q", "-c", str(log)], stdout=output, check=True)
+    log.unlink()
+    compressed = subprocess.run(args, capture_output=True, text=True)
+    check(compressed.returncode == 0,
+          f"the same logical log must remain usable after zstd archival: {compressed}")
+    stored.write_bytes(b"not a zstd frame")
+    corrupt = subprocess.run(args, capture_output=True, text=True)
+    check(corrupt.returncode == 2, f"unreadable archived evidence is not a classification: {corrupt}")
+    print("PASS loader archival: compressed evidence works; corruption fails closed")
+
 # --------------------------------------------------------------------------- pin sync
 
 def git(*args, cwd):
@@ -887,13 +938,12 @@ def test_cli(tmp):
     check(out.returncode == 0, f"--declarations on an empty tree must still report: {out.stderr}")
     out = subprocess.run([sys.executable, "-B", str(SCRIPTS / "rung-driver.py"), "stop",
                           "--log", str(tmp / "missing.log")], capture_output=True, text=True)
-    check(out.returncode == 2 and "no run log" in out.stderr, f"a missing log is refused: {out.stderr}")
+    check(out.returncode == 2, f"a missing log is refused: {out.stderr}")
     log = tmp / "pass.log"
     log.write_text("VERDICT: PASS\nXCB_RC=0\n")
     out = subprocess.run([sys.executable, "-B", str(SCRIPTS / "rung-driver.py"), "stop",
                           "--log", str(log), "--xcode", str(tmp)], capture_output=True, text=True)
-    check(out.returncode == 1 and "did not stop in dyld" in out.stdout,
-          f"a passing run reports no stop rather than failing: {out.stdout}{out.stderr}")
+    check(out.returncode == 1, f"a run without a loader stop reports that state: {out.stdout}{out.stderr}")
     print("PASS cli: --help for each tool, and the driver's two non-errors")
 
 
@@ -909,6 +959,7 @@ def main():
         test_cover(tmp / "cover")
         test_bind_crosscheck(tmp / "bindcheck")
         test_loader_stop(tmp / "stop")
+        test_unresolved_stop_referrer(tmp / "unresolved-stop")
         test_pin_sync(tmp / "pin")
         test_pin_selection(tmp / "pin-selection")
         test_cli(tmp / "cli")

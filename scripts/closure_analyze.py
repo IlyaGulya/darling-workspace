@@ -728,7 +728,7 @@ def classify_route(install_name, refs, ctx, demanded=None):
     for c in candidates:
         if c in overlays:
             return ROUTE_PAYLOAD, (f"overlay recipe {overlays[c]} (matched candidate '{c}') "
-                                   "-- in the overlay checkout, not deployed")
+                                   "-- in the overlay checkout; deployment is not established by this source scan")
     darling = ctx.get("darling", "")
     sources = ctx.get("sources", {})
     if demanded is None:

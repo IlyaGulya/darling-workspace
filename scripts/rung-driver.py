@@ -28,11 +28,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+from pathlib import Path
 import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import closure_analyze as ca  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "west_commands"))
+from evidence_storage import EvidenceError, open_payload  # noqa: E402
 
 
 # --------------------------------------------------------------------------- loader stop
@@ -226,10 +229,12 @@ def print_declaration(sources, install_name):
 # --------------------------------------------------------------------------- stop
 
 def cmd_stop(args):
-    if not os.path.isfile(args.log):
-        print(f"rung-driver: no run log at {args.log}", file=sys.stderr)
+    try:
+        with open_payload(Path(args.log)) as payload:
+            text = payload.read().decode("utf-8", errors="replace")
+    except (EvidenceError, OSError) as error:
+        print(f"rung-driver: cannot read run log {args.log}: {error}", file=sys.stderr)
         return 2
-    text = open(args.log, encoding="utf-8", errors="replace").read()
     stops = parse_loader_stop(text)
     if not stops:
         print(f"rung-driver: no 'Library not loaded' and no 'Symbol not found' line in {args.log} -- the run "
@@ -250,8 +255,14 @@ def cmd_stop(args):
     print(f"  referenced by: {referrer_raw or '(the log does not name a referrer)'}")
     referrer_host = guest_path_to_host(referrer_raw, args.xcode, args.prefix) if referrer_raw else None
     if referrer_raw and referrer_host is None:
-        print("                 -- the log's referrer path resolves to nothing on this host: it is "
-              "printed as-is and no demand is measured from it")
+        print("rung-driver: cannot resolve the observed referrer; its demand is unknown, not absent",
+              file=sys.stderr)
+        print(f"  guest referrer: {referrer_raw}", file=sys.stderr)
+        print(f"  prefix searched: {args.prefix}", file=sys.stderr)
+        print(f"  alternate root: {os.path.join(args.prefix, 'libexec/darling')}", file=sys.stderr)
+        print("  pass --prefix for the runtime that produced this log; no provider route was classified",
+              file=sys.stderr)
+        return 2
     elif referrer_host:
         print(f"  referrer host: {referrer_host}")
 
@@ -265,6 +276,13 @@ def cmd_stop(args):
             print("  NOTE: the log's referrer is NOT one of the closure's referrers of this install "
                   "name; measuring the demand from the log's referrer alone.")
             refs = observed
+    if not refs:
+        print("rung-driver: a loader stop was observed, but its referrers could not be established",
+              file=sys.stderr)
+        print(f"  prefix searched: {args.prefix}", file=sys.stderr)
+        print("  supply the run's --prefix/--entry or a complete log; unknown demand is not a non-blocker",
+              file=sys.stderr)
+        return 2
     print()
     print("== the demand ==")
     print(f"  prefix carries the install name: "
@@ -495,7 +513,8 @@ def cmd_verify(args):
 def add_common(ap):
     ap.add_argument("--darling", default=ca.DEFAULTS["darling"])
     ap.add_argument("--build", default=ca.DEFAULTS["build"])
-    ap.add_argument("--prefix", default=ca.DEFAULTS["prefix"])
+    ap.add_argument("--prefix", default=ca.DEFAULTS["prefix"],
+                    help="runtime prefix from this run; guest referrers use it and libexec/darling (default: %(default)s)")
     ap.add_argument("--xcode", default=ca.DEFAULTS["xcode"])
     ap.add_argument("--swift-bin", default=ca.DEFAULTS["swift_bin"])
     ap.add_argument("--base", default=None, help="ladder base commit (default: derived from git)")
@@ -522,7 +541,7 @@ def main():
                                       "current rung), resolve the install name and the referrer, "
                                       "print the demand per dependency field with demangled shapes "
                                       "and weak/strong, and print the route with its evidence.")
-    stop.add_argument("--log", required=True, help="the run log carrying the loader stop")
+    stop.add_argument("--log", required=True, help="raw or indexed compressed logical run log carrying the loader stop")
     add_common(stop)
     stop.set_defaults(func=cmd_stop)
     verify = sub.add_parser("verify", help="verify a supplied rung",
