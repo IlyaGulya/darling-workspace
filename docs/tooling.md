@@ -1021,9 +1021,18 @@ whole accumulated server history before and after a run. **Every guest capture**
 workload's own redirected `*.out`); the **child's environment and descriptor table read from the HOST** (sampled
 while the child is alive, because a guest cannot read its own `/proc`); **any core** written during the run (symlinked,
 not copied); the **abort/terminate text wherever it landed**, lines copied WHOLE with the longest one's length
-reported; the **plane/ledger counters**; the **deployed sha256 of every runtime copy** (the `RUN-ENV` line, produced
+reported; the **plane/ledger counters**; the **fixed boot-component file hashes** (the `RUN-ENV` line, produced
 by `dwdiag env`, so there is one candidate table and not two); launchd's own debug log and its quoted
 `Mach service lookup` lines; and the **instrument census that names every silent instrument**.
+`RUN-ENV` does not cover custom workload binaries/libraries or prove loaded-image identity.
+
+Final teardown observations are retained in `cleanup.json` and announced as the `cleanup` manifest item:
+`state` is `clean`, `residue`, or `retained`; `processes`, `mounts`, and `layer_mounts` are the post-cleanup
+counts, and `shutdown_rc` is the shutdown command's status. Isolation overlays are recorded separately as
+`layer_mounts`, not residue. State follows the remaining processes/mounts, not shutdown rc alone.
+With `--freeze-on-fail`, state is `retained` and all unmeasured counts/status are `null`, never fabricated zeros.
+`verdict.txt` remains the final harness outcome, including workload checks, collection and cleanup: a clean
+prefix does not turn a failed workload into PASS. An interrupted run without a cleanup receipt proves no cleanup.
 
 Every item is a row of the bundle's `MANIFEST`: `PRESENT <path>` or `MISSING <reason>`. Rules:
 

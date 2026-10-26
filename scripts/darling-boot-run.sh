@@ -24,7 +24,7 @@
 # (the xtrace naming `<arm-out-prefix>.trace.<pid>`/`.traceg.<pid>` is announced nowhere else), the child's
 # environment and descriptor table read from the HOST while it was alive (a guest cannot read its own /proc), any
 # core written during the run, the abort/terminate text lifted WHOLE from wherever it landed, the plane/ledger
-# counters, the deployed sha256 of every runtime copy (the RUN-ENV line), and the instrument census that NAMES every
+# counters, the deployed sha256 of the fixed boot-component inventory (the RUN-ENV line), and the instrument census that NAMES every
 # instrument that stayed silent. Every item is a row of the bundle's MANIFEST: PRESENT <path> or MISSING <reason>,
 # so a piece the harness could not collect is reported rather than silently absent, and `INCOMPLETE` in the bundle
 # marks one that did not finish. It is produced before teardown and on the freeze-on-fail path too.
@@ -86,6 +86,12 @@ BUNDLE_SERVER_READY=0
 BUNDLE_RUN_ENV=""
 BUNDLE_CORE_PATTERN=""
 BUNDLE_CORE_DIR=""
+# Final teardown observations. A retained runtime has no post-cleanup measurements.
+CLEANUP_STATE=not-attempted
+CLEANUP_PROCESSES=null
+CLEANUP_MOUNTS=null
+CLEANUP_LAYER_MOUNTS=null
+CLEANUP_SHUTDOWN_RC=null
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -345,7 +351,7 @@ clear_stale_runtime_files() {
 # COLLECTS, per run, in one place: both logs (the harness's own and this run's server bytes), every
 # guest-process capture with its path PRINTED, the child's environment and descriptor table read from the HOST, any
 # core written during the run, the abort/terminate text wherever it landed, the plane/ledger counters, the deployed
-# sha256 of every runtime artifact, and a census that NAMES the instruments that stayed silent.
+# sha256 of the fixed boot-component inventory, and a census that NAMES the instruments that stayed silent.
 #
 # The rules it obeys:
 #   * every item is a ROW of `MANIFEST`, with PRESENT <path> or MISSING <reason> -- a missing piece is never
@@ -426,9 +432,9 @@ bundle_begin() {
 		BUNDLE_FAILED=1
 		bundle_missing server-log-boundary "log-start failed: server bytes cannot be attributed reliably; see $BUNDLE_SERVER_STATE and collector stderr"
 	fi
-	# THE DEPLOYED ARTIFACT IDENTITY. `dwdiag` owns the candidate table (one list, no second convention), and the
-	# line is what answers "which build actually ran" -- two runs served by different copies were compared as if they
-	# were the same build twice.
+	# DEPLOYED BOOT-COMPONENT FILE IDENTITY. `dwdiag` owns the fixed candidate table.
+	# These hashes name configured files, not every workload dependency or the bytes loaded by a live process.
+	# Workload-specific executables and libraries need their own identity measurement.
 	BUNDLE_RUN_ENV=""
 	if [ -x "$SCRIPT_DIR/dwdiag" ]; then
 		"$SCRIPT_DIR/dwdiag" env --prefix "$PREFIX" > "$BUNDLE_DIR/run-env.raw" 2>"$BUNDLE_DIR/run-env.err"
@@ -436,10 +442,10 @@ bundle_begin() {
 		if [ "$env_rc" -eq 0 ] && [ -s "$BUNDLE_DIR/run-env.raw" ]; then
 			BUNDLE_RUN_ENV=$(cat "$BUNDLE_DIR/run-env.raw")
 			cp -f "$BUNDLE_DIR/run-env.raw" "$BUNDLE_DIR/run-env.txt"
-			bundle_present run-env "$BUNDLE_DIR/run-env.txt" "$BUNDLE_RUN_ENV"
+			bundle_present run-env "$BUNDLE_DIR/run-env.txt" "fixed boot-component files only; not workload or loaded-image identity; $BUNDLE_RUN_ENV"
 		else
 			rm -f "$BUNDLE_DIR/run-env.raw"
-			bundle_missing run-env "dwdiag env --prefix $PREFIX exited $env_rc, so no deployed copy under this prefix could be digested (see $BUNDLE_DIR/run-env.err). The digest is of DEPLOYED files: without it nothing in this bundle names the build that ran"
+			bundle_missing run-env "dwdiag env --prefix $PREFIX exited $env_rc, so no fixed boot-component copy could be digested (see $BUNDLE_DIR/run-env.err)"
 		fi
 	else
 		bundle_missing run-env "no executable $SCRIPT_DIR/dwdiag: the deployed-copy digest cannot be taken (and the instrument census below will be missing too)"
@@ -727,6 +733,15 @@ bundle_server_count() {
 # Only bundle-owned copies are eligible; the ongoing external $LOG and prefix logs are never passed here.
 bundle_finalize() {
 	[ "$BUNDLE" = 1 ] || return 0
+	if printf '{"state":"%s","processes":%s,"mounts":%s,"layer_mounts":%s,"shutdown_rc":%s}\n' \
+		"$CLEANUP_STATE" "$CLEANUP_PROCESSES" "$CLEANUP_MOUNTS" "$CLEANUP_LAYER_MOUNTS" \
+		"$CLEANUP_SHUTDOWN_RC" > "$BUNDLE_DIR/cleanup.json"; then
+		bundle_present cleanup "$BUNDLE_DIR/cleanup.json" "final prefix teardown observations; retained runtimes have null measurements, not measured zeros"
+	else
+		BUNDLE_FAILED=1
+		verdict=1
+		bundle_missing cleanup "could not write final teardown observations"
+	fi
 	printf 'verdict=%s\n' "$verdict" > "$BUNDLE_DIR/verdict.txt"
 	bundle_present verdict "$BUNDLE_DIR/verdict.txt" "harness outcome including collection and cleanup; workload status declarations remain in the console/run log"
 	if [ "$BUNDLE_FAILED" = 0 ]; then
@@ -1072,6 +1087,7 @@ if [ "${FREEZE_ON_FAIL:-0}" -eq 1 ] && [ "$verdict" -ne 0 ]; then
 	echo "FREEZE-ON-FAIL prefix=$PREFIX log=$LOG verdict=$verdict"
 	echo "FREEZE-ON-FAIL inspect now, then clean up with: west darling-prefix-repair --prefix $PREFIX --cleanup-mounts"
 	echo "FREEZE-ON-FAIL or: DPREFIX=$PREFIX DARLING_PREFIX=$PREFIX DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 $PREFIX/bin/darling --rootless shutdown"
+	CLEANUP_STATE=retained
 	bundle_finalize
 	exit 1
 fi
@@ -1080,7 +1096,8 @@ STAGE=cleanup; echo "== cleanup =="
 witness "TEARDOWN stage=shutdown-enter self=$$ parent=$PPID harness=$(caller_id $$)"
 DPREFIX="$PREFIX" DARLING_PREFIX="$PREFIX" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
 	"$PREFIX/bin/darling" --rootless shutdown >/dev/null 2>&1
-witness "TEARDOWN stage=shutdown-exit rc=$? self=$$"
+CLEANUP_SHUTDOWN_RC=$?
+witness "TEARDOWN stage=shutdown-exit rc=$CLEANUP_SHUTDOWN_RC self=$$"
 sleep 3
 owned_pids | while read -r pid; do
 	anc=$(own_ancestors | tr '\n' ' ')
@@ -1114,8 +1131,13 @@ layer_mounts=$(mount 2>/dev/null | awk -v p="$PREFIX" '$3 == p && $5 == "fuse.fu
 # Same rule after the run: leave the prefix as a *bootable* clean state, not merely a process-free one.
 clear_stale_runtime_files
 echo "prefix processes after: $final, mounts: $mounts (plus $layer_mounts prefix layer mount(s))"
+CLEANUP_STATE=clean
+CLEANUP_PROCESSES=$final
+CLEANUP_MOUNTS=$mounts
+CLEANUP_LAYER_MOUNTS=$layer_mounts
 if [ "$final" -gt 0 ] || [ "$mounts" -gt 0 ]; then
 	echo "cleanup FAILED" >&2
+	CLEANUP_STATE=residue
 	verdict=1
 fi
 bundle_finalize
