@@ -121,6 +121,7 @@ CONTRACTS = (
     "tests/run-west-test-guarded-timeout-contract.sh",
     "tests/run-west-test-guest-command-contract.sh",
     "tests/run-west-test-prefix-cleanup-contract.sh",
+    "tests/run-prefix-cleanup-ownership-contract.sh",
     "tests/run-clt-provenance-contract.sh",
     "tests/run-rootless-cleanup-contract.sh",
     "tests/run-rootless-prefix-contract.sh",

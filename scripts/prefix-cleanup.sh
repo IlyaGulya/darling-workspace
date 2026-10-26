@@ -43,24 +43,32 @@ if [ ! -d "$PREFIX" ]; then
 	exit 2
 fi
 
-# Enumerate prefix-owned processes by exe first, then by cmdline. Both are needed: exe catches guest
-# processes whose cmdline is an in-guest path, and cmdline catches a process whose exe is unreadable.
-# Three arms, all three measured as necessary:
+# Enumerate prefix-owned processes by runtime identity, never by a prefix string in argv.
 #
-#   exe      catches a process launched from a prefix path.
-#   cmdline  catches a process that names the prefix in its arguments.
+#   exe      catches a process launched from a prefix path.  This is the executable's real
+#            identity, and readlink still returns " (deleted)" for an unlinked image.
 #   comm+maps catches a GUEST process, and it is the arm that was missing. Measured for a live guest
-#            process: comm is "mldr", cmdline is EMPTY (not merely an in-guest path, so the cmdline arm
-#            cannot see it), and /proc/<pid>/exe fails with ENOENT -- the image file is gone (unlinked or
+#            process: comm is "mldr", cmdline is EMPTY (not merely an in-guest path, so argv cannot
+#            see it), and /proc/<pid>/exe fails with ENOENT -- the image file is gone (unlinked or
 #            memfd), so the exe arm cannot see it either. Its `maps` IS readable and names the prefix,
 #            which is what makes it identifiable at all. Both conditions are required together, so a
-#            same-named host process cannot be caught by the name alone.
-GUEST_COMMS="mldr launchd vchroot shellspawn"
+#            same-named host process cannot be caught by the name alone.  darlingserver is included
+#            because the server can outlive an unlinked prefix image in exactly the same way.
+#
+# There is deliberately NO generic cmdline arm: a host tool invoked as `tool --prefix <prefix>` names
+# the prefix without being part of it, and treating that mention as ownership killed read-only
+# observers.  An executable whose argv[0] names a prefix path is already covered by the exe arm; when
+# its image is unreadable, the comm+maps arm is the runtime-identity check.
+GUEST_COMMS="mldr launchd vchroot shellspawn darlingserver"
+
+# The prefix's own device:inode. Identity, not spelling, is what excludes the process that serves the
+# prefix's layer (see the `layer=` arm in owned_pids below).
+PREFIX_ID=$(stat -Lc '%d:%i' "$PREFIX" 2>/dev/null)
 
 # SELF_NAME guard: this script is invoked WITH --prefix, so its own cmdline (and its pipeline subshells',
-# which have different PIDs and the same cmdline) contains the prefix and would match the cmdline arm --
-# the loop would kill the loop doing the killing. Measured: without this, a dry run proposed to stop its own
-# shell. The guard is on the name, not on the PID, because a subshell's PID differs but its cmdline does not.
+# which have different PIDs and the same cmdline) contains the prefix. The loop must not stop the loop
+# doing the stopping. Measured: without this, a dry run proposed to stop its own shell. The guard is on
+# the name, not on the PID, because a subshell's PID differs but its cmdline does not.
 SELF_NAME=${0##*/}
 SELF_PID=$$
 ANCESTORS=$(p=$$; while [ -n "$p" ] && [ "$p" != "0" ] && [ "$p" != "1" ]; do echo "$p"; p=$(sed 's/.*) //' "/proc/$p/stat" 2>/dev/null | awk '{print $2}'); done | tr '\n' ' ')
@@ -79,15 +87,33 @@ owned_pids() {
 		esac
 		cmd=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null)
 		case "$cmd" in *"$SELF_NAME"*) continue ;; esac
-		case "$cmd" in
-			*"$PREFIX"*) echo "$pid"; continue ;;
+		# The daemon that SERVES the prefix's own layer is not a prefix-owned runtime process. When the
+		# prefix is itself a mount (an isolation lane's fuse-overlayfs view), its argv names the prefix
+		# in -o upperdir=/workdir= and in the mountpoint argument. Identity is the program AND the
+		# prefix's own device:inode, so a fixture that merely runs fuse-overlayfs under the prefix is
+		# still swept, while the process that serves this prefix's layer is excluded before the
+		# comm+maps arm can see it.
+		case "${exe##*/}" in
+		fuse-overlayfs)
+			layer=0
+			if [ -n "$PREFIX_ID" ]; then
+				for a in $cmd; do
+					case "$a" in /*) ;; *) continue ;; esac
+					if [ "$(stat -Lc '%d:%i' "$a" 2>/dev/null)" = "$PREFIX_ID" ]; then layer=1; break; fi
+				done
+			fi
+			[ "$layer" = 1 ] && continue
+			;;
 		esac
 		comm=$(cat "$d/comm" 2>/dev/null)
 		case " $GUEST_COMMS " in
 			*" $comm "*) ;;
 			*) continue ;;
 		esac
-		if grep -q -- "$PREFIX" "$d/maps" 2>/dev/null; then
+		# A guest's own image/libraries are the runtime identity; a prefix string only in
+		# /proc/<pid>/cmdline is not.  Match the mapped path, not the whole maps line, so another
+		# directory that merely has the prefix as a substring cannot match.
+		if grep -F -q -- "$PREFIX/" "$d/maps" 2>/dev/null; then
 			echo "$pid"
 		fi
 	done
@@ -130,9 +156,13 @@ fi
 final=$(count_owned)
 # Mountpoint under the prefix, not a substring anywhere in the mount line: an overlay instance that
 # names this prefix in its lowerdir is not a mount under the prefix (MEASURED, see dar-c4ff).
-mounts=$(mount 2>/dev/null | awk -v p="$PREFIX" '$3 == p || index($3, p "/") == 1' | wc -l)
+# A FUSE overlay AT the prefix path is the isolation layer itself - an isolation lane's copy-on-write
+# view, or a fixture's own instance - so it is reported separately instead of counting as residue.
+# A kernel `overlay` at the prefix is NOT excluded: that is the privileged runtime's own bring-up mount.
+mounts=$(mount 2>/dev/null | awk -v p="$PREFIX" 'index($3, p "/") == 1 || ($3 == p && $5 != "fuse.fuse-overlayfs")' | wc -l)
+layer_mounts=$(mount 2>/dev/null | awk -v p="$PREFIX" '$3 == p && $5 == "fuse.fuse-overlayfs"' | wc -l)
 echo "prefix-owned processes after: $final"
-echo "mounts under prefix: $mounts"
+echo "mounts under prefix: $mounts (plus $layer_mounts prefix layer mount(s))"
 
 if [ "$final" -gt 0 ] || [ "$mounts" -gt 0 ]; then
 	echo "prefix is NOT clean" >&2
