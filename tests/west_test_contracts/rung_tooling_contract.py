@@ -18,8 +18,9 @@ wrong by hand at least once:
   * pin sync's rewrite: only a revision value changes, a forward pin moves, an ahead pin is refused
     unless told otherwise, and a manifest with nothing to change is reported as no change.
 
-Every case is synthetic: no Xcode tree, no prefix, no build directory and no llvm tools are needed,
-because a contract that needs the ladder's inputs can only run where the ladder already runs.
+Every case is synthetic: no Xcode tree, prefix or build directory is needed.
+The cover CLI cases use installed LLVM tools when available; the other cases
+require no LLVM.
 """
 
 from __future__ import annotations
@@ -925,6 +926,64 @@ def test_pin_selection(tmp):
 
 # --------------------------------------------------------------------------- cli
 
+def test_cover_json_cli(tmp):
+    objdump = shutil.which("llvm-objdump")
+    if objdump is None or not (Path(objdump).parent / "llvm-nm").is_file():
+        print("SKIP cover JSON CLI: llvm-objdump and llvm-nm are not installed together")
+        return
+    darling, build = declaration_fixture(tmp)
+    bundle = tmp / "Xcode.app"
+    contents = bundle / "Contents"
+    entry = contents / "Frameworks/libxcodebuildLoader.dylib"
+    entry.parent.mkdir(parents=True)
+    missing = "/usr/lib/libMissing.dylib"
+    name = missing.encode() + b"\0"
+    command_size = (24 + len(name) + 7) & ~7
+    dylib = struct.pack("<6I", 0xC, command_size, 24, 0, 0, 0)
+    dylib += name + b"\0" * (command_size - 24 - len(name))
+    bind = b"\x11\x40_needed\0\x90\0"
+    commands = [
+        struct.pack("<II16s4Q4I", 0x19, 72, b"__TEXT", 0x100000000, 0x1000,
+                    0, 0x1000, 7, 5, 0, 0),
+        dylib,
+        struct.pack("<12I", 0x80000022, 48, 0, 0, 0x400, len(bind), 0, 0, 0, 0, 0, 0),
+    ]
+    data = bytearray(0x1000)
+    command_bytes = b"".join(commands)
+    struct.pack_into("<IiiIIIII", data, 0, 0xFEEDFACF, 0x01000007, 3, 6,
+                     len(commands), len(command_bytes), 0x80, 0)
+    data[32:32 + len(command_bytes)] = command_bytes
+    data[0x400:0x400 + len(bind)] = bind
+    entry.write_bytes(data)
+    common = [
+        sys.executable, "-B", str(SCRIPTS / "closure_analyze.py"), "--json",
+        "--darling", str(darling), "--build", str(build), "--prefix", str(tmp / "prefix"),
+        "--swift-bin", str(Path(objdump).parent),
+    ]
+    for selected, mode in ((bundle, ["--cover", "--order", "3"]),
+                           (contents, ["--order", "3"])):
+        result = subprocess.run([*common, "--xcode", str(selected), *mode],
+                                capture_output=True, text=True, timeout=30)
+        check(result.returncode == 1, f"the strong missing image must remain a stop: {result}")
+        report = json.loads(result.stdout)
+        check(report["xcode"] == str(contents), f"selected bundle must resolve to Contents: {report}")
+        check(report["entries"] == [{"entry": str(entry), "path": str(entry), "from": "argument"}],
+              f"the selected loader, not another Xcode, must be analyzed: {report}")
+        check(report["counts"][ca.COVER_IMAGE_ABSENT] == 1,
+              f"the real eager import must be counted against its missing field: {report}")
+        check([(event["kind"], event.get("install_name")) for event in report["events"]]
+              == [("image", missing)], f"JSON must preserve the actual predicted loader stop: {report}")
+    invalid = write(tmp / "invalid-entry", "not a Mach-O image or guest run log\n")
+    result = subprocess.run(
+        [*common, "--xcode", str(bundle), "--cover", "--entry", str(invalid)],
+        capture_output=True, text=True, timeout=30)
+    check(result.returncode == 2, f"an unreadable closure entry must not be success: {result}")
+    report = json.loads(result.stdout)
+    check(bool(report["empty_reason"]) and all(count == 0 for count in report["counts"].values()),
+          f"empty-input JSON must explain why no imports could be analyzed: {report}")
+    print("PASS cover CLI: selected bundle/Contents, machine-readable stops, and incomplete input")
+
+
 def test_cli(tmp):
     tmp.mkdir(parents=True, exist_ok=True)
     for script in ("closure_analyze.py", "rung-driver.py", "west-pin-sync.py"):
@@ -962,6 +1021,7 @@ def main():
         test_unresolved_stop_referrer(tmp / "unresolved-stop")
         test_pin_sync(tmp / "pin")
         test_pin_selection(tmp / "pin-selection")
+        test_cover_json_cli(tmp / "cover-cli")
         test_cli(tmp / "cli")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

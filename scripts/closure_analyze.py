@@ -2710,13 +2710,18 @@ def _host_entry_path(entry, xcode):
     return entry
 
 
-def print_cover(graph, prefix, ctx=None, xcode=None, out=sys.stdout):
-    """The readable table: the entry and its source, the reached/rest split, and one line per
-    remaining unmet eager demand of a REACHED image with what would supply it."""
+def _cover_counts(graph):
     counts = {label: 0 for label in COVER_ORDER}
     for image in graph["images"].values():
         for imp in image["imports"]:
             counts[imp["label"]] = counts.get(imp["label"], 0) + 1
+    return counts
+
+
+def print_cover(graph, prefix, ctx=None, xcode=None, out=sys.stdout):
+    """The readable table: the entry and its source, the reached/rest split, and one line per
+    remaining unmet eager demand of a REACHED image with what would supply it."""
+    counts = _cover_counts(graph)
     reached = set(graph.get("reached", ()))
     print("SYMBOL COVERAGE -- every import of the load closure resolved against the deployed prefix.", file=out)
     print(f"  prefix : {prefix}", file=out)
@@ -2820,7 +2825,8 @@ def main():
     ap.add_argument("--darling", default=DEFAULTS["darling"])
     ap.add_argument("--build", default=DEFAULTS["build"])
     ap.add_argument("--prefix", default=DEFAULTS["prefix"])
-    ap.add_argument("--xcode", default=DEFAULTS["xcode"])
+    ap.add_argument("--xcode", default=DEFAULTS["xcode"],
+                    help="selected Xcode.app bundle or its Contents directory")
     ap.add_argument("--swift-bin", default=DEFAULTS["swift_bin"])
     ap.add_argument("--base", default=None, help="ladder base commit (default: derived from git)")
     ap.add_argument("--components", default=None,
@@ -2897,8 +2903,13 @@ def main():
             print(f"closure_analyze.py: missing {swift(tool)}; pass --swift-bin", file=sys.stderr)
             return 2
     if not os.path.isfile(os.path.join(args.xcode, "Frameworks/libxcodebuildLoader.dylib")):
-        print(f"closure_analyze.py: no load-time entry image under {args.xcode}", file=sys.stderr)
-        return 2
+        contents = os.path.join(args.xcode, "Contents")
+        if os.path.isfile(os.path.join(contents, "Frameworks/libxcodebuildLoader.dylib")):
+            args.xcode = contents
+        else:
+            print(f"closure_analyze.py: no load-time entry image under {args.xcode}; "
+                  "pass the selected Xcode.app bundle or its Contents directory", file=sys.stderr)
+            return 2
 
     base = args.base or ladder_base(args.darling)
 
@@ -2916,19 +2927,23 @@ def main():
     if args.cover or args.order:
         graph = cover_closure(entries, args.prefix, args.xcode, without_images=args.without,
                               without_symbols=args.without_symbol)
-        ctx = classify_context(args.darling, manifest, args.xcode,
-                               payload=args.payload or os.path.join(args.darling, "src/external/swift"),
-                               overlay=args.overlay)
-        print("closure_analyze.py --cover")
-        print(f"  darling      : {args.darling}")
-        print(f"  prefix       : {args.prefix} (both roots: the root and libexec/darling)")
-        print(f"  xcode        : {args.xcode}")
-        if args.without:
-            print(f"  withheld     : {', '.join(sorted(args.without))} (treated as NOT deployed)")
-        if args.without_symbol:
-            print(f"  withheld sym : {', '.join(sorted(args.without_symbol))}")
-        print()
-        counts = print_cover(graph, args.prefix, ctx, args.xcode)
+        if args.json:
+            counts = _cover_counts(graph)
+        else:
+            ctx = classify_context(
+                args.darling, manifest, args.xcode,
+                payload=args.payload or os.path.join(args.darling, "src/external/swift"),
+                overlay=args.overlay)
+            print("closure_analyze.py --cover")
+            print(f"  darling      : {args.darling}")
+            print(f"  prefix       : {args.prefix} (both roots: the root and libexec/darling)")
+            print(f"  xcode        : {args.xcode}")
+            if args.without:
+                print(f"  withheld     : {', '.join(sorted(args.without))} (treated as NOT deployed)")
+            if args.without_symbol:
+                print(f"  withheld sym : {', '.join(sorted(args.without_symbol))}")
+            print()
+            counts = print_cover(graph, args.prefix, ctx, args.xcode)
         if graph.get("empty_reason"):
             if args.json:
                 print(json.dumps({"entries": graph["entries"], "observed": graph.get("observed"),
@@ -2936,7 +2951,7 @@ def main():
                                  indent=2, sort_keys=True))
             return 2      # 2 = the ENTRY gave nothing to cover (distinct from 1 = stops found)
         events = cover_events(graph)
-        if args.order:
+        if args.order and not args.json:
             print(f"== next {args.order} predicted stop(s) ==")
             for i, event in enumerate(events[:args.order], 1):
                 if event["kind"] == "image":

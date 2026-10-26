@@ -31,6 +31,15 @@ the hypothesis that a regression then pins.
 | `scripts/rung-driver.py` | the current loader rung and its structural verification | `stop --log LOGICAL_RUN_LOG --prefix OWNED_PREFIX` reads raw or indexed `.zst` evidence, parses the last missing image or symbol, and reports per-field demand with demangled shapes and weak/strong binding. Unresolved observed referrers or unknown referrers in a truncated stop fail with exit 2 and the searched prefix; unknown demand is not a `NO-REFERRER` non-blocker. Source-route evidence does not establish deployment. `verify --component X` checks deployed exports and nested re-exports against strong demands, including weak/upward-only referrers, and checks payload == staged resource == deployed copy. The built artifact's own export trie gates only with `--fail-on-built-miss`. Loader structure and artifact identity are not consumer-visible runtime proof |
 | `scripts/west-pin-sync.py` | whether `west.yml`'s revisions match the darling superproject's gitlinks | `check` prints the before/after table and fails when a pin is behind its gitlink; `sync` rewrites only the `revision:` values of named projects (comments and formatting survive); a pin **ahead** of its gitlink is refused unless `--allow-downgrade` says so |
 
+For closure analysis, `--xcode` accepts the selected `Xcode.app` bundle or its
+`Contents` directory. With `--cover` or `--order`, `--json` writes one JSON
+document to stdout, without the human table or predicted-order preamble,
+including when an entry yields no readable images. Exit 0 means no modeled
+loader stops, 1 means stops remain, and 2 means incomplete or invalid inputs.
+This is static coverage of the selected entry, not runtime API behavior or
+successful application compilation; later `dlopen` targets need their own
+`--entry` or an observed guest run log.
+
 The `cfnetwork` component includes public `NSURLSession` HTTP data tasks backed
 by the existing `NSURLConnection`/CFHTTPStream transport, a shared session worker
 and ordered delegate operations. Verify real response bytes, the supplied
