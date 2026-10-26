@@ -1086,6 +1086,15 @@ For a closed archive without a top-level receipt, `--write-manifest` writes a ne
 verification; it refuses overwrite and never hashes that receipt into itself. Existing invalid receipts are errors,
 not silently re-pinned hashes.
 
+`verify` reports receipt integrity separately from coverage: `manifest_count` counts receipts found;
+`unsealed_files` and `unsealed_paths` identify regular files in the selected `coverage_scope` that no receipt covers.
+`failed: false` means the checked hashes agree, not that later files were sealed. A legacy logical checksum covers
+its verified `.zst` replacement; storage-only compression can still add unsealed index metadata. No receipt means
+the selected files are unsealed, even when their storage indexes validate. `created_checksums` counts rows newly
+written by `--write-manifest`; `checksums` counts rows checked in existing receipts. The inventory excludes symlinks
+and is a scan-time observation, not a writer lock: quiesce the owning writers before sealing. Keep later results
+in a new addendum rather than overwriting an existing receipt.
+
 
 **A run of this kind is archived** so the claim is reproducible rather than asserted:
 `evidence/instrument-auto-bundle-2026-10-15/` holds one bundle from the current ladder workload

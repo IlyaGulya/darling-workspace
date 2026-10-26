@@ -48,6 +48,7 @@ def verify_archive(root: Path, *, recursive: bool, write_manifest: bool = False)
         raise EvidenceError(f"verification requires a real evidence directory: {root}")
     files = []
     index_directories = []
+    covered = set()
     for directory, dirs, names in os.walk(root, followlinks=False):
         if index_paths(Path(directory)):
             index_directories.append(Path(directory))
@@ -65,7 +66,8 @@ def verify_archive(root: Path, *, recursive: bool, write_manifest: bool = False)
                 payloads += 1
         except (EvidenceError, OSError, ValueError, KeyError, TypeError) as error:
             errors.append({"path": str(directory), "error": str(error)})
-    for manifest in (path for path in files if path.name == "SHA256SUMS"):
+    manifests = [path for path in files if path.name == "SHA256SUMS"]
+    for manifest in manifests:
         try:
             for line in manifest.read_text().splitlines():
                 if not line or line.startswith("#"):
@@ -83,11 +85,14 @@ def verify_archive(root: Path, *, recursive: bool, write_manifest: bool = False)
                 if not path.resolve().is_relative_to(root.resolve()):
                     raise EvidenceError(f"checksum target is outside selected archive: {name}")
                 if path.is_file():
+                    covered.add(path.resolve())
                     if _hash(path) != digest:
                         raise EvidenceError(f"checksum mismatch: {path}")
                 else:
+                    stored = path.with_name(path.name + ".zst")
+                    covered.add(stored.resolve())
                     metadata = payload_metadata(path)
-                    verify_stored(path.with_name(path.name + ".zst"), digest, metadata["bytes"])
+                    verify_stored(stored, digest, metadata["bytes"])
                 checksums += 1
         except (EvidenceError, OSError, ValueError) as error:
             errors.append({"path": str(manifest), "error": str(error)})
@@ -103,4 +108,17 @@ def verify_archive(root: Path, *, recursive: bool, write_manifest: bool = False)
             stream.flush()
             os.fsync(stream.fileno())
         result["manifest"] = str(destination)
+        result["created_checksums"] = len(files)
+        covered.update(path.resolve() for path in files)
+        manifests.append(destination)
+    unsealed = sorted(
+        str(path.relative_to(root)) for path in files
+        if path not in manifests and path.resolve() not in covered
+    )
+    result.update(
+        manifest_count=len(manifests),
+        coverage_scope="recursive" if recursive else "top-level",
+        unsealed_files=len(unsealed),
+        unsealed_paths=unsealed,
+    )
     return result

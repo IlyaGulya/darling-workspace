@@ -82,6 +82,31 @@ class EvidenceStorageContract(unittest.TestCase):
         self.assertEqual(result.returncode == 0, succeeds, result.stderr or result.stdout)
         return result
 
+    def test_receipt_coverage_distinguishes_later_files_and_selection_scope(self) -> None:
+        self.payload("original.log", b"completed original workload\n")
+        initial = json.loads(self.cli("verify", self.root, "--recursive").stdout)
+        self.assertFalse(initial["failed"], initial)
+        self.assertEqual(initial["manifest_count"], 0)
+        self.assertEqual(initial["unsealed_paths"], ["original.log"])
+
+        created = json.loads(self.cli("verify", self.root, "--recursive", "--write-manifest").stdout)
+        self.assertEqual(created["created_checksums"], 1)
+        self.assertEqual(created["manifest_count"], 1)
+        self.assertEqual(created["unsealed_files"], 0)
+        receipt = (self.root / "SHA256SUMS").read_bytes()
+        self.payload("late/app.log", b"later workload outside the original seal\n")
+
+        shallow = json.loads(self.cli("verify", self.root).stdout)
+        self.assertEqual(shallow["coverage_scope"], "top-level")
+        self.assertEqual(shallow["unsealed_files"], 0)
+        recursive = json.loads(self.cli("verify", self.root, "--recursive").stdout)
+        self.assertFalse(recursive["failed"], recursive)
+        self.assertEqual(recursive["checksums"], 1)
+        self.assertEqual(recursive["coverage_scope"], "recursive")
+        self.assertEqual(recursive["unsealed_files"], 1)
+        self.assertEqual(recursive["unsealed_paths"], ["late/app.log"])
+        self.assertEqual((self.root / "SHA256SUMS").read_bytes(), receipt)
+
     def test_sealed_index_remains_byte_exact_after_append_and_repeat(self) -> None:
         first = self.payload("payloadA.stdout")
         second_content = PAYLOAD + b"second finalized assembly diagnostic\n"
@@ -115,7 +140,8 @@ class EvidenceStorageContract(unittest.TestCase):
         self.assertFalse(path.exists())
         self.assertEqual(self.cat(path), PAYLOAD)
         self.assertEqual((self.root / "SHA256SUMS").read_bytes(), receipt)
-        self.cli("verify", self.root, "--recursive")
+        result = json.loads(self.cli("verify", self.root, "--recursive").stdout)
+        self.assertNotIn(path.name + ".zst", result["unsealed_paths"])
 
     def test_conflicting_addition_rejects_read_verify_and_publication(self) -> None:
         path = self.payload()
