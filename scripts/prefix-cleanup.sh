@@ -56,8 +56,8 @@ fi
 #            because the server can outlive an unlinked prefix image in exactly the same way.
 #
 # There is deliberately NO generic cmdline arm: a host tool invoked as `tool --prefix <prefix>` names
-# the prefix without being part of it, and treating that mention as ownership killed read-only
-# observers.  An executable whose argv[0] names a prefix path is already covered by the exe arm; when
+# the prefix without being part of it, and treating that mention as ownership could kill a read-only
+# observer.  An executable whose argv[0] names a prefix path is already covered by the exe arm; when
 # its image is unreadable, the comm+maps arm is the runtime-identity check.
 GUEST_COMMS="mldr launchd vchroot shellspawn darlingserver"
 
@@ -111,9 +111,10 @@ owned_pids() {
 			*) continue ;;
 		esac
 		# A guest's own image/libraries are the runtime identity; a prefix string only in
-		# /proc/<pid>/cmdline is not.  Match the mapped path, not the whole maps line, so another
-		# directory that merely has the prefix as a substring cannot match.
-		if grep -F -q -- "$PREFIX/" "$d/maps" 2>/dev/null; then
+		# /proc/<pid>/cmdline is not.  maps separates the pathname with a literal space after the
+		# inode, so require that boundary: another root whose path merely contains the prefix
+		# string (for example /otherroot/path<PREFIX>/x) cannot match.
+		if grep -F -q -- " $PREFIX/" "$d/maps" 2>/dev/null; then
 			echo "$pid"
 		fi
 	done
@@ -139,7 +140,7 @@ if [ -x "$PREFIX/bin/darling" ]; then
 fi
 sleep "$SETTLE"
 
-# 2. SIGKILL whatever is left. Match by exe AND cmdline; never a global pattern.
+# 2. SIGKILL whatever is left. Match by exe AND mapped pathname; never argv mentions or a global pattern.
 owned_pids | while read -r pid; do
 	kill -9 "$pid" 2>/dev/null
 done

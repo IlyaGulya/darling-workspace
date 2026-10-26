@@ -27,9 +27,11 @@ trap cleanup EXIT INT TERM
 
 prefix="$tmp/prefix"
 other="$tmp/other-prefix"
-mkdir -p "$prefix/bin" "$prefix/lib" "$other/bin" "$other/lib"
+nested="$tmp/otherroot/path$prefix"
+mkdir -p "$prefix/bin" "$prefix/lib" "$other/bin" "$other/lib" "$nested/lib"
 printf 'prefix payload\n' >"$prefix/lib/mapped.bin"
 printf 'other payload\n' >"$other/lib/mapped.bin"
+printf 'nested mirror payload\n' >"$nested/lib/mapped.bin"
 cp /bin/sleep "$prefix/bin/owned-sleeper"
 cp /bin/sleep "$other/bin/other-sleeper"
 
@@ -79,6 +81,10 @@ pids+=("$observer")
 otherguest=$!
 pids+=("$otherguest")
 
+"$tmp/probe" mldr "$nested/lib/mapped.bin" &
+nestedguest=$!
+pids+=("$nestedguest")
+
 "$tmp/fuse-overlayfs" mldr "$prefix/lib/mapped.bin" "$prefix" &
 layer=$!
 pids+=("$layer")
@@ -114,6 +120,7 @@ present "$guest" unlinked-guest-mldr
 present "$server" unlinked-server
 absent "$observer" host-observer-arg
 absent "$otherguest" other-prefix-guest
+absent "$nestedguest" nested-otherroot-mirror
 absent "$layer" layer-server
 
 if [ "$fail" -ne 0 ]; then
