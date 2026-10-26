@@ -1,116 +1,83 @@
 #!/usr/bin/env bash
-# Host contract for the ownership rule in scripts/darling-boot-run.sh -- the rule that decides whether the next
-# boot starts clean, and the one whose blind spot cost a whole diagnostic cycle.
-#
-# MEASURED DEFECT this pins. A run killed from outside leaves a daemonized darlingserver behind: ppid=1, argv
-# "darlingserver 4 3 <prefix-basename> 6 1000 1000 8 0" (the prefix as a directory CAPABILITY, never as a path),
-# one process per line on the console of the next run. The harness's ownership rule matched only (a) ancestors of
-# itself, (b) /proc/<pid>/exe under the prefix and (c) a cmdline containing the prefix PATH -- so all three arms
-# missed it, the check printed "clean: 0 prefix-owned processes", and the next boot met the stale
-# .darlingserver.sock / .init.pid of a server that no longer existed and never reached shellspawn readiness.
-#
-# The arms the contract pins:
-#   capability  the runtime's retained prefix DIRECTORY descriptor, compared by device:inode. This is the
-#               framework's own rule (west_commands/test_prefix.py::_runtime_retains_prefix); without it a
-#               process that scrubs DARLING_* and carries no path anywhere is invisible.
-#   initpid     the pid named by the prefix's own .init.pid.
-#   stale files .init.pid naming a dead pid, and idle .darlingserver*.sock files, are REPORTED by the
-#               diagnostic mode and CLEARED by a real run before it boots.
-#
-# No prefix is booted: synthetic processes carry exactly the argv and descriptor shapes the real ones do, and the
-# diagnostic mode (--list-owned) is the observable surface. A rule that can only be exercised by booting cannot be
-# tested, which is why that mode exists.
-set -uo pipefail
-
+# Host-only ownership regression: shared executable + exact prefix directory FD.
+# A PID record, argv or environment alone cannot claim a process. No guest boots.
+set -euo pipefail
 workspace_root="$(cd "$(dirname "$0")/.." && pwd)"
-harness="$workspace_root/scripts/darling-boot-run.sh"
-[ -x "$harness" ] || { echo "contract: no harness at $harness" >&2; exit 2; }
-
-tmp="$(mktemp -d)"
-prefix="$tmp/prefix-own"
-mkdir -p "$prefix/bin"
-printf '#!/bin/sh\nexit 0\n' > "$prefix/bin/darling"
-chmod 755 "$prefix/bin/darling"
-# The fake server must ignore its numeric argv, because the real one's argv carries the prefix as a CAPABILITY
-# ("darlingserver 4 3 <basename> 6 ..."). Two measured properties are deliberately kept: the stub is compiled (a
-# renamed `sleep` would reject the numeric arguments on the first line) and its NAME IS LONGER THAN 15 CHARACTERS,
-# so /proc/<pid>/comm is truncated and only the exe-basename arm can pass the ownership gate. That truncation is the
-# defect the first version of this arm had.
-printf '#include <unistd.h>\nint main(int argc, char **argv) { (void)argc; (void)argv; for (;;) pause(); }\n' \
-	> "$tmp/darlingserver-stub-long.c"
-cc -o "$tmp/darlingserver-stub-long" "$tmp/darlingserver-stub-long.c" 2>/dev/null || {
-	echo "contract: no C compiler to build the stub server" >&2
-	exit 2
-}
-
+harness="${DARLING_BOOT_HARNESS_UNDER_TEST:-$workspace_root/scripts/darling-boot-run.sh}"
+state="${DW_STATE_ROOT:-$workspace_root/../.west-state}/contracts/boot-ownership"
+mkdir -p "$state"
+tmp="$(mktemp -d "$state/run.XXXXXX")"
 pids=()
 cleanup() {
-	for p in "${pids[@]:-}"; do kill -9 "$p" 2>/dev/null; done
-	rm -rf "$tmp"
+	for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
+	for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+	rm -rf -- "$tmp"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+prefix="$tmp/prefix"
+other="$tmp/other-prefix"
+mkdir -p "$prefix" "$other" "$tmp/runtime/bin"
+printf '#include <unistd.h>\nint main(void) { for (;;) pause(); }\n' > "$tmp/holder.c"
+mkdir -p "$prefix/bin"
+# Refusing host sentinel for the old observer's launcher-presence prerequisite;
+# neither implementation may execute it in --list-owned mode.
+cp /bin/false "$prefix/bin/darling"
+cc -O2 -Wall -Wextra -o "$tmp/runtime/bin/darlingserver" "$tmp/holder.c"
 
-fail=0
-check() { # label expected actual
-	if [ "$2" = "$3" ]; then
-		echo "ok   $1"
-	else
-		echo "FAIL $1: expected [$2] got [$3]" >&2
-		fail=1
-	fi
-}
-contains() { case "$1" in *"$2"*) echo yes ;; *) echo no ;; esac; }
-
-# 1. The daemonized server: comm=darlingserver, argv shape as measured, and the prefix held as an open directory
-#    descriptor with no DARLING_* variable and no prefix path in argv.
-python3 -c '
-import os, sys
-fd = os.open(sys.argv[1], os.O_RDONLY)
-os.set_inheritable(fd, True)
-os.execv(sys.argv[2], ["darlingserver", "4", "3", os.path.basename(sys.argv[1]), "6", "1000", "1000", "8", "0"])
-' "$prefix" "$tmp/darlingserver-stub-long" &
-server_pid=$!
-pids+=("$server_pid")
-sleep 0.5
-
-# 2. A live pid recorded by the prefix itself, and an unrelated process that must never be reported.
-sleep 30 & init_pid=$!
-pids+=("$init_pid")
-sleep 30 & unrelated_pid=$!
-pids+=("$unrelated_pid")
-printf '%s\n' "$init_pid" > "$prefix/.init.pid"
-sleep 0.3
-
-out="$tmp/list-owned.txt"
-"$harness" --prefix "$prefix" --list-owned > "$out" 2>&1
-rc=$?
-check "diagnostic mode exits 0" 0 "$rc"
-check "diagnostic mode does not boot" no "$(contains "$(cat "$out")" "== run ==")"
-
-listed="$(grep -E '^[0-9]+$' "$out" | tr '\n' ' ')"
-check "capability arm reports the daemonized server" yes "$(contains " $listed " " $server_pid ")"
-check "initpid arm reports the prefix's own init pid" yes "$(contains " $listed " " $init_pid ")"
-check "unrelated process is not prefix-owned" no "$(contains " $listed " " $unrelated_pid ")"
-check "capability arm is named in the witness" yes "$(contains "$(cat "$out")" "arm=capability")"
-check "initpid arm is named in the witness" yes "$(contains "$(cat "$out")" "arm=initpid")"
-
-# 3. Stale runtime files: .init.pid naming a dead pid, and an idle socket. Both are reported, and neither hides
-#    behind a live owner.
-kill -9 "$server_pid" 2>/dev/null
-printf '999999\n' > "$prefix/.init.pid"
-for sock in .darlingserver.sock .darlingserver.stat.sock; do
-	python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.close()' "$prefix/$sock"
+env -u DPREFIX -u DARLING_PREFIX "$tmp/runtime/bin/darlingserver" 4 3 prefix 6 1000 1000 8 0 3<"$prefix" &
+server=$!; pids+=("$server")
+env -u DPREFIX -u DARLING_PREFIX "$tmp/runtime/bin/darlingserver" 4 3 other-prefix 6 1000 1000 8 0 3<"$other" &
+other_server=$!; pids+=("$other_server")
+DPREFIX="$prefix" DARLING_PREFIX="$prefix" "$tmp/runtime/bin/darlingserver" "--prefix=$prefix" 3<"$other" &
+observer=$!; pids+=("$observer")
+DPREFIX="$prefix" DARLING_PREFIX="$prefix" "$tmp/runtime/bin/darlingserver" &
+env_observer=$!; pids+=("$env_observer")
+sleep 60 &
+recorded_unrelated=$!; pids+=("$recorded_unrelated")
+printf '%s\n' "$recorded_unrelated" > "$prefix/.init.pid"
+# Wait for exec, not an arbitrary process readiness interval.
+for pid in "$server" "$other_server" "$observer" "$env_observer"; do
+	for attempt in {1..100}; do
+		[[ "$(readlink "/proc/$pid/exe" 2>/dev/null || true)" == "$tmp/runtime/bin/darlingserver" ]] && break
+		sleep 0.01
+	done
+	[[ "$(readlink "/proc/$pid/exe")" == "$tmp/runtime/bin/darlingserver" ]]
 done
-out2="$tmp/list-owned-stale.txt"
-"$harness" --prefix "$prefix" --list-owned > "$out2" 2>&1
-stale="$(grep -c '^STALE-RUNTIME-FILE' "$out2")"
-check "stale .init.pid and both idle sockets are reported" 3 "$stale"
-check "stale .init.pid names the dead pid" yes "$(contains "$(cat "$out2")" "$prefix/.init.pid pid=999999 dead")"
-check "stale server socket is reported" yes "$(contains "$(cat "$out2")" "$prefix/.darlingserver.sock")"
 
-if [ "$fail" -eq 0 ]; then
-	echo "DARLING-BOOT-HARNESS-OWNERSHIP PASS: capability, initpid and stale-file arms hold"
+if "$harness" --prefix "$prefix" --list-owned > "$tmp/observed" 2>&1; then
+	:
 else
-	echo "DARLING-BOOT-HARNESS-OWNERSHIP FAIL" >&2
+	result=$?
+	cat "$tmp/observed" >&2
+	exit "$result"
 fi
-exit "$fail"
+has_pid() { grep -Eq "^$1$" "$tmp/observed"; }
+has_pid "$server" || { cat "$tmp/observed"; echo 'FAIL missing capability owner' >&2; exit 1; }
+for pid in "$other_server" "$observer" "$env_observer" "$recorded_unrelated"; do
+	if has_pid "$pid"; then
+		cat "$tmp/observed"
+		echo "FAIL unrelated process classified as owned: $pid" >&2
+		exit 1
+	fi
+	kill -0 "$pid"
+done
+[[ "$(cat "$prefix/.init.pid")" == "$recorded_unrelated" ]]
+
+# Diagnostic observation does not consume stale metadata or remove socket files.
+printf '2147483647\n' > "$prefix/.init.pid"
+python3 - "$prefix" <<'PY'
+import os
+import socket
+import sys
+os.chdir(sys.argv[1])
+for name in ('.darlingserver.sock', '.darlingserver.stat.sock'):
+    with socket.socket(socket.AF_UNIX) as listener:
+        listener.bind(name)
+PY
+before="$(stat -c '%n:%d:%i:%f:%s' "$prefix/.init.pid" "$prefix/.darlingserver.sock" "$prefix/.darlingserver.stat.sock")"
+"$harness" --prefix "$prefix" --list-owned > "$tmp/stale-observed" 2>&1
+[[ "$(cat "$prefix/.init.pid")" == 2147483647 ]]
+[[ "$(stat -c '%n:%d:%i:%f:%s' "$prefix/.init.pid" "$prefix/.darlingserver.sock" "$prefix/.darlingserver.stat.sock")" == "$before" ]]
+printf 'DARLING-BOOT-HARNESS-OWNERSHIP PASS\n'

@@ -51,23 +51,6 @@ def sdk_homebrew_detection():
     check(fixed == (True, "11.3"), "fixed SDK must be discoverable and version-name consistent")
 
 
-def build_drift_gate():
-    def old_build(patches_yml_matches_tree, target):
-        return "built"
-
-    def fixed_build(patches_yml_matches_tree, target, skip_gate=False):
-        if skip_gate:
-            return "built"
-        if not patches_yml_matches_tree:
-            return "fatal: patchset DRIFT"
-        return "built"
-
-    check(old_build(False, "darlingserver") == "built", "old targeted build must proceed despite patchset drift")
-    check(fixed_build(False, "darlingserver") == "fatal: patchset DRIFT", "fixed targeted build must fail on drift")
-    check(fixed_build(False, "darlingserver", skip_gate=True) == "built", "fixed build must preserve explicit packaging opt-out")
-    check(fixed_build(True, "system_kernel") == "built", "fixed build must pass when tree matches patches.yml")
-
-
 def commpage_map_fixed():
     CANONICAL = "0x7fffffe00000"
 
@@ -105,7 +88,6 @@ TESTS = {
     "perl-disable-nsgetexecutablepath": perl_disable_nsgetexecutablepath,
     "libressl-nist-strict-aliasing": libressl_nist_strict_aliasing,
     "sdk-homebrew-detection": sdk_homebrew_detection,
-    "build-drift-gate": build_drift_gate,
     "commpage-map-fixed": commpage_map_fixed,
     "mldr-stack-mmap-fallback": mldr_stack_mmap_fallback,
 }

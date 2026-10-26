@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Exercise CMake installation isolation against the selected product source."""
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -27,22 +26,22 @@ def main():
     InstallSymlink(../files/payload "${CMAKE_INSTALL_PREFIX}/libexec/darling/System/Library/Caches/dsym/uuid/payload")
     ''')
         subprocess.run(['cmake', '-S', str(source), '-B', str(build), '-DCMAKE_INSTALL_PREFIX=' + str(prefix)], cwd=root, check=True)
-        base = root / 'base.json'
-        base.write_text(json.dumps({'schema': 1, 'entrypoints': [], 'resources': []}))
-        output = build / 'manifest.json'
-        subprocess.run(['python3', '-B', str(source_root / 'cmake/stage-homebrew-perl.py'),
-                        '--cmake', 'cmake', '--build-dir', str(build), '--install-prefix', str(prefix),
-                        '--manifest-input', str(base), '--manifest-output', str(output)],
-                       env={**os.environ, 'DESTDIR': str(root / 'inherited destination')}, cwd=root, check=True)
-        assert not prefix.exists(), 'component staging populated the real prefix'
-        assert not (root / 'inherited destination').exists(), 'inherited DESTDIR redirected staging'
-        resources = json.loads(output.read_text())['resources']
-        assert len(resources) == 3, resources
-        for item in resources:
-            path = Path(item['host_path'])
-            assert path.resolve().is_relative_to(build)
+        destination = root / 'staged-destination'
+        subprocess.run(
+            ['cmake', '--install', str(build)],
+            env={**os.environ, 'DESTDIR': str(destination)}, cwd=root, check=True,
+        )
+        assert not prefix.exists(), 'normal DESTDIR installation populated the real runtime root'
+        staged_prefix = destination / prefix.relative_to('/')
+        resources = [
+            staged_prefix / 'libexec/darling/System/Library/Perl/5.18/payload',
+            staged_prefix / 'libexec/darling/Library/Perl/5.18/payload',
+            staged_prefix / 'libexec/darling/usr/bin/payload',
+            staged_prefix / 'libexec/darling/System/Library/Caches/dsym/files/payload',
+        ]
+        for path in resources:
+            assert path.resolve().is_relative_to(destination)
             assert path.read_text() == 'real CMake installation payload\n'
-        staged_prefix = build / 'rootless-homebrew-perl' / prefix.relative_to('/')
         alias = staged_prefix / 'libexec/darling/System/Library/Caches/dsym/uuid/payload'
         assert alias.is_symlink() and alias.read_text() == 'real CMake installation payload\n'
         print('PASS real CMake relative install, absolute dSYM install, symlink install and DESTDIR isolation')

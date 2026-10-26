@@ -9,6 +9,8 @@ cd "$root"
 }
 ROOTLESS_TIER_REPO="$root"
 . "$root/ci/rootless-prefix.sh"
+export TMPDIR="$DW_STATE_ROOT/tmp"
+mkdir -p -- "$TMPDIR"
 
 status=0
 set +e
@@ -26,7 +28,9 @@ for ((index = 1; index <= $#; index += 2)); do
 		status=1
 		continue
 	fi
-	west test --prefix "$prefix" --cleanup-prefix
+	runtime_args=()
+	[[ -z "${DARLING_RUNTIME_ROOT:-}" ]] || runtime_args=(--runtime-root "$DARLING_RUNTIME_ROOT")
+	west test "${runtime_args[@]}" --prefix "$prefix" --cleanup-prefix
 	cleanup_rc=$?
 	if (( cleanup_rc == 0 )); then
 		rootless_prefix_remove "$kind" "$prefix"
@@ -39,7 +43,7 @@ for ((index = 1; index <= $#; index += 2)); do
 done
 west test --gc --gc-runtime-evidence
 gc_rc=$?
-"$root/scripts/west-job.sh" assert-no-live-west-test --state-root "${TMPDIR:-/tmp}"
+"$root/scripts/west-job.sh" assert-no-live-west-test --state-root "$TMPDIR"
 jobs_rc=$?
 (( gc_rc == 0 && jobs_rc == 0 )) || status=1
 exit "$status"

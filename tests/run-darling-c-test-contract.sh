@@ -2,8 +2,26 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+scratch="${DW_STATE_ROOT:-${repo%/*}/.west-state}/test-scratch"
+mkdir -p "$scratch"
+tmp="$(mktemp -d "$scratch/guest-c-contract.XXXXXX")"
+finish() {
+	local status="$1" command="$2" output
+	if (( status == 0 )); then
+		rm -rf "$tmp"
+	else
+		printf 'FAIL darling-c-test-contract: rc=%s command=%s\nartifacts: %s\n' \
+			"$status" "$command" "$tmp" >&2
+		for output in "$tmp"/*.out; do
+			[[ -f "$output" ]] || continue
+			printf '\n=== %s ===\n' "$output" >&2
+			cat "$output" >&2
+		done
+	fi
+}
+trap 'finish "$?" "$BASH_COMMAND"' EXIT
+export DARLING_RUNTIME_ROOT="$tmp/installed-runtime"
+mkdir -p "$DARLING_RUNTIME_ROOT/libexec/darling"
 
 cat >"$tmp/launcher" <<'SH'
 #!/usr/bin/env bash
@@ -220,34 +238,6 @@ if compgen -G "$tmp/prefix/private/var/tmp/${name}_unresolved.*" >/dev/null; the
 	exit 1
 fi
 
-cat >"$tmp/compile-fail.c" <<'C'
-int main(void) { return this_does_not_compile; }
-C
-printf 'darlingserver pid=42 exec-mldr\n' >"$tmp/rootless-boot.trace"
-printf 'launchd pid=43 runtime-loop\n' >"$tmp/prefix/.west-rootless-guest-fd.log"
-mkdir -p "$tmp/prefix/private/var/tmp"
-printf 'launchd pid=43 runtime-loop\n' >"$tmp/prefix/private/var/tmp/.west-rootless-boot.log"
-if DARLING_HOST_BOOT_TRACE="$tmp/rootless-boot.trace" DPREFIX="$tmp/prefix" \
-	"$repo/testkit/scripts/run-darling-c-test.sh" \
-	--name "${name}_compile_fail" --source "$tmp/compile-fail.c" \
-	--launcher "$tmp/launcher" --cc cc --cflags '' >"$tmp/compile-fail.out" 2>&1; then
-	cat "$tmp/compile-fail.out" >&2
-	exit 1
-fi
-grep -F -x -q WEST_GUEST_STAGE=compile "$tmp/compile-fail.out"
-grep -F -x -q WEST_TEST_FAILURE_PHASE=compile "$tmp/compile-fail.out"
-grep -E -q '^ORACLE_RC=[1-9][0-9]*$' "$tmp/compile-fail.out"
-grep -F -q 'WEST_GUEST_FILE_SHA256 launcher ' "$tmp/compile-fail.out"
-grep -F -q 'WEST_GUEST_FILE_MISSING prefix_libsystem_kernel ' "$tmp/compile-fail.out"
-grep -F -q -- '--- rootless host boot trace: ' "$tmp/compile-fail.out"
-grep -F -x -q 'darlingserver pid=42 exec-mldr' "$tmp/compile-fail.out"
-grep -F -q -- '--- rootless guest boot trace: ' "$tmp/compile-fail.out"
-grep -F -x -q 'launchd pid=43 runtime-loop' "$tmp/compile-fail.out"
-grep -F -q -- '--- rootless guest FD trace: ' "$tmp/compile-fail.out"
-if grep -F -x -q WEST_GUEST_STAGE=run "$tmp/compile-fail.out"; then
-	cat "$tmp/compile-fail.out" >&2
-	exit 1
-fi
 
 cat >"$tmp/hang.c" <<'C'
 #include <unistd.h>

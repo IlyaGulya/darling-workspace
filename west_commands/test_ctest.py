@@ -3,23 +3,63 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 import tempfile
+from collections.abc import Mapping
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from shlex import quote
 
-from test_runtime import (
-    load_ctest_runtime_profiles,
-    partition_ctest_runtime_profiles,
-)
 
 
 def is_ctest_binding(test: dict) -> bool:
     """A registration reference, not a fixture runner with a build-time label."""
     return bool(test.get("ctest-label") or test.get("ctest-name")) and test.get("runner") in {None, "ctest"}
+
+
+def installed_requirement_problems(test: dict, runtime) -> list[str]:
+    """Compare workload prerequisites with facts sealed into the installation."""
+    identity = runtime.identity
+    build = identity.get("build") if isinstance(identity, Mapping) else None
+    configuration = build.get("configuration") if isinstance(build, Mapping) else None
+    if not isinstance(configuration, Mapping):
+        configuration = {}
+    problems = []
+    workload = test.get("id") or test.get("name") or "<unnamed>"
+    false_constants = {"", "0", "OFF", "NO", "FALSE", "N", "IGNORE", "NOTFOUND"}
+    boolean_constants = false_constants | {"1", "ON", "YES", "TRUE", "Y"}
+    for key, expected in test.get("requires-build-features", {}).items():
+        actual = configuration.get(key)
+        expected_text = ("ON" if expected else "OFF") if isinstance(expected, bool) else str(expected)
+        requirement = f"workload {workload} requires installed CMake {key}={expected_text}"
+        if actual is None:
+            problems.append(f"{requirement}; selected {key}=unknown (installation {runtime.root})")
+            continue
+        actual_text = str(actual)
+        if isinstance(expected, bool) or expected_text.upper() in boolean_constants:
+            def cmake_bool(value) -> bool:
+                if isinstance(value, bool):
+                    return value
+                text = str(value).upper()
+                return text not in false_constants and not text.endswith("-NOTFOUND")
+            matches = cmake_bool(actual) == cmake_bool(expected)
+        else:
+            matches = actual_text == expected_text
+        if not matches:
+            problems.append(f"{requirement}; selected {key}={actual_text} (installation {runtime.root})")
+    for relative in test.get("requires-installed-paths", []):
+        path = Path(relative)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError(f"workload {workload}: installed prerequisite path must be relative: {relative}")
+        installed = runtime.root / path
+        # Broken symlinks can be intentional filesystem-oracle inputs.
+        if not installed.is_symlink() and not installed.exists():
+            problems.append(
+                f"workload {workload} requires installed path {relative}; "
+                f"selected installation {runtime.root} is missing {relative}"
+            )
+    return problems
 
 
 def ctest_reference_args(test: dict) -> list[str]:
@@ -71,16 +111,11 @@ def ctest_metadata_variants(
         if len(environments) != 1 or not environments <= {"host", "darling", "macos"}:
             raise ValueError(f"CTest registration {name!r} has ambiguous environment labels")
         environment = next(iter(environments))
-        # A scalar runs/env remains a restriction of this patch binding.
+        # A scalar runs/env remains a restriction of this workload binding.
         if test.get("env") and test["env"] != environment:
             continue
-        profiles = [label.removeprefix("runtime-profile:") for label in labels
-                    if label.startswith("runtime-profile:")]
         if environment != "darling" and (
-            test.get("runtime-profile")
-            or profiles
-            or set(test.get("requires", [])) & {"darling-prefix", "darling-eunion-prefix"}
-            or (test.get("red-proof") or {}).get("mode") == "guest-runtime-deploy"
+            set(test.get("requires", [])) & {"darling-prefix", "darling-eunion-prefix"}
         ):
             raise ValueError(
                 f"CTest registration {name!r}: Darling runtime ownership needs "
@@ -91,7 +126,6 @@ def ctest_metadata_variants(
         variant["_ctest"] = {
             "name": name,
             "labels": labels,
-            "profiles": profiles,
             "disabled": bool(properties.get("DISABLED", False)),
             "index": registration.get("_ctest_index"),
             "directory": properties.get("WORKING_DIRECTORY"),
@@ -391,7 +425,7 @@ class CtestSelectionMixin:
             configured["ctest_build"] = self._configure_and_build(
                 self._testkit_dir(),
                 self._executor,
-                darling_launcher=self._resolve_darling_launcher(self._prefix),
+                darling_launcher=str(self._runtime.launcher) if getattr(self, "_runtime", None) else None,
                 prefix=self._prefix,
                 bundle_root=str(getattr(self, "_bundle_root", "")),
                 build_dir=Path(temp) / "build",
@@ -401,19 +435,11 @@ class CtestSelectionMixin:
             )
             yield configured
 
-    def _ctest_runtime_profile_definitions(self) -> dict[str, dict]:
-        path = self._testkit_dir() / "runtime-profiles.yml"
-        try:
-            return load_ctest_runtime_profiles(path)
-        except (OSError, ValueError) as error:
-            self.die(f"invalid CTest runtime profile definitions at {path}: {error}")
-
-    def _selected_ctest_runtime_groups(
+    def _selected_ctest_groups(
         self,
         build: Path,
         label_args: list[str],
         passthrough: list[str],
-        additional_profiles: list[str],
         *,
         env: str | None = None,
         diag: str | None = None,
@@ -430,12 +456,12 @@ class CtestSelectionMixin:
             capture_output=True,
         )
         if discovery.returncode:
-            self._dump_command_tail("CTest runtime profile discovery", discovery)
-            self.die("could not discover CTest runtime profiles")
+            self._dump_command_tail("CTest selection discovery", discovery)
+            self.die("could not discover CTest selection")
         try:
             payload = json.loads(discovery.stdout)
         except json.JSONDecodeError as error:
-            self.die(f"CTest runtime profile discovery returned invalid JSON: {error}")
+            self.die(f"CTest selection discovery returned invalid JSON: {error}")
         if not payload.get("tests"):
             self.die("CTest selectors matched no registrations; refusing an empty selection")
         try:
@@ -456,7 +482,6 @@ class CtestSelectionMixin:
                 "name": variant["_ctest"]["name"],
                 "index": variant["_ctest"]["index"],
                 "darling": variant["env"] == "darling",
-                "profiles": variant["_ctest"]["profiles"],
             }
             for variant in variants
             if (not env or variant["env"] == env)
@@ -464,38 +489,20 @@ class CtestSelectionMixin:
         ]
         if not selections:
             self.die(f"CTest selectors matched no applicable registrations (env={env or 'any'}, diag={diag or 'any'})")
-        try:
-            return partition_ctest_runtime_profiles(
-                self._ctest_runtime_profile_definitions(),
-                selections,
-                additional_profiles,
-            )
-        except ValueError as error:
-            self.die(f"invalid CTest runtime profile selection: {error}")
+        groups = []
+        for darling in (False, True):
+            members = [selection for selection in selections if selection["darling"] == darling]
+            if members:
+                groups.append({
+                    "darling": darling,
+                    "tests": [selection["name"] for selection in members],
+                    "indices": [selection["index"] for selection in members],
+                })
+        return groups
 
     @contextmanager
-    def _ctest_runtime_profile_context(self, profiles: list[str]):
-        """Build and temporarily deploy the runtime declared by selected CTest cases."""
-
-        if not profiles:
-            prefix_text = getattr(self, "_prefix", None)
-            runtime_env = os.environ.copy()
-            if prefix_text:
-                runtime_env.update(self._darling_prefix_env(prefix_text))
-                launcher = self._resolve_darling_launcher(prefix_text)
-                if launcher:
-                    runtime_env["DARLING"] = launcher
-                    runtime_env["DARLING_LAUNCHER"] = launcher
-            yield runtime_env
-            return
-        with self._runtime_profile_deployment_context(
-            profiles, label_prefix="CTest", retain_deployment=False
-        ) as deployment:
-            yield deployment.env
-
-    @contextmanager
-    def _metadata_ctest_selection(self, selected, *, env, diag, label, additional_profiles):
-        """Resolve references in the active source profile before prefix acquisition."""
+    def _metadata_ctest_selection(self, selected, *, env, diag, label):
+        """Resolve workload CTest references before prefix acquisition."""
         from test_selection import select_metadata_tests
         resolved = []
         builds = {}
@@ -514,7 +521,7 @@ class CtestSelectionMixin:
                     scratch = stack.enter_context(tempfile.TemporaryDirectory(prefix="west-ctest-selection-"))
                     builds[scope] = self._configure_and_build(
                         self._testkit_dir(), self._executor,
-                        darling_launcher=self._resolve_darling_launcher(self._prefix),
+                        darling_launcher=str(self._runtime.launcher) if getattr(self, "_runtime", None) else None,
                         prefix=self._prefix,
                         bundle_root=str(getattr(self, "_bundle_root", "")),
                         build_dir=Path(scratch) / "build",
@@ -554,23 +561,11 @@ class CtestSelectionMixin:
                         test, registrations, default_env="macos" if sys.platform == "darwin" else "host"
                     )
                     chosen = select_metadata_tests(
-                        {"patches": [{**patch, "tests": variants}]},
-                        patch_path=None, bead=None, env=env, diag=diag, label=label,
-                        red_only=False, resolved_diag=self._resolved_diag,
+                        patch, variants, env=env, diag=diag, label=label,
+                        resolved_diag=self._resolved_diag,
                     ).selected
                     for _, variant in chosen:
                         registration = variant["_ctest"]
-                        profiles = list(dict.fromkeys([
-                            *([variant["runtime-profile"]] if variant.get("runtime-profile") else []),
-                            *registration["profiles"],
-                        ]))
-                        groups = partition_ctest_runtime_profiles(
-                            self._ctest_runtime_profile_definitions(),
-                            [{"name": registration["name"], "darling": variant["env"] == "darling",
-                              "profiles": profiles}],
-                            additional_profiles,
-                        )
-                        registration["profiles"] = groups[0]["profiles"]
                         registration["build"] = str(build)
                         resolved.append((patch, variant))
                     if not chosen:
@@ -584,27 +579,4 @@ class CtestSelectionMixin:
             if not resolved:
                 detail = "; ".join(unavailable) or "metadata selectors matched no runnable bindings"
                 self.die(f"no tests selected (env={env or 'any'}): {detail}")
-            # The outer prefix lease shuts down the existing runtime before
-            # entering a provider. Its launcher mode must already be known.
-            launcher_env = {}
-            definitions = None
-            for _, test in resolved:
-                profiles = list(test.get("_ctest", {}).get("profiles", []))
-                if test.get("runtime-profile"):
-                    profiles.append(test["runtime-profile"])
-                for name in dict.fromkeys(profiles):
-                    if definitions is None:
-                        definitions = self._ctest_runtime_profile_definitions()
-                    if name not in definitions:
-                        self.die(f"unknown runtime profile: {name}")
-                    for key, value in definitions[name].get("launcher-env", {}).items():
-                        value = str(value)
-                        if key in launcher_env and launcher_env[key] != value:
-                            self.die(f"selected runtime profiles conflict on launcher environment {key}")
-                        launcher_env[key] = value
-            previous_prefix_env = getattr(self, "_prefix_env", {})
-            self._prefix_env = {**previous_prefix_env, **launcher_env}
-            try:
-                yield resolved
-            finally:
-                self._prefix_env = previous_prefix_env
+            yield resolved

@@ -62,24 +62,24 @@
 # if a non-bare tier is requested but no executor is configured, the test falls
 # back to bare (with a warning) so the suite still runs. The Darling launcher is
 # resolved from the CTest process environment, never baked into CTest at CMake
-# configure time: a runtime provider can therefore replace it with its isolated
-# prefix launcher. Darling guest C tests are SOURCE-driven: the local suite
+# configure time: the selected installed image and independent writable prefix
+# are supplied by the caller. Darling guest C tests are SOURCE-driven: the suite
 # uploads the C source, compiles it with the guest CLT inside the prefix, then
 # runs the guest binary. Do not run Linux host test binaries under `darling shell`.
 
 set(_ADD_COMPAT_TEST_CMAKE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 get_filename_component(_ADD_COMPAT_TEST_ROOT
   "${_ADD_COMPAT_TEST_CMAKE_DIR}/.." ABSOLUTE)
-set(DARLING_SHELL "${DARLING_SHELL}" CACHE STRING
-  "Deprecated command list for Darling shell; prefer DARLING_LAUNCHER")
 set(DARLING_TEST_PREFIX "${DARLING_TEST_PREFIX}" CACHE PATH
   "Darling prefix exported to env=darling tests as DPREFIX/DARLING_PREFIX")
-option(DARLING_TEST_NO_OVERLAYFS
-  "Export DARLING_NOOVERLAYFS=1 to env=darling CTest entries" OFF)
+if(DEFINED DARLING_TEST_NO_OVERLAYFS)
+  message(FATAL_ERROR
+    "DARLING_TEST_NO_OVERLAYFS is retired; remove it from configure arguments. "
+    "For a stale cache, run: cmake -S '${CMAKE_SOURCE_DIR}' "
+    "-B '${CMAKE_BINARY_DIR}' -U DARLING_TEST_NO_OVERLAYFS")
+endif()
 set(DARLING_TEST_BUNDLE_ROOT "${DARLING_TEST_BUNDLE_ROOT}" CACHE PATH
   "Debug bundle root passed to darling-debug-runner for guarded/forensic tests")
-set(DARLING_TEST_DEFAULT_RUNTIME_PROFILE "homebrew" CACHE STRING
-  "Runtime provider assigned to env=darling tests without a product-specific override")
 set(DARLING_TEST_GUARDED_CLEANUP_GRACE_SECONDS 10 CACHE STRING
   "Seconds reserved after a guarded timeout for diagnostics and cleanup")
 if(NOT DARLING_TEST_GUARDED_CLEANUP_GRACE_SECONDS MATCHES "^[0-9]+$")
@@ -89,7 +89,7 @@ endif()
 
 function(add_compat_test)
   set(options INSTALL FUZZ STRESS SMOKE)
-  set(oneValue NAME SOURCE BEAD DIAG WORKDIR TIMEOUT MIN_VERSION MAX_VERSION RUNTIME_PROFILE)
+  set(oneValue NAME SOURCE BEAD DIAG WORKDIR TIMEOUT MIN_VERSION MAX_VERSION)
   set(multiValue ENVS SUBMODULES EXTRA_SOURCES INCLUDES DEFINES LIBS RESOURCES ARGS OK_MARKER EXPECT_FAILURE_MARKER)
   cmake_parse_arguments(ACT "${options}" "${oneValue}" "${multiValue}" ${ARGN})
 
@@ -122,10 +122,6 @@ function(add_compat_test)
         "(expected host|darling|macos)")
     endif()
   endforeach()
-  if(ACT_RUNTIME_PROFILE AND NOT "darling" IN_LIST ACT_ENVS)
-    message(FATAL_ERROR
-      "add_compat_test(${ACT_NAME}): RUNTIME_PROFILE requires ENVS darling")
-  endif()
   if(ACT_DIAG AND NOT ACT_DIAG MATCHES "^(bare|guarded|forensic)$")
     message(FATAL_ERROR "add_compat_test: DIAG must be bare|guarded|forensic")
   endif()
@@ -352,32 +348,11 @@ function(add_compat_test)
         "DPREFIX=${DARLING_TEST_PREFIX}"
         "DARLING_PREFIX=${DARLING_TEST_PREFIX}"
         "DARLING_GUEST_TIMEOUT_SECONDS=${guest_stage_timeout}")
-      if(DARLING_TEST_NO_OVERLAYFS)
-        set_property(TEST "${test_name}" APPEND PROPERTY ENVIRONMENT
-          "DARLING_NOOVERLAYFS=1")
-      endif()
     endif()
 
     set(labels "env:${env}" "diag:${diag}")
     if(ACT_BEAD)
       list(APPEND labels "bead:${ACT_BEAD}")
-    endif()
-    if(env STREQUAL "darling")
-      # Most guest cases run against the ordinary product runtime.  Keep that
-      # deployment decision in the framework instead of repeating it in every
-      # product test.  RUNTIME_PROFILE remains a narrow override for a case
-      # whose subject is a distinct runtime variant (for example rootless or
-      # a perf-only darlingserver build).
-      set(runtime_profile "${ACT_RUNTIME_PROFILE}")
-      if(NOT runtime_profile)
-        set(runtime_profile "${DARLING_TEST_DEFAULT_RUNTIME_PROFILE}")
-      endif()
-      if(NOT runtime_profile)
-        message(FATAL_ERROR
-          "add_compat_test(${ACT_NAME}): env=darling needs a runtime provider; "
-          "set DARLING_TEST_DEFAULT_RUNTIME_PROFILE or RUNTIME_PROFILE")
-      endif()
-      list(APPEND labels "runtime-profile:${runtime_profile}")
     endif()
     foreach(sm IN LISTS ACT_SUBMODULES)
       list(APPEND labels "submod:${sm}")

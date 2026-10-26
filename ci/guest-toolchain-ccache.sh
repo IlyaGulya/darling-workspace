@@ -88,9 +88,11 @@ case "$command_name" in
 			ci/guest-toolchain-ccache.sh
 			ci/run-test-tier.sh
 			west_commands/test.py
-			west_commands/test_runtime.py
-			west_commands/test_runtime_build.py
-			testkit/runtime-profiles.yml
+			ci/rootless-prefix.sh
+			west_commands/runtime_install.py
+			west_commands/darling_build.py
+			west_commands/darling_bootstrap.py
+			west_commands/deploy_receipt.py
 		)
 		for file in "${contract_files[@]}"; do
 			[[ -f "$root/$file" ]] || {

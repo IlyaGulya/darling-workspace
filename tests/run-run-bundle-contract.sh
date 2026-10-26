@@ -11,22 +11,24 @@
 #   * launchd's own debug log -- where the answer to "which Mach service did the workload resolve" actually was --
 #     was collected by nothing.
 #
-# No prefix, no guest and no Darling build is involved: the harness reads the workload's status out of the LOG it
-# was given, so this drives it offline against a stub `<prefix>/bin/darling` that runs the `--cmd` payload on the
-# HOST (the same technique as tests/run-darling-boot-verdict-contract.sh).
+# No guest or Darling build is involved. A synthetic installed host launcher runs
+# the --cmd payload on the host; separate guest-state directories exercise only
+# bundle collection, classification and storage.
 set -uo pipefail
 
 workspace_root="$(cd "$(dirname "$0")/.." && pwd)"
 harness="$workspace_root/scripts/darling-boot-run.sh"
 [ -x "$harness" ] || { echo "contract: no executable harness at $harness" >&2; exit 2; }
 
-scratch="$workspace_root/.west-state/supervisor-tooling-20261025"
+scratch="${DW_STATE_ROOT:-$workspace_root/../.west-state}/contracts"
 mkdir -p "$scratch"
 tmp="$(mktemp -d "$scratch/run-bundle-contract.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 # Exercise shell collection without triggering the Rust build shim. The shared codec is real.
 mkdir -p "$tmp/scripts"
 cp "$harness" "$tmp/scripts/darling-boot-run.sh"
+cp "$workspace_root/scripts/darling-runtime.sh" "$tmp/scripts/darling-runtime.sh"
+ln -s "$workspace_root/west_commands" "$tmp/west_commands"
 harness="$tmp/scripts/darling-boot-run.sh"
 export EVIDENCE_HELPER="$workspace_root/scripts/darling-evidence.py"
 cat > "$tmp/scripts/darling-evidence.py" <<'CODEC'
@@ -51,21 +53,21 @@ DIAG
 chmod 755 "$tmp/scripts/dwdiag"
 if [ -x "$workspace_root/scripts/darling-stop-reason.sh" ]; then
 	cp "$workspace_root/scripts/darling-stop-reason.sh" "$tmp/scripts/darling-stop-reason.sh"
-	mkdir -p "$tmp/west_commands"
-	cp "$workspace_root/west_commands/stop_reason.py" "$workspace_root/west_commands/evidence_storage.py" "$tmp/west_commands/"
 fi
 evidence_cat() { python3 "$EVIDENCE_HELPER" cat "$1"; }
 prefix="$tmp/prefix-bundle"
-mkdir -p "$prefix/bin" "$prefix/private/var/log/com.apple.launchd"
+runtime="$tmp/runtime"
+mkdir -p "$runtime/bin" "$runtime/libexec/darling" "$prefix/private/var/log/com.apple.launchd"
+cp /bin/true "$runtime/bin/darlingserver"
 : > "$prefix/private/var/log/dserver.log"
-cat > "$prefix/bin/darling" <<'STUB'
+cat > "$runtime/bin/darling" <<'STUB'
 #!/bin/sh
 for a in "$@"; do last="$a"; done
 case "$*" in *shutdown*) exit 0 ;; esac
 eval "$last"
 exit $?
 STUB
-chmod 755 "$prefix/bin/darling"
+chmod 755 "$runtime/bin/darling"
 # launchd's own debug log, which the bundle must collect and ANNOUNCE: the service a workload resolved is a line in
 # THIS file, in a process other than the one under test.
 printf 'Mach service lookup: com.apple.FileCoordination from pid 4242\nMach service lookup failed: com.example.Absent from pid 4242\n' \
@@ -74,7 +76,7 @@ printf 'Mach service lookup: com.apple.FileCoordination from pid 4242\nMach serv
 # An abort line LONGER than the 512-byte cap that once truncated exactly this record. The bundle must carry it WHOLE.
 long_body="$(printf 'x%.0s' $(seq 1 900))"
 log="$tmp/run.log"
-out="$("$harness" --prefix "$prefix" --wait 12 --log "$log" \
+out="$("$harness" --runtime-root "$runtime" --prefix "$prefix" --wait 12 --log "$log" \
 	--cmd "printf 'HELLO=1\nFINAL=1\nlibc++abi: terminating with uncaught exception: %s\n' '$long_body'" 2>"$tmp/stderr.txt")"; rc=$?
 bundle="$log.bundle"
 
@@ -130,7 +132,7 @@ check "arm 7: the deployed-copy digest is an item or a MISSING row" yes \
 # 8. HONESTY IN THE OTHER DIRECTION: a bundle directory that already holds another run's files is REFUSED, because a
 #    mixed bundle reads as this run's evidence.
 mkdir -p "$tmp/used"; : > "$tmp/used/old-evidence"
-"$harness" --prefix "$prefix" --wait 5 --log "$tmp/run2.log" --bundle "$tmp/used" --cmd 'true' >"$tmp/out2.txt" 2>&1; rc2=$?
+"$harness" --runtime-root "$runtime" --prefix "$prefix" --wait 5 --log "$tmp/run2.log" --bundle "$tmp/used" --cmd 'true' >"$tmp/out2.txt" 2>&1; rc2=$?
 check "arm 8: a non-empty --bundle directory is refused" 2 "$rc2"
 check "arm 8: refused bundle keeps original evidence untouched" yes "$([ -f "$tmp/used/old-evidence" ] && [ ! -e "$tmp/used/MANIFEST" ] && echo yes || echo no)"
 
@@ -151,7 +153,7 @@ mkdir -p "$(dirname "$server")"
 bundle_run() { # case-name command
 	local name="$1" command="$2"
 	bundle="$tmp/bundle-$name"
-	out="$("$harness" --prefix "$prefix" --log "$tmp/$name.log" --bundle "$bundle" \
+	out="$("$harness" --runtime-root "$runtime" --prefix "$prefix" --log "$tmp/$name.log" --bundle "$bundle" \
 		--wait 5 --poll 'DONE=' --marker 'DONE=' --cmd "$command" 2>&1)"
 	rc=$?
 }
@@ -248,7 +250,7 @@ check "compression failure: manifest records storage failure" yes \
 
 : > "$server"
 bundle="$tmp/bundle-frozen"
-out="$("$harness" --prefix "$prefix" --log "$tmp/frozen.log" --bundle "$bundle" --freeze-on-fail \
+out="$("$harness" --runtime-root "$runtime" --prefix "$prefix" --log "$tmp/frozen.log" --bundle "$bundle" --freeze-on-fail \
 	--wait 5 --poll 'DONE=' --marker 'DONE=' --cmd \
 	'python3 -c '\''import os; open(os.environ["DPREFIX"]+"/private/var/log/dserver.log","a").write("plane-doorbell-sent frozen-proof\n"*4096)'\''; echo DONE=9' 2>&1)"
 rc=$?

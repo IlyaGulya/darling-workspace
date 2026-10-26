@@ -1,331 +1,139 @@
-import sys
+"""Flat workload schema and retained structured runner inputs."""
+
+from copy import deepcopy
 from pathlib import Path
+import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from west_commands.test_manifest import ManifestError, normalize_test, normalize_test_profile
+from west_commands.test_manifest import ManifestError, load_workloads, normalize_workloads
 
 
-profile = {
+fixture = {
     "version": 1,
-    "test-profiles": {
-        "guest-runtime": {
-            "kind": "guest",
-            "coverage-tier": "runtime",
-            "runs": "guest",
-            "diag": "bare",
-            "runner": "guest-c-fixture",
-            "repo": "darling-workspace",
-            "compile-flags": ["-std=gnu11", "-Wall", "-Wextra", "-Werror"],
-            "red-proof": "runtime",
-        },
-        "guest-runtime-guarded": {
-            "extends": "guest-runtime",
-            "diag": "guarded",
-        },
-    },
-    "artifact-profiles": {
-        "xnu-kernel": {
-            "module": "darling/src/external/xnu",
-            "build-targets": ["system_kernel"],
-            "deploy": ["usr/lib/system/libsystem_kernel.dylib"],
-        },
-        "dyld": {
-            "module": "darling/src/external/dyld",
-            "build-targets": ["src/external/dyld/dyld"],
-            "deploy": ["usr/lib/dyld"],
-        },
-    },
-    "resource-profiles": {
-        "dcc-smoke-cache": {
-            "kind": "dcc-cache",
-            "source-module": "darling/src/external/darlingserver",
-            "source-ref": "HEAD",
-            "tools-dir": "tools/closure-cache",
-            "builder": "dcc5-builder.c",
-            "closure-list": "smoke2-list.txt",
-            "install-root": "guest-visible",
-            "env": "DARLING_DYLD_DCC2_PATH",
-            "enable-env": "DARLING_DYLD_DCC2",
-        },
-        "guest-trace": {
-            "kind": "host-trace-files",
-            "oracle": True,
-            "files": [
-                {
-                    "env": "WEST_TRACE",
-                    "prefix-relative-path": "private/var/tmp/trace.log",
-                    "contains": ["TRACE_OK"],
-                }
-            ],
-        },
-        "rpc-stats": {
-            "kind": "host-stat-deltas",
-            "fields": [{"path": "rpc.calls", "min-delta": 1}],
-        },
-    },
-    "fixture-profiles": {
-        "eunion-overlay": {
-            "kind": "eunion-overlay",
-            "template-files": [
-                {
-                    "guest-path": "/private/var/tmp/lower.txt",
-                    "contents": "LOWER\n",
-                }
-            ],
-            "upper-files": [
-                {
-                    "guest-path": "/private/var/tmp/upper.txt",
-                    "contents": "UPPER\n",
-                }
-            ],
-            "template-symlinks": [
-                {
-                    "guest-path": "/private/var/tmp/link",
-                    "target": "target",
-                }
-            ],
-            "cleanup-dirs": ["/private/var/tmp/eunion-contract"],
-            "forbid-template-paths": ["/private/var/tmp/created.txt"],
-            "require-upper-paths": ["/private/var/tmp/created-upper.txt"],
-            "verify-template-files-after": True,
-        },
-    },
-    "patches": [
+    "workloads": [
         {
-            "path": "xnu/compact.patch",
-            "module": "darling/src/external/xnu",
-            "tests": [
-                {
-                    "use": "guest-runtime-guarded",
-                    "name": "compact_guest",
-                    "script": "tests/compact_guest.c",
-                    "ok-marker": "COMPACT_OK",
-                    "artifacts": ["xnu-kernel"],
-                    "resources": ["guest-trace", "rpc-stats"],
-                    "fixtures": ["eunion-overlay"],
-                    "timeout-seconds": 45,
-                    "red-proof": {
-                        "current-minus-skip-patches": ["xnu/downstream.patch"],
-                        "expect-output-contains": ["old runtime failure"],
-                    },
-                },
-                {
-                    "ctest": "bead:dar-q95.6",
-                    "runs": "host",
-                    "red-proof": "source",
-                    "build-target": "darling_ec_tls_regress",
-                    "runner": "darling-cmake-target-fixture",
-                    "name": "ctest_alias",
-                },
-                {
-                    "name": "verbose_host",
-                    "kind": "contract",
-                    "coverage-tier": "host",
-                    "env": "host",
-                    "runner": "script",
-                    "script": "tests/run-verbose.sh",
-                },
-            ],
-        }
+            "id": "guest-trace", "name": "same-name", "module": "darling/src/external/darlingserver",
+            "bead": "dar-a", "kind": "guest", "env": "darling", "diag": "guarded",
+            "runner": "guest-c-fixture", "repo": "darling-workspace",
+            "script": "tests/guest.c", "args": ["--mode", "full"],
+            "ok-marker": "GUEST_OK", "timeout-seconds": 45,
+            "compile-flags": ["-std=gnu11", "-Wall", "-Werror"],
+            "requires": ["darling-prefix", "darling-eunion-prefix", "homebrew-lz4"],
+            "guest-env-vars": {"TRACE": "1"}, "env-vars": {"INPUT": "value"},
+            "host-temp-files": [{"env": "FAULT", "prefix-relative-path": "private/var/tmp/fault"}],
+            "host-trace-oracle": True,
+            "host-trace-files": [{"env": "TRACE", "prefix-relative-path": "private/var/tmp/trace", "contains": ["TRACE_OK"]}],
+            "host-stat-deltas": [{"path": "rpc.calls", "min-delta": 1}],
+            "eunion-template-files": [{"guest-path": "/private/var/tmp/lower", "contents": "LOWER\n"}],
+            "eunion-template-symlinks": [{"guest-path": "/private/var/tmp/link", "target": "lower"}],
+            "eunion-upper-files": [{"guest-path": "/private/var/tmp/upper", "contents": "UPPER\n"}],
+            "eunion-cleanup-dirs": ["/private/var/tmp/fixture"],
+            "eunion-forbid-template-paths": ["/private/var/tmp/created"],
+            "eunion-require-upper-paths": ["/private/var/tmp/created"],
+            "eunion-verify-template-files-after": True,
+        },
+        {"id": "host-model", "name": "same-name", "module": "darling", "runner": "c-fixture",
+         "coverage-tier": "model", "red": True,
+         "red-proof": {"mode": "self", "expect-output-contains": ["OLD_MODEL_REJECTED", "MODEL_OK"]}},
+        {"id": "source-script", "module": "darling/src/external/darlingserver",
+         "runner": "source-script-fixture", "source-script": "tests/current.sh",
+         "source-env": "DSERVER_SRC_ROOT", "cases": [{"name": "default", "args": ["full"], "stdout": "OK\n"}]},
+        {"id": "ctest", "module": "darling", "ctest-label": "bead:dar-a", "ctest-name": "host/regression"},
     ],
+    "aliases": {"example": ["guest-trace", "host-model"]},
 }
+normalized = normalize_workloads(fixture)
+assert normalized["workloads"][0] == {**fixture["workloads"][0], "coverage-tier": "runtime"}
+assert normalized["workloads"][1]["red-proof"] == fixture["workloads"][1]["red-proof"]
+assert normalized["workloads"][2]["coverage-tier"] == "source"
+assert "env" not in normalized["workloads"][3], "CTest registration owns its environment variants"
+assert "diag" not in normalized["workloads"][3], "CTest registration owns its diagnostic variants"
+assert "env" not in fixture["workloads"][1], "normalization must not mutate inputs"
 
-normalized = normalize_test_profile(profile)
-tests = normalized["patches"][0]["tests"]
-compact = tests[0]
-assert compact["kind"] == "guest", compact
-assert compact["coverage-tier"] == "runtime", compact
-assert compact["env"] == "darling", compact
-assert compact["diag"] == "guarded", compact
-assert compact["runner"] == "guest-c-fixture", compact
-assert compact["repo"] == "darling-workspace", compact
-assert compact["requires"] == ["darling-prefix", "darling-eunion-prefix"], compact
-assert compact["compile-flags"] == ["-std=gnu11", "-Wall", "-Wextra", "-Werror"], compact
-assert compact["red"] is True, compact
-assert compact["script"] == "tests/compact_guest.c", compact
-assert compact["ok-marker"] == "COMPACT_OK", compact
-assert compact["timeout-seconds"] == 45, compact
-assert compact["red-proof"]["mode"] == "guest-runtime-deploy", compact
-assert compact["red-proof"]["expect-failure-phase"] == "run", compact
-assert compact["red-proof"]["bad-profile"] == "current-minus-patch", compact
-assert compact["red-proof"]["current-minus-skip-patches"] == ["xnu/downstream.patch"], compact
-assert compact["red-proof"]["expect-output-contains"] == ["old runtime failure"], compact
-assert compact["red-proof"]["runtime-artifacts"] == [
-    {
-        "module": "darling/src/external/xnu",
-        "build-targets": ["system_kernel"],
-        "deploy": ["usr/lib/system/libsystem_kernel.dylib"],
-    }
-], compact
-assert compact["host-trace-oracle"] is True, compact
-assert compact["host-trace-files"] == [
-    {
-        "env": "WEST_TRACE",
-        "prefix-relative-path": "private/var/tmp/trace.log",
-        "contains": ["TRACE_OK"],
-    }
-], compact
-assert compact["host-stat-deltas"] == [{"path": "rpc.calls", "min-delta": 1}], compact
-assert compact["eunion-template-files"] == [
-    {"guest-path": "/private/var/tmp/lower.txt", "contents": "LOWER\n"}
-], compact
-assert compact["eunion-upper-files"] == [
-    {"guest-path": "/private/var/tmp/upper.txt", "contents": "UPPER\n"}
-], compact
-assert compact["eunion-template-symlinks"] == [
-    {"guest-path": "/private/var/tmp/link", "target": "target"}
-], compact
-assert compact["eunion-cleanup-dirs"] == ["/private/var/tmp/eunion-contract"], compact
-assert compact["eunion-forbid-template-paths"] == ["/private/var/tmp/created.txt"], compact
-assert compact["eunion-require-upper-paths"] == [
-    "/private/var/tmp/created-upper.txt"
-], compact
-assert compact["eunion-verify-template-files-after"] is True, compact
-assert "darling-eunion-prefix" in compact["requires"], compact
-assert (
-    "use" not in compact
-    and "extends" not in compact
-    and "artifacts" not in compact
-    and "resources" not in compact
-    and "fixtures" not in compact
-    and "runs" not in compact
-)
+with tempfile.TemporaryDirectory(prefix="west-workloads-contract-") as temporary:
+    path = Path(temporary) / "workloads.yml"
+    path.write_text("version: 1\nworkloads:\n- id: current\n  module: darling\n  ctest-label: smoke\n")
+    loaded = load_workloads(path)
+    assert loaded["workloads"][0]["id"] == "current"
+    assert loaded["aliases"] == {}
 
-mixed_red_runner = normalize_test(
-    {
-        "name": "mixed_red_runner",
-        "kind": "guest",
-        "runner": "guest-c-fixture",
-        "script": "tests/current.c",
-        "red": True,
-        "red-proof": {
-            "mode": "guest-runtime-deploy",
-            "red-runner": {"runner": "script", "script": "tests/old.sh"},
-            "runtime-artifacts": [
-                {
-                    "module": "darling/src/external/darlingserver",
-                    "build-targets": ["darlingserver"],
-                    "deploy": ["bin/darlingserver"],
-                }
-            ],
-        },
-    },
-    {},
-    {},
-)
-assert mixed_red_runner["red-proof"]["expect-failure-phase"] == "script", mixed_red_runner
 
-ctest_alias = tests[1]
-assert ctest_alias["coverage-tier"] == "host", ctest_alias
-assert ctest_alias["ctest-label"] == "bead:dar-q95.6", ctest_alias
-assert ctest_alias["env"] == "host", ctest_alias
-assert ctest_alias["red"] is True, ctest_alias
-assert ctest_alias["red-proof"] == {
-    "mode": "source-base",
-    "expect-failure-phase": "configure",
-}, ctest_alias
-assert ctest_alias["target"] == "darling_ec_tls_regress", ctest_alias
-assert "ctest" not in ctest_alias and "build-target" not in ctest_alias
+def rejects(data):
+    try:
+        normalize_workloads(data)
+    except ManifestError:
+        return
+    raise AssertionError(f"accepted invalid workload catalog: {data!r}")
 
-ctest_label = normalize_test(
-    {
-        "name": "ctest_label",
-        "ctest-label": "eunion-host",
-        "red": True,
-        "red-proof": {"mode": "source-base"},
-    },
-    {},
-    {},
-)
-assert ctest_label["red-proof"]["expect-failure-phase"] == "ctest", ctest_label
 
-source_default = normalize_test(
-    {
-        "kind": "contract",
-        "runner": "source-contract-script",
-        "script": "tests/source-contract.sh",
-    },
-    {},
-    {},
-)
-assert source_default["kind"] == "source-contract", source_default
-assert source_default["coverage-tier"] == "source", source_default
+for field in ("patches", "source-base", "source-commit", "source-revision", "source-ref", "source-profile",
+              "runtime-profile", "runtime-profiles", "requires-profile", "runtime-artifacts", "source-patches",
+              "test-profiles", "artifact-profiles", "resource-profiles", "fixture-profiles",
+              "current-minus-skip-patches", "ctest-source-override", "runtime-mode", "runtime-root",
+              "bootstrap", "launcher-env", "guest-toolchain", "source-worktree"):
+    invalid = deepcopy(fixture)
+    invalid["workloads"][0][field] = "forbidden"
+    rejects(invalid)
+    invalid = deepcopy(fixture)
+    invalid["workloads"][0]["dcc-cache"] = {field: "nested authority"}
+    rejects(invalid)
 
-source_behavior_override = normalize_test(
-    {
-        "kind": "contract",
-        "coverage-tier": "host",
-        "runner": "source-contract-script",
-        "script": "tests/behavior-contract.sh",
-    },
-    {},
-    {},
-)
-assert source_behavior_override["kind"] == "contract", source_behavior_override
-assert source_behavior_override["coverage-tier"] == "host", source_behavior_override
+for proof in ({"mode": "source-base"}, {"mode": "guest-runtime-deploy"}, "runtime"):
+    invalid = deepcopy(fixture)
+    invalid["workloads"][1]["red-proof"] = proof
+    rejects(invalid)
 
-verbose = tests[2]
-assert verbose == profile["patches"][0]["tests"][2], verbose
+invalid = deepcopy(fixture)
+invalid["workloads"][1]["id"] = "guest-trace"
+rejects(invalid)
+for alias_members in ([], ["missing"], ["host-model", "host-model"]):
+    invalid = deepcopy(fixture)
+    invalid["aliases"]["example"] = alias_members
+    rejects(invalid)
+invalid = deepcopy(fixture)
+invalid["workloads"][2]["cases"] = []
+rejects(invalid)
+invalid = deepcopy(fixture)
+invalid["workloads"][3]["command"] = "override-registration"
+rejects(invalid)
 
-empty_fixture_profile = normalize_test(
-    {
-        "name": "empty_fixture_profile",
-        "kind": "guest",
-        "runner": "guest-c-fixture",
-        "script": "tests/empty_fixture_profile.c",
-        "fixtures": ["empty-overlay"],
-    },
-    {},
-    {},
-    {},
-    {"empty-overlay": {"kind": "eunion-overlay"}},
-)
-assert empty_fixture_profile["requires"] == ["darling-eunion-prefix"], empty_fixture_profile
-for field in (
-    "eunion-template-files",
-    "eunion-template-symlinks",
-    "eunion-upper-files",
-    "eunion-cleanup-dirs",
-    "eunion-forbid-template-paths",
-    "eunion-require-upper-paths",
+for field, value in (
+    ("requires-build-features", ["DARLING_RING_TRANSPORT"]),
+    ("requires-build-features", {"bad-feature-name": True}),
+    ("requires-build-features", {"DSERVER_TOOLS": []}),
+    ("requires-installed-paths", "bin/dserverdbg"),
+    ("requires-installed-paths", ["/bin/dserverdbg"]),
+    ("requires-installed-paths", ["../foreign"]),
 ):
-    assert field not in empty_fixture_profile, (field, empty_fixture_profile)
+    invalid = deepcopy(fixture)
+    invalid["workloads"][0][field] = value
+    rejects(invalid)
+for mode in ("DARLING_ROOTLESS", "DARLING_NOOVERLAYFS", "DARLING_EUNION"):
+    invalid = deepcopy(fixture)
+    invalid["workloads"][0]["env-vars"][mode] = "1"
+    rejects(invalid)
 
-try:
-    normalize_test_profile(
-        {
-            "test-profiles": {"base": {"runner": "guest-c-fixture"}},
-            "patches": [
-                {
-                    "path": "bad.patch",
-                    "module": "darling",
-                    "tests": [{"use": "base", "name": "bad", "artifacts": ["missing"]}],
-                }
-            ],
-        }
-    )
-except ManifestError as error:
-    assert "unknown artifact profile 'missing'" in str(error), error
-else:
-    raise AssertionError("missing artifact profile unexpectedly passed")
+controller = {
+    "id": "controller", "module": "darling-workspace",
+    "runner": "guest-runtime-script", "script": "owner.sh",
+    "env": "darling", "requires": ["darling-prefix"], "prefix-controller": True,
+}
+normalize_workloads({"version": 1, "workloads": [controller]})
+for changed in (
+    {"prefix-controller": "yes"}, {"env": "host"}, {"env": "macos"},
+    {"requires": []}, {"requires": 1}, {"requires": [{}]},
+    {"runner": "guest-c-fixture"}, {"runner": "guest-argv-fixture"},
+    {"runner": "ctest"}, {"command": "opaque command"},
+):
+    rejects({"version": 1, "workloads": [{**controller, **changed}]})
+for reserved in ("WEST_TEST_PREFIX_LEASE", "WEST_TEST_PREFIX_LEASE_FD"):
+    for field in ("env-vars", "guest-env-vars"):
+        rejects({"version": 1, "workloads": [{**controller, field: {reserved: "forged"}}]})
 
-try:
-    normalize_test_profile(
-        {
-            "patches": [
-                {
-                    "path": "bad.patch",
-                    "module": "darling",
-                    "tests": [{"name": "bad", "needs": ["xnu-kernel"]}],
-                }
-            ],
-        }
-    )
-except ManifestError as error:
-    assert "needs is not part of the compact test DSL" in str(error), error
-else:
-    raise AssertionError("needs unexpectedly passed")
-
+catalog = load_workloads(ROOT / "testkit/workloads.yml")
+workloads = catalog["workloads"]
+assert len({test["id"] for test in workloads}) == len(workloads)
 print("PASS west-test-manifest-contract")

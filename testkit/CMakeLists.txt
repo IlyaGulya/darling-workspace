@@ -23,9 +23,8 @@ if(NOT DEFINED DARLING_SRC)
 endif()
 get_filename_component(_workspace_root "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 
-# Host-only XNU tests can be pointed at a materialized XNU worktree without
-# replacing the whole Darling checkout. West uses this to keep source-base RED
-# and profile GREEN builds isolated from the developer's current source tree.
+# Host-only XNU tests may use an explicit current-source checkout independently
+# of the Darling checkout selected for the other source-owned cases.
 if(NOT DEFINED DARLING_XNU_SRC)
   set(DARLING_XNU_SRC "${DARLING_SRC}/src/external/xnu")
 endif()
@@ -64,16 +63,18 @@ if(EXISTS "${_thread_checkin_wait}")
     ARGS       spin
     EXPECT_FAILURE_MARKER "FAIL: creator burned"
   )
+  set_property(TEST
+    host/mldr_thread_create_checkin_wait
+    host/mldr_thread_create_checkin_wait_spin_red
+    APPEND PROPERTY LABELS host-regression)
 else()
   message(WARNING
     "darling checkout missing ${_thread_checkin_wait}; skipping "
     "dar-dar6x4-perf-5dq.1")
 endif()
 
-# E-UNION host tests compile the selected profile's XNU sources as ordinary
-# CTest targets. The source-base RED proof uses the same targets after West
-# configures this project with a temporary XNU worktree, so a failure cannot be
-# accepted merely because a separate shell runner behaved differently.
+# E-UNION host tests compile the selected current XNU sources as ordinary CTest
+# targets, preserving the production-code behavioral oracle.
 set(_mldr "${DARLING_SRC}/src/startup/mldr")
 set(_libsystem_kernel_tests
   "${DARLING_XNU_SRC}/darling/src/libsystem_kernel/tests")
@@ -83,13 +84,9 @@ set(_libsystem_kernel_tests
 # the fixture creates real upper/lower trees and xattr markers, not a source
 # matcher or a model of vchroot.
 #
-# This host-only suite is opt-in. A guest CTest build still configures this
-# project, but its default source checkout is the unpatched West project while
-# the runtime provider is built from a materialized profile forest. Compiling
-# the E-UNION harness unconditionally would therefore mix those two source
-# identities and fail before CTest can select guest tests. Metadata invocations
-# that select `eunion-host` enable this explicitly alongside their source
-# override.
+# This host-only suite is opt-in so selecting guest cases does not also build
+# unrelated host harnesses. Workload bindings selecting `eunion-host` enable it
+# alongside their explicit current-source override.
 option(DARLING_ENABLE_EUNION_HOST_SUITE
   "Build the source-bound E-UNION host CTest suite" OFF)
 
@@ -286,7 +283,6 @@ if(EXISTS "${_getattrlist_name_objtype_guest}")
     ENVS       darling macos
     BEAD       dar-e1j
     SUBMODULES xnu
-    RUNTIME_PROFILE homebrew-rootless-no-mount
     INSTALL
     SMOKE
     TIMEOUT    30
@@ -308,7 +304,6 @@ if(EXISTS "${_posix_spawn_failure_guest}")
     ENVS       darling macos
     BEAD       dar-3jw9
     SUBMODULES xnu
-    RUNTIME_PROFILE spawn-failure-ownership
     INSTALL
     TIMEOUT    90
     OK_MARKER  "POSIX_SPAWN_FAILURE_OWNERSHIP_OK"
@@ -332,7 +327,6 @@ if(EXISTS "${_sigpending_mask_guest}")
     ENVS       darling macos
     BEAD       dar-759a.5.3
     SUBMODULES xnu
-    RUNTIME_PROFILE spawn-failure-ownership
     INSTALL
     TIMEOUT    30
     OK_MARKER  "SIGPENDING_MASK_COPYOUT_OK"
@@ -347,7 +341,6 @@ if(EXISTS "${_sigaction_ignore_pending_guest}")
     ENVS       darling macos
     BEAD       dar-cpuk
     SUBMODULES xnu
-    RUNTIME_PROFILE spawn-failure-ownership
     INSTALL
     TIMEOUT    30
     OK_MARKER  "SIGACTION_IGNORE_PENDING_OK"
@@ -362,7 +355,6 @@ if(EXISTS "${_signal_handler_mask_guest}")
     ENVS       darling macos
     BEAD       dar-1c53
     SUBMODULES xnu
-    RUNTIME_PROFILE spawn-failure-ownership
     INSTALL
     TIMEOUT    30
     OK_MARKER  "SIGNAL_HANDLER_MASK_OK"
@@ -377,7 +369,6 @@ if(EXISTS "${_kqueue_close_pipe_eof_guest}")
     ENVS       darling macos
     BEAD       dar-fgjm
     SUBMODULES libkqueue
-    RUNTIME_PROFILE kqueue-close-knote-lifetime
     INSTALL
     TIMEOUT    30
     OK_MARKER  "KQUEUE_CLOSE_PIPE_EOF_OK"
@@ -422,7 +413,6 @@ if(EXISTS "${_bzero_return_register_guest}")
     ENVS       darling
     BEAD       dar-q95.4
     SUBMODULES libplatform
-    RUNTIME_PROFILE homebrew-libplatform
     TIMEOUT    30
     OK_MARKER  "BZERO_RETURN_REGISTER_GUEST_OK"
   )
@@ -535,13 +525,11 @@ if(EXISTS "${_nsoperationqueue_runloop_poll_guest}")
     TIMEOUT    90
     OK_MARKER  "NSOPERATIONQUEUE_RUNLOOP_POLL_DONE"
   )
-  # The sysroot and compiler here MIRROR what the runtime profile itself passes (measured in the recorded
-  # bundle's env.txt: DARLING_GUEST_CFLAGS=--sysroot /Volumes/SystemRoot/...MacOSX.sdk). This variable is
-  # replaced, not appended, by the testkit runner, so the value must be complete; the only additions are the
-  # Objective-C language selection (the runner stages the source under a `.c` name) and the framework link.
+  # Compile this Objective-C fixture against the guest CLT SDK. This replaces,
+  # rather than appends to, the runner's flags and includes the framework link.
   set_property(TEST darling/nsoperationqueue_runloop_poll_guest APPEND PROPERTY
     ENVIRONMENT
-    "DARLING_GUEST_CFLAGS=--sysroot /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -x objective-c -fblocks -framework Foundation")
+    "DARLING_GUEST_CFLAGS=-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -x objective-c -fblocks -framework Foundation")
 endif()
 
 # The MACH_SEND_TIMEOUT semantics oracle: what Darling returns when a receive right is never received on, what
@@ -597,7 +585,6 @@ if(EXISTS "${_fork_checkin_signal_storm_guest}")
     ENVS       darling
     BEAD       dar-gwn.6.5
     SUBMODULES darlingserver
-    RUNTIME_PROFILE perf-darlingserver
     TIMEOUT    45
     OK_MARKER  "FORK_CHECKIN_SIGNAL_STORM_OK"
   )
@@ -612,7 +599,6 @@ if(EXISTS "${_rootless_no_mount_guest}")
     ENVS       darling
     BEAD       dar-test-infra-sp5.8.4.5
     SUBMODULES darling darlingserver xnu
-    RUNTIME_PROFILE homebrew-rootless-no-mount
     TIMEOUT    45
     OK_MARKER  "ROOTLESS_NO_MOUNT_GUEST_OK"
   )
@@ -649,6 +635,8 @@ if(EXISTS "${_mldr}/glibc_fork_reset.c")
     WORKDIR       "${CMAKE_BINARY_DIR}"        # harness dlopen()s ./tls_mod.so
   )
   add_dependencies(compat.glibc_fork_lock_reset tls_mod)
+  set_property(TEST host/glibc_fork_lock_reset
+    APPEND PROPERTY LABELS host-regression)
 else()
   message(WARNING
     "darling checkout not found at ${DARLING_SRC}; skipping dar-gwn.5 "
@@ -1096,6 +1084,36 @@ if(EXISTS "${_startup_stream_purity_guest}")
 else()
   message(WARNING
     "workspace missing ${_startup_stream_purity_guest}; skipping the dar-m90y startup stream purity regression")
+endif()
+
+# Flat structured workloads participate in the same CTest selection plane as
+# source-owned cases. The bridge delegates execution to the existing runner;
+# declarations that already bind CTest registrations are not registered twice.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/workloads.yml")
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  set(_workload_registration "${CMAKE_CURRENT_BINARY_DIR}/workloads.cmake")
+  set(_workload_bridge_args
+    --catalog "${CMAKE_CURRENT_SOURCE_DIR}/workloads.yml"
+    --generate "${_workload_registration}")
+  if(DARLING_TEST_EXECUTOR)
+    list(APPEND _workload_bridge_args --executor "${DARLING_TEST_EXECUTOR}")
+  endif()
+  if(DARLING_TEST_BUNDLE_ROOT)
+    list(APPEND _workload_bridge_args --bundle-root "${DARLING_TEST_BUNDLE_ROOT}")
+  endif()
+  execute_process(
+    COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run-workload.py" ${_workload_bridge_args}
+    RESULT_VARIABLE _workload_registration_rc
+    ERROR_VARIABLE _workload_registration_error)
+  if(NOT _workload_registration_rc EQUAL 0)
+    message(FATAL_ERROR
+      "Could not register structured workloads: ${_workload_registration_error}")
+  endif()
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/workloads.yml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run-workload.py")
+  include("${_workload_registration}")
 endif()
 
 # Run after every source-owned registration and caller property override.

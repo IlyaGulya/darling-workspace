@@ -18,8 +18,10 @@ import urllib.request
 
 try:
     from .test_execution import run_bounded
+    from .runtime_install import resolve_runtime
 except ImportError:
     from test_execution import run_bounded
+    from runtime_install import resolve_runtime
 
 
 BREW_COMMIT = "c4a3482c22876114a8c3cf8244815541e47b684f"
@@ -231,7 +233,7 @@ def _register_build_logs(environment: dict[str, str], work: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def conflicting_homebrew(prefix: Path) -> Path | None:
+def conflicting_homebrew(prefix: Path, system_root: Path) -> Path | None:
     """Return the existing installation that forbids staging a fresh stack.
 
     The same paths decide whether staging is possible and whether an existing
@@ -240,7 +242,7 @@ def conflicting_homebrew(prefix: Path) -> Path | None:
 
     # Do not merge into a previous install or shadow an installation in the base.
     for relative in ("usr/local/Homebrew", "usr/local/bin/brew", "usr/local/Cellar/lz4"):
-        for base in (prefix, prefix / "libexec/darling"):
+        for base in (prefix, system_root):
             existing = base / relative
             if existing.exists() or existing.is_symlink():
                 return existing
@@ -252,13 +254,15 @@ def homebrew_lz4_context(env: dict[str, str] | None) -> Iterator[dict[str, str]]
     environment = dict(os.environ if env is None else env)
     if not environment.get("DPREFIX") or not environment.get("DARLING_LAUNCHER"):
         raise ValueError("homebrew-lz4 requires West DPREFIX and DARLING_LAUNCHER")
-    prefix = Path(environment["DPREFIX"]).resolve(strict=True)
-    if prefix == Path("/") or not prefix.is_dir():
+    runtime = resolve_runtime(environment.get("DARLING_RUNTIME_ROOT"))
+    prefix = Path(environment["DPREFIX"])
+    environment = runtime.environment(prefix, environment)
+    if prefix == Path("/"):
         raise ValueError("homebrew-lz4 requires a disposable guest prefix, not the host root")
-    existing = conflicting_homebrew(prefix)
+    preflight = Path(__file__).resolve().parents[1] / "tests/run-homebrew-build-tools-preflight.sh"
+    existing = conflicting_homebrew(prefix, runtime.system_root)
     if existing is not None:
         raise ValueError(f"homebrew-lz4 requires a fresh installation: {existing}")
-    preflight = Path(__file__).resolve().parents[1] / "tests/run-homebrew-build-tools-preflight.sh"
     result = run_bounded(
         ["bash", str(preflight)],
         cwd=preflight.parent.parent,
@@ -270,7 +274,7 @@ def homebrew_lz4_context(env: dict[str, str] | None) -> Iterator[dict[str, str]]
             "homebrew-lz4: native build-tools preflight failed; "
             "provision the complete Homebrew runtime component before staging brew"
         )
-    template = prefix / "libexec/darling"
+    template = runtime.system_root
     before = _template_digest(template)
     cache = Path(environment.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "west/darling-homebrew"
     cache.mkdir(parents=True, exist_ok=True)

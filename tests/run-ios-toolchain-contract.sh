@@ -37,10 +37,10 @@ boot_run="$repo_root/scripts/darling-boot-run.sh"
 sdk_rel="Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
 clang_rel="Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
 
-[ -n "$prefix" ] && [ -x "$prefix/bin/darling" ] || {
-	echo "ios-toolchain: DPREFIX must name a booted Darling prefix" >&2
-	exit 2
-}
+[ -n "$prefix" ] || { echo "ios-toolchain: DPREFIX must select guest state" >&2; exit 2; }
+DARLING_WORKSPACE_ROOT="$repo_root"
+. "$repo_root/scripts/darling-runtime.sh"
+darling_resolve_runtime "${DARLING_RUNTIME_ROOT:-}" || exit $?
 [ -n "$xcode_app" ] || {
 	echo "ios-toolchain: XCODE_APP must name the Xcode.app tree" >&2
 	exit 2

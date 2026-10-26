@@ -69,8 +69,8 @@ A tooling question also requires the relevant reference section and current help
   audit evidence, not behavioral coverage. Tests must catch consumer-visible
   behavior; do not pin incidental wording, command spellings or derived digests.
 - Guest tests compile/run inside Darling, not Linux binaries through a launcher.
-  A libsystem_kernel change requires dyld deployment too. Verify every runtime
-  copy and the run's own artifact identity before claiming what code executed.
+- A libsystem_kernel change requires a complete new normal installation, including dyld.
+  Record the selected installed-image identity and the runtime that served each run.
 - PASS needs the workload's completed oracle and cleanup. Log growth, silent
   probes, intermediate diagnostics and cached verdicts are not fresh acceptance.
   Preserve exact commands, verdicts, warnings, evidence locations and blockers.

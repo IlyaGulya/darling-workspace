@@ -14,6 +14,7 @@ from prefix_repair import (
     prefix_mount_targets,
     repair_prefix_prerequisites,
 )
+from runtime_install import RuntimeInstallationError, resolve_runtime
 from test_prefix import (
     cleanup_rootless_runtime_sockets,
     rootless_prefix_process_snapshot,
@@ -25,19 +26,23 @@ class DarlingPrefixRepair(WestCommand):
         super().__init__(
             "darling-prefix-repair",
             "Repair Darling prefix boot and guest-test prerequisites",
-            "Create required tmp directories and restore canonical CLT links in a Darling prefix",
+            "Repair writable guest state; selected installed runtime files are read-only prerequisites.",
             accepts_unknown_args=False,
         )
 
     def do_add_parser(self, parser_adder):
         parser = parser_adder.add_parser(self.name, description=self.description)
         parser.add_argument(
+            "--runtime-root",
+            help="installed Darling runtime root; defaults to DARLING_RUNTIME_ROOT or the selected installed launcher",
+        )
+        parser.add_argument(
             "--prefix",
             action="append",
             default=[],
             help=(
-                "Darling prefix to repair; repeatable. Defaults to DARLING_PREFIX "
-                "or ~/work/darling-prefix."
+                "Writable Darling guest prefix to repair; repeatable. Defaults to "
+                "DPREFIX, DARLING_PREFIX or ~/.darling; separate from --runtime-root."
             ),
         )
         parser.add_argument(
@@ -62,14 +67,26 @@ class DarlingPrefixRepair(WestCommand):
         raw_prefixes = [*args.prefix, *args.extra_prefix]
         if not raw_prefixes:
             raw_prefixes = [
-                os.environ.get("DARLING_PREFIX", str(Path.home() / "work/darling-prefix"))
+                os.environ.get("DPREFIX")
+                or os.environ.get("DARLING_PREFIX")
+                or str(Path.home() / ".darling")
             ]
+        try:
+            runtime = resolve_runtime(args.runtime_root)
+            # Validate every raw spelling before any repair or cleanup can mutate.
+            for raw_prefix in raw_prefixes:
+                runtime.environment(raw_prefix)
+        except RuntimeInstallationError as error:
+            self.err(str(error))
+            raise SystemExit(1) from error
 
         failed = False
         for raw_prefix in raw_prefixes:
-            prefix = Path(raw_prefix).expanduser()
+            prefix = Path(raw_prefix)
             self.inf(f"== {prefix} ==")
-            result = repair_prefix_prerequisites(prefix, check=args.check)
+            result = repair_prefix_prerequisites(
+                prefix, check=args.check, system_root=runtime.system_root
+            )
             if args.cleanup_mounts:
                 if args.check:
                     mounts = prefix_mount_targets(prefix)

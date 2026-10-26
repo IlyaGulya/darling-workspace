@@ -32,11 +32,11 @@ read_exact(const char* path, const char* expected)
 int
 main(void)
 {
-	if (read_exact("/private/var/tmp/west-eunion-smoke/lower.txt", "LOWER\n") != 0)
+	if (read_exact("/usr/share/darling/tests/eunion/smoke/lower.txt", "LOWER\n") != 0)
 		return 1;
-	if (read_exact("/private/var/tmp/west-eunion-smoke/upper.txt", "UPPER\n") != 0)
+	if (read_exact("/usr/share/darling/tests/eunion/smoke/upper.txt", "UPPER\n") != 0)
 		return 1;
-	if (read_exact("/private/var/tmp/west-eunion-smoke/shadow.txt", "UPPER_SHADOW\n") != 0)
+	if (read_exact("/usr/share/darling/tests/eunion/smoke/shadow.txt", "UPPER_SHADOW\n") != 0)
 		return 1;
 
 	puts("WEST_EUNION_PREFIX_SMOKE_OK");

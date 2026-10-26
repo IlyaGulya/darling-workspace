@@ -5,6 +5,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 export ROOTLESS_TIER_REPO="$root"
 . "$root/ci/rootless-prefix.sh"
+export TMPDIR="$DW_STATE_ROOT/tmp"
 defer_global_cleanup="${DARLING_TIER_DEFER_GLOBAL_CLEANUP:-0}"
 case "$defer_global_cleanup" in
 	0|1) ;;
@@ -13,6 +14,7 @@ case "$defer_global_cleanup" in
 		exit 2
 		;;
 esac
+mkdir -p -- "$TMPDIR"
 
 native_tar() {
 	local operation="$1"
@@ -62,11 +64,11 @@ cleanup_rootless_tier() {
 		esac
 		if (( test_rc == 0 )) && [[ "$tier_kind" == toolchain ]]; then
 			"$root/ci/collect-rootless-diagnostics.sh" \
-				"$root/.west-test/rootless-toolchain-diagnostics" "$prefix"
+				"$DW_STATE_ROOT/evidence/rootless-toolchain-diagnostics" "$prefix"
 			evidence_rc=$?
 			(( evidence_rc == 0 )) || cleanup_rc=1
 		fi
-		west test --prefix "$prefix" --cleanup-prefix
+		west test --runtime-root "$DARLING_RUNTIME_ROOT" --prefix "$prefix" --cleanup-prefix
 		cleanup_command_rc=$?
 		(( cleanup_command_rc == 0 )) || cleanup_rc=1
 		if [[ "$tier_kind" == corpus || "$tier_kind" == regression ]] && \
@@ -85,7 +87,7 @@ cleanup_rootless_tier() {
 	if [[ "$defer_global_cleanup" == 0 ]]; then
 		west test --gc --gc-runtime-evidence
 		gc_rc=$?
-		"$root/scripts/west-job.sh" assert-no-live-west-test --state-root "${TMPDIR:-/tmp}"
+		"$root/scripts/west-job.sh" assert-no-live-west-test --state-root "$TMPDIR"
 		jobs_rc=$?
 	fi
 	if (( test_rc == 0 && cleanup_rc == 0 && gc_rc == 0 && jobs_rc == 0 )); then
@@ -112,76 +114,44 @@ run_guest_macho_regression_tier() {
 		exit 2
 	fi
 	tier_kind="$requested_tier_kind"
+	rootless_runtime_select
+	export DARLING_CI_TEST_DATA=1
 	validation_group=homebrew
-	diagnostics_dir="$root/$diagnostics_relative_path"
+	diagnostics_dir="$DW_STATE_ROOT/evidence/$diagnostics_relative_path"
 	prefix="$(rootless_prefix_create "$tier_kind" "$prefix_variable")"
 	rootless_prefix_export_output prefix "$prefix"
 	trap 'cleanup_rootless_tier "$?"' EXIT
 	rootless_prefix_assert_no_guest_toolchain "$tier_kind" "$prefix"
 	rm -rf -- "$diagnostics_dir"
 	mkdir -p -- "$diagnostics_dir"
-	export DARLING_ROOTLESS=1
-	export DARLING_NOOVERLAYFS=1
-	export DARLING_EUNION=1
 	export WEST_TEST_FORBID_GUEST_TOOLCHAIN=1
-	WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test --prefix "$prefix" \
-		--bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal \
-		--runtime-build-timeout-seconds 600
+	rootless_runtime_bootstrap "$prefix"
 	WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 west test \
-		--profile homebrew \
 		--env darling \
 		--guest-macho-validation-group "$validation_group" \
 		--guest-macho-evidence-dir "$diagnostics_dir/fixtures" \
-		--reuse-prefix-runtime \
+		--runtime-root "$DARLING_RUNTIME_ROOT" \
 		--prefix "$prefix"
 }
 
 case "${1:-}" in
 	host)
-		if [[ -n "${WEST_MATERIALIZED_WORKSPACE_LOCK:-}" ]]; then
-			if [[ "$WEST_MATERIALIZED_WORKSPACE_LOCK" != /* ]]; then
-				echo "materialized workspace lock must be absolute" >&2
-				exit 2
-			fi
-			exec {materialized_workspace_lock_fd}>"$WEST_MATERIALIZED_WORKSPACE_LOCK"
-			flock -s "$materialized_workspace_lock_fd"
-		fi
 		exec "$root/ci/run-host-tier.py" "${@:2}"
 		;;
 	guest-smoke)
 		tier_kind=smoke
-		if [[ -n "${WEST_MATERIALIZED_WORKSPACE_LOCK:-}" ]]; then
-			if [[ "$WEST_MATERIALIZED_WORKSPACE_LOCK" != /* ]]; then
-				echo "materialized workspace lock must be absolute" >&2
-				exit 2
-			fi
-			mkdir -p -- "${WEST_MATERIALIZED_WORKSPACE_LOCK%/*}"
-			exec {materialized_workspace_lock_fd}>"$WEST_MATERIALIZED_WORKSPACE_LOCK"
-			flock -s "$materialized_workspace_lock_fd"
-		fi
-		if [[ -n "${WEST_RUNTIME_BUILD_CACHE_DIR:-}" ]]; then
-			if [[ ! "${WEST_RUNTIME_BUILD_CACHE_KEY:-}" =~ ^[0-9a-f]{64}$ ]]; then
-				echo "runtime build cache identity is incomplete" >&2
-				exit 2
-			fi
-			mkdir -p -- "$WEST_RUNTIME_BUILD_CACHE_DIR"
-			exec {runtime_cache_lock_fd}>"$WEST_RUNTIME_BUILD_CACHE_DIR/.guest-tier.lock"
-			flock "$runtime_cache_lock_fd"
-		fi
+		rootless_runtime_select
 		prefix="$(rootless_prefix_create "$tier_kind" DARLING_SMOKE_PREFIX)"
 		rootless_prefix_export_output prefix "$prefix"
 		trap 'cleanup_rootless_tier "$?"' EXIT
-		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 run_tier_phase bootstrap-runtime \
-			west test --prefix "$prefix" \
-			--bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal \
-			--runtime-build-timeout-seconds 600
-		WEST_TEST_FORBID_GUEST_TOOLCHAIN=1 run_tier_phase guest-contracts \
-			west test \
-			--profile homebrew --patch darling/rootless-prefix-initialization.patch \
-			--env darling \
-			--label 'name:(rootless_prefix_initialization_guest|rootless_prebuilt_macho_regression)' \
-			--reuse-prefix-runtime \
-			--prefix "$prefix" "${@:2}"
+		export WEST_TEST_FORBID_GUEST_TOOLCHAIN=1
+		run_tier_phase bootstrap-runtime rootless_runtime_bootstrap "$prefix"
+		for workload in rootless_prefix_initialization_guest rootless_prebuilt_macho_regression; do
+			run_tier_phase "$workload" west test \
+				--workload "$workload" --env darling \
+				--runtime-root "$DARLING_RUNTIME_ROOT" \
+				--prefix "$prefix" "${@:2}"
+		done
 		;;
 	guest-full)
 		if [[ -n "${2:-}" ]]; then
@@ -189,7 +159,7 @@ case "${1:-}" in
 			exit 2
 		fi
 		run_guest_macho_regression_tier regression DARLING_REGRESSION_PREFIX \
-			.west-test/guest-full-diagnostics
+			guest-full-diagnostics
 		;;
 	guest-macho-validation)
 		if [[ -n "${2:-}" ]]; then
@@ -197,29 +167,25 @@ case "${1:-}" in
 			exit 2
 		fi
 		run_guest_macho_regression_tier corpus DARLING_CORPUS_PREFIX \
-			.west-test/guest-macho-validation-diagnostics/homebrew
+			guest-macho-validation-diagnostics/homebrew
 		;;
 	guest-toolchain)
 		tier_kind=toolchain
+		rootless_runtime_select
 		prefix="$(rootless_prefix_create "$tier_kind" DARLING_TOOLCHAIN_PREFIX)"
 		rootless_prefix_export_output prefix "$prefix"
 		trap 'cleanup_rootless_tier "$?"' EXIT
-		west test --prefix "$prefix" \
-			--bootstrap-runtime-profile homebrew-guest-toolchain-provisioning \
-			--runtime-build-timeout-seconds 1800
-		# Select the patch-owned script explicitly. A broad CTest smoke label can
-		# select unrelated regressions and still omit this acceptance proof.
-		west test --profile homebrew \
-			--patch darling/rootless-prefix-initialization.patch \
-			--env darling --label 'name:rootless_guest_toolchain_compile_execute' \
-			--reuse-prefix-runtime \
+		rootless_runtime_bootstrap "$prefix" darling-command-line-tools
+		# Select the real compiler/SDK acceptance proof, not a broad smoke label.
+		west test --workload rootless_guest_toolchain_compile_execute \
+			--env darling --runtime-root "$DARLING_RUNTIME_ROOT" \
 			--prefix "$prefix" "${@:2}"
 		;;
 	acceptance-cleanup)
 		unset DARLING_TIER_DEFER_GLOBAL_CLEANUP
 		west test --gc --gc-runtime-evidence
 		exec "$root/scripts/west-job.sh" assert-no-live-west-test \
-			--state-root "${TMPDIR:-/tmp}"
+			--state-root "$TMPDIR"
 		;;
 	macos)
 		build="${DARLING_TESTKIT_BUILD:-$root/.west-test/macos-build}"

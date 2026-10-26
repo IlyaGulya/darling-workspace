@@ -4,13 +4,23 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 
-scope_build="$(mktemp -d)"
-trap 'rm -rf "$scope_build"' EXIT
+scratch="${DW_STATE_ROOT:-${repo%/*}/.west-state}/test-scratch"
+mkdir -p "$scratch"
+scope_build="$(mktemp -d "$scratch/testkit-contract.XXXXXX")"
+finish() {
+	local status="$1" command="$2"
+	if (( status == 0 )); then
+		rm -rf "$scope_build"
+	else
+		printf 'FAIL west-test-testkit-contract: rc=%s command=%s\nartifacts: %s\n' \
+			"$status" "$command" "$scope_build" >&2
+	fi
+}
+trap 'finish "$?" "$BASH_COMMAND"' EXIT
 
 export PYTHONDONTWRITEBYTECODE=1
 
 tests/run-darling-c-test-contract.sh
-tests/run-west-test-runtime-build-contract.sh
 tests/run-west-guest-toolchain-contract.sh
 tests/run-west-guest-toolchain-cache-contract.sh
 tests/run-west-guest-toolchain-ccache-contract.sh
@@ -21,15 +31,14 @@ tests/run-west-macho-corpus-batch-contract.sh
 # Exercise West's real extension loader.  It does not import command modules
 # like ordinary Python packages, so this catches loader-incompatible module
 # declarations before any CTest discovery runs.
-west test --help | grep -q -- '--bootstrap-runtime-profile NAME'
+west test --help | grep -q -- '--runtime-root ROOT'
+west test --help | grep -q -- '--source-root SOURCE'
+west test --help | grep -q -- '--workload NAME'
 west test --help | grep -q -- '--guest-macho-validation-group {homebrew}'
 west test --help | grep -q -- '--guest-macho-evidence-dir DIR'
-west patch verify --help | grep -q -- '--applicability-only'
 
-# Guest CTest builds configure the unpatched West source tree before a runtime
-# profile is materialized. The source-bound E-UNION host harness must therefore
-# stay out of the default build; metadata eunion-host invocations enable it in
-# their separate source-override build.
+# The explicit source-bound host harness remains opt-in; ordinary guest
+# selection consumes the installed image without enabling unrelated host targets.
 cmake -S testkit -B "$scope_build" -G Ninja \
 	-DDARLING_ENABLE_EUNION_HOST_SUITE=OFF >/dev/null
 if ctest --test-dir "$scope_build" --show-only=json-v1 2>/dev/null |
@@ -38,15 +47,6 @@ if ctest --test-dir "$scope_build" --show-only=json-v1 2>/dev/null |
 	exit 1
 fi
 
-
-if patch_profile_error="$(west test --patch darling/rootless-shellspawn-lifecycle.patch \
-	--prefix-profile homebrew --list 2>&1)"; then
-	printf '%s\n' "$patch_profile_error" >&2
-	exit 1
-fi
-printf '%s\n' "$patch_profile_error" | grep -F -q -- \
-	'--patch selects patch metadata and requires --profile; --prefix-profile selects only a Darling prefix' ||
-	{ printf '%s\n' "$patch_profile_error" >&2; exit 1; }
 
 bead="dar-dar6x4-perf-5dq.1"
 
@@ -67,47 +67,27 @@ printf '%s\n' "$list_by_submodule" | grep -q 'host/mldr_thread_create_checkin_wa
 list_guest="$(west test --bead dar-cps --env darling --list)"
 printf '%s\n' "$list_guest" | grep -q 'darling/abort_with_payload_no_group_broadcast' ||
 	{ printf '%s\n' "$list_guest" >&2; exit 1; }
-dar_cps_json="$(ctest --test-dir testkit/build --show-only=json-v1 \
-	-L 'bead:dar-cps' -L 'env:darling')"
-printf '%s\n' "$dar_cps_json" | grep -q 'runtime-profile:homebrew' ||
-	{ printf '%s\n' "$dar_cps_json" >&2; exit 1; }
 
 list_select_guest="$(west test --bead dar-q95.3 --env darling --list)"
 printf '%s\n' "$list_select_guest" | grep -q 'darling/select_fdset_guest' ||
 	{ printf '%s\n' "$list_select_guest" >&2; exit 1; }
-list_select_prebuilt="$(west test --profile homebrew --patch xnu/select-pselect-fdset.patch --env darling --label 'name:select_fdset_guest_prebuilt' --list)"
+list_select_prebuilt="$(west test --workload select_fdset_guest_prebuilt --env darling --list)"
 printf '%s\n' "$list_select_prebuilt" | grep -q 'select_fdset_guest_prebuilt' ||
 	{ printf '%s\n' "$list_select_prebuilt" >&2; exit 1; }
-list_macho_homebrew="$(west test --profile homebrew --env darling --guest-macho-validation-group homebrew --list)"
+list_macho_homebrew="$(west test --env darling --guest-macho-validation-group homebrew --list)"
 [ "$(printf '%s\n' "$list_macho_homebrew" | grep -F -c '_prebuilt')" -eq 13 ] ||
 	{ printf '%s\n' "$list_macho_homebrew" >&2; exit 1; }
-if west test --profile homebrew --env darling --guest-macho-validation-group invalid --list >/dev/null 2>&1; then
+if west test --env darling --guest-macho-validation-group invalid --list >/dev/null 2>&1; then
 	echo 'guest Mach-O selector accepted an invalid group' >&2
 	exit 1
 fi
-if group_without_profile="$(west test --env darling --guest-macho-validation-group homebrew --list 2>&1)"; then
-	echo 'guest Mach-O selector accepted a group without its metadata profile' >&2
-	exit 1
-fi
-printf '%s\n' "$group_without_profile" | grep -F -q -- \
-	'--guest-macho-validation-group requires --profile homebrew' ||
-	{ printf '%s\n' "$group_without_profile" >&2; exit 1; }
-
 list_getattrlist_guest="$(west test --bead dar-e1j --env darling --list)"
 printf '%s\n' "$list_getattrlist_guest" | grep -q 'darling/getattrlist_name_objtype_guest' ||
 	{ printf '%s\n' "$list_getattrlist_guest" >&2; exit 1; }
-getattrlist_json="$(ctest --test-dir testkit/build --show-only=json-v1 \
-	-L 'bead:dar-e1j' -L 'env:darling')"
-printf '%s\n' "$getattrlist_json" | grep -q 'runtime-profile:homebrew' ||
-	{ printf '%s\n' "$getattrlist_json" >&2; exit 1; }
 
 list_bzero_guest="$(west test --bead dar-q95.4 --env darling --list)"
 printf '%s\n' "$list_bzero_guest" | grep -q 'darling/bzero_return_register_guest' ||
 	{ printf '%s\n' "$list_bzero_guest" >&2; exit 1; }
-bzero_json="$(ctest --test-dir testkit/build --show-only=json-v1 \
-	-L 'bead:dar-q95.4' -L 'env:darling')"
-printf '%s\n' "$bzero_json" | grep -q 'runtime-profile:homebrew-libplatform' ||
-	{ printf '%s\n' "$bzero_json" >&2; exit 1; }
 
 list_sigignore_guest="$(west test --bead dar-cpuk --env darling --list)"
 printf '%s\n' "$list_sigignore_guest" | grep -q 'darling/sigaction_ignore_pending' ||
@@ -123,12 +103,9 @@ for bead in dar-q95.10 dar-q95.11 dar-q95.20 dar-gwn.6.4 dar-gwn.6 dar-gwn.1.6 d
 		{ printf '%s\n' "$guest_list" >&2; exit 1; }
 done
 
-# The E-UNION host suite has source-base RED proof and must run against a
-# materialized selected profile through the same CTest label used by GREEN.
-# It is declared in wget-residual: that chain carries the patches its assertions
-# need (xnu/eunion-large-directory.patch, xnu/eunion-content-fd-validation.patch),
-# while homebrew's chain stops earlier and made the suite structurally RED.
-eunion_metadata="$(west test --profile wget-residual --patch xnu/eunion-content-fd-validation.patch --env host --list)"
+# The host suite compiles the explicitly selected current XNU checkout and
+# keeps its real CTest registration and behavioral oracle.
+eunion_metadata="$(west test --workload eunion_hardening_host_suite --env host --list)"
 printf '%s\n' "$eunion_metadata" | grep -q 'host/eunion_hardening_host_suite' ||
 	{ printf '%s\n' "$eunion_metadata" >&2; exit 1; }
 

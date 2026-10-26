@@ -40,7 +40,6 @@ work="$output/.work"
 export ROOTLESS_TIER_REPO="$root"
 export TMPDIR="$work"
 export DARLING_CLT_CACHE="$work/clt-cache"
-: "${RUNNER_TEMP:?batch requires the official RUNNER_TEMP directory}"
 . "$root/ci/rootless-prefix.sh"
 . "$root/testkit/scripts/darling-guest-shell.sh"
 
@@ -53,9 +52,6 @@ declare -a fixture_source_hashes=()
 declare -a fixture_compile_json=()
 declare -a fixture_link_json=()
 declare -a fixture_markers=()
-declare -a fixture_profiles=()
-declare -a fixture_patch_paths=()
-declare -a fixture_patch_hashes=()
 declare -a fixture_source_files=()
 declare -a fixture_source_revisions=()
 
@@ -125,9 +121,9 @@ west_project_revision() {
 	git -C "$project_root" rev-parse HEAD
 }
 
-while IFS=$'\t' read -r name source_project source_path source_sha256 compile_json link_json marker profile patch_path patch_sha256; do
+while IFS=$'\t' read -r name source_project source_path source_sha256 compile_json link_json marker; do
 	[[ "$name" == "name" ]] && continue
-	[[ -n "$name" && -n "$source_project" && -n "$source_path" && -n "$source_sha256" && -n "$compile_json" && -n "$link_json" && -n "$marker" && -n "$profile" && -n "$patch_path" && -n "$patch_sha256" ]] || {
+	[[ -n "$name" && -n "$source_project" && -n "$source_path" && -n "$source_sha256" && -n "$compile_json" && -n "$link_json" && -n "$marker" ]] || {
 		echo "malformed guest Mach-O batch spec" >&2
 		exit 1
 	}
@@ -148,22 +144,6 @@ while IFS=$'\t' read -r name source_project source_path source_sha256 compile_js
 		echo "source SHA-256 mismatch for $name: expected $source_sha256, got $actual_source_sha256" >&2
 		exit 1
 	}
-	case "$patch_path" in
-		/*|*..*) echo "unsafe owning patch path for $name: $patch_path" >&2; exit 1 ;;
-	esac
-	patch_file="$(realpath -e -- "$root/$patch_path")" || {
-		echo "owning patch is missing for $name: $patch_path" >&2
-		exit 1
-	}
-	case "$patch_file" in
-		"$root"/*) ;;
-		*) echo "owning patch symlink escapes workspace: $name" >&2; exit 1 ;;
-	esac
-	actual_patch_sha256="$(sha256sum -- "$patch_file" | cut -d' ' -f1)"
-	[[ "$actual_patch_sha256" == "$patch_sha256" ]] || {
-		echo "patch SHA-256 mismatch for $name: expected $patch_sha256, got $actual_patch_sha256" >&2
-		exit 1
-	}
 	fixture_names+=("$name")
 	fixture_projects+=("$source_project")
 	fixture_paths+=("$source_path")
@@ -171,9 +151,6 @@ while IFS=$'\t' read -r name source_project source_path source_sha256 compile_js
 	fixture_compile_json+=("$compile_json")
 	fixture_link_json+=("$link_json")
 	fixture_markers+=("$marker")
-	fixture_profiles+=("$profile")
-	fixture_patch_paths+=("$patch_path")
-	fixture_patch_hashes+=("$patch_sha256")
 	fixture_source_files+=("$source_file")
 	fixture_source_revisions+=("$(west_project_revision "$source_project")")
 done <<<"$source_rows"
@@ -190,8 +167,7 @@ cleanup_prefix() {
 	local remove_rc=0
 	set +e
 	if [[ -n "$active_prefix" && -d "$active_prefix" ]]; then
-		DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
-			west test --prefix "$active_prefix" --cleanup-prefix
+		west test --runtime-root "$DARLING_RUNTIME_ROOT" --prefix "$active_prefix" --cleanup-prefix
 		cleanup_rc=$?
 	fi
 	west test --gc --gc-runtime-evidence
@@ -266,6 +242,7 @@ set -a
 . "$ccache_env"
 set +a
 
+rootless_runtime_select
 set_batch_state prefix-create RUNNING
 prefix="$(rootless_prefix_create corpus CORPUS_PREFIX)"
 active_prefix="$prefix"
@@ -297,9 +274,7 @@ for index in "${!fixture_names[@]}"; do
 done
 
 set_batch_state runtime-bootstrap RUNNING
-west test --prefix "$prefix" \
-	--bootstrap-runtime-profile homebrew-guest-toolchain-provisioning \
-	--runtime-build-timeout-seconds 1800
+rootless_runtime_bootstrap "$prefix" darling-command-line-tools
 rootless_prefix_assert_guest_toolchain corpus "$prefix"
 
 set_batch_state guest-compile RUNNING
@@ -327,20 +302,13 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B \
 	"$batch_guest_script" "$compiler_path" "$batch_guest_manifest"
 guest_script="$(<"$batch_guest_script")"
 guest_rc=0
-DARLING_ROOTLESS=1 \
-	DARLING_NOOVERLAYFS=1 \
-	DARLING_EUNION=1 \
-	darling_guest_shell "$prefix/bin/darling" "$prefix" 600 "$guest_script" \
+DPREFIX="$prefix" DARLING_PREFIX="$prefix" \
+	darling_guest_shell "$DARLING_LAUNCHER" "$prefix" 600 "$guest_script" \
 	>"$work/batch-guest.log" 2>&1 || guest_rc=$?
 cp -- "$work/batch-guest.log" "$output/batch-guest.log"
 
 shutdown_rc=0
-DARLING_ROOTLESS=1 \
-	DARLING_NOOVERLAYFS=1 \
-	DARLING_EUNION=1 \
-	DPREFIX="$prefix" \
-	DARLING_PREFIX="$prefix" \
-	west test --prefix "$prefix" --cleanup-prefix || shutdown_rc=$?
+west test --runtime-root "$DARLING_RUNTIME_ROOT" --prefix "$prefix" --cleanup-prefix || shutdown_rc=$?
 if (( shutdown_rc != 0 )); then
 	echo "host-side Darling shutdown failed with rc $shutdown_rc" >&2
 	guest_rc="$shutdown_rc"
@@ -354,6 +322,8 @@ compiler_target="$(readlink -f -- "$prefix$compiler_path")"
 	exit 1
 }
 compiler_sha256="$(sha256sum -- "$compiler_target" | cut -d' ' -f1)"
+launcher_sha256="$(sha256sum -- "$DARLING_LAUNCHER" | cut -d' ' -f1)"
+server_sha256="$(sha256sum -- "$DARLING_RUNTIME_ROOT/bin/darlingserver" | cut -d' ' -f1)"
 clt_provenance="$root/docs/clt-provenance-041-90419.txt"
 objdump="$(command -v llvm-objdump || true)"
 [[ -n "$objdump" ]] || {
@@ -362,7 +332,7 @@ objdump="$(command -v llvm-objdump || true)"
 }
 
 manifest="$output/batch-manifest.tsv"
-printf 'fixture\tsource-project\tsource-path\tsource-revision\tsource-sha256\tpatch-path\tpatch-sha256\tartifact-sha256\truntime-profile\texpected-marker\n' >"$manifest"
+printf 'fixture\tsource-project\tsource-path\tsource-revision\tsource-sha256\tartifact-sha256\truntime-launcher-sha256\truntime-server-sha256\texpected-marker\n' >"$manifest"
 for index in "${!fixture_names[@]}"; do
 	name="${fixture_names[$index]}"
 	marker="${fixture_markers[$index]}"
@@ -470,18 +440,17 @@ for index in "${!fixture_names[@]}"; do
 	provenance_document_sha256="$(sha256sum -- "$fixture_dir/provenance.txt" | cut -d' ' -f1)"
 	{
 		printf 'field\tvalue\n'
-		printf 'schema\t1\n'
+		printf 'schema\t2\n'
 		printf 'fixture\t%s\n' "$name"
 		printf 'source-project\t%s\n' "${fixture_projects[$index]}"
 		printf 'source-path\t%s\n' "${fixture_paths[$index]}"
 		printf 'source-revision\t%s\n' "${fixture_source_revisions[$index]}"
 		printf 'source-sha256\t%s\n' "${fixture_source_hashes[$index]}"
-		printf 'patch-path\t%s\n' "${fixture_patch_paths[$index]}"
-		printf 'patch-sha256\t%s\n' "${fixture_patch_hashes[$index]}"
 		printf 'compile-flags\t%s\n' "$compile_flags_value"
 		printf 'link-flags\t%s\n' "$link_flags_value"
-		printf 'runtime-profile\t%s\n' "${fixture_profiles[$index]}"
-		printf 'bootstrap-profile\thomebrew-guest-toolchain-provisioning\n'
+		printf 'runtime-root\t%s\n' "$DARLING_RUNTIME_ROOT"
+		printf 'runtime-launcher-sha256\t%s\n' "$launcher_sha256"
+		printf 'runtime-server-sha256\t%s\n' "$server_sha256"
 		printf 'compiler-path\t%s\n' "$compiler_path"
 		printf 'compiler-sha256\t%s\n' "$compiler_sha256"
 		printf 'compiler-version\t%s\n' "$clang_version"
@@ -504,11 +473,10 @@ for index in "${!fixture_names[@]}"; do
 		printf 'observed-marker\t%s\n' "$observed_marker"
 	} >"$fixture_dir/provenance.tsv"
 	printf '%s  %s\n' "$artifact_sha256" "$name" >"$fixture_dir/artifact.sha256"
-	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
 		"$name" "${fixture_projects[$index]}" "${fixture_paths[$index]}" \
 		"${fixture_source_revisions[$index]}" "${fixture_source_hashes[$index]}" \
-		"${fixture_patch_paths[$index]}" "${fixture_patch_hashes[$index]}" \
-		"$artifact_sha256" "${fixture_profiles[$index]}" "$marker" >>"$manifest"
+		"$artifact_sha256" "$launcher_sha256" "$server_sha256" "$marker" >>"$manifest"
 done
 
 if (( guest_rc != 0 )); then

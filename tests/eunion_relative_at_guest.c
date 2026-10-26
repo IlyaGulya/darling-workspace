@@ -61,12 +61,12 @@ write_exact(int fd, const char* text)
 int
 main(void)
 {
-	const char* root = "/private/var/tmp/west-eunion-relative-at";
-	const char* unlink_path = "/private/var/tmp/west-eunion-relative-at/unlink.txt";
-	const char* rename_src = "/private/var/tmp/west-eunion-relative-at/rename_src/child.txt";
-	const char* rename_dst = "/private/var/tmp/west-eunion-relative-at/rename_dst/child.txt";
-	const char* created = "/private/var/tmp/west-eunion-relative-at/created/new.txt";
-	const char* rmdir_target = "/private/var/tmp/west-eunion-relative-at/rmdir_target";
+	const char* root = "/usr/share/darling/tests/eunion/relative-at";
+	const char* unlink_path = "/usr/share/darling/tests/eunion/relative-at/unlink.txt";
+	const char* rename_src = "/usr/share/darling/tests/eunion/relative-at/rename_src/child.txt";
+	const char* rename_dst = "/usr/share/darling/tests/eunion/relative-at/rename_dst/child.txt";
+	const char* created = "/usr/share/darling/tests/eunion/relative-at/created/new.txt";
+	const char* rmdir_target = "/usr/share/darling/tests/eunion/relative-at/rmdir_target";
 
 	int dirfd = open(root, O_RDONLY);
 	if (dirfd < 0) {
@@ -81,7 +81,7 @@ main(void)
 		return 1;
 	}
 	close(fd);
-	if (read_exact("/private/var/tmp/west-eunion-relative-at/open_existing.txt",
+	if (read_exact("/usr/share/darling/tests/eunion/relative-at/open_existing.txt",
 	    "OPENAT_EXISTING\n") != 0) {
 		close(dirfd);
 		return 1;

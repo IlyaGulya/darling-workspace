@@ -82,11 +82,11 @@ append_byte(const char* path)
 int
 main(void)
 {
-	const char* setid = "/private/var/tmp/west-eunion-meta/setid.txt";
-	const char* fdmeta = "/private/var/tmp/west-eunion-meta/fdmeta.txt";
-	const char* fdxattr = "/private/var/tmp/west-eunion-meta/fdxattr.txt";
-	const char* pathxattr = "/private/var/tmp/west-eunion-meta/pathxattr.txt";
-	const char* ftrunc = "/private/var/tmp/west-eunion-meta/ftrunc.txt";
+	const char* setid = "/usr/share/darling/tests/eunion/metadata/setid.txt";
+	const char* fdmeta = "/usr/share/darling/tests/eunion/metadata/fdmeta.txt";
+	const char* fdxattr = "/usr/share/darling/tests/eunion/metadata/fdxattr.txt";
+	const char* pathxattr = "/usr/share/darling/tests/eunion/metadata/pathxattr.txt";
+	const char* ftrunc = "/usr/share/darling/tests/eunion/metadata/ftrunc.txt";
 
 	if (append_byte(setid) != 0)
 		return 1;

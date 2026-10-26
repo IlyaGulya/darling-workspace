@@ -186,6 +186,7 @@ def run_bounded(
     heartbeat_seconds: float | None = None,
     heartbeat: Callable[[float], None] | None = None,
     output_line: Callable[[str, str], None] | None = None,
+    pass_fds: Sequence[int] = (),
 ) -> ProcessResult:
     """Run ``args`` with a deadline and terminate its entire process group.
 
@@ -202,6 +203,23 @@ def run_bounded(
         raise ValueError("output_line requires capture_output")
     if output_line is not None and input_data is not None:
         raise ValueError("output_line cannot be combined with input_data")
+    # Lease capabilities belong only to explicitly selected controllers. A
+    # launcher/compiler/arbitrary helper must not inherit a marker after
+    # subprocess has closed its backing descriptor.
+    selected_env = os.environ if env is None else env
+    lease_marker = selected_env.get("WEST_TEST_PREFIX_LEASE")
+    lease_fd_value = selected_env.get("WEST_TEST_PREFIX_LEASE_FD", "8")
+    carries_lease = (
+        bool(lease_marker) and lease_fd_value.isdecimal()
+        and int(lease_fd_value) in pass_fds
+    )
+    if not carries_lease and (
+        "WEST_TEST_PREFIX_LEASE" in selected_env
+        or "WEST_TEST_PREFIX_LEASE_FD" in selected_env
+    ):
+        env = dict(selected_env)
+        env.pop("WEST_TEST_PREFIX_LEASE", None)
+        env.pop("WEST_TEST_PREFIX_LEASE_FD", None)
 
     capture_streams = None
     if capture_output:
@@ -228,6 +246,7 @@ def run_bounded(
         stdin=subprocess.PIPE if input_data is not None else None,
         text=False if output_line is not None else text,
         start_new_session=True,
+        pass_fds=pass_fds,
     )
     try:
         if output_line is not None:

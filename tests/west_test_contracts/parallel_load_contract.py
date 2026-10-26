@@ -1,9 +1,9 @@
-"""Contract for the parameterised runtime load fixture and its profile binding.
+"""Contract for the parameterised runtime load fixture and its flat workload bindings.
 
 The fixture's own runs need a Darling prefix, so this contract binds everything
 that is observable on the host:
 
-* the parameters declared by ``patches/runtime-load-smoke/patches.yml`` reach
+* the parameters declared by ``testkit/workloads.yml`` reach
   the fixture's validated plan and drive its generated program, so the declared
   ``sources``, ``concurrency`` and ``rounds`` are exactly the load the guest
   work is sized to;
@@ -12,7 +12,7 @@ that is observable on the host:
 * an unusable parameter is rejected before any transport work starts;
 * the fixture reuses the shared guest transport (``run_guest_shell_argv``)
   rather than inventing one, and carries its toolchain root into the argv;
-* the profile binds the same fixture under both ring transports.
+* both distinct on/off workload declarations preserve the same load fixture.
 
 The generated program is executed here with a substituted transport and a stub
 CommandLineTools tree, which is how the load volumes above are observed without
@@ -32,21 +32,21 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from west_commands.test_manifest import load_test_profile  # noqa: E402
+from west_commands.test_manifest import load_workloads  # noqa: E402
 import _runtime_load_probe as probe  # noqa: E402
 
 
-PROFILE = ROOT / "patches/runtime-load-smoke/patches.yml"
+CATALOG = ROOT / "testkit/workloads.yml"
 STUB_DELAY = "0.5"
 
-TRANSPORTS = ("homebrew-ring-on", "homebrew-ring-off")
+WORKLOAD_IDS = ("runtime_load_on", "runtime_load_off")
 PARAMETER_LIMITS = {
     "RUNTIME_LOAD_SOURCES": probe.SOURCES_LIMIT,
     "RUNTIME_LOAD_CONCURRENCY": probe.CONCURRENCY_LIMIT,
     "RUNTIME_LOAD_ROUNDS": probe.ROUNDS_LIMIT,
 }
 assert set(PARAMETER_LIMITS) == set(probe.PARAMETERS), (
-    "the profile must declare exactly the parameters the fixture validates"
+    "the workload must declare exactly the parameters the fixture validates"
 )
 
 # The heavier setting the fixture must also accept. Every parameter differs from
@@ -138,24 +138,18 @@ def concurrency_profile(log: Path) -> tuple[int, int]:
     return invocations, peak
 
 
-def check_profile_binding() -> list[tuple[str, dict, tuple[int, int, int]]]:
-    profile = load_test_profile(PROFILE)
-    patches = profile.get("patches", [])
-    assert patches, "the smoke profile declares no carrier binding"
-
-    bound: dict[str, dict] = {}
-    for patch in patches:
-        for test in patch.get("tests", []):
-            transport = test.get("runtime-profile")
-            assert transport, f"{test.get('name')}: test declares no runtime transport"
-            assert transport not in bound, f"transport {transport} is bound twice"
-            bound[transport] = test
-    assert set(bound) == set(TRANSPORTS), (
-        "the smoke profile must bind the fixture under both ring transports"
+def check_workload_bindings() -> list[tuple[str, dict, tuple[int, int, int]]]:
+    catalog = load_workloads(CATALOG)
+    bound = {
+        test["id"]: test for test in catalog["workloads"]
+        if test.get("script") == "tests/_runtime_load_probe.py"
+    }
+    assert set(bound) == set(WORKLOAD_IDS), (
+        "both distinct load workloads must remain declared"
     )
 
     declared_tests = []
-    for transport in TRANSPORTS:
+    for transport in WORKLOAD_IDS:
         test = bound[transport]
         assert test.get("env") == "darling", f"{transport}: the load fixture runs in the guest"
         assert test.get("runner") == "python", f"{transport}: runner must be the python shape"
@@ -353,7 +347,7 @@ def check_invalid_parameters_rejected() -> None:
 
 
 def main() -> int:
-    declared_tests = check_profile_binding()
+    declared_tests = check_workload_bindings()
     with tempfile.TemporaryDirectory(prefix="parallel-load-contract-") as temporary:
         root = Path(temporary)
         for index, (transport, test, expected) in enumerate(declared_tests, start=1):

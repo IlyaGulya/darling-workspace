@@ -185,9 +185,16 @@ for live_capture in (False, True):
         tempdir = Path(temp)
         ready = tempdir / "ready"
         cleaned = tempdir / "cleaned"
+        os.mkfifo(tempdir / "cancel.fifo")
+        cancellation_fd = os.open(tempdir / "cancel.fifo", os.O_RDWR | os.O_CLOEXEC)
         code = """
-import os, pathlib, signal, sys, time
+import os, pathlib, signal, sys, threading, time
 root = pathlib.Path(sys.argv[1])
+def abort():
+    with open(root / "cancel.fifo", "rb", buffering=0) as endpoint:
+        endpoint.read(1)
+    os._exit(99)
+threading.Thread(target=abort, daemon=True).start()
 def cancelled(signum, frame):
     time.sleep(float(sys.argv[2]))
     (root / "cleaned").write_text("resource released")
@@ -198,15 +205,11 @@ print("CANCEL_READY", flush=True)
 time.sleep(30)
 """
 
-        cancellation_fd = None
-
         def interrupt_when_ready(*_args):
-            global cancellation_fd
             try:
-                pid = int(ready.read_text())
+                int(ready.read_text())
             except (FileNotFoundError, ValueError):
                 return
-            cancellation_fd = os.pidfd_open(pid)
             signal.raise_signal(signal.SIGINT)
 
         try:
@@ -225,13 +228,18 @@ time.sleep(30)
             assert cleaned.is_file(), "caller unwound before child cleanup completed"
             assert not Path(f"/proc/{int(ready.read_text())}").exists(), "cancelled child was not reaped"
         finally:
-            if cancellation_fd is not None:
+            # A private endpoint remains tied to this child even if its PID is reused.
+            os.write(cancellation_fd, b"X")
+            os.close(cancellation_fd)
+            try:
+                pid = int(ready.read_text())
+            except (FileNotFoundError, ValueError):
+                pass
+            else:
                 try:
-                    signal.pidfd_send_signal(cancellation_fd, signal.SIGKILL)
-                except ProcessLookupError:
+                    os.waitpid(pid, 0)
+                except ChildProcessError:
                     pass
-                finally:
-                    os.close(cancellation_fd)
 
 with tempfile.TemporaryDirectory() as temp:
     # A surviving DESCENDANT must not be killed by the capture. The leader exits

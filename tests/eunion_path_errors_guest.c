@@ -26,9 +26,9 @@ int
 main(void)
 {
 	const char* shadowed_child =
-	    "/private/var/tmp/west-eunion-path-errors/shadow_dir/lower.txt";
+	    "/usr/share/darling/tests/eunion/path-errors/shadow_dir/lower.txt";
 	const char* escape_child =
-	    "/private/var/tmp/west-eunion-path-errors/escape_link/new.txt";
+	    "/usr/share/darling/tests/eunion/path-errors/escape_link/new.txt";
 
 	if (expect_open_errno(shadowed_child, O_RDONLY, ENOTDIR) != 0)
 		return 1;

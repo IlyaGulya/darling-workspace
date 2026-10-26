@@ -10,15 +10,14 @@ per dependency field by hand, decide the route, and then verify a supplied artif
           demand per dependency field with demangled shapes and weak/strong, and print the route the
           missing name takes with the evidence behind it (`closure_analyze.py --sweep` classifies the
           whole closure the same way; this is the same classifier for the current stop).
-  verify  For a supplied rung: the deployed prefix copy satisfies every strong demand (its own
-          export trie, an image its re-export graph reaches, or a demand only weak/upward referrers
-          make) and the sha chain payload == staged resource == deployed prefix copy.  The built
-          artifact's own export trie -- the analyzer's implementation view, which resolves no
-          re-exports -- is reported with its root named; it gates the rung only with
-          --fail-on-built-miss, because an artifact that exports nothing itself may still be a
-          correct rung once its re-exported providers are counted.
+  verify  The selected guest image satisfies every strong demand through its own export trie or
+          its re-export graph, with weak/upward-only demands reported separately. The ordinary
+          installation's reference image is also measured without re-exports; that independent
+          surface gates the diagnostic only with --fail-on-installed-miss. Hashes compare any
+          available committed payload against the installed reference and selected guest image,
+          naming shared paths rather than pretending they are independent staging evidence.
 
-Nothing here writes: it reads the log, the tree, the manifest, the payload and the prefix.
+Nothing here writes: it reads the log, source, ordinary install manifest, payload and guest roots.
 `closure_analyze.py` owns the declarations, the Mach-O readers and the route classifier; this script
 is the command surface over them, so there is one implementation of each fact, not two.
 """
@@ -93,7 +92,7 @@ def guest_path_to_host(raw, xcode, prefix):
     if raw.startswith("/Volumes/SystemRoot/"):
         cand = raw[len("/Volumes/SystemRoot"):]
         return cand if os.path.exists(cand) else None
-    for base in (prefix, os.path.join(prefix, "libexec/darling")):
+    for base in prefix.bases():
         cand = os.path.join(base, raw.lstrip("/"))
         if os.path.exists(cand):
             return cand
@@ -117,20 +116,47 @@ def demangle(symbols):
 
 # --------------------------------------------------------------------------- shared facts
 
+def prepare_analysis(args):
+    """Resolve real image-analysis prerequisites only after any file-only log parsing."""
+    try:
+        sources = ca.declaration_sources(args.darling, args.build)
+    except (OSError, ValueError) as error:
+        print(f"rung-driver: {error}", file=sys.stderr)
+        return None
+    args.runtime_root = args.runtime_root or sources["runtime_root"]
+    if not args.runtime_root:
+        print("rung-driver: pass --runtime-root or use a normally configured CMake build",
+              file=sys.stderr)
+        return None
+    args.guest_roots = ca.GuestRoots(args.prefix, args.runtime_root)
+    ca.SWIFT_BIN = args.swift_bin
+    ca.BUILD_DIR = args.build
+    for tool in ("llvm-objdump", "llvm-nm"):
+        if not os.path.isfile(ca.swift(tool)):
+            print(f"rung-driver: missing {ca.swift(tool)}; pass --swift-bin", file=sys.stderr)
+            return None
+    if not os.path.isdir(args.xcode):
+        print(f"rung-driver: no Xcode tree at {args.xcode}", file=sys.stderr)
+        return None
+    args.sources = sources
+    return sources
+
+
 def rung_facts(args):
     """Resolve the tree's facts once: declarations, closure, and the route context."""
-    sources = ca.declaration_sources(args.darling, args.build)
+    sources = args.sources
     manifest = sources["manifest"]
     # The default entry is the loader image; --entry replaces it (a bundle's own images load later
     # than the loader's closure reaches, so their referrers are invisible without it).
     entries = args.entry or [os.path.join(args.xcode, "Frameworks/libxcodebuildLoader.dylib")]
     entries = [ca._host_entry_path(e, args.xcode) for e in entries]
-    edges = {}
     for entry in entries:
         if not os.path.isfile(entry):
             print(f"rung-driver: entry image does not exist: {entry}", file=sys.stderr)
             raise SystemExit(2)
-        edges.update(ca.load_closure(entry, args.xcode))
+    graph = ca.cover_closure(entries, args.guest_roots, args.xcode)
+    edges = {record["path"]: [tuple(dep) for dep in record["dylibs"]]
+             for record in graph["images"].values()}
     ctx = ca.classify_context(args.darling, manifest, args.xcode, payload=args.payload,
                               overlay=args.overlay)
     return sources, manifest, edges, ctx
@@ -206,7 +232,7 @@ def _definition_note(detail, name):
 
 
 def print_declaration(sources, install_name):
-    """Which declaration (if any) supplies this install name, from the manifest first."""
+    """Which ordinary CMake installation record supplies this install name."""
     manifest = sources["manifest"]
     if not manifest:
         print("  declaration  : no generated manifest under --build")
@@ -214,7 +240,7 @@ def print_declaration(sources, install_name):
     by_install = manifest[1]
     entry = by_install.get(install_name)
     if entry:
-        print(f"  declaration  : [manifest] target={entry['target']}")
+        print(f"  declaration  : [install-manifest] target={entry['target']}")
         print(f"                 host_path={entry['host_path']}")
         for tgt, decl in sorted(sources["decls"].items()):
             if decl["install_name"] == install_name:
@@ -222,7 +248,7 @@ def print_declaration(sources, install_name):
                       f"{decl.get('cmake_target')}, source {decl.get('source')})")
                 return entry, decl
         return entry, None
-    print("  declaration  : NOT in the generated manifest (no component deploys this install name)")
+    print("  declaration  : NOT in the normal CMake install manifest")
     return None, None
 
 
@@ -253,14 +279,15 @@ def cmd_stop(args):
     print(f"  install name : {install_name}")
     print(f"  reason       : {reason}")
     print(f"  referenced by: {referrer_raw or '(the log does not name a referrer)'}")
-    referrer_host = guest_path_to_host(referrer_raw, args.xcode, args.prefix) if referrer_raw else None
+    if prepare_analysis(args) is None:
+        return 2
+    referrer_host = guest_path_to_host(referrer_raw, args.xcode, args.guest_roots) if referrer_raw else None
     if referrer_raw and referrer_host is None:
         print("rung-driver: cannot resolve the observed referrer; its demand is unknown, not absent",
               file=sys.stderr)
         print(f"  guest referrer: {referrer_raw}", file=sys.stderr)
-        print(f"  prefix searched: {args.prefix}", file=sys.stderr)
-        print(f"  alternate root: {os.path.join(args.prefix, 'libexec/darling')}", file=sys.stderr)
-        print("  pass --prefix for the runtime that produced this log; no provider route was classified",
+        print(f"  guest roots: {args.guest_roots}", file=sys.stderr)
+        print("  pass the observed --prefix and --runtime-root; no provider route was classified",
               file=sys.stderr)
         return 2
     elif referrer_host:
@@ -279,14 +306,14 @@ def cmd_stop(args):
     if not refs:
         print("rung-driver: a loader stop was observed, but its referrers could not be established",
               file=sys.stderr)
-        print(f"  prefix searched: {args.prefix}", file=sys.stderr)
-        print("  supply the run's --prefix/--entry or a complete log; unknown demand is not a non-blocker",
+        print(f"  guest roots: {args.guest_roots}", file=sys.stderr)
+        print("  supply the observed guest roots/--entry or a complete log; unknown demand is not a non-blocker",
               file=sys.stderr)
         return 2
     print()
     print("== the demand ==")
     print(f"  prefix carries the install name: "
-          f"{ca.deployed_state(args.prefix, install_name, None)[0]}")
+          f"{ca.deployed_state(args.guest_roots, install_name, None)[0]}")
     print_declaration(sources, install_name)
     print()
     demanded, _per_referrer = print_demand(install_name, refs)
@@ -312,7 +339,9 @@ def sha256(path):
 
 
 def cmd_verify(args):
-    sources = ca.declaration_sources(args.darling, args.build)
+    sources = prepare_analysis(args)
+    if sources is None:
+        return 2
     decl = None
     if args.component:
         name, decl = ca.resolve_decl(args.component, sources["decls"])
@@ -326,14 +355,13 @@ def cmd_verify(args):
     print(f"  component    : {args.component or '(by install name)'}")
     print(f"  install name : {install_name}")
     print(f"  manifest     : {sources['manifest_path']}")
-    print(f"  prefix       : {args.prefix}")
+    print(f"  guest roots  : {args.guest_roots}")
     print(f"  payload      : {args.payload or os.path.join(args.darling, 'src/external/swift')}")
     print()
 
     _sources, manifest, edges, ctx = rung_facts(args)
     if decl is None and manifest:
-        # --install-name: the manifest's own entry is the declaration the analyzer uses, so the
-        # built-artifact leg judges it instead of skipping for want of a --component.
+        # --install-name resolves directly through the ordinary installed image's record.
         entry = manifest[1].get(install_name)
         if entry:
             decl = {"target": entry["target"], "install_name": install_name,
@@ -362,9 +390,9 @@ def cmd_verify(args):
     # the analyzer's own classification, never a second one derived here from a raw count of demanded
     # names.
     print("== 1. the deployed image satisfies every demand ==")
-    print("  root judged  : the deployed prefix copy (NOT the build artifact; step 3 proves the two "
-          "equal when the sha chain holds)")
-    deployed_path = ca.deployed_path(args.prefix, install_name)
+    print("  root judged  : the selected guest image, including any writable-upper override; "
+          "step 3 compares it with the immutable installation's reference")
+    deployed_path = ca.deployed_path(args.guest_roots, install_name)
     split = None
     if not deployed_path:
         print(f"  FAIL: the prefix carries no {install_name}")
@@ -373,7 +401,7 @@ def cmd_verify(args):
         print(f"  deployed copy: {deployed_path}")
         own_detail = ca.exports_detail(deployed_path)
         own = own_detail["names"]
-        reexported, providers = ca.reexported_exports(deployed_path, args.prefix)
+        reexported, providers = ca.reexported_exports(deployed_path, args.guest_roots)
         split = ca.demand_split(demanded, refs, demanded_by_referrer, own, reexported)
         print(f"  own export trie: {len(own)} name(s); re-exported: {len(reexported)} name(s) from "
               f"{len(providers)} image(s)"
@@ -400,12 +428,10 @@ def cmd_verify(args):
                      if split["tolerated"] else ""))
     print()
 
-    # 2. the built artifact's OWN surface: what the analyzer judges, and the only leg that is about
-    # implementation rather than loadability.  It resolves no re-exports by design (an umbrella that
-    # re-exports its providers legitimately exports nothing itself), so its MISS is REPORTED with its
-    # root named and gates the rung only when asked (--fail-on-built-miss): a built-artifact absence
-    # is real information, not a verdict about the deployed rung (dar-m3s0 follow-up).
-    print("== 2. the built artifact's own surface (analyzer) ==")
+    # The installed reference's own surface excludes re-exports by design. An umbrella can
+    # legitimately export nothing itself, so report that surface independently from the selected
+    # guest image's loadability and gate it only when explicitly requested.
+    print("== 2. the installed reference's own surface (analyzer) ==")
     built = ca.resolve_artifact(manifest, decl) if decl else None
     built_miss = 0
     built_known = False
@@ -417,8 +443,8 @@ def cmd_verify(args):
               "judge; this is NOT 'MISS 0'")
         built_known = True
     else:
-        print(f"  root judged  : the build artifact {built} (manifest host_path) -- NOT the deployed "
-              "chain step 1 judged")
+        print(f"  root judged  : the installed reference {built} (normal install manifest) -- "
+              "step 1 judged the selected guest image and re-export chain")
         base = args.base or ca.ladder_base(args.darling)
         result = ca.analyze_component(args.component or install_name, decl, manifest, args.darling,
                                       base, refs)
@@ -442,23 +468,20 @@ def cmd_verify(args):
             chain = len(split["satisfied_reexport"]) if split else 0
             print(f"  note: this is the artifact's own surface, not a verdict about the rung: step 1 "
                   f"judged the deployed chain, which satisfies {chain} of the field's demanded "
-                  f"name(s) through a re-export.  Pass --fail-on-built-miss to gate on this leg.")
-    if built_known and args.fail_on_built_miss:
+                  f"name(s) through a re-export. Pass --fail-on-installed-miss to gate on this leg.")
+    if built_known and args.fail_on_installed_miss:
         if not built:
-            failures.append("the built artifact is absent and none is declared with a host_path "
-                            "(--fail-on-built-miss)")
+            failures.append("the installed reference is absent (--fail-on-installed-miss)")
         elif built_miss:
-            failures.append(f"built artifact MISS {built_miss} (--fail-on-built-miss)")
+            failures.append(f"installed reference MISS {built_miss} (--fail-on-installed-miss)")
     print()
 
-    # 3. the sha chain payload == staged resource == deployed prefix copy.
-    print("== 3. sha chain payload == staged resource == deployed copy ==")
-    staged = os.path.join(args.build, "rootless-toolchain-resources", install_name.lstrip("/"))
+    # Compare the committed payload, installed reference and selected guest image, without staging.
+    print("== 3. sha chain payload == installed reference == selected guest image ==")
     payload_dir = args.payload or os.path.join(args.darling, "src/external/swift")
     payload_file = os.path.join(payload_dir, os.path.basename(install_name))
     if not os.path.isfile(payload_file):
-        # A framework carried by the payload, or a component this tree builds: the payload leg is
-        # the build artifact instead, and the chain says which leg is missing rather than failing.
+        # Framework payloads retain their member layout; source-built providers have no payload leg.
         fw = None
         for part in install_name.split("/"):
             if part.endswith(".framework"):
@@ -472,8 +495,7 @@ def cmd_verify(args):
                 payload_file = None
         else:
             payload_file = None
-    legs = [("payload", payload_file), ("staged resource", staged),
-            ("deployed", deployed_path), ("built artifact", built)]
+    legs = [("payload", payload_file), ("installed reference", built), ("deployed", deployed_path)]
     digests = {}
     for label, path in legs:
         digest = sha256(path) if path else None
@@ -502,9 +524,9 @@ def cmd_verify(args):
             print(f"  FAIL: {reason}")
         print("  RESULT: FAIL")
         return 1
-    print("  RESULT: PASS -- the deployed prefix copy satisfies every strong demand (its own export "
-          "trie or a re-exported image), the sha chain is intact, and the built artifact's own "
-          "surface was reported (step 2; gate it with --fail-on-built-miss)")
+    print("  RESULT: PASS -- the selected guest image satisfies every strong demand, the available "
+          "payload/installed-reference hashes agree, and the reference's own surface was reported "
+          "(step 2; gate it with --fail-on-installed-miss)")
     return 0
 
 
@@ -514,7 +536,9 @@ def add_common(ap):
     ap.add_argument("--darling", default=ca.DEFAULTS["darling"])
     ap.add_argument("--build", default=ca.DEFAULTS["build"])
     ap.add_argument("--prefix", default=ca.DEFAULTS["prefix"],
-                    help="runtime prefix from this run; guest referrers use it and libexec/darling (default: %(default)s)")
+                    help="writable DPREFIX upper from the observed run, if any")
+    ap.add_argument("--runtime-root", default=ca.DEFAULTS["runtime_root"],
+                    help="installed runtime root (default: DARLING_RUNTIME_ROOT or CMake cache)")
     ap.add_argument("--xcode", default=ca.DEFAULTS["xcode"])
     ap.add_argument("--swift-bin", default=ca.DEFAULTS["swift_bin"])
     ap.add_argument("--base", default=None, help="ladder base commit (default: derived from git)")
@@ -545,20 +569,17 @@ def main():
     add_common(stop)
     stop.set_defaults(func=cmd_stop)
     verify = sub.add_parser("verify", help="verify a supplied rung",
-                            description="Verify a supplied rung three ways: the deployed prefix copy "
-                                        "satisfies every strong demand (its own export trie, a "
-                                        "re-exported image, or a weak/upward-only referrer) and the "
-                                        "sha chain payload == staged resource == deployed copy; the "
-                                        "built artifact's own export trie, which resolves no "
-                                        "re-exports, is reported with its root named and gates the "
-                                        "rung only with --fail-on-built-miss.")
+                            description="Verify the selected guest image's strong demand and "
+                                        "re-export coverage against the installed reference and "
+                                        "any committed payload. The reference's own export trie "
+                                        "gates only with --fail-on-installed-miss.")
     verify.add_argument("--component", default=None,
                         help="declared target or install-name stem (e.g. "
-                             "swift_libswiftUniformTypeIdentifiers_dylib)")
+                             "libswiftUniformTypeIdentifiers)")
     verify.add_argument("--install-name", default=None,
                         help="verify by install name when no declaration resolves")
-    verify.add_argument("--fail-on-built-miss", action="store_true",
-                        help="also fail when the BUILD artifact's own export trie does not carry "
+    verify.add_argument("--fail-on-installed-miss", action="store_true",
+                        help="also fail when the installed reference's own export trie does not carry "
                              "every strongly demanded name (or is absent).  That number is real "
                              "information about implementation, but it is not a verdict about the "
                              "deployed rung, so it is reported and not gated by default.")
@@ -566,15 +587,6 @@ def main():
     verify.set_defaults(func=cmd_verify)
     args = ap.parse_args()
 
-    ca.SWIFT_BIN = args.swift_bin
-    ca.BUILD_DIR = args.build
-    for tool in ("llvm-objdump", "llvm-nm"):
-        if not os.path.isfile(ca.swift(tool)):
-            print(f"rung-driver: missing {ca.swift(tool)}; pass --swift-bin", file=sys.stderr)
-            return 2
-    if not os.path.isdir(args.xcode):
-        print(f"rung-driver: no Xcode tree at {args.xcode}", file=sys.stderr)
-        return 2
     return args.func(args)
 
 

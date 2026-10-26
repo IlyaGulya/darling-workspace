@@ -158,11 +158,12 @@ with tempfile.TemporaryDirectory(prefix="dev-output-contract-") as temporary:
         "transaction_id": "abc",
         "inputs": {
             "tier": "canonical",
-            "profile": "-profile with space",
+            "workloads": ["-workload with space"],
             "bead": None,
-            "patch": "-patch one",
+            "runtime_root": "/installed runtime",
             "prefix": None,
             "build_dir": None,
+            "source_root": "/derived candidate/source",
             "evidence": str(evidence),
             "west_argv": ["/recorded/west launcher"],
         },
@@ -184,8 +185,9 @@ with tempfile.TemporaryDirectory(prefix="dev-output-contract-") as temporary:
         "dev",
         "check",
         "canonical",
-        "--profile=-profile with space",
-        "--patch=-patch one",
+        "--workload=-workload with space",
+        "--runtime-root=/installed runtime",
+        "--source-root=/derived candidate/source",
         f"--evidence={evidence}",
         "--dry-run",
         "--json",
@@ -236,6 +238,22 @@ with tempfile.TemporaryDirectory(prefix="dev-output-contract-") as temporary:
         ]
     )
     assert package_args.required_tier == "acceptance"
+    assert not hasattr(package_args, "profile")
+    selected = root_parser.parse_args([
+        "dev", "check", "quick", "--workload", "homebrew-preflight",
+        "--workload", "homebrew-source", "--runtime-root", "/installed runtime",
+        "--source-root", "/derived candidate/source",
+        "--evidence", str(root / "check.json"),
+    ])
+    assert selected.workload == ["homebrew-preflight", "homebrew-source"]
+    assert selected.runtime_root == Path("/installed runtime")
+    assert selected.source_root == Path("/derived candidate/source")
+    assert not hasattr(selected, "profile") and not hasattr(selected, "patch")
+    status_args = root_parser.parse_args([
+        "dev", "status", "--runtime-root", "/installed runtime", "--prefix", "/guest state",
+    ])
+    assert status_args.runtime_root == Path("/installed runtime")
+    assert status_args.prefix == Path("/guest state")
     assert parsed.json is True
     errors: list[str] = []
     command.err = errors.append
@@ -280,9 +298,9 @@ with tempfile.TemporaryDirectory(prefix="dev-output-contract-") as temporary:
         "transaction_id": "check-progress",
         "inputs": {
             "tier": "acceptance",
-            "profile": "homebrew",
+            "workloads": [],
             "bead": None,
-            "patch": None,
+            "runtime_root": None,
             "prefix": None,
             "build_dir": None,
             "evidence": str(check_evidence),

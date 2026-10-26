@@ -38,7 +38,7 @@ def command_names() -> list[str]:
             continue
         if in_commands:
             m = re.match(r"^  ([a-z][a-z0-9-]*)\b", line)
-            if m:
+            if m and m.group(1) != "help":
                 names.append(m.group(1))
             elif line.strip() and not line.startswith(" "):
                 break

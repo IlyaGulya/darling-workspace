@@ -36,12 +36,10 @@ def validate_rootless_disposable_prefix(
 ) -> Path:
     """Return a canonical disposable prefix path or reject a broad target.
 
-    A debug tree is accepted by name, as it always was. A bootstrap prefix - the
-    kind ``west test --prefix /tmp/darling-rootless-<name>
-    --bootstrap-runtime-profile <profile>`` creates - is accepted when it carries
-    the framework's own prefix-state marker, because that marker is how the
-    framework identifies a prefix it owns; a directory that merely has a similar
-    name is refused.
+    A historical debug tree is accepted by name. A historical bootstrap prefix
+    is accepted only with the framework's own prefix-state marker; a directory
+    that merely has a similar name is refused. This recognizes cleanup targets,
+    not a supported way to create new prefixes.
     """
 
     root = temp_root.resolve()

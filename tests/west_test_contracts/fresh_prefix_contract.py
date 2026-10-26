@@ -14,15 +14,15 @@ sys.path.insert(0, str(ROOT / "west_commands"))
 
 import fresh_prefix
 from fresh_prefix import create_fresh_prefix, disposable_prefix_path, prefix_tree_size, remove_fresh_prefix
+from runtime_install import InstalledRuntime
 
 
 with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     baseline = root / "baseline"
     baseline.mkdir()
-    (baseline / "bin").mkdir()
-    original = baseline / "bin" / "darling"
-    original.write_text("baseline launcher\n")
+    original = baseline / "payload.txt"
+    original.write_text("baseline guest payload\n")
     canonical_toolchain = baseline / "Library" / "Developer" / "CommandLineTools"
     canonical_toolchain.mkdir(parents=True)
     (canonical_toolchain / "clang").write_text("canonical compiler\n")
@@ -45,24 +45,39 @@ with tempfile.TemporaryDirectory() as temp:
         "provenance=darling-runtime-prefix-lifecycle-v2\n"
     )
     target = root / "darling-fresh-prefix-contract"
+    runtime_root = root / "runtime"
+    (runtime_root / "bin").mkdir(parents=True)
+    system_root = runtime_root / "libexec" / "darling"
+    system_root.mkdir(parents=True)
+    launcher = runtime_root / "bin" / "darling"
+    launcher.write_text(
+        "#!/bin/sh\n"
+        'test "$1" = "bind-clone" || exit 2\n'
+        'printf "DARLING_PREFIX_STATE_V2\\nschema_version=2\\nruntime_mode=rootless-eunion\\n'
+        'generation=1\\nprovenance=contract-bind\\n" > "$DPREFIX/.darling-prefix-state-v2"\n'
+    )
+    launcher.chmod(0o755)
+    runtime = InstalledRuntime(
+        root=runtime_root, launcher=launcher, system_root=system_root, identity=None
+    )
+    runtime_before = launcher.read_bytes()
 
     created = create_fresh_prefix(
         baseline,
         destination=target,
         temp_root=root,
         reserve_bytes=0,
+        runtime=runtime,
     )
     assert created.success, created.problems
     assert created.path == target
-    # A copied prefix is a DIFFERENT prefix: the lifecycle record must name the copy's own
-    # device/inode, or the launcher refuses it as "belongs to another prefix".
+    # A copied prefix is a DIFFERENT prefix: only the product's checked bind-clone
+    # operation publishes its lifecycle record.
     rebound = (target / ".darling-prefix-state-v2").read_text()
-    target_stat = target.stat()
-    assert f"prefix_device={target_stat.st_dev}" in rebound, rebound
-    assert f"prefix_inode={target_stat.st_ino}" in rebound, rebound
-    assert f"owner_uid={__import__('os').getuid()}" in rebound, rebound
-    copied = target / "bin" / "darling"
-    assert copied.read_text() == "baseline launcher\n"
+    assert "provenance=contract-bind" in rebound, rebound
+    assert rebound != (baseline / ".darling-prefix-state-v2").read_text()
+    copied = target / "payload.txt"
+    assert copied.read_text() == "baseline guest payload\n"
     assert copied.stat().st_ino != original.stat().st_ino
     assert (target / "Library" / "Developer" / "CommandLineTools" / "clang").exists()
     assert not (target / "Library" / "Developer" / "CommandLineTools.clt11-bak").exists()
@@ -72,8 +87,11 @@ with tempfile.TemporaryDirectory() as temp:
         for message in created.changed
     ), created.changed
     assert not (target / "private" / "tmp" / "stale.sock").exists()
-    copied.write_text("fresh launcher\n")
-    assert original.read_text() == "baseline launcher\n"
+    copied.write_text("fresh guest payload\n")
+    assert original.read_text() == "baseline guest payload\n"
+    assert not (target / "bin" / "darling").exists()
+    assert not (target / "libexec" / "darling").exists()
+    assert launcher.read_bytes() == runtime_before
     server.close()
 
     removed = remove_fresh_prefix(target, temp_root=root)
@@ -85,9 +103,53 @@ with tempfile.TemporaryDirectory() as temp:
         destination=root / "darling-fresh-prefix-insufficient",
         temp_root=root,
         reserve_bytes=1 << 62,
+        runtime=runtime,
     )
     assert not insufficient.success
     assert "needs" in insufficient.problems[0]
+
+    alias = root / "baseline-alias"
+    alias.symlink_to(baseline, target_is_directory=True)
+    parent_alias = root / "parent-alias"
+    parent_alias.symlink_to(root, target_is_directory=True)
+    for index, unsafe in enumerate((
+        str(alias),
+        str(parent_alias / "baseline"),
+        f"{root}/./baseline",
+        f"{root}/baseline/../baseline",
+    )):
+        rejected_target = root / f"darling-fresh-prefix-unsafe-{index}"
+        rejected = create_fresh_prefix(
+            unsafe, destination=rejected_target, temp_root=root,
+            reserve_bytes=0, runtime=runtime,
+        )
+        assert not rejected.success, unsafe
+        assert not rejected_target.exists(), unsafe
+    for unsafe in (
+        f"{root}/./darling-fresh-prefix-invalid",
+        f"{root}/baseline/../darling-fresh-prefix-invalid",
+        str(parent_alias / "darling-fresh-prefix-invalid"),
+    ):
+        try:
+            disposable_prefix_path(unsafe, temp_root=root)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"normalized an unsafe fresh-prefix destination: {unsafe}")
+
+    legacy = root / "legacy-combined"
+    (legacy / "bin").mkdir(parents=True)
+    (legacy / "bin" / "darling").write_text("obsolete launcher\n")
+    (legacy / "bin" / "darlingserver").write_text("obsolete server\n")
+    (legacy / "libexec" / "darling").mkdir(parents=True)
+    legacy_target = root / "darling-fresh-prefix-legacy"
+    rejected = create_fresh_prefix(
+        legacy, destination=legacy_target, temp_root=root,
+        reserve_bytes=0, runtime=runtime,
+    )
+    assert not rejected.success
+    assert not legacy_target.exists(), "legacy runtime image was copied before admission"
+    assert launcher.read_bytes() == runtime_before
 
     fallback_source = root / "fallback-source"
     fallback_destination = root / "fallback-destination"
@@ -104,20 +166,9 @@ with tempfile.TemporaryDirectory() as temp:
     assert fallback_destination.read_text() == "fallback contents\n"
 
 
-def test_durable_default_never_lands_in_tmp() -> None:
-    from test_store import durable_root, durable_subdir
-
-    workspace = root = Path(tempfile.mkdtemp(prefix="fresh-root-contract-"))
-    try:
-        assert durable_root(workspace) == workspace / ".west-state"
-        assert durable_subdir(workspace, "prefixes") == workspace / ".west-state" / "prefixes"
-        assert durable_root(workspace, {"DW_STATE_ROOT": "/declared/root"}) == Path("/declared/root")
-    finally:
-        shutil.rmtree(workspace)
 
 
 
-test_durable_default_never_lands_in_tmp()
 
 for invalid in (Path("/tmp/not-disposable"), Path("/tmp/darling-fresh-prefix-parent/child")):
     try:

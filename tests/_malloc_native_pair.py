@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-off native source-base proof; West owns the prefix lifecycle."""
+"""Compare an explicit immutable baseline artifact with the installed executable."""
 import hashlib
 import os
 from pathlib import Path
@@ -10,12 +10,20 @@ import tempfile
 workspace = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(workspace / "west_commands"))
 from test_guest_execution import run_guest_shell_argv
+from runtime_install import resolve_runtime
 
 prefix = Path(os.environ["DPREFIX"])
 source = Path(os.environ["MALLOC_NATIVE_BASE_BINARY"])
 expected = os.environ["MALLOC_NATIVE_BASE_SHA256"]
 if hashlib.sha256(source.read_bytes()).hexdigest() != expected:
-    raise SystemExit("source-base native executable checksum mismatch")
+    raise SystemExit("baseline native executable checksum mismatch")
+runtime = resolve_runtime()
+ready = run_guest_shell_argv(
+    str(runtime.launcher), prefix, ("/usr/bin/true",),
+    cwd=workspace, env=runtime.environment(prefix), timeout_seconds=60,
+)
+if ready.returncode:
+    raise SystemExit(ready.returncode)
 with tempfile.TemporaryDirectory(prefix="malloc-native-pair-", dir=prefix / "private/var/tmp") as temporary:
     binary = Path(temporary) / "rack_region_generation_base"
     shutil.copyfile(source, binary)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-off matched transport observation; West owns the prefix lifecycle."""
+"""Observe the selected installed transport; West owns the prefix lifecycle."""
 import hashlib
 import json
 import os
@@ -10,11 +10,15 @@ import sys
 workspace = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(workspace / "west_commands"))
 from test_guest_execution import run_guest_shell_argv
+from runtime_install import resolve_runtime
 
 prefix = Path(os.environ["DPREFIX"])
 mode = os.environ["RING_EXPECTED_MODE"]
 if mode not in {"ON", "OFF"}:
     raise SystemExit("invalid expected ring mode")
+runtime = resolve_runtime()
+source_root = Path(os.environ.get("DARLING_SOURCE_ROOT", workspace.parent / "darling"))
+stat_tool = source_root / "src/external/darlingserver/tools/darling-stat"
 result = run_guest_shell_argv(
     os.environ["DARLING_LAUNCHER"], prefix,
     ("/usr/libexec/rack_region_generation",),
@@ -23,7 +27,7 @@ result = run_guest_shell_argv(
 if result.returncode != 0:
     raise SystemExit(result.returncode)
 snapshot = json.loads(subprocess.check_output(
-    [sys.executable, os.environ["RING_STAT_TOOL"], str(prefix)],
+    [sys.executable, str(stat_tool), str(prefix)],
     text=True, timeout=10,
 ))
 per_call = snapshot.get("per_call", {})
@@ -40,7 +44,7 @@ if mode == "OFF" and (ring_keys or attach != 0):
 proof = {
     "mode": mode, "prefix": str(prefix), "host_self_calls": host_calls,
     "ring_attach": attach, "ring_serviced": serviced, "ring_keys": ring_keys,
-    "server_sha256": hashlib.sha256((prefix / "bin/darlingserver").read_bytes()).hexdigest(),
+    "server_sha256": hashlib.sha256((runtime.root / "bin/darlingserver").read_bytes()).hexdigest(),
 }
 print("RING_MODE_PROOF " + json.dumps(proof, sort_keys=True))
 print("RING_MODE_PROOF_OK mode=" + mode)

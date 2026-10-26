@@ -50,9 +50,9 @@ expect_no_dir_entry(const char* dir, const char* name)
 int
 main(void)
 {
-	const char* dir = "/private/var/tmp/west-eunion-mkdir-opaque/recreate";
-	const char* stale_a = "/private/var/tmp/west-eunion-mkdir-opaque/recreate/stale_a.txt";
-	const char* stale_b = "/private/var/tmp/west-eunion-mkdir-opaque/recreate/stale_b.txt";
+	const char* dir = "/usr/share/darling/tests/eunion/mkdir-opaque/recreate";
+	const char* stale_a = "/usr/share/darling/tests/eunion/mkdir-opaque/recreate/stale_a.txt";
+	const char* stale_b = "/usr/share/darling/tests/eunion/mkdir-opaque/recreate/stale_b.txt";
 
 	if (access(stale_a, F_OK) != 0 || access(stale_b, F_OK) != 0) {
 		printf("fixture stale children missing before rmdir: %s\n", strerror(errno));

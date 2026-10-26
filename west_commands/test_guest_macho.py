@@ -48,7 +48,7 @@ _DYLIB_COMMANDS = {
 }
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _PREFIX_NAME = re.compile(
-    r"^darling-rootless-(?P<kind>[A-Za-z0-9_]+)(?:[.-][A-Za-z0-9_]+)*$"
+    r"^dw-(?P<initial>[A-Za-z0-9_])\.[A-Za-z0-9]+$"
 )
 
 
@@ -329,18 +329,15 @@ def load_guest_macho_fixture(root: Path, corpus: str, fixture_name: str) -> Gues
 
 
 def _prefix_contains_guest_toolchain(prefix: Path) -> bool:
-    return any(
-        (prefix / relative).exists() or (prefix / relative).is_symlink()
-        for relative in (
-            "Library/Developer/CommandLineTools",
-            "libexec/darling/Library/Developer/CommandLineTools",
-        )
-    )
+    path = prefix / "Library/Developer/CommandLineTools"
+    return path.exists() or path.is_symlink()
 
 
 def _trusted_root() -> Path:
-    root_value = os.environ.get("RUNNER_TEMP") or os.environ.get("TMPDIR") or "/tmp"
-    root = Path(os.path.realpath(root_value))
+    state = os.environ.get("DW_STATE_ROOT")
+    if not state:
+        raise GuestMachoFixtureError("DW_STATE_ROOT is required for prefix ownership validation")
+    root = Path(os.path.realpath(state)) / "p"
     repo_value = os.environ.get("ROOTLESS_TIER_REPO")
     if not repo_value:
         raise GuestMachoFixtureError("ROOTLESS_TIER_REPO is required for prefix ownership validation")
@@ -350,8 +347,6 @@ def _trusted_root() -> Path:
         raise GuestMachoFixtureError(f"trusted root does not exist: {root}")
     if root == Path("/") or root == home or root == repo or repo in root.parents:
         raise GuestMachoFixtureError(f"trusted root is unsafe: {root}")
-    if "RUNNER_TEMP" not in os.environ and home in root.parents:
-        raise GuestMachoFixtureError(f"trusted root under HOME requires RUNNER_TEMP: {root}")
     return root
 
 
@@ -425,7 +420,7 @@ def _require_tier_owned_fresh_prefix(prefix: Path, env: Mapping[str, str]) -> No
         fields[key] = value
     if set(fields) != {"schema", "kind", "pid"}:
         raise GuestMachoFixtureError(f"incomplete tier prefix owner: {owner}")
-    if fields["schema"] != "1" or fields["kind"] != match.group("kind"):
+    if fields["schema"] != "1" or not _SAFE_NAME.fullmatch(fields["kind"]) or fields["kind"][0] != match.group("initial"):
         raise GuestMachoFixtureError(f"tier prefix owner does not match prefix: {prefix}")
     if not fields["pid"].isdigit() or int(fields["pid"]) <= 1:
         raise GuestMachoFixtureError(f"tier prefix owner has an invalid pid: {owner}")
@@ -433,9 +428,6 @@ def _require_tier_owned_fresh_prefix(prefix: Path, env: Mapping[str, str]) -> No
         raise GuestMachoFixtureError(
             f"tier prefix owner pid is not a live ancestor of this West process: {owner}"
         )
-    for name in ("DARLING_ROOTLESS", "DARLING_NOOVERLAYFS", "DARLING_EUNION"):
-        if env.get(name) != "1":
-            raise GuestMachoFixtureError(f"guest Mach-O runner requires {name}=1")
     if _prefix_contains_guest_toolchain(prefix):
         raise GuestMachoFixtureError(f"guest Mach-O prefix already contains CommandLineTools: {prefix}")
 
@@ -448,8 +440,6 @@ def run_guest_macho_fixture(command: Any, invocation: dict, env: dict[str, str] 
         run_env = os.environ.copy()
     if not guest_toolchain_provisioning_forbidden(run_env):
         command.die(f"{invocation['name']}: guest Mach-O runner requires no-CLT policy")
-    if invocation.get("requires_profile") or invocation.get("runtime_profile"):
-        command.die(f"{invocation['name']}: guest Mach-O runner cannot use a provisioning profile")
 
     repo_root_value = invocation.get("repo_root")
     if not repo_root_value:
@@ -466,9 +456,11 @@ def run_guest_macho_fixture(command: Any, invocation: dict, env: dict[str, str] 
         _require_tier_owned_fresh_prefix(prefix, run_env)
     except GuestMachoFixtureError as error:
         command.die(f"{invocation['name']}: {error}")
-    guest = command._resolve_darling_launcher(str(prefix))
-    if not guest:
-        command.die(f"{invocation['name']}: guest Mach-O runner needs a Darling launcher")
+    runtime = command._installed_runtime()
+    run_env = runtime.environment(prefix, run_env)
+    guest = str(runtime.launcher)
+    if _prefix_contains_guest_toolchain(runtime.system_root):
+        command.die(f"{invocation['name']}: installed runtime image contains CommandLineTools")
 
     staged = prefix / "private/var/tmp" / f"west-macho-{fixture.name}"
     temporary = staged.with_name(f".{staged.name}.{os.getpid()}.tmp")

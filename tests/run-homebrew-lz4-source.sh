@@ -2,7 +2,7 @@
 set -euo pipefail
 
 : "${DPREFIX:?west must provide the disposable test prefix}"
-: "${DARLING_LAUNCHER:?west must provide the deployed launcher}"
+: "${DARLING_LAUNCHER:?west must provide the installed launcher}"
 : "${DARLING_HOMEBREW_LZ4_WORK:?west homebrew-lz4 resource must stage the inputs}"
 : "${DARLING_HOMEBREW_LZ4_INPUTS:?west homebrew-lz4 resource must provide the provenance record}"
 

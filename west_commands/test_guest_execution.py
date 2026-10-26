@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -15,6 +16,28 @@ try:
 except ImportError:  # Loaded as a West extension module, not a package.
     from test_execution import ProcessResult, run_bounded
 
+
+def guest_c_fixture_prerequisite_problems(
+    prefix: Path, guest_cc: str, guest_cflags: str, *, system_root: Path,
+) -> list[str]:
+    """Check the guest-visible CLT union, never a prefix-local runtime copy."""
+
+    problems = []
+
+    def check(guest_path: str, description: str) -> None:
+        relative = guest_path.lstrip("/")
+        if not any((root / relative).exists() for root in (prefix, system_root)):
+            problems.append(f"{description} missing in guest filesystem: {guest_path}")
+
+    if guest_cc.startswith("/Library/Developer/CommandLineTools/"):
+        check(guest_cc, "guest compiler")
+    flags = shlex.split(guest_cflags)
+    for index, flag in enumerate(flags):
+        if flag == "-isysroot" and index + 1 < len(flags):
+            sysroot = flags[index + 1]
+            if sysroot.startswith("/Library/Developer/CommandLineTools/"):
+                check(sysroot, "guest SDK sysroot")
+    return problems
 
 def failure_phase_from_output(output: str) -> str | None:
     """Prefer readiness failures, then source-driven guest runner stages."""

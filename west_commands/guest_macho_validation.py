@@ -52,27 +52,15 @@ def add_cli_arguments(parser) -> None:
 
 def validate_cli_selection(args) -> None:
     group = args.guest_macho_validation_group
-    if group and not args.profile:
-        raise ValueError(
-            "--guest-macho-validation-group requires --profile homebrew"
-        )
-    if group and args.profile != "homebrew":
-        raise ValueError(
-            "--guest-macho-validation-group requires --profile homebrew"
-        )
     if group and args.env != "darling":
         raise ValueError("--guest-macho-validation-group requires --env darling")
     if args.guest_macho_evidence_dir and not group:
         raise ValueError(
             "--guest-macho-evidence-dir requires --guest-macho-validation-group"
         )
-    if group and args.patch:
-        raise ValueError(
-            "--guest-macho-validation-group selects the exact group; do not combine it with --patch"
-        )
     if group and any(
         getattr(args, option, None)
-        for option in ("bead", "diag", "label", "red_only")
+        for option in ("bead", "diag", "label", "workload")
     ):
         raise ValueError(
             "--guest-macho-validation-group selects the exact group; do not combine it with filters"
@@ -89,10 +77,8 @@ def validate_selected_group(selected: list[tuple[dict, dict]], group: str) -> No
         raise ValueError(f"guest Mach-O validation group has the wrong fixture set: {group}")
     if any(test.get("runner") != "guest-macho-fixture" for _, test in selected):
         raise ValueError("guest Mach-O validation group selected a non-Mach-O test")
-    if any(test.get("source-profile") != group for _, test in selected):
-        raise ValueError(
-            "guest Mach-O validation group selected an incompatible source-profile"
-        )
+    if any(test.get("validation-group") != group for _, test in selected):
+        raise ValueError("guest Mach-O validation group selected an incompatible fixture")
 
 
 def capture_invocation(command, invocation, env, evidence_dir: Path) -> int:

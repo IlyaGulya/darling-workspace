@@ -6,15 +6,11 @@ import importlib.util
 import io
 import json
 import os
-import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "west_commands"))
-from test_profile import ProfileOperationsMixin
 SPEC = importlib.util.spec_from_file_location("run_host_tier", ROOT / "ci/run-host-tier.py")
 assert SPEC is not None and SPEC.loader is not None
 host_tier = importlib.util.module_from_spec(SPEC)
@@ -87,18 +83,20 @@ with tempfile.TemporaryDirectory(prefix="host-tier-contract-") as raw:
 registered = {Path(contract).stem for contract in host_tier.CONTRACTS} | {
     name for name, _, _ in host_tier.EXPLICIT_CONTRACTS
 }
-sweeps = {"homebrew-host-metadata", "wget-residual-host-metadata"}
+sweeps = {"canonical-host-workloads"}
 declared = set(host_tier.CONTRACT_WEIGHTS) - sweeps
 assert declared <= registered, sorted(declared - registered)
 assert host_tier._weight_for("a-command-nobody-weighted") == 1
 # The table has to match the commands the tier really builds, not just the
 # registration lists: everything the builder emits is checked against it, and
 # two commands must never share a name, or a weight would apply twice.
-built = host_tier.build_commands([], prematerialized=None)
+built = host_tier.build_commands(["--bead", "selected"])
 assert host_tier._validate_weights(built) == []
 assert len({command.name for command in built}) == len(built)
-assert [command.weight for command in built if command.name == "homebrew-host-metadata"] == [3]
-assert [command.weight for command in built if command.name == "wget-residual-host-metadata"] == [3]
+canonical_sweep = next(command for command in built if command.name == "canonical-host-workloads")
+assert canonical_sweep.weight == 3
+assert canonical_sweep.argv == ["west", "test", "--env", "host", "--bead", "selected"]
+assert canonical_sweep.cacheable is False
 assert all(command.weight >= 1 for command in built)
 assert all(
     command.weight == 1 or command.name in host_tier.CONTRACT_WEIGHTS for command in built
@@ -122,7 +120,7 @@ assert not host_tier._invokes(
 assert not host_tier._invokes(
     "# tests/run-west-x-contract.sh is the chain\n", "run-west-x-contract.sh"
 )
-# A declaration in patch metadata is an execution: the profile runs that script.
+# Script metadata is an execution only after the host-workload filter selects it.
 assert host_tier._invokes("    script: tests/run-west-x-contract.sh\n", "run-west-x-contract.sh")
 # The tier's own registration lists must not credit a contract through a probe.
 assert not host_tier._invokes(
@@ -153,6 +151,22 @@ with tempfile.TemporaryDirectory(prefix="host-tier-census-") as raw:
     assert "probe_only_contract.py" in census, census
     assert "run-census-probed-contract.sh" in census, census
     assert "run-census-invoked-contract.sh" not in census, census
+    (workspace / "testkit").mkdir()
+    for name in ("declared_host", "declared_guest", "external_host"):
+        (tests / "west_test_contracts" / f"{name}_contract.py").write_text("print('fixture')\n")
+    (workspace / "testkit" / "workloads.yml").write_text(
+        "version: 1\nworkloads:\n"
+        "- id: host\n  env: host\n  repo: darling-workspace\n"
+        "  script: tests/west_test_contracts/declared_host_contract.py\n"
+        "- id: guest\n  env: darling\n  repo: darling-workspace\n"
+        "  script: tests/west_test_contracts/declared_guest_contract.py\n"
+        "- id: external\n  env: host\n  repo: darling\n"
+        "  script: tests/west_test_contracts/external_host_contract.py\n"
+    )
+    census = host_tier.unaccounted_contracts(tests)
+    assert "declared_host_contract.py" not in census, census
+    assert "declared_guest_contract.py" in census, census
+    assert "external_host_contract.py" in census, census
 
 # A command's weight is slots it holds while running, so a heavy command cannot
 # run beside anything that leaves it no room. Two commands that each cost the
@@ -198,77 +212,5 @@ with tempfile.TemporaryDirectory(prefix="host-tier-weight-contract-") as raw:
         "heavy-a",
         "heavy-a",
     ], order
-
-with tempfile.TemporaryDirectory(prefix="host-profile-contract-") as raw:
-    root = Path(raw)
-    workspace = root / "materialized-v2/homebrew/guest"
-    manifest_repo = workspace / "darling-workspace"
-    project = workspace / "darling"
-    for repo in (manifest_repo, project):
-        repo.mkdir(parents=True)
-        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(
-            ["git", "config", "user.email", "host-tier@example.invalid"],
-            cwd=repo,
-            check=True,
-        )
-        subprocess.run(
-            ["git", "config", "user.name", "Host Tier Contract"],
-            cwd=repo,
-            check=True,
-        )
-        (repo / "value").write_text("value\n")
-        subprocess.run(["git", "add", "value"], cwd=repo, check=True)
-        subprocess.run(["git", "commit", "-qm", "value"], cwd=repo, check=True)
-    manifest_revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=manifest_repo,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-    ).stdout.strip()
-    project_revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=project,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-    ).stdout.strip()
-    (workspace / "tier-workspace-index.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "kind": "west-acceptance-tier-workspace",
-                "profile": "homebrew",
-                "manifest_revision": manifest_revision,
-                "projects": [{"path": "darling", "revision": project_revision}],
-                "generated_locks": [
-                    {"path": "patches/homebrew/west.lock.yml", "sha256": "0" * 64}
-                ],
-            }
-        )
-    )
-
-    class ProfileHost(ProfileOperationsMixin):
-        manifest = type("Manifest", (), {"repo_abspath": str(manifest_repo)})()
-
-        def _profile_modules(self, _profile):
-            return {"darling"}
-
-        def _project_path(self, module):
-            return workspace / module
-
-    environment = {
-        "WEST_MATERIALIZED_WORKSPACE_LOCK": str(root / "materialized-v2/homebrew/.guest.lock"),
-        "WEST_PREMATERIALIZED_PROFILE": "homebrew",
-    }
-    with patch.dict(os.environ, environment, clear=False):
-        assert ProfileHost()._profile_is_applied("homebrew")
-        subprocess.run(
-            ["git", "commit", "--allow-empty", "-qm", "unexpected"],
-            cwd=project,
-            check=True,
-        )
-        assert not ProfileHost()._profile_is_applied("homebrew")
 
 print("PASS host-tier-contract")

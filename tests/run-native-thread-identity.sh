@@ -31,8 +31,15 @@ if [ -z "$prefix" ]; then
 	echo "NATIDENT-HARNESS-VERDICT INFRASTRUCTURE no DPREFIX/DARLING_PREFIX" >&2
 	exit 3
 fi
-launcher="${DARLING_LAUNCHER:-${DARLING:-$prefix/bin/darling}}"
-src_root="${DARLING_SRC_ROOT:-$(cd "$workspace_root/.." && pwd)/darling}"
+launcher="${DARLING_LAUNCHER:-${DARLING:-}}"
+if [ -z "$launcher" ] && [ -n "${DARLING_RUNTIME_ROOT:-}" ]; then
+	launcher="$DARLING_RUNTIME_ROOT/bin/darling"
+fi
+if [ -z "$launcher" ]; then
+	echo "NATIDENT-HARNESS-VERDICT INFRASTRUCTURE select DARLING_LAUNCHER or DARLING_RUNTIME_ROOT" >&2
+	exit 3
+fi
+src_root="${DARLING_SOURCE_ROOT:-${DARLING_SRC_ROOT:-$(cd "$workspace_root/.." && pwd)/darling}}"
 native_src="$here/native_thread_identity_native.c"
 guest_src="$here/native_thread_identity_guest.c"
 guest_runner="$workspace_root/testkit/scripts/run-darling-c-test.sh"
@@ -45,24 +52,15 @@ for required in "$native_src" "$guest_src" "$guest_runner" "$elfcalls_header" "$
 	fi
 done
 
-# Guest compiler and SDK. The prefix may carry the CommandLineTools itself, or (as this workspace's rootless
-# prefixes do) the guest may reach the host's ~/.darling tree through the launcher's /Volumes/SystemRoot mapping.
-# Both are tried in the order the guest can actually resolve them, and the resolved pair is printed.
-guest_cc="${DARLING_GUEST_CC:-}"
-guest_sysroot="${DARLING_GUEST_SYSROOT:-}"
-if [ -z "$guest_cc" ]; then
-	if [ -x "$HOME/.darling/Library/Developer/CommandLineTools/usr/bin/clang" ]; then
-		guest_cc="/Volumes/SystemRoot$HOME/.darling/Library/Developer/CommandLineTools/usr/bin/clang"
-		guest_sysroot="${guest_sysroot:-/Volumes/SystemRoot$HOME/.darling/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk}"
-	else
-		guest_cc="/Library/Developer/CommandLineTools/usr/bin/clang"
-		guest_sysroot="${guest_sysroot:-/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk}"
-	fi
-fi
-guest_sysroot="${guest_sysroot:-/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk}"
+# The selected prefix supplies its real guest CLT. Explicit guest compiler/SDK
+# overrides remain available; never borrow a toolchain from another prefix.
+guest_cc="${DARLING_GUEST_CC:-/Library/Developer/CommandLineTools/usr/bin/clang}"
+guest_sysroot="${DARLING_GUEST_SYSROOT:-/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk}"
 
 guest_tmpdir="$prefix/private/var/tmp"
-build_dir="$(mktemp -d "${TMPDIR:-/tmp}/natident-build.XXXXXX")"
+state_root="${DW_STATE_ROOT:-$workspace_root/../.west-state}"
+mkdir -p "$state_root/native-thread-identity"
+build_dir="$(mktemp -d "$state_root/native-thread-identity/build.XXXXXX")"
 run_log="$guest_tmpdir/native-thread-identity.run.log"
 cleanup() { rm -rf "$build_dir"; }
 trap cleanup EXIT

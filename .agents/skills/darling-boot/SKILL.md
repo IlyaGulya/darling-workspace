@@ -42,10 +42,12 @@ correct stale instructions rather than following copied paths or hashes.
   with a real guest Mach-O/file operation; a bare `/usr/bin/true` is currently
   resolved as a host path under `/Volumes/SystemRoot`, so its rc0 is not proof of
   guest execution.
-- Guest C/C++ CTest fixtures compile inside Darling. Declare
-  `guest-toolchain: darling-command-line-tools` where required and let the
-  provisioner install reviewed CLT through the guest `installer`. Never commit
-  CLT packages or snapshots; a runtime-only smoke does not prove a compiler/SDK.
+- Guest C/C++ CTest fixtures compile inside Darling. Flat guest-C workloads derive
+  compiler prerequisites; workload selection does not provision the compiler.
+  Explicitly provision reviewed CLT through the guest `installer` using
+  `west darling-bootstrap --runtime-root R --prefix P --no-build` with
+  `--guest-toolchain darling-command-line-tools`, not a workload metadata field.
+  Never commit CLT packages or snapshots; a runtime-only smoke does not prove a compiler/SDK.
 - Catalog packages are checked for size and XAR boundaries, compressed-TOC SHA-1
   and pinned whole-file SHA-256 before installation. Catalog SHA-1 is NOT
   whole-file SHA-1. `DARLING_CLT_PACKAGE` instead selects the one pinned local
@@ -64,50 +66,52 @@ environment; add `$HOME/.local/bin` to PATH if needed. `--prefix` only selects
 a path. Bootstrap an absent/empty owned prefix in a separate invocation before
 any prefix-backed selection; see [bootstrap](../../../docs/test-infra.md#bootstrap-a-fresh-prefix-before-a-prefix-backed-run).
 
-The canonical runtime-setup providers are `manifest-ring-baseline` (runtime
-only, no CLT) and `manifest-ring-on` (runtime plus reviewed guest compiler/SDK).
-These are runtime providers, not patch/source profiles. Both declare
-`source-mode: manifest`: all managed project HEADs must match their manifest
-revisions, the selected product modules must have no tracked modifications or
-untracked source overrides, and the manifest repository must have no tracked
-modifications. Preserve foreign changes and coordinate with their owner instead
-of resetting, stashing or bypassing this gate. Legacy internals still exist;
-their presence is not permission to use them for canonical setup.
+Select an immutable normal product installation `R` separately from writable
+guest state `P`: `R/bin/darling`, `R/bin/darlingserver` and
+`R/libexec/darling` belong to the image; `P` is `DPREFIX`. The two paths must
+be disjoint. Never discover a launcher in `P/bin` or copy system libraries
+into `P`. Configure the build `B` with absolute `CMAKE_INSTALL_PREFIX=R`,
+default `COMPONENTS=stock`, build ALL and perform the full ordinary install:
+`mise run west darling-build --build-dir B --runtime-root R --install`.
+Add `--with-test-data` only when the workload requires installed test assets.
+New code needs a new image root; never overwrite a published image.
 
-For a long run, use the existing supervisor. Replace every example path with an
-absolute owned path and use a fresh, nonexistent job directory per invocation:
+For a long bootstrap, use the existing supervisor with absolute owned paths
+and a fresh, nonexistent job directory:
 
 ```bash
 export DW_STATE_ROOT=/absolute/owned/state
 scripts/west-job.sh start --state-dir "$DW_STATE_ROOT/jobs/bootstrap" -- \
-  mise run west test --prefix "$DW_STATE_ROOT/prefix" \
-  --bootstrap-runtime-profile manifest-ring-baseline
+  mise run west darling-bootstrap --runtime-root "$DW_STATE_ROOT/runtime" \
+  --prefix "$DW_STATE_ROOT/prefix" --build-dir "$DW_STATE_ROOT/build"
 scripts/west-job.sh follow --state-dir "$DW_STATE_ROOT/jobs/bootstrap"
 ```
 
-Choose `manifest-ring-on` instead when guest compilation is required; these are
-alternatives, not sequential setup steps. To select the reviewed local CLT 13.2,
-export `DARLING_CLT_PACKAGE=/absolute/path/to/reviewed.pkg` **before** starting
-that provisioning job. Use a fresh prefix if the older SDK layout conflicts;
-do not remove its SDK directory to force an in-place upgrade. Do not combine
-bootstrap with CTest selectors, `--list`, extra runtime providers or passthrough
-arguments. Read `darling-testing` before the subsequent test selection.
+The build must already be configured for that final runtime root. Bootstrap
+can consume an existing verified image without rewriting it: omit `--build-dir`
+and use `--no-build`. For a fresh image, `--no-build` with a build directory
+skips compilation but still installs already-built files into the new root.
+Optional `--guest-toolchain darling-command-line-tools` provisions real guest
+CLT; `--smoke-timeout-seconds N` bounds smoke. Export the pinned
+`DARLING_CLT_PACKAGE` before provisioning when using the reviewed local package.
+Use a fresh prefix for incompatible SDK layouts, never remove SDKs to force
+an upgrade. Bootstrap is setup, not a workload verdict.
 
-`darling-bootstrap --prefix ABS --build-dir ABS` is a separate explicit,
-already-configured-build route. Its plan checks build defines and a matching
-`CMAKE_INSTALL_PREFIX`; it builds/deploys and smokes that tree, but does not
-enforce the provider's full clean manifest-source gate, provision CLT or write
-the retained provider marker. Do not substitute it for canonical provider setup
-or infer source provenance from its smoke. Its prefix parent must already exist;
-the prefix itself must not be a symlink.
+Workspace lifecycle owners retain an exclusive persistent external per-prefix
+sibling lease, `<P.parent>/.west-prefix-lease-<sha256(P.name)>`, through cleanup.
+It is not the product's `P/.lifecycle.lock`. Never delete the lease file or
+replace it with a parent-directory flock. Clone identity belongs to the product:
+`DPREFIX=DEST R/bin/darling bind-clone BASE`; supported lane/fresh-prefix tools
+invoke it, and workspace Python must not rewrite lifecycle records. Keep the
+caller's raw prefix spelling for product safety checks.
+Nested controllers may borrow only the owner's verified inherited locked
+descriptor. Never export lease markers by hand; the marker alone is not a
+lock, and actual runtime children must not retain the workspace lease.
 
-Do not use named Homebrew dev scenarios as the manifest-native setup/workload
-route: their current dispatch still selects legacy source/patch metadata.
-There is no manifest-native Homebrew scenario in that facade. Named contexts
-are local West configuration, not portable runtime artifacts; inspecting
-`mise run dw dev run --help` does not establish canonical source selection.
-Its `--dry-run` prints a command without building or creating a job, whereas
-`west test --dry-run` is GC-only and is not a launch preview.
+Named contexts record runtime root and guest prefix separately; they are local
+configuration, not portable runtime artifacts. Select flat workloads with
+`west test --workload ID --source-root S --runtime-root R --prefix P`.
+Read `darling-testing` first. `west test --dry-run` is GC-only, not a launch preview.
 
 Retain the job path. Reconnect with `scripts/west-job.sh follow --state-dir JOB`;
 cancel with `scripts/west-job.sh cancel --state-dir JOB`, then follow to final
@@ -123,23 +127,14 @@ AND prefix cleanup. Separate lanes may run concurrently.
 
 ## 3. Run once and inspect evidence
 
-- Provider bootstrap runs doctor workspace scope before build/deploy and runtime
-  scope after guest smoke, before optional CLT provisioning. A doctor pass is
-  not the installer verdict or completion of the enclosing job. `all` combines
-  workspace and runtime checks; scoped passes are not full audits.
-- Read `mise run west darling-doctor --help`. For an ordinary current-runtime
-  audit, pass the actual `--prefix` (install prefix baked into the launcher)
-  and prefix-matched `--build-dir`; `--extra-prefix` compares an additional
-  runtime prefix's critical closure. Defaults are not workspace discovery.
-  Current receipt checks are distinct from historical baseline mode;
-  `--no-baseline-file` selects historical mode too. Do not waive unexplained drift.
-  Doctor does not boot by default; `--boot-smoke` is an explicit guest launch
-  requiring ownership, not a read-only audit option.
-- On provider-bootstrap failure, read retained doctor JSON, stdout/stderr,
-  command, rc and timeout in the reported evidence archive. A restored prefix
-  after rollback is a different state, not the failed deployment's evidence.
-  The explicit-build bootstrap reports doctors in its command output instead;
-  post-smoke doctor/receipt failure can leave its deployment retained.
+- Read `mise run west darling-doctor --help` and select explicit `--runtime-root R`
+  and `--prefix P` for the requested audit. Defaults are not workspace discovery.
+  A scoped doctor pass, install receipt or successful smoke is not the enclosing
+  workload's verdict. Do not waive unexplained drift. `--boot-smoke` is an
+  explicit guest launch requiring ownership, not a read-only audit.
+- On bootstrap failure retain its command, JSON, stdout/stderr, rc, timeout,
+  selected installation identity and cleanup result. A later repaired prefix
+  is a different state, not evidence of the failed run.
 - When a diagnostic runner is used, retain its printed `BUNDLE` path and verify
   executor provenance. Its stdout/stderr are registered for live job observation;
   `--activity-log` adds other logs. `--forward-output` is post-execution replay,
@@ -158,7 +153,7 @@ AND prefix cleanup. Separate lanes may run concurrently.
 1. Request graceful shutdown through the run's prefix-scoped lifecycle owner;
    verify remaining processes and mounts even when shutdown exits zero. After
    the previous owner has stopped, standalone cleanup is
-   `mise run west test --prefix ABS --cleanup-prefix`, without test selectors or
+   `mise run west test --runtime-root R --prefix P --cleanup-prefix`, without test selectors or
    `--keep-prefix-running`. This stops/cleans runtime state; it does not delete
    the prefix tree.
 2. Let that owner terminate verified leftovers. Never globally pkill/killall
@@ -182,12 +177,11 @@ AND prefix cleanup. Separate lanes may run concurrently.
    darling-rootless-debug-cleanup --path ABS --dry-run`; it refuses detected
    live processes/mounts. Use `--sudo` only for its reported ownership failure.
    Never glob-delete prefixes or source worktrees.
-6. Select the deployment path deliberately. `--deploy-only` and the
-   deploy-verify wrapper copy/hash components without lifecycle locking or
-   rollback; they are not the full build/deploy transaction. Stop the owning
-   runtime first and verify every intended path. No in-place overwrite of
-   executing binaries, guessed baseline reset or writes into another owner's
-   prefix. Runtime RED proof must back up/restore every declared artifact and
-   verify fixed-runtime return. A receipt or rollback alone is not guest readiness.
+6. Select a complete immutable installation deliberately. Never overwrite
+   executing binaries or publish changes into an existing image. Runtime RED
+   proof uses separate bad/fixed normal installs and the same oracle, declared
+   dependencies and lifecycle cleanup. Return explicitly to the fixed image.
+   Rescue kill/repair can clean a failed run but cannot produce clean PASS;
+   ordinary acceptance requires product shutdown and zero owned residue.
 7. Record final command status, guest-visible verdict, evidence paths and cleanup.
    Use `darling-durability` to retain results; do not reset unrelated prefixes.

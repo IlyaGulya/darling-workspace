@@ -1,30 +1,4 @@
-"""Darling environment doctor — catch build/version drift before it wastes a boot cycle.
-
-This exists because two long debugging detours (Beads perf#24c2c-pre / #89 and #90) turned out to be
-pure environment drift, not code bugs:
-
-  #89  Built dyld in the WRONG build directory. There are two build dirs for the same source; the
-       deployed, bootable closure comes from the one whose CMAKE_INSTALL_PREFIX equals the prefix
-       baked into the launcher at compile time (the launcher is rootless by default and needs no setuid;
-       the privileged mode is retired). A dyld built with the wrong prefix can never
-       boot that prefix, and the failure looks like a mysterious silent hang.
-
-  #90  A project's working tree was checked out to a different commit than the West manifest pins
-       (xnu on an experimental perf branch instead of the manifest revision). A fresh closure build
-       then silently compiled unexpected source and wedged launchd.
-
-West is the source of truth for versions here (`west.yml` / `west list`), NOT the git-submodule
-pointer inside `darling/.gitmodules` (which can itself differ from both the manifest and the working
-tree — xnu had three different commits at once). So this command compares each project's WORKING TREE
-HEAD against the WEST MANIFEST revision, plus checks build-prefix alignment and the deployed baseline.
-
-Read-only. Exit 0 = green; exit 1 = diagnosed problem or operational failure; invalid
-arguments exit 2. Default output is bounded, while --full and --json expose complete detail.
-Intended for `west darling-doctor` before a build/deploy/boot, and as a pre-build gate.
-Typed rootless prefixes without a published runtime are checked as PREPARED;
-launchd creates their boot directories. Published runtimes must satisfy READY
-directory postconditions. Build identity and binary checks apply in both phases.
-"""
+"""Read-only West source and installed-runtime diagnostics, with bounded/full/JSON output."""
 
 from __future__ import annotations
 
@@ -41,14 +15,11 @@ from typing import Any
 from west.commands import WestCommand
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from deploy_receipt import read_receipt, receipt_path, stale_source_problems, verify_receipt
-from prefix_repair import PrefixBootPhase, prefix_boot_phase, prefix_boot_prerequisite_problems
+from deploy_receipt import receipt_path, verify_receipt
+from prefix_repair import prefix_boot_phase, prefix_boot_prerequisite_problems
 from runtime_boot_smoke import run_boot_smoke
+from runtime_install import cmake_cache, resolve_runtime
 
-_EXTRA_PREFIX_DYLIBS = [
-    "libsystem_kernel.dylib",
-    "libsystem_pthread.dylib",
-]
 
 SCHEMA_VERSION = 1
 DEFAULT_PROBLEM_LIMIT = 8
@@ -58,10 +29,6 @@ DEFAULT_ROW_CHARACTER_LIMIT = 500
 def _run(cmd, cwd=None):
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
 
-
-def _md5(path: Path):
-    r = _run(["md5sum", str(path)])
-    return r.stdout.split()[0] if r.returncode == 0 and r.stdout else None
 
 
 def _west_argv() -> list[str]:
@@ -82,42 +49,25 @@ class DarlingDoctor(WestCommand):
     def __init__(self):
         super().__init__(
             "darling-doctor",
-            "Verify workspace/build/deploy alignment before building or booting",
-            "Check West-manifest vs working-tree drift, build-prefix alignment, and deployed baseline",
+            "Verify West source selection and an ordinary installed Darling runtime",
+            "Check active West revisions, selected CMake configuration, installed integrity and optional guest boot",
             accepts_unknown_args=False,
         )
 
     def do_add_parser(self, parser_adder):
         p = parser_adder.add_parser(self.name, description=self.description)
+        p.add_argument("--runtime-root", type=Path, help="ordinary product installation, separate from guest state")
         p.add_argument(
-            "--prefix",
-            default=os.environ.get(
-                "DARLING_PREFIX", str(Path.home() / "work/darling-prefix")
-            ),
-            help="install prefix baked into the launcher at compile time (default: ~/work/darling-prefix)",
+            "--prefix", type=Path, default=os.environ.get("DPREFIX"),
+            help="writable guest state (DPREFIX); required only for --boot-smoke",
         )
         p.add_argument(
-            "--build-dir",
-            default=os.environ.get(
-                "DARLING_BUILD_DIR", str(Path.home() / "work/darling-build")
-            ),
-            help="the prefix-matched CMake build dir used for deployable binaries",
-        )
-        # baseline md5s: precedence = explicit flag > env var > deploy-baseline.md5 in the manifest repo
-        p.add_argument(
-            "--expect-dyld-md5", default=os.environ.get("DARLING_EXPECT_DYLD_MD5")
+            "--build-dir", type=Path, default=os.environ.get("DARLING_BUILD_DIR"),
+            help="optional selected CMake build; never the authority for previously installed bytes",
         )
         p.add_argument(
-            "--expect-mldr-md5", default=os.environ.get("DARLING_EXPECT_MLDR_MD5")
-        )
-        p.add_argument(
-            "--expect-dserver-md5",
-            default=os.environ.get("DARLING_EXPECT_DSERVER_MD5"),
-        )
-        p.add_argument(
-            "--no-baseline-file",
-            action="store_true",
-            help="ignore darling-workspace/deploy-baseline.md5 (only use flags/env)",
+            "--source-root", type=Path,
+            help="selected prepared Darling source closure (otherwise selected build CMAKE_HOME_DIRECTORY)",
         )
         p.add_argument(
             "--boot-smoke",
@@ -128,35 +78,11 @@ class DarlingDoctor(WestCommand):
             "digest matched). Costs about 30-60s and needs the prefix stopped.",
         )
         p.add_argument(
-            "--receipt-mode",
-            choices=("current", "historical"),
-            default="current",
-            help="how to verify deployed runtime artifacts: 'current' (default) "
-            "checks them against the build/deployment receipt written by the "
-            "deploy path; 'historical' compares md5s against "
-            "deploy-baseline.md5/flags, which is the regression mode. Explicit "
-            "--expect-*-md5 or --no-baseline-file also select 'historical'.",
-        )
-        p.add_argument(
-            "--deploy-receipt",
-            default=None,
-            help="explicit deployment receipt path (default: "
-            "<prefix>/.darling-deploy-receipt.json)",
-        )
-        p.add_argument(
             "--allow-drift",
             action="append",
             default=[],
             help="project name/path whose manifest<->worktree drift is intentional (repeatable). "
             "Also read from darling-workspace/doctor-allow-drift.txt if present.",
-        )
-        p.add_argument(
-            "--extra-prefix",
-            action="append",
-            default=[],
-            metavar="PREFIX",
-            help="additional runtime/test prefix whose critical closure dylibs must match --prefix "
-            "(repeatable; DARLING_TEST_PREFIX is also checked when set)",
         )
         p.add_argument(
             "--scope",
@@ -184,18 +110,16 @@ class DarlingDoctor(WestCommand):
 
         self._reset_output()
         topdir = Path(self.topdir)
-        extra_prefixes = list(args.extra_prefix)
-        env_extra = os.environ.get("DARLING_TEST_PREFIX")
-        if env_extra and env_extra not in extra_prefixes:
-            extra_prefixes.append(env_extra)
-        args.extra_prefix = extra_prefixes
+        if args.boot_smoke and args.prefix is None:
+            self.err("--boot-smoke requires --prefix or DPREFIX")
+            raise SystemExit(2)
 
         self._detail("== Darling env doctor ==")
         self._detail(f"  workspace = {topdir}")
         self._detail(f"  build     = {args.build_dir}")
         self._detail(f"  prefix    = {args.prefix}")
-        if args.extra_prefix:
-            self._detail(f"  extra     = {', '.join(args.extra_prefix)}")
+        self._detail(f"  runtime   = {args.runtime_root or os.environ.get('DARLING_RUNTIME_ROOT', 'PATH selection')}")
+        self._detail(f"  source    = {args.source_root or ('selected build source' if args.build_dir else 'active West source')}")
 
         attempts = (
             (
@@ -205,7 +129,7 @@ class DarlingDoctor(WestCommand):
             ),
             (
                 "runtime",
-                "2. build-dir install-prefix vs deployed launcher",
+                "2. selected build configuration",
                 lambda: self._check_build_prefix(topdir, args),
             ),
             (
@@ -215,13 +139,8 @@ class DarlingDoctor(WestCommand):
             ),
             (
                 "runtime",
-                "3. deployed binaries vs known-good baseline",
-                lambda: self._check_baseline(args),
-            ),
-            (
-                "runtime",
-                "4. extra runtime prefixes vs primary prefix",
-                lambda: self._check_extra_prefixes(args),
+                "3. installed-runtime integrity",
+                lambda: self._check_installation(args),
             ),
             (
                 "runtime",
@@ -307,34 +226,20 @@ class DarlingDoctor(WestCommand):
         self._detail(f"  ✗ operational error: {message}", "error")
 
     def _full_command(self, args: argparse.Namespace) -> str:
-        command = [
-            *self._invocation_west_argv,
-            "darling-doctor",
-            f"--prefix={args.prefix}",
-            f"--build-dir={args.build_dir}",
-        ]
-        if args.scope != "all":
-            command.append(f"--scope={args.scope}")
+        command = [*self._invocation_west_argv, "darling-doctor"]
         for option, attribute in (
-            ("--expect-dyld-md5", "expect_dyld_md5"),
-            ("--expect-mldr-md5", "expect_mldr_md5"),
-            ("--expect-dserver-md5", "expect_dserver_md5"),
+            ("--runtime-root", "runtime_root"), ("--prefix", "prefix"),
+            ("--build-dir", "build_dir"), ("--source-root", "source_root"),
         ):
             value = getattr(args, attribute)
-            if value:
+            if value is not None:
                 command.append(f"{option}={value}")
-        if args.no_baseline_file:
-            command.append("--no-baseline-file")
-        receipt_mode = getattr(args, "receipt_mode", None)
-        if receipt_mode and receipt_mode != "historical":
-            command.append(f"--receipt-mode={receipt_mode}")
-        deploy_receipt = getattr(args, "deploy_receipt", None)
-        if deploy_receipt:
-            command.append(f"--deploy-receipt={deploy_receipt}")
+        if args.scope != "all":
+            command.append(f"--scope={args.scope}")
+        if args.boot_smoke:
+            command.append("--boot-smoke")
         for value in args.allow_drift:
             command.append(f"--allow-drift={value}")
-        for value in args.extra_prefix:
-            command.append(f"--extra-prefix={value}")
         command.append("--full")
         return shlex.join(command)
 
@@ -356,13 +261,11 @@ class DarlingDoctor(WestCommand):
             "inputs": {
                 "workspace": str(Path(self.topdir)),
                 "scope": args.scope,
-                "build_dir": str(args.build_dir),
-                "prefix": str(args.prefix),
-                "extra_prefixes": [str(value) for value in args.extra_prefix],
+                "build_dir": str(args.build_dir) if args.build_dir is not None else None,
+                "prefix": str(args.prefix) if args.prefix is not None else None,
+                "runtime_root": str(args.runtime_root) if args.runtime_root is not None else os.environ.get("DARLING_RUNTIME_ROOT"),
+                "source_root": str(args.source_root) if args.source_root is not None else getattr(self, "_resolved_source_root", None),
                 "allow_drift": [str(value) for value in args.allow_drift],
-                "baseline_file_enabled": not args.no_baseline_file,
-                "receipt_mode": self._baseline_mode(args),
-                "deploy_receipt": getattr(args, "deploy_receipt", None),
                 "west_argv": list(self._invocation_west_argv),
             },
             "summary": {
@@ -442,17 +345,6 @@ class DarlingDoctor(WestCommand):
             )
 
     # -- helpers -----------------------------------------------------------
-    def _baseline_file(self):
-        """Read deploy-baseline.md5 from the manifest repo: {'dyld':..,'mldr':..,'dserver':..}."""
-        f = Path(self.manifest.repo_abspath) / "deploy-baseline.md5"
-        out = {}
-        if f.exists():
-            for line in f.read_text().splitlines():
-                line = line.split("#", 1)[0].strip()
-                if "=" in line:
-                    k, v = line.split("=", 1)
-                    out[k.strip()] = v.strip()
-        return out
 
     def _allowlist(self, topdir, args):
         allow = set(args.allow_drift)
@@ -471,18 +363,47 @@ class DarlingDoctor(WestCommand):
         if allow:
             self._detail(f"  (declared-drift allowlist: {sorted(allow)})")
         any_drift = False
+        product = next((Path(item.abspath) for item in self.manifest.projects if item.name == "darling"), Path(topdir) / "darling")
+        selected = self._selected_source_root(args)
+        tree = _run(["git", "ls-tree", "-r", "-z", "HEAD"], cwd=selected)
+        if tree.returncode:
+            raise ValueError(f"cannot inspect selected source closure at {selected}: {tree.stderr.strip()}")
+        links = []
+        for record in tree.stdout.split("\0"):
+            if record.startswith("160000 "):
+                links.append(Path(record.split("\t", 1)[1]))
         for project in self.manifest.projects:
             if project.name == "manifest":  # the self/manifest project
                 continue
             if not self.manifest.is_active(project):
                 continue
-            abspath = Path(project.abspath)
+            canonical = Path(project.abspath)
+            try:
+                relative = canonical.relative_to(product)
+            except ValueError:
+                abspath = canonical
+            else:
+                # Independently managed West projects (e.g. docs/) are not
+                # transplanted into a prepared product/gitlink closure.
+                in_closure = relative == Path() or any(relative == link or link in relative.parents for link in links)
+                abspath = selected / relative if in_closure else canonical
             if not (abspath / ".git").exists():
+                self._problem(f"{project.name}: selected source repository is absent at {abspath}")
                 continue
-            pinned = project.revision  # what the manifest pins
-            head = _run(["git", "rev-parse", "HEAD"], cwd=abspath).stdout.strip()
+            pinned = project.revision
+            head = _run(["git", "rev-parse", "--verify", "HEAD"], cwd=abspath).stdout.strip()
             if not head:
+                self._problem(f"{project.name}: cannot read selected source HEAD at {abspath}")
                 continue
+            tracked = _run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=abspath)
+            if tracked.returncode:
+                self._problem(f"{project.name}: cannot inspect selected source changes at {abspath}")
+            elif tracked.stdout.strip():
+                message = f"{project.name}: selected source has tracked modifications at {abspath}"
+                if project.name in allow or project.path in allow:
+                    self._warn(message)
+                else:
+                    self._problem(message)
             branch = _run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=abspath
             ).stdout.strip()
@@ -530,278 +451,98 @@ class DarlingDoctor(WestCommand):
         if not any_drift:
             self._ok("every active project HEAD matches its West manifest revision")
         elif self.fail:
-            self._detail(
-                "        => a fresh build uses the CHECKED-OUT source, not the pinned one."
-            )
-            self._detail(
-                "           Reset:   west update <project>   (detaches to manifest-rev)"
-            )
-            self._detail(
-                "           Declare: add the project name/path to doctor-allow-drift.txt"
-            )
+            self._detail("        => build from the intended prepared source closure; preserve foreign checkouts.")
+            self._detail("           Declare intentional revision drift with --allow-drift PROJECT.")
 
-    # -- CHECK 2: build dir prefix vs launcher baked prefix ---------------
-    def _check_build_prefix(self, topdir, args):
-        self._section("2. build-dir install-prefix vs deployed launcher")
-        launcher = Path(args.prefix) / "bin" / "darling"
-        baked = None
-        if launcher.exists():
-            r = _run(["strings", str(launcher)])
-            for line in r.stdout.splitlines():
-                if line.endswith("/bin/darlingserver"):
-                    baked = line[: -len("/bin/darlingserver")]
-                    break
-            if baked:
-                self._detail(f"  launcher baked INSTALL_PREFIX = {baked}")
+    def _selected_source_root(self, args) -> Path:
+        if args.source_root is not None:
+            selected = Path(args.source_root).expanduser().resolve()
+        elif args.build_dir is not None:
+            source = cmake_cache(args.build_dir).get("CMAKE_HOME_DIRECTORY")
+            if not source:
+                raise ValueError(f"selected build has no CMAKE_HOME_DIRECTORY: {args.build_dir}")
+            selected = Path(source).resolve()
         else:
-            self._warn(f"no launcher at {launcher} (skip baked-prefix check)")
+            selected = Path(self.topdir) / "darling"
+        self._resolved_source_root = str(selected)
+        return selected
 
-        cache = Path(args.build_dir) / "CMakeCache.txt"
-        if not cache.exists():
-            self._problem(
-                f"no CMakeCache.txt in {args.build_dir} (is --build-dir correct?)"
-            )
+    def _check_build_prefix(self, topdir, args):
+        self._section("2. selected build configuration")
+        if args.build_dir is None:
+            self._warn("no build selected; installed images do not require their build tree to remain available")
             return
-        bp = None
-        for line in cache.read_text().splitlines():
-            if line.startswith("CMAKE_INSTALL_PREFIX:"):
-                bp = line.split("=", 1)[1]
-                break
-        self._detail(f"  build dir CMAKE_INSTALL_PREFIX = {bp}")
-        if baked and bp != baked:
-            self._problem(
-                f"build-dir prefix ({bp}) != launcher baked prefix ({baked}); "
-                f"a dyld/mldr built here will NOT boot {args.prefix}"
-            )
-        elif baked:
-            self._ok("build-dir prefix matches launcher baked prefix")
+        configuration = cmake_cache(args.build_dir)
+        destination = configuration.get("CMAKE_INSTALL_PREFIX")
+        source = configuration.get("CMAKE_HOME_DIRECTORY")
+        if not destination or not Path(destination).is_absolute():
+            self._problem(f"selected build has no absolute CMAKE_INSTALL_PREFIX: {args.build_dir}")
+        else:
+            self._ok(f"selected build installs into {destination}; this is not writable guest state")
+        if not source:
+            self._problem(f"selected build has no CMAKE_HOME_DIRECTORY: {args.build_dir}")
+        elif Path(source).resolve() != self._selected_source_root(args):
+            self._problem(f"selected build source {source} differs from --source-root {args.source_root}")
+        else:
+            self._ok(f"selected build uses source {source}")
 
-        wrong = topdir / "darling" / "build"
-        wcache = wrong / "CMakeCache.txt"
-        if wcache.exists() and str(wrong) != str(Path(args.build_dir)):
-            for line in wcache.read_text().splitlines():
-                if line.startswith("CMAKE_INSTALL_PREFIX:"):
-                    wp = line.split("=", 1)[1]
-                    if baked and wp != baked:
-                        self._warn(
-                            f"a second build dir at {wrong} has prefix={wp} (NOT {baked}); "
-                            "do not build deployable binaries there"
-                        )
-                    break
-
-    # -- CHECK 2b: prefix boot prerequisites ------------------------------
     def _check_prefix_boot_prereqs(self, args):
-        self._section("2b. prefix boot prerequisites")
-
-        def check_one(prefix: Path, label: str):
-            phase = prefix_boot_phase(prefix)
-            problems = prefix_boot_prerequisite_problems(prefix, phase=phase)
+        self._section("2b. guest prefix prerequisites")
+        if args.prefix is None:
+            self._warn("no guest prefix selected; installed-runtime integrity remains independently checkable")
+            return
+        prefix = Path(args.prefix)
+        if not prefix.is_absolute() or ".." in prefix.parts:
+            self._problem(f"guest prefix must be absolute without '..': {prefix}")
+            return
+        if prefix.is_symlink():
+            self._problem(f"guest prefix is a symlink: {prefix}")
+            return
+        if prefix.exists() and not prefix.is_dir():
+            self._problem(f"guest prefix is not a directory: {prefix}")
+            return
+        if not prefix.exists():
+            self._ok("guest prefix is absent; the normal product launcher owns first-use initialization")
+            return
+        state = prefix / ".darling-prefix-state-v2"
+        if state.exists():
+            problems = prefix_boot_prerequisite_problems(prefix, phase=prefix_boot_phase(prefix))
             if problems:
                 for problem in problems:
-                    self._problem(f"{label}: {problem}")
+                    self._problem(f"guest prefix: {problem}")
                 return
-            if phase is PrefixBootPhase.PREPARED:
-                self._ok(f"{label}: typed rootless prefix prepared; launchd owns first-boot directories")
-                return
-            self._ok(f"{label}: boot directory postconditions satisfied")
-
-        check_one(Path(args.prefix), "prefix")
-        for extra in args.extra_prefix:
-            check_one(Path(extra), f"extra {extra}")
-
-    # -- CHECK 3: deployed binaries vs current deploy receipt / baseline ---
-    def _baseline_mode(self, args) -> str:
-        mode = getattr(args, "receipt_mode", None) or "current"
-        if mode == "historical":
-            return "historical"
-        if (
-            getattr(args, "expect_dyld_md5", None)
-            or getattr(args, "expect_mldr_md5", None)
-            or getattr(args, "expect_dserver_md5", None)
-            or getattr(args, "no_baseline_file", False)
-        ):
-            # Explicit md5 expectations are the historical comparison request.
-            return "historical"
-        return "current"
-
-    def _check_baseline(self, args):
-        if self._baseline_mode(args) == "historical":
-            self._check_baseline_historical(args)
+            self._ok("existing guest prefix identity and boot directory prerequisites are valid")
         else:
-            self._check_deploy_receipt(args)
+            self._warn("guest prefix has no retained identity; normal launcher initialization has not been verified")
 
-    def _workspace_commit(self) -> str | None:
-        repo = getattr(self.manifest, "repo_abspath", None)
-        if not repo:
-            return None
-        result = _run(["git", "-C", str(repo), "rev-parse", "HEAD"])
-        return result.stdout.strip() if result.returncode == 0 and result.stdout else None
-
-    def _deployed_markers(self, prefix: Path) -> list[Path]:
-        return [
-            prefix / "libexec/darling/usr/lib/dyld",
-            prefix / "usr/lib/dyld",
-            prefix / "libexec/darling/usr/libexec/darling/mldr",
-            prefix / "bin/darlingserver",
-        ]
-
-    def _check_deploy_receipt(self, args):
-        self._section("3. deployed binaries vs current deployment receipt")
-        prefix = Path(args.prefix)
-        explicit = getattr(args, "deploy_receipt", None)
-        path = Path(explicit) if explicit else receipt_path(prefix)
-        if not path.is_file():
-            if any(marker.exists() for marker in self._deployed_markers(prefix)):
-                self._problem(
-                    f"deployed runtime artifacts have no deployment receipt at {path}; "
-                    "deploy with west darling-build --deploy (or let west test deploy) "
-                    "so the deployed bytes are recorded against the current build"
-                )
-            else:
-                self._warn(f"no deployed runtime artifacts and no receipt at {path} (skip)")
+    def _check_installation(self, args):
+        self._section("3. installed-runtime integrity")
+        runtime = resolve_runtime(args.runtime_root)
+        self._ok(f"ordinary installed launcher: {runtime.launcher}")
+        if args.prefix is not None:
+            runtime.environment(args.prefix)
+        payload = runtime.identity
+        if payload is None:
+            self._warn(f"no workspace install receipt at {receipt_path(runtime.root)}; package provenance is unknown/unverified, ordinary launch remains supported")
             return
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                raise ValueError("receipt is not a JSON object")
-            if payload.get("schema_version") != 1:
-                raise ValueError(
-                    f"unsupported receipt schema {payload.get('schema_version')!r}"
-                )
-        except (ValueError, OSError) as error:
-            self._problem(f"deployment receipt unreadable at {path}: {error}")
-            return
-
-        self._detail(f"  (receipt from {path})")
-        recorded = (payload.get("workspace") or {}).get("manifest_commit")
-        current = self._workspace_commit()
-        if recorded and current and recorded != current:
-            self._warn(
-                f"receipt was written for workspace {recorded[:12]}; current manifest "
-                f"commit is {current[:12]} (redeploy to refresh the receipt)"
-            )
-        components = payload.get("components") or []
-        if components:
-            summary = ", ".join(
-                f"{row.get('path')}@{str(row.get('revision'))[:12]}"
-                for row in components
-                if isinstance(row, dict)
-            )
-            self._detail(f"  components: {summary}")
         problems, notes = verify_receipt(payload)
-        for note in notes:
-            self._ok(note)
         for problem in problems:
             self._problem(f"{problem.label}: {problem.message}")
-        for problem in stale_source_problems(payload):
-            self._problem(f"{problem.label}: {problem.message}")
+        for note in notes:
+            self._ok(note)
+        self._detail(f"  recorded build: {payload.get('build', {}).get('directory')}")
+        self._detail(f"  recorded source: {payload.get('source', {}).get('directory')}")
+        self._detail("  mutable source/build changes do not invalidate this immutable installed inventory")
 
     def _check_boot_smoke(self, args):
-        """Start the prefix and require a guest shell.
-
-        The other runtime checks judge artifacts and lifecycle files. This one exercises what they
-        cannot see: that the deployed chain boots. MEASURED: a targeted deploy left a chain that
-        never reached a shell (shellspawn not ready within 30s) while every artifact digest matched
-        its receipt, and nothing named the property that was actually broken. Off by default because
-        it starts the prefix (about 30-60s); pass --boot-smoke to run it.
-        """
-        if not getattr(args, "boot_smoke", False):
-            self._warn(
-                "runtime boot smoke not requested; pass --boot-smoke to start the prefix and "
-                "require a guest shell (the check that catches a chain which does not boot)"
-            )
-            return
         self._section("5. runtime boot smoke")
-        ok, detail = run_boot_smoke(Path(self.topdir), Path(args.prefix))
+        if not args.boot_smoke:
+            self._warn("guest boot not exercised; --boot-smoke explicitly launches and shuts down the selected prefix")
+            return
+        ok, detail = run_boot_smoke(
+            Path(self.topdir), args.prefix, runtime_root=args.runtime_root,
+        )
         if ok:
             self._ok(detail)
-            return
-        self._problem(
-            "the prefix did not reach a guest shell: "
-            + detail
-            + " -- the deployed chain is not bootable; re-bootstrap the prefix (west test --prefix "
-            "P --bootstrap-runtime-profile ...) or deploy the whole chain (dyld + closure + "
-            "darlingserver + mldr/mldr32)"
-        )
-
-    def _check_baseline_historical(self, args):
-        self._section("3. deployed binaries vs known-good baseline")
-        prefix = Path(args.prefix)
-        bf = {} if args.no_baseline_file else self._baseline_file()
-        if bf and not args.no_baseline_file:
-            self._detail(
-                f"  (baseline from {Path(self.manifest.repo_abspath) / 'deploy-baseline.md5'})"
-            )
-        dyld_md5 = args.expect_dyld_md5 or bf.get("dyld")
-        mldr_md5 = args.expect_mldr_md5 or bf.get("mldr")
-        dserver_md5 = args.expect_dserver_md5 or bf.get("dserver")
-        checks = [
-            (
-                "deployed dyld (base tree)",
-                prefix / "libexec/darling/usr/lib/dyld",
-                dyld_md5,
-            ),
-            ("deployed dyld (prefix root)", prefix / "usr/lib/dyld", dyld_md5),
-            (
-                "deployed mldr",
-                prefix / "libexec/darling/usr/libexec/darling/mldr",
-                mldr_md5,
-            ),
-            ("deployed darlingserver", prefix / "bin/darlingserver", dserver_md5),
-        ]
-        for label, path, expect in checks:
-            if not expect:
-                self._warn(f"{label}: no expected md5 (skip)")
-                continue
-            if not path.exists():
-                self._problem(f"{label}: missing at {path}")
-                continue
-            got = _md5(path)
-            if got == expect:
-                self._ok(f"{label} md5 matches baseline")
-            else:
-                self._problem(
-                    f"{label} md5 {got} != baseline {expect} ({path})"
-                )
-
-        d1 = prefix / "libexec/darling/usr/lib/dyld"
-        d2 = prefix / "usr/lib/dyld"
-        if d1.exists() and d2.exists():
-            if _md5(d1) == _md5(d2):
-                self._ok("both deployed dyld copies match each other")
-            else:
-                self._problem(
-                    "the two deployed dyld copies DIFFER (half-deploy); "
-                    f"deploy to BOTH {d1} AND {d2}"
-                )
-
-    # -- CHECK 4: additional runtime/test prefixes vs primary prefix ------
-    def _check_extra_prefixes(self, args):
-        if not args.extra_prefix:
-            return
-        self._section("4. extra runtime prefixes vs primary prefix")
-        primary = Path(args.prefix)
-        for raw in args.extra_prefix:
-            extra = Path(raw)
-            self._detail(f"  extra prefix = {extra}")
-            local_fail = False
-            for name in _EXTRA_PREFIX_DYLIBS:
-                primary_path = primary / "usr/lib/system" / name
-                extra_path = extra / "usr/lib/system" / name
-                if not primary_path.exists():
-                    self._problem(f"primary prefix missing {name} at {primary_path}")
-                    local_fail = True
-                    continue
-                if not extra_path.exists():
-                    self._problem(f"extra prefix missing {name} at {extra_path}")
-                    local_fail = True
-                    continue
-                primary_md5 = _md5(primary_path)
-                extra_md5 = _md5(extra_path)
-                if primary_md5 != extra_md5:
-                    self._problem(
-                        f"{extra}: {name} md5 {extra_md5} != primary {primary_md5}"
-                    )
-                    local_fail = True
-            if not local_fail:
-                self._ok(f"{extra} critical closure dylibs match primary prefix")
+        else:
+            self._problem(f"ordinary installed runtime did not complete guest boot and clean product shutdown: {detail}")

@@ -12,7 +12,7 @@
  * the touch path reads no current_thread()/current_task(). This fixture fails if the modify path
  * needed the ambient requester after all (the call would not complete with rc 0).
  *
- * Host-built as a guest Mach-O and executed by the prefix; nothing is compiled in the guest.
+ * Compiled inside Darling with the reviewed guest CommandLineTools.
  */
 #include <sys/event.h>
 #include <mach/mach.h>

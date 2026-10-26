@@ -22,7 +22,6 @@ on:
           - macos
           - macho-corpus-batch
           - macho-corpus-validation
-          - arch-lock-first
       ccache_mode:
         description: ccache mode for guest-toolchain only; other tiers ignore this input
         required: false
@@ -32,71 +31,10 @@ on:
           - warm
           - cold
 
-jobs:
-  arch-lock-first:
-    if: github.event_name == 'workflow_dispatch' && inputs.tier == 'arch-lock-first'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      DARLING_WEST_UPDATE_JOBS: 8
-    permissions:
-      contents: read
-    steps:
-      - name: Configure Arch acceptance paths
-        run: |
-          printf 'ARCH_LOCK_FIRST_ROOT=%s\n' "$RUNNER_TEMP/arch-lock-first" >>"$GITHUB_ENV"
-          printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >>"$GITHUB_ENV"
-      - uses: actions/checkout@v7
-        with:
-          path: darling-dev/darling-workspace
-          fetch-depth: 0
-      - name: Install West
-        run: python3 -m pip install west
-      - name: Materialize frozen West workspace
-        run: darling-dev/darling-workspace/ci/bootstrap-west.sh
-      - name: Apply canonical Arch composition
-        working-directory: darling-dev/darling-workspace
-        run: |
-          set -euo pipefail
-          evidence="$ARCH_LOCK_FIRST_ROOT/evidence"
-          mkdir -p "$evidence"
-          west patch apply --profile arch \
-            --lock-first-evidence "$evidence/lock-first-evidence.json"
-          python3 ci/patch_stack_acceptance.py capture \
-            --workspace "$PWD" --profile arch \
-            --modules "$evidence/arch-modules.json" \
-            --manifest "$evidence/arch-manifest.json"
-          jq -e '
-            .verdict == "VALID" and
-            .evidence_schema_version == 2 and
-            .batch_id == "darling-arch-lock-first-batch-1" and
-            .expected_count == 19 and
-            (.series | length) == 19
-          ' "$evidence/lock-first-evidence.json" >/dev/null
-      - name: Verify Arch transaction cleanup
-        if: always()
-        working-directory: darling-dev/darling-workspace
-        run: |
-          set -euo pipefail
-          while IFS= read -r project; do
-            test -z "$(git -C "$project" for-each-ref --format='%(refname)' \
-              refs/west/patch-stack-materialize/ \
-              refs/west/patch-stack-results/ \
-              refs/west/patch-stack-lock-first/)"
-            ! git -C "$project" worktree list --porcelain | grep -Eq 'west-(lock-materialize|patch-lock-first)-'
-          done < <(west list -f '{abspath}')
-      - name: Upload Arch lock-first acceptance evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: arch-lock-first-acceptance
-          if-no-files-found: error
-          retention-days: 14
-          path: |
-            ${{ runner.temp }}/arch-lock-first/evidence/lock-first-evidence.json
-            ${{ runner.temp }}/arch-lock-first/evidence/arch-modules.json
-            ${{ runner.temp }}/arch-lock-first/evidence/arch-manifest.json
+env:
+  DW_STATE_ROOT: ${{ github.workspace }}/.west-state/ci
 
+jobs:
   host:
     if: github.event_name != 'workflow_dispatch' || inputs.tier == 'host'
     runs-on: ubuntu-latest
@@ -119,6 +57,8 @@ jobs:
     timeout-minutes: 30
     env:
       DARLING_WEST_UPDATE_JOBS: 8
+      DARLING_RUNTIME_ROOT: ${{ github.workspace }}/.west-state/ci/runtime
+      DARLING_BUILD_DIR: ${{ github.workspace }}/.west-state/ci/build
     permissions:
       contents: read
     steps:
@@ -141,7 +81,7 @@ jobs:
         continue-on-error: true
         id: rootless_smoke_diagnostic
         working-directory: darling-dev/darling-workspace
-        run: ci/run-rootless-bootstrap-diagnostic.sh .west-test/bootstrap-failure-trace
+        run: ci/run-rootless-bootstrap-diagnostic.sh "$DW_STATE_ROOT/evidence/bootstrap-failure-trace"
       - name: Collect guest runtime diagnostics
         if: always()
         working-directory: darling-dev/darling-workspace
@@ -151,10 +91,10 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "$TIER_PREFIX" ]]; then
-            ci/collect-rootless-diagnostics.sh .west-test/rootless-diagnostics/tier "$TIER_PREFIX"
+            ci/collect-rootless-diagnostics.sh "$DW_STATE_ROOT/evidence/rootless-diagnostics/tier" "$TIER_PREFIX"
           fi
           if [[ -n "$DIAGNOSTIC_PREFIX" ]]; then
-            ci/collect-rootless-diagnostics.sh .west-test/rootless-diagnostics/bootstrap "$DIAGNOSTIC_PREFIX"
+            ci/collect-rootless-diagnostics.sh "$DW_STATE_ROOT/evidence/rootless-diagnostics/bootstrap" "$DIAGNOSTIC_PREFIX"
           fi
       - name: Upload guest runtime evidence
         if: always()
@@ -164,10 +104,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
           path: |
-            darling-dev/darling-workspace/.west-test/rootless-diagnostics
-            darling-dev/darling-workspace/.west-test/bootstrap-failure-trace
-            darling-dev/darling-workspace/.west-test/runtime-evidence/**/manifest.json
-            darling-dev/darling-workspace/.west-test/runtime-evidence/**/diagnostics/**
+            ${{ env.DW_STATE_ROOT }}/evidence/rootless-diagnostics
+            ${{ env.DW_STATE_ROOT }}/evidence/bootstrap-failure-trace
+            ${{ env.DW_STATE_ROOT }}/evidence/**/manifest.json
+            ${{ env.DW_STATE_ROOT }}/evidence/**/diagnostics/**
       - name: Cleanup test state and runtime evidence
         if: always()
         working-directory: darling-dev/darling-workspace
@@ -185,6 +125,8 @@ jobs:
     timeout-minutes: 45
     env:
       DARLING_WEST_UPDATE_JOBS: 8
+      DARLING_RUNTIME_ROOT: ${{ github.workspace }}/.west-state/ci/runtime
+      DARLING_BUILD_DIR: ${{ github.workspace }}/.west-state/ci/build
     permissions:
       contents: read
     steps:
@@ -210,7 +152,7 @@ jobs:
         run: |
           if [[ -n "$TIER_PREFIX" ]]; then
             ci/collect-rootless-diagnostics.sh \
-              ".west-test/guest-full-diagnostics/failure" \
+              "$DW_STATE_ROOT/evidence/guest-full-diagnostics/failure" \
               "$TIER_PREFIX"
           fi
       - name: Upload guest-full evidence
@@ -221,9 +163,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
           path: |
-            darling-dev/darling-workspace/.west-test/guest-full-diagnostics
-            darling-dev/darling-workspace/.west-test/runtime-evidence/**/manifest.json
-            darling-dev/darling-workspace/.west-test/runtime-evidence/**/diagnostics/**
+            ${{ env.DW_STATE_ROOT }}/evidence/guest-full-diagnostics
+            ${{ env.DW_STATE_ROOT }}/evidence/**/manifest.json
+            ${{ env.DW_STATE_ROOT }}/evidence/**/diagnostics/**
       - name: Cleanup guest-full prefix and West state
         if: always()
         working-directory: darling-dev/darling-workspace
@@ -237,6 +179,8 @@ jobs:
     timeout-minutes: 45
     env:
       DARLING_WEST_UPDATE_JOBS: 8
+      DARLING_RUNTIME_ROOT: ${{ github.workspace }}/.west-state/ci/runtime
+      DARLING_BUILD_DIR: ${{ github.workspace }}/.west-state/ci/build
     permissions:
       contents: read
     steps:
@@ -285,7 +229,7 @@ jobs:
           TIER_PREFIX: ${{ steps.rootless_toolchain.outputs.prefix }}
         run: |
           if [[ -n "$TIER_PREFIX" ]]; then
-            ci/collect-rootless-diagnostics.sh .west-test/rootless-toolchain-diagnostics "$TIER_PREFIX"
+            ci/collect-rootless-diagnostics.sh "$DW_STATE_ROOT/evidence/rootless-toolchain-diagnostics" "$TIER_PREFIX"
           fi
       - name: Upload guest toolchain evidence
         if: always()
@@ -295,9 +239,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
           path: |
-            darling-dev/darling-workspace/.west-test/rootless-toolchain-diagnostics
-            darling-dev/darling-workspace/.west-test/runtime-evidence/**/manifest.json
-            darling-dev/darling-workspace/.west-test/runtime-evidence/**/diagnostics/**
+            ${{ env.DW_STATE_ROOT }}/evidence/rootless-toolchain-diagnostics
+            ${{ env.DW_STATE_ROOT }}/evidence/**/manifest.json
+            ${{ env.DW_STATE_ROOT }}/evidence/**/diagnostics/**
       - name: Cleanup test state and runtime evidence
         if: always()
         working-directory: darling-dev/darling-workspace
@@ -307,7 +251,7 @@ jobs:
       - name: Collect guest-toolchain ccache statistics
         if: always() && steps.guest_ccache.outcome == 'success'
         working-directory: darling-dev/darling-workspace
-        run: ci/guest-toolchain-ccache.sh stats "$RUNNER_TEMP/guest-toolchain-ccache-evidence"
+        run: ci/guest-toolchain-ccache.sh stats "$DW_STATE_ROOT/evidence/guest-toolchain-ccache"
       - name: Upload guest-toolchain ccache statistics
         if: always() && steps.guest_ccache.outcome == 'success'
         uses: actions/upload-artifact@v7
@@ -315,7 +259,7 @@ jobs:
           name: guest-toolchain-ccache-statistics
           if-no-files-found: ignore
           retention-days: 7
-          path: ${{ runner.temp }}/guest-toolchain-ccache-evidence
+          path: ${{ env.DW_STATE_ROOT }}/evidence/guest-toolchain-ccache
       - name: Save guest-toolchain ccache
         if: success() && inputs.ccache_mode == 'warm' && steps.guest_ccache_restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -330,6 +274,8 @@ jobs:
     timeout-minutes: 45
     env:
       DARLING_WEST_UPDATE_JOBS: 8
+      DARLING_RUNTIME_ROOT: ${{ github.workspace }}/.west-state/ci/runtime
+      DARLING_BUILD_DIR: ${{ github.workspace }}/.west-state/ci/build
     permissions:
       contents: read
     steps:
@@ -355,7 +301,7 @@ jobs:
         run: |
           if [[ -n "$TIER_PREFIX" ]]; then
             ci/collect-rootless-diagnostics.sh \
-              ".west-test/guest-macho-validation-diagnostics/homebrew-failure" \
+              "$DW_STATE_ROOT/evidence/guest-macho-validation-diagnostics/homebrew-failure" \
               "$TIER_PREFIX"
           fi
       - name: Upload guest Mach-O validation evidence
@@ -366,9 +312,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
           path: |
-            darling-dev/darling-workspace/.west-test/guest-macho-validation-diagnostics
-            darling-dev/darling-workspace/.west-test/runtime-evidence/**/manifest.json
-            darling-dev/darling-workspace/.west-test/runtime-evidence/**/diagnostics/**
+            ${{ env.DW_STATE_ROOT }}/evidence/guest-macho-validation-diagnostics
+            ${{ env.DW_STATE_ROOT }}/evidence/**/manifest.json
+            ${{ env.DW_STATE_ROOT }}/evidence/**/diagnostics/**
       - name: Cleanup guest Mach-O validation prefix and West state
         if: always()
         working-directory: darling-dev/darling-workspace
@@ -384,6 +330,9 @@ jobs:
         variant: [a, b]
     runs-on: ubuntu-latest
     timeout-minutes: 55
+    env:
+      DARLING_RUNTIME_ROOT: ${{ github.workspace }}/.west-state/ci/runtime
+      DARLING_BUILD_DIR: ${{ github.workspace }}/.west-state/ci/build
     permissions:
       contents: read
     steps:
@@ -403,7 +352,7 @@ jobs:
       - name: Build fixed Phase 3B Mach-O batch
         working-directory: darling-dev/darling-workspace
         env:
-          BATCH_OUTPUT: ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}
+          BATCH_OUTPUT: ${{ env.DW_STATE_ROOT }}/evidence/macho-corpus-batch/${{ matrix.variant }}
         run: ci/build-guest-macho-batch.sh "$BATCH_OUTPUT" "${{ matrix.variant }}"
       - name: Upload batch evidence only
         if: always()
@@ -413,16 +362,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
           path: |
-            ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}/batch-manifest.tsv
-            ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}/batch-state.tsv
-            ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}/failure-summary.txt
-            ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}/batch-guest.log
-            ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}/fixtures/**
+            ${{ env.DW_STATE_ROOT }}/evidence/macho-corpus-batch/${{ matrix.variant }}/batch-manifest.tsv
+            ${{ env.DW_STATE_ROOT }}/evidence/macho-corpus-batch/${{ matrix.variant }}/batch-state.tsv
+            ${{ env.DW_STATE_ROOT }}/evidence/macho-corpus-batch/${{ matrix.variant }}/failure-summary.txt
+            ${{ env.DW_STATE_ROOT }}/evidence/macho-corpus-batch/${{ matrix.variant }}/batch-guest.log
+            ${{ env.DW_STATE_ROOT }}/evidence/macho-corpus-batch/${{ matrix.variant }}/fixtures/**
       - name: Cleanup batch prefix and West state
         if: always()
         working-directory: darling-dev/darling-workspace
         env:
-          BATCH_OUTPUT: ${{ runner.temp }}/macho-corpus-batch/${{ matrix.variant }}
+          BATCH_OUTPUT: ${{ env.DW_STATE_ROOT }}/evidence/macho-corpus-batch/${{ matrix.variant }}
         run: |
           set +e
           status=0
@@ -450,11 +399,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: macho-corpus-batch-*
-          path: ${{ runner.temp }}/macho-corpus-batch-runs
+          path: ${{ env.DW_STATE_ROOT }}/evidence/macho-corpus-batch-runs
           merge-multiple: false
       - name: Compare batch binaries and stable provenance
         working-directory: darling-dev/darling-workspace
-        run: ci/compare-guest-macho-batch.sh "$RUNNER_TEMP/macho-corpus-batch-runs"
+        run: ci/compare-guest-macho-batch.sh "$DW_STATE_ROOT/evidence/macho-corpus-batch-runs"
 
   clt-integrity:
     if: github.event_name == 'workflow_dispatch' && inputs.tier == 'clt-integrity'
@@ -472,7 +421,7 @@ jobs:
           path: darling-dev/darling-workspace
       - name: Download and verify CLT provenance without cache
         working-directory: darling-dev/darling-workspace
-        run: ci/verify-clt-provenance.sh "$RUNNER_TEMP/clt-provenance"
+        run: ci/verify-clt-provenance.sh "$DW_STATE_ROOT/evidence/clt-provenance"
       - name: Upload CLT provenance
         if: always()
         uses: actions/upload-artifact@v7
@@ -481,12 +430,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
-            ${{ runner.temp }}/clt-provenance/provenance.txt
-            ${{ runner.temp }}/clt-provenance/provenance.tsv
-            ${{ runner.temp }}/clt-provenance/darling-catalog-response.json
-            ${{ runner.temp }}/clt-provenance/darling-catalog-http-headers.txt
-            ${{ runner.temp }}/clt-provenance/http-headers
-            ${{ runner.temp }}/clt-provenance/signatures
+            ${{ env.DW_STATE_ROOT }}/evidence/clt-provenance/provenance.txt
+            ${{ env.DW_STATE_ROOT }}/evidence/clt-provenance/provenance.tsv
+            ${{ env.DW_STATE_ROOT }}/evidence/clt-provenance/darling-catalog-response.json
+            ${{ env.DW_STATE_ROOT }}/evidence/clt-provenance/darling-catalog-http-headers.txt
+            ${{ env.DW_STATE_ROOT }}/evidence/clt-provenance/http-headers
+            ${{ env.DW_STATE_ROOT }}/evidence/clt-provenance/signatures
 
   clt-integrity-compare:
     needs: clt-integrity
@@ -502,11 +451,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: clt-provenance-*
-          path: ${{ runner.temp }}/clt-provenance-runs
+          path: ${{ env.DW_STATE_ROOT }}/evidence/clt-provenance-runs
           merge-multiple: false
       - name: Compare stable provenance fields
         working-directory: darling-dev/darling-workspace
-        run: ci/compare-clt-provenance.sh "$RUNNER_TEMP/clt-provenance-runs"
+        run: ci/compare-clt-provenance.sh "$DW_STATE_ROOT/evidence/clt-provenance-runs"
 
   macos-package:
     if: github.event_name == 'workflow_dispatch' && inputs.tier == 'macos'
@@ -514,22 +463,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Verify native CTest relocation and failure handling
-        run: python3 -B tests/west_test_contracts/native_bundle_contract.py --work-dir "$RUNNER_TEMP/native-contract"
+        run: python3 -B tests/west_test_contracts/native_bundle_contract.py --work-dir "$DW_STATE_ROOT/evidence/native-contract"
       - name: Preserve native contract evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-contract
-          path: ${{ runner.temp }}/native-contract
+          path: ${{ env.DW_STATE_ROOT }}/evidence/native-contract
           if-no-files-found: warn
       - name: Build installable native oracle bundle
-        run: ci/run-test-tier.sh macos-package "$RUNNER_TEMP/oracle"
+        run: ci/run-test-tier.sh macos-package "$DW_STATE_ROOT/oracle"
       - name: Archive complete native oracle bundle with permissions
-        run: ci/run-test-tier.sh macos-archive "$RUNNER_TEMP/oracle" "$RUNNER_TEMP/macos-oracle.tar"
+        run: ci/run-test-tier.sh macos-archive "$DW_STATE_ROOT/oracle" "$DW_STATE_ROOT/evidence/macos-oracle.tar"
       - uses: actions/upload-artifact@v4
         with:
           name: macos-oracle
-          path: ${{ runner.temp }}/macos-oracle.tar
+          path: ${{ env.DW_STATE_ROOT }}/evidence/macos-oracle.tar
           if-no-files-found: error
 
   macos:
@@ -545,17 +494,17 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: macos-oracle
-          path: ${{ runner.temp }}/macos-oracle-artifact
+          path: ${{ env.DW_STATE_ROOT }}/macos-oracle-artifact
       - name: Extract native oracle into a fresh directory
-        run: ci/run-test-tier.sh macos-extract "$RUNNER_TEMP/macos-oracle-artifact/macos-oracle.tar" "$RUNNER_TEMP/oracle"
+        run: ci/run-test-tier.sh macos-extract "$DW_STATE_ROOT/macos-oracle-artifact/macos-oracle.tar" "$DW_STATE_ROOT/oracle"
       - name: Run identical native macOS oracle bundle
         env:
-          DARLING_NATIVE_RESULTS_DIR: ${{ runner.temp }}/native-results
-        run: ci/run-test-tier.sh macos-installed "$RUNNER_TEMP/oracle"
+          DARLING_NATIVE_RESULTS_DIR: ${{ env.DW_STATE_ROOT }}/evidence/native-results
+        run: ci/run-test-tier.sh macos-installed "$DW_STATE_ROOT/oracle"
       - name: Preserve native CTest results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-results-${{ matrix.runner }}
-          path: ${{ runner.temp }}/native-results
+          path: ${{ env.DW_STATE_ROOT }}/evidence/native-results
           if-no-files-found: warn

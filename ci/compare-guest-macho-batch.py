@@ -18,7 +18,6 @@ if str(WEST_COMMANDS) not in sys.path:
 from guest_macho_batch_specs import (  # noqa: E402
     ANCHOR_ARTIFACT_SHA256,
     ANCHOR_FIXTURE,
-    BATCH_BOOTSTRAP_PROFILE,
     FIXTURE_SPECS,
     validate_specs,
 )
@@ -58,12 +57,11 @@ REQUIRED_FIELDS = (
     "source-path",
     "source-revision",
     "source-sha256",
-    "patch-path",
-    "patch-sha256",
     "compile-flags",
     "link-flags",
-    "runtime-profile",
-    "bootstrap-profile",
+    "runtime-launcher-sha256",
+    "runtime-server-sha256",
+    "runtime-root",
     "compiler-path",
     "compiler-sha256",
     "compiler-version",
@@ -92,12 +90,10 @@ STABLE_FIELDS = (
     "source-path",
     "source-revision",
     "source-sha256",
-    "patch-path",
-    "patch-sha256",
     "compile-flags",
     "link-flags",
-    "runtime-profile",
-    "bootstrap-profile",
+    "runtime-launcher-sha256",
+    "runtime-server-sha256",
     "compiler-path",
     "compiler-sha256",
     "compiler-version",
@@ -117,10 +113,9 @@ BATCH_FIELDS = (
     "source-path",
     "source-revision",
     "source-sha256",
-    "patch-path",
-    "patch-sha256",
     "artifact-sha256",
-    "runtime-profile",
+    "runtime-launcher-sha256",
+    "runtime-server-sha256",
     "expected-marker",
 )
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -277,7 +272,7 @@ def read_provenance(path: Path, spec_name: str) -> dict[str, str]:
     if missing:
         raise ValueError(f"{path}: missing provenance fields {missing}")
     spec = next(spec for spec in FIXTURE_SPECS if spec.name == spec_name)
-    if values["schema"] != "1" or values["fixture"] != spec.name:
+    if values["schema"] != "2" or values["fixture"] != spec.name:
         raise ValueError(f"{path}: wrong fixture identity")
     if values["source-project"] != spec.source_project:
         raise ValueError(f"{path}: source project differs from allowlist")
@@ -285,21 +280,20 @@ def read_provenance(path: Path, spec_name: str) -> dict[str, str]:
         raise ValueError(f"{path}: source path differs from allowlist")
     if values["source-sha256"] != spec.source_sha256:
         raise ValueError(f"{path}: source SHA-256 differs from allowlist")
-    if values["patch-path"] != spec.patch_path or values["patch-sha256"] != spec.patch_sha256:
-        raise ValueError(f"{path}: owning patch provenance differs from allowlist")
     if values["compile-flags"] != "|".join(spec.compile_flags):
         raise ValueError(f"{path}: compile flags differ from allowlist")
     if values["link-flags"] != ("|".join(spec.link_flags) or "-"):
         raise ValueError(f"{path}: link flags differ from allowlist")
-    if values["runtime-profile"] != spec.runtime_profile:
-        raise ValueError(f"{path}: runtime profile differs from allowlist")
-    if values["bootstrap-profile"] != BATCH_BOOTSTRAP_PROFILE:
-        raise ValueError(f"{path}: unexpected bootstrap profile")
+    for field in ("runtime-launcher-sha256", "runtime-server-sha256"):
+        if not _SHA256_RE.fullmatch(values[field]):
+            raise ValueError(f"{path}: invalid installed runtime identity: {field}")
+    if not Path(values["runtime-root"]).is_absolute():
+        raise ValueError(f"{path}: installed runtime root is not absolute")
     if values["expected-marker"] != spec.expected_marker or values["expected-returncode"] != "0":
         raise ValueError(f"{path}: expected behavior differs from allowlist")
     if values["clt-product-id"] != "041-90419":
         raise ValueError(f"{path}: unexpected CLT product")
-    if not _SHA256_RE.fullmatch(values["source-sha256"]) or not _SHA256_RE.fullmatch(values["patch-sha256"]):
+    if not _SHA256_RE.fullmatch(values["source-sha256"]):
         raise ValueError(f"{path}: invalid provenance SHA-256")
     if not re.fullmatch(r"[0-9a-f]{40}", values["source-revision"]):
         raise ValueError(f"{path}: invalid source revision")

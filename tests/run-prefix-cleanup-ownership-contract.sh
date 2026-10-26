@@ -14,7 +14,9 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tmp="$(mktemp -d)"
+state="${DW_STATE_ROOT:-$repo/../.west-state}/contracts/cleanup-ownership"
+mkdir -p "$state"
+tmp="$(mktemp -d "$state/run.XXXXXX")"
 pids=()
 cleanup() {
 	for pid in "${pids[@]}"; do
@@ -34,6 +36,8 @@ printf 'other payload\n' >"$other/lib/mapped.bin"
 printf 'nested mirror payload\n' >"$nested/lib/mapped.bin"
 cp /bin/sleep "$prefix/bin/owned-sleeper"
 cp /bin/sleep "$other/bin/other-sleeper"
+mkdir -p "$tmp/shared-bin"
+cp /bin/bash "$prefix/bin/controller"
 
 cat >"$tmp/probe.c" <<'PROBE'
 #define _GNU_SOURCE
@@ -50,6 +54,10 @@ int main(int argc, char **argv)
 	int fd = open(argv[2], O_RDONLY);
 	struct stat st;
 	if (fd < 0 || fstat(fd, &st) != 0) return 3;
+	if (S_ISDIR(st.st_mode)) {
+		sleep(120);
+		return 0;
+	}
 	void *map = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
 	if (map == MAP_FAILED) return 4;
 	volatile unsigned char byte = *(volatile unsigned char *)map;
@@ -60,6 +68,7 @@ int main(int argc, char **argv)
 PROBE
 cc -O2 -Wall -Wextra -o "$tmp/probe" "$tmp/probe.c"
 cp "$tmp/probe" "$tmp/fuse-overlayfs"
+cp "$tmp/probe" "$tmp/shared-bin/mldr"
 
 "$prefix/bin/owned-sleeper" 120 &
 owned=$!
@@ -88,6 +97,13 @@ pids+=("$nestedguest")
 "$tmp/fuse-overlayfs" mldr "$prefix/lib/mapped.bin" "$prefix" &
 layer=$!
 pids+=("$layer")
+
+"$tmp/shared-bin/mldr" guest-renamed "$prefix" &
+shared_guest=$!
+pids+=("$shared_guest")
+DPREFIX="$prefix" DARLING_PREFIX="$prefix" "$tmp/shared-bin/mldr" guest-renamed "$other" &
+shared_other=$!
+pids+=("$shared_other")
 
 sleep 1
 
@@ -118,10 +134,24 @@ fail=0
 present "$owned" prefix-exe
 present "$guest" unlinked-guest-mldr
 present "$server" unlinked-server
+present "$shared_guest" shared-image-prefix-capability
+absent "$shared_other" shared-image-other-prefix-despite-environment
 absent "$observer" host-observer-arg
 absent "$otherguest" other-prefix-guest
 absent "$nestedguest" nested-otherroot-mirror
 absent "$layer" layer-server
+
+"$prefix/bin/controller" -c '
+	"$1/scripts/prefix-cleanup.sh" --prefix "$2" --dry-run > "$3"
+	result=$?
+	exit "$result"
+' controller "$repo" "$prefix" "$tmp/controller.out" &
+controller=$!
+pids+=("$controller")
+wait "$controller"
+unset "pids[${#pids[@]}-1]"
+out="$tmp/controller.out"
+absent "$controller" invoking-controller
 
 if [ "$fail" -ne 0 ]; then
 	cat "$out" >&2

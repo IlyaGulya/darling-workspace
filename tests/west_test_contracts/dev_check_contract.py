@@ -1,21 +1,14 @@
 #!/usr/bin/env python3
-"""Behavioral transaction contract for the ``west dev check`` core."""
+"""Focused behavioral contract for the profile-free dev check/package core."""
 from __future__ import annotations
 
-import hashlib
-import json
 import os
-import signal
-import stat
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
-import threading
-import time
 from pathlib import Path
-from typing import Callable
-
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "west_commands"))
@@ -23,3667 +16,530 @@ import dev_check
 
 
 FAKE_WEST = r'''#!/usr/bin/env python3
-import hashlib
 import json
 import os
-import signal
-import subprocess
 import sys
-import time
 from pathlib import Path
-
-
-def append(authority, argv):
-    path = Path(os.environ["DEV_CHECK_FAKE_LOG"])
-    with path.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps({"authority": authority, "argv": argv}) + "\n")
-
-
-def interrupted(role):
-    marker = Path(os.environ["DEV_CHECK_INTERRUPT_MARKERS"])
-    marker.mkdir(parents=True, exist_ok=True)
-    (marker / role).write_text("SIGINT\n", encoding="utf-8")
-    os._exit(130)
-
-
-def parallel_barrier(name):
-    value = os.environ.get("DEV_CHECK_PARALLEL_BARRIER")
-    if not value:
-        return
-    root = Path(value)
-    root.mkdir(parents=True, exist_ok=True)
-    (root / f"{name}.ready").write_text("ready\n", encoding="utf-8")
-    deadline = time.monotonic() + 5
-    while len(list(root.glob("*.ready"))) < 3:
-        if time.monotonic() >= deadline:
-            raise SystemExit(97)
-        time.sleep(0.01)
-
-
-def assert_isolated(stage):
-    forbidden = {
-        "GH_TOKEN",
-        "GITHUB_TOKEN",
-        "GIT_ASKPASS",
-        "SSH_ASKPASS",
-        "SSH_AUTH_SOCK",
-    }
-    if forbidden.intersection(os.environ):
-        raise SystemExit(96)
-    if (
-        Path(os.environ["HOME"]).name != stage
-        or Path(os.environ["XDG_CACHE_HOME"]).name != stage
-        or Path(os.environ["XDG_CONFIG_HOME"]).name != stage
-        or os.environ.get("GIT_CONFIG_COUNT") != "0"
-        or os.environ.get("GIT_CONFIG_GLOBAL") != "/dev/null"
-        or os.environ.get("GIT_CONFIG_NOSYSTEM") != "1"
-    ):
-        raise SystemExit(95)
-
-
-
-def hold_with_cleanup(name):
-    root = Path(os.environ["DEV_CHECK_PARALLEL_CLEANUP"])
-    root.mkdir(parents=True, exist_ok=True)
-    orphan = root / f"{name}.orphan"
-    cleaned = root / f"{name}.cleaned"
-    cancel_requested = [False]
-
-    def cancel(_signum, _frame):
-        # A cancelled peer is signalled more than once. The first request owns
-        # the cleanup and the rest must not interrupt it: a repeated SIGINT
-        # landing inside the cleanup would abandon the orphan this contract
-        # asserts against.
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-        cancel_requested[0] = True
-
-    signal.signal(signal.SIGINT, cancel)
-    orphan.write_text("owned\n", encoding="utf-8")
-    (root / f"{name}.holding").write_text("holding\n", encoding="utf-8")
-    # Hold until the orchestrator cancels this peer. The deadline only guards
-    # against a cancellation that never arrives; it is not the ordering.
-    deadline = time.monotonic() + 300
-    while not cancel_requested[0]:
-        if time.monotonic() >= deadline:
-            break
-        time.sleep(0.01)
-    orphan.unlink(missing_ok=True)
-    cleaned.write_text("cleaned\n", encoding="utf-8")
-    if cancel_requested[0]:
-        raise SystemExit(130)
-
-
-def wait_for_holders():
-    root = Path(os.environ["DEV_CHECK_PARALLEL_CLEANUP"])
-    deadline = time.monotonic() + 5
-    while len(list(root.glob("*.holding"))) < 2:
-        if time.monotonic() >= deadline:
-            raise SystemExit(94)
-        time.sleep(0.01)
-
-if sys.argv[1:] == ["--interrupt-descendant"]:
-    signal.signal(signal.SIGINT, lambda _signum, _frame: interrupted("descendant"))
-    Path(os.environ["DEV_CHECK_INTERRUPT_READY"]).write_text(
-        str(os.getpid()), encoding="utf-8"
-    )
-    while True:
-        time.sleep(60)
 
 argv = sys.argv[1:]
-if argv[-1:] == ["--version"]:
-    sys.stdout.write("West version: fixture-1.0\n")
-    raise SystemExit(0)
-append("west", argv)
-mode = os.environ.get("DEV_CHECK_FAKE_MODE", "pass")
-if argv[:2] == ["patch", "verify"]:
-    if os.environ.get("DEV_CHECK_PARALLEL_BARRIER"):
-        assert_isolated("candidate")
-    parallel_barrier("patch-verify")
-    if mode in {"fail-parallel", "interrupt-parallel"}:
-        wait_for_holders()
-    sys.stdout.write("patch verify raw evidence\n")
-    if mode == "fail-parallel":
-        raise SystemExit(43)
-    if mode == "interrupt-parallel":
-        os.kill(os.getppid(), signal.SIGINT)
-        time.sleep(60)
-if argv[:1] == ["test"] and "--materialize-profile" in argv:
-    if os.environ.get("DEV_CHECK_PARALLEL_BARRIER"):
-        assert_isolated("host")
-    parallel_barrier("host-materialized-test")
-    sys.stderr.write("host materialized raw evidence\n")
-    if mode in {"fail-parallel", "interrupt-parallel"}:
-        hold_with_cleanup("host-materialized-test")
-if mode == "fail-check" and argv[:2] == ["patch", "check"]:
-    sys.stdout.write("O" * 20000 + "\nSTDOUT-END\n")
-    sys.stderr.write("E" * 21000 + "\nSTDERR-END\n")
-    raise SystemExit(37)
-if mode == "interrupt" and argv[:2] == ["patch", "check"]:
-    signal.signal(signal.SIGINT, lambda _signum, _frame: interrupted("leader"))
-    ready = Path(os.environ["DEV_CHECK_INTERRUPT_READY"])
-    subprocess.Popen([sys.executable, __file__, "--interrupt-descendant"])
-    deadline = time.monotonic() + 5
-    while not ready.exists():
-        if time.monotonic() >= deadline:
-            raise SystemExit(98)
-        time.sleep(0.01)
-    os.kill(os.getppid(), signal.SIGINT)
-    while True:
-        time.sleep(60)
-if argv[:1] == ["test"] and "--list" in argv:
-    sys.stdout.write("fixture.case: [env:host diag:contract kind:behavior]\n")
-if argv[:2] == ["patch", "apply"] and "--lock-first-evidence" in argv:
-    ids = json.loads((Path.cwd() / "fixture-ids.json").read_text())
-    (Path.cwd() / "patches" / "homebrew" / "west.lock.yml").write_text(
-        "manifest:\n  projects: []\n# generated candidate\n",
-        encoding="utf-8",
-    )
-    module_repo = Path.cwd().parent / "fixture" / "module"
-    subprocess.run(
-        ["git", "commit", "--allow-empty", "-qm", "candidate integration"],
-        cwd=module_repo,
-        env={
-            **os.environ,
-            "GIT_AUTHOR_DATE": "2001-01-01T00:00:00Z",
-            "GIT_COMMITTER_DATE": "2001-01-01T00:00:00Z",
-        },
-        check=True,
-    )
-    applied_commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=module_repo,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-    ).stdout.strip()
-    lock_evidence = Path(argv[argv.index("--lock-first-evidence") + 1])
-    lock_evidence.parent.mkdir(parents=True, exist_ok=True)
-    lock_evidence.write_text(
-        json.dumps(
-            {
-                "evidence_schema_version": 2,
-                "verdict": "VALID",
-                "batch_id": "dev-check-contract-batch",
-                "expected_count": 1,
-                "module_order": ["fixture/module"],
-                "series_order": [
-                    {"module": "fixture/module", "patch": "fixture/change.patch"}
-                ],
-                "series": [
-                    {
-                        "module": "fixture/module",
-                        "patch": "fixture/change.patch",
-                        "base": ids["base"],
-                        "source": ids["source"],
-                        "canonical_tree": ids["tree"],
-                        "applied_commit": applied_commit,
-                        "applied_tree": ids["tree"],
-                        "verdict": "VALID",
-                    }
-                ],
-            },
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-if len(argv) >= 2 and argv[:2] == ["patch", "export-locks"]:
-    output = Path(argv[argv.index("--output") + 1])
-    output.mkdir(parents=True)
-    if mode == "package-fail":
-        (output / "partial").write_text("transaction-owned\n", encoding="utf-8")
-        raise SystemExit(41)
-    ids = json.loads((Path.cwd() / "fixture-ids.json").read_text())
-    source = ids["source"]
-    mbox_data = subprocess.run(
-        [
-            "git",
-            "format-patch",
-            "--stdout",
-            "--no-stat",
-            "--full-index",
-            f"{source}^!",
-        ],
-        cwd=ids["module_repo"],
-        check=True,
-        stdout=subprocess.PIPE,
-    ).stdout
-    patch_id = subprocess.run(
-        ["git", "patch-id", "--stable"],
-        input=mbox_data,
-        check=True,
-        stdout=subprocess.PIPE,
-    ).stdout.decode().split()[0]
-    mbox = output / "mbox" / "fixture" / "module" / "fixture" / "change.mbox"
-    mbox.parent.mkdir(parents=True)
-    mbox.write_bytes(mbox_data)
-    evidence = {
-        "export_schema_version": 1,
-        "profile": argv[argv.index("--profile") + 1],
-        "verdict": "VALID",
-        "mode": "immutable-lock-format-patch",
-        "batch_id": "dev-check-contract-batch",
-        "expected_count": 1,
-        "module_order": ["fixture/module"],
-        "series_order": [
-            {"module": "fixture/module", "patch": "fixture/change.patch"}
-        ],
-        "series": [
-            {
-                "module": "fixture/module",
-                "patch": "fixture/change.patch",
-                "lock": "fixture.lock.yml",
-                "base": ids["base"],
-                "source": source,
-                "ordered_commits": [source],
-                "commit_count": 1,
-                "resulting_tree": ids["tree"],
-                "mbox": "mbox/fixture/module/fixture/change.mbox",
-                "sha256": hashlib.sha256(mbox_data).hexdigest(),
-                "stable_patch_ids": [patch_id],
-            }
-        ],
-        "clean_odb": {
-            "module_count": 1,
-            "immutable_fetch_transactions": 1,
-            "alternates": 0,
-            "shallow": 0,
-            "partial": 0,
-        },
-    }
-    if mode == "package-semantic-lie":
-        evidence["series"][0]["resulting_tree"] = "9" * 40
-    (output / "evidence.json").write_text(
-        json.dumps(evidence, sort_keys=True, indent=2) + "\n", encoding="utf-8"
-    )
-'''
-
-FAKE_ORACLE = r'''#!/usr/bin/env python3
-import hashlib
-import json
-import os
-import signal
-import sys
-from pathlib import Path
-import time
-
-
-def parallel_barrier(name):
-    value = os.environ.get("DEV_CHECK_PARALLEL_BARRIER")
-    if not value:
-        return
-    root = Path(value)
-    root.mkdir(parents=True, exist_ok=True)
-    (root / f"{name}.ready").write_text("ready\n", encoding="utf-8")
-    deadline = time.monotonic() + 5
-    while len(list(root.glob("*.ready"))) < 3:
-        if time.monotonic() >= deadline:
-            raise SystemExit(97)
-        time.sleep(0.01)
-
-
-
-def assert_isolated(stage):
-    forbidden = {
-        "GH_TOKEN",
-        "GITHUB_TOKEN",
-        "GIT_ASKPASS",
-        "SSH_ASKPASS",
-        "SSH_AUTH_SOCK",
-    }
-    if forbidden.intersection(os.environ):
-        raise SystemExit(96)
-    if (
-        Path(os.environ["HOME"]).name != stage
-        or Path(os.environ["XDG_CACHE_HOME"]).name != stage
-        or Path(os.environ["XDG_CONFIG_HOME"]).name != stage
-        or os.environ.get("GIT_CONFIG_COUNT") != "0"
-        or os.environ.get("GIT_CONFIG_GLOBAL") != "/dev/null"
-        or os.environ.get("GIT_CONFIG_NOSYSTEM") != "1"
-    ):
-        raise SystemExit(95)
-
-
-def hold_with_cleanup(name):
-    root = Path(os.environ["DEV_CHECK_PARALLEL_CLEANUP"])
-    root.mkdir(parents=True, exist_ok=True)
-    orphan = root / f"{name}.orphan"
-    cleaned = root / f"{name}.cleaned"
-    cancel_requested = [False]
-
-    def cancel(_signum, _frame):
-        # A cancelled peer is signalled more than once. The first request owns
-        # the cleanup and the rest must not interrupt it: a repeated SIGINT
-        # landing inside the cleanup would abandon the orphan this contract
-        # asserts against.
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-        cancel_requested[0] = True
-
-    signal.signal(signal.SIGINT, cancel)
-    orphan.write_text("owned\n", encoding="utf-8")
-    (root / f"{name}.holding").write_text("holding\n", encoding="utf-8")
-    # Hold until the orchestrator cancels this peer. The deadline only guards
-    # against a cancellation that never arrives; it is not the ordering.
-    deadline = time.monotonic() + 300
-    while not cancel_requested[0]:
-        if time.monotonic() >= deadline:
-            break
-        time.sleep(0.01)
-    orphan.unlink(missing_ok=True)
-    cleaned.write_text("cleaned\n", encoding="utf-8")
-    if cancel_requested[0]:
-        raise SystemExit(130)
-
-parallel_barrier("immutable-oracle")
-assert_isolated("oracle")
-if os.environ.get("DEV_CHECK_FAKE_MODE") in {
-    "fail-parallel",
-    "interrupt-parallel",
-}:
-    hold_with_cleanup("immutable-oracle")
-sys.stdout.write("immutable oracle raw evidence\n")
 log = Path(os.environ["DEV_CHECK_FAKE_LOG"])
 with log.open("a", encoding="utf-8") as stream:
-    stream.write(json.dumps({"authority": "oracle", "argv": sys.argv[1:]}) + "\n")
-output = Path(sys.argv[sys.argv.index("--output") + 1])
-workspace = Path(sys.argv[sys.argv.index("--workspace") + 1])
-frozen_sha256 = hashlib.sha256((workspace / "west.lock.yml").read_bytes()).hexdigest()
-ids = json.loads((workspace / "fixture-ids.json").read_text())
-generated_path = workspace / "patches" / "homebrew" / "west.lock.yml"
-generated_data = b"manifest:\n  projects: []\n# generated candidate\n"
-generated_row = {
-    "profile": "homebrew",
-    "path": "patches/homebrew/west.lock.yml",
-    "semantic_sha256": "c" * 64,
-}
-output.parent.mkdir(parents=True, exist_ok=True)
-series = {
-    "module": "fixture/module",
-    "patch": "fixture/change.patch",
-    "base": ids["base"],
-    "source": ids["source"],
-    "canonical_tree": ids["tree"],
-    "applied_commit": ids["source"],
-    "applied_tree": ids["tree"],
-    "verdict": "VALID",
-}
-output.write_text(
-    json.dumps(
-        {
-            "oracle_schema_version": 2,
-            "mode": "immutable-cherry-pick-oracle",
-            "profile": "homebrew",
-            "profile_order": ["homebrew"],
-            "batches": [
-                {
-                    "profile": "homebrew",
-                    "batch_id": "dev-check-contract-batch",
-                    "expected_count": 1,
-                    "module_order": ["fixture/module"],
-                    "series_order": [
-                        {"module": "fixture/module", "patch": "fixture/change.patch"}
-                    ],
-                    "series": [series],
-                    "verdict": "VALID",
-                }
-            ],
-            "modules": [
-                {
-                    "module": "fixture/module",
-                    "commit": ids["source"],
-                    "tree": ids["tree"],
-                }
-            ],
-            "generated_profile_locks": [generated_row],
-            "frozen_manifest_sha256": frozen_sha256,
-            "clean_odb": {
-                "module_count": 1,
-                "immutable_fetch_transactions": 1,
-                "alternates": 0,
-                "shallow": 0,
-                "partial": 0,
-            },
-            "cleanup": {"root": "removed", "worktrees": "removed", "refs": "removed"},
-            "verdict": "VALID",
-        },
-        sort_keys=True,
-    )
-    + "\n",
-    encoding="utf-8",
-)
+    stream.write(json.dumps({"argv": argv}) + "\n")
+if argv[:1] == ["list"]:
+    repo = Path(os.environ["DEV_CHECK_MANIFEST_REPO"])
+    source = Path(os.environ["DEV_CHECK_SOURCE_ROOT"])
+    source_sha = os.environ["DEV_CHECK_SOURCE_HEAD"]
+    for name, path, sha in (
+        ("manifest", repo, os.environ["DEV_CHECK_MANIFEST_HEAD"]),
+        ("darling", source, source_sha),
+        ("darling-dependency", source / "dependency", os.environ["DEV_CHECK_DEPENDENCY_HEAD"]),
+        ("darling-docs", source / "docs" / "standalone", os.environ["DEV_CHECK_DOCS_HEAD"]),
+    ):
+        print(f"{name}\t{path}\t{sha}\tcloned")
+    raise SystemExit(0)
+if argv[:1] == ["test"] and "--list" in argv:
+    print("fixture.case: [env:host diag:bare kind:behavior]")
+    raise SystemExit(0)
+if argv[:1] == ["test"]:
+    print("workload pass")
+    raise SystemExit(0)
+if argv[-1:] == ["--version"]:
+    print("West version: fixture-1.0")
+    raise SystemExit(0)
+raise SystemExit(2)
 '''
-
-FAKE_TIER = r'''#!/usr/bin/env python3
-import json
-import os
-import signal
-import sys
-import time
-from pathlib import Path
-
-
-def barrier(name):
-    value = os.environ.get("DEV_CHECK_FINAL_TIER_BARRIER")
-    if not value:
-        return
-    root = Path(value)
-    root.mkdir(parents=True, exist_ok=True)
-    (root / f"{name}.ready").write_text("ready\n", encoding="utf-8")
-    deadline = time.monotonic() + 5
-    while len(list(root.glob("*.ready"))) < 2:
-        if time.monotonic() >= deadline:
-            raise SystemExit(97)
-        time.sleep(0.01)
-
-
-def hold(name):
-    root = Path(os.environ["DEV_CHECK_FINAL_TIER_CLEANUP"])
-    root.mkdir(parents=True, exist_ok=True)
-    orphan = root / f"{name}.orphan"
-    holding = root / f"{name}.holding"
-    cleaned = root / f"{name}.cleaned"
-    cancel_requested = [False]
-
-    def cancel(_signum, _frame):
-        # A cancelled peer is signalled more than once. The first request owns
-        # the cleanup and the rest must not interrupt it: a repeated SIGINT
-        # landing inside the cleanup would abandon the holding marker and the
-        # orphan this contract asserts against.
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-        cancel_requested[0] = True
-
-    signal.signal(signal.SIGINT, cancel)
-    orphan.write_text("owned\n", encoding="utf-8")
-    holding.write_text("holding\n", encoding="utf-8")
-    deadline = time.monotonic() + 300
-    while not cancel_requested[0]:
-        if time.monotonic() >= deadline:
-            break
-        time.sleep(0.01)
-    holding.unlink(missing_ok=True)
-    orphan.unlink(missing_ok=True)
-    cleaned.write_text("cleaned\n", encoding="utf-8")
-    if cancel_requested[0]:
-        raise SystemExit(130)
-
-
-def wait_for_holder():
-    root = Path(os.environ["DEV_CHECK_FINAL_TIER_CLEANUP"])
-    deadline = time.monotonic() + 5
-    while not list(root.glob("*.holding")):
-        if time.monotonic() >= deadline:
-            raise SystemExit(94)
-        time.sleep(0.01)
-
-
-argv = sys.argv[1:]
-with Path(os.environ["DEV_CHECK_FAKE_LOG"]).open("a", encoding="utf-8") as stream:
-    stream.write(json.dumps({"authority": "tier", "argv": argv}) + "\n")
-mode = os.environ.get("DEV_CHECK_FAKE_MODE", "pass")
-if argv == ["host"]:
-    assert Path.cwd().parent.name == "guest"
-    assert os.environ["WEST_PREMATERIALIZED_PROFILE"] == "homebrew"
-    assert Path(os.environ["CCACHE_DIR"]).name == "host-ccache-v1"
-    assert Path(os.environ["HOME"]).name == "final-host"
-    barrier("acceptance-host-tier")
-    if mode in {"fail-final-tier", "interrupt-final-tier"}:
-        wait_for_holder()
-    if mode == "fail-final-tier":
-        raise SystemExit(43)
-    if mode == "interrupt-final-tier":
-        os.kill(os.getppid(), signal.SIGINT)
-        time.sleep(60)
-elif argv == ["guest-smoke"]:
-    assert Path.cwd().parent.name == "guest"
-    assert Path(os.environ["HOME"]).name == "guest"
-    assert os.environ.get("DARLING_TIER_DEFER_GLOBAL_CLEANUP") == "1"
-    barrier("acceptance-guest-smoke")
-    if mode in {"fail-final-tier", "interrupt-final-tier"}:
-        hold("acceptance-guest-smoke")
-elif argv == ["acceptance-cleanup"]:
-    root_value = os.environ.get("DEV_CHECK_FINAL_TIER_CLEANUP")
-    if root_value:
-        root = Path(root_value)
-        root.mkdir(parents=True, exist_ok=True)
-        assert not list(root.glob("*.holding"))
-        assert not list(root.glob("*.orphan"))
-        (root / "final-cleanup").write_text("clean\n", encoding="utf-8")
-else:
-    raise SystemExit(93)
-'''
-
-FAKE_ACCEPTANCE = r'''#!/usr/bin/env python3
-import hashlib
-import json
-import os
-import subprocess
-import shutil
-import sys
-from pathlib import Path
-
-name = Path(__file__).name
-action = sys.argv[1:2]
-if (
-    name == "patch_stack_lock_first_acceptance.py"
-    and action == ["clone-acceptance-seed"]
-):
-    authority = "manifest-clone"
-elif (
-    name == "patch_stack_lock_first_acceptance.py" and action == ["seed-source-refs"]
-):
-    authority = "seed"
-elif (
-    name == "patch_stack_lock_first_acceptance.py"
-    and action == ["clone-tier-workspace"]
-):
-    authority = "clone-tier"
-elif (
-    name == "patch_stack_lock_first_acceptance.py"
-    and action == ["materialize-candidate"]
-):
-    authority = "candidate-materialize"
-elif (
-    name == "patch_stack_lock_first_acceptance.py"
-    and action == ["publish-candidate-cache"]
-):
-    authority = "candidate-publish"
-else:
-    authority = {
-        "bootstrap-west.sh": "bootstrap",
-        "patch_stack_acceptance.py": "capture",
-        "patch_stack_lock_first_acceptance.py": "compare",
-    }[name]
-with Path(os.environ["DEV_CHECK_FAKE_LOG"]).open("a", encoding="utf-8") as stream:
-    stream.write(json.dumps({"authority": authority, "argv": sys.argv[1:]}) + "\n")
-if authority == "manifest-clone":
-    source = Path(sys.argv[sys.argv.index("--source") + 1])
-    destination = Path(sys.argv[sys.argv.index("--destination") + 1])
-    subprocess.run(
-        ["git", "clone", "--no-local", "--no-hardlinks", "--no-checkout", source, destination],
-        check=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-elif authority == "seed":
-    pass
-elif authority == "candidate-materialize":
-    cache = Path(sys.argv[sys.argv.index("--cache") + 1])
-    evidence = Path(sys.argv[sys.argv.index("--lock-evidence") + 1])
-    modules = Path(sys.argv[sys.argv.index("--modules") + 1])
-    candidate_manifest = Path(
-        sys.argv[sys.argv.index("--candidate-manifest") + 1]
-    )
-    west = sys.argv[sys.argv.index("--west-command") + 1 :]
-    profile = sys.argv[sys.argv.index("--profile") + 1]
-    if cache.exists():
-        evidence.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(cache / "evidence.json", evidence)
-        shutil.copy2(cache / "modules.json", modules)
-        shutil.copy2(cache / "candidate-manifest.json", candidate_manifest)
-        manifest_workspace = Path(
-            sys.argv[sys.argv.index("--manifest-workspace") + 1]
-        )
-        generated = json.loads(candidate_manifest.read_text())[
-            "generated_profile_locks"
-        ]
-        for index, row in enumerate(generated):
-            destination = manifest_workspace / row["path"]
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(cache / "generated" / str(index), destination)
-        subprocess.run(
-            [
-                *west,
-                "patch",
-                "apply",
-                "--profile",
-                profile,
-                "--lock-first-evidence",
-                str(evidence),
-            ],
-            cwd=manifest_workspace,
-            check=True,
-        )
-    else:
-        west = sys.argv[sys.argv.index("--west-command") + 1 :]
-        profile = sys.argv[sys.argv.index("--profile") + 1]
-        subprocess.run(
-            [
-                *west,
-                "patch",
-                "apply",
-                "--profile",
-                profile,
-                "--lock-first-evidence",
-                str(evidence),
-            ],
-            cwd=Path(sys.argv[sys.argv.index("--manifest-workspace") + 1]),
-            check=True,
-        )
-elif authority == "candidate-publish":
-    cache = Path(sys.argv[sys.argv.index("--cache") + 1])
-    cache.mkdir(mode=0o700, exist_ok=True)
-    shutil.copy2(
-        sys.argv[sys.argv.index("--lock-evidence") + 1],
-        cache / "evidence.json",
-    )
-    shutil.copy2(
-        sys.argv[sys.argv.index("--modules") + 1],
-        cache / "modules.json",
-    )
-    shutil.copy2(
-        sys.argv[sys.argv.index("--candidate-manifest") + 1],
-        cache / "candidate-manifest.json",
-    )
-    manifest_workspace = Path(
-        sys.argv[sys.argv.index("--manifest-workspace") + 1]
-    )
-    generated = json.loads(
-        Path(sys.argv[sys.argv.index("--candidate-manifest") + 1]).read_text()
-    )["generated_profile_locks"]
-    (cache / "generated").mkdir()
-    for index, row in enumerate(generated):
-        shutil.copy2(
-            manifest_workspace / row["path"],
-            cache / "generated" / str(index),
-        )
-elif authority == "clone-tier":
-    source = Path(sys.argv[sys.argv.index("--source-workspace") + 1])
-    destination = Path(sys.argv[sys.argv.index("--destination-workspace") + 1])
-    if not destination.exists():
-        shutil.copytree(source, destination)
-elif authority == "bootstrap":
-    workspace = Path.cwd()
-    assert os.environ.get("DARLING_WEST_UPDATE_JOBS") == "8"
-    path_cache = Path(os.environ["DARLING_WEST_UPDATE_PATH_CACHE"])
-    assert path_cache.is_absolute() and path_cache.is_dir()
-    ids = json.loads((workspace / "fixture-ids.json").read_text())
-    destination = workspace.parent / "fixture" / "module"
-    shutil.copytree(ids["module_repo"], destination)
-elif authority == "capture":
-    workspace = Path(sys.argv[sys.argv.index("--workspace") + 1])
-    modules = Path(sys.argv[sys.argv.index("--modules") + 1])
-    manifest = Path(sys.argv[sys.argv.index("--manifest") + 1])
-    ids = json.loads((workspace / "fixture-ids.json").read_text())
-    generated_path = workspace / "patches" / "homebrew" / "west.lock.yml"
-    generated_data = generated_path.read_bytes()
-    generated_row = {
-        "profile": "homebrew",
-        "path": "patches/homebrew/west.lock.yml",
-        "size": len(generated_data),
-        "sha256": hashlib.sha256(generated_data).hexdigest(),
-        "semantic_sha256": "c" * 64,
-    }
-    modules.parent.mkdir(parents=True, exist_ok=True)
-    modules.write_text(
-        json.dumps(
-            {
-                "profile": "homebrew",
-                "modules": [
-                    {
-                        "module": "fixture/module",
-                        "west_name": "fixture-module",
-                        "path": "fixture/module",
-                        "integration_profile": "homebrew",
-                        "integration_oid": subprocess.run(
-                            ["git", "rev-parse", "HEAD"],
-                            cwd=workspace.parent / "fixture" / "module",
-                            check=True,
-                            text=True,
-                            stdout=subprocess.PIPE,
-                        ).stdout.strip(),
-                        "tree": ids["tree"],
-                        "status": "",
-                    }
-                ],
-            },
-
-
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=workspace,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-    ).stdout.strip()
-    frozen = (workspace / "west.lock.yml").read_bytes()
-    manifest.write_text(
-        json.dumps(
-            {
-                "workspace_commit": commit,
-                "frozen_manifest_sha256": hashlib.sha256(frozen).hexdigest(),
-                "generated_profile_locks": [generated_row],
-                "validated_nested_children": {},
-            },
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-elif authority == "compare":
-    result = Path(sys.argv[sys.argv.index("--result") + 1])
-    result.parent.mkdir(parents=True, exist_ok=True)
-    result.write_text(
-        json.dumps(
-            {
-                "evidence_schema_version": 2,
-                "verdict": "VALID",
-                "batch_id": "dev-check-contract-batch",
-                "expected_count": 1,
-                "module_order": ["fixture/module"],
-                "module_count": 1,
-                "control_mode": "immutable-cherry-pick-oracle",
-                "candidate_mode": "default-lock-first",
-                "lock_first_evidence": "lock-first-evidence.json",
-            },
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-'''
-
-
-def executable(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if content.startswith("#!/usr/bin/env python3"):
-        content = content.replace(
-            "#!/usr/bin/env python3", f"#!{sys.executable}", 1
-        )
-    path.write_text(content, encoding="utf-8")
-    path.chmod(0o755)
 
 
 def git(repo: Path, *args: str) -> str:
-    completed = subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        env=os.environ.copy(),
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
         check=True,
         text=True,
-        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-    )
-    return completed.stdout.strip()
+    ).stdout.strip()
 
 
-def load_log(path: Path) -> list[dict[str, object]]:
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+class FakeRuntime:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.launcher = root / "bin" / "darling"
+        self.system_root = root / "libexec" / "darling"
+        self.identity = {"fixture": "installed-runtime"}
 
-
-def clear_log(path: Path) -> None:
-    path.unlink(missing_ok=True)
-
-
-def must_reject(callback: Callable[[], object], fragment: str) -> None:
-    try:
-        callback()
-    except dev_check.DevCheckError as error:
-        assert fragment in str(error), error
-    else:
-        raise AssertionError(f"dev check accepted invalid input requiring {fragment!r}")
-
-
-def wait_for_markers(root: Path, expected: set[str]) -> set[str]:
-    """Return the cleanup markers the cancelled peers write in their own groups.
-
-    A cancelled peer writes them in its own process group, and the receipt is
-    built once that group is quiescent, so they are normally in place by the
-    time the receipt is read. Wait for them anyway: this read and the group's
-    last write are independent, and reading once is what made this assertion
-    flake under load. Only the reading is tolerant; the caller still asserts
-    the exact set, so a peer that never cleans up still fails the contract.
-    """
-    deadline = time.monotonic() + 10
-    observed = {path.name for path in root.glob("*.cleaned")}
-    while observed != expected:
-        if time.monotonic() >= deadline:
-            break
-        time.sleep(0.05)
-        observed = {path.name for path in root.glob("*.cleaned")}
-    return observed
-
-
-def package_copy(source: Path, destination: Path) -> Path:
-    shutil.copytree(source, destination)
-    return destination
-
-
-def rewrite_package_index(
-    package: Path, change: Callable[[dict[str, object]], None]
-) -> None:
-    index_path = package / "package-index.json"
-    index = json.loads(index_path.read_text(encoding="utf-8"))
-    change(index)
-    index_path.write_text(
-        json.dumps(index, sort_keys=True, indent=2) + "\n", encoding="utf-8"
-    )
-    sums_path = package / "SHA256SUMS"
-    sums = {}
-    for line in sums_path.read_text(encoding="utf-8").splitlines():
-        digest, relative = line.split("  ", 1)
-        sums[relative] = digest
-    sums["package-index.json"] = hashlib.sha256(index_path.read_bytes()).hexdigest()
-    sums_path.write_text(
-        "".join(f"{digest}  {relative}\n" for relative, digest in sorted(sums.items())),
-        encoding="utf-8",
-    )
-
-
-def reseal_package(package: Path) -> None:
-    index_path = package / "package-index.json"
-    index = json.loads(index_path.read_text(encoding="utf-8"))
-    for row in index["files"]:
-        data = (package / row["path"]).read_bytes()
-        row["sha256"] = hashlib.sha256(data).hexdigest()
-        row["bytes"] = len(data)
-    index_path.write_text(
-        json.dumps(index, sort_keys=True, indent=2) + "\n", encoding="utf-8"
-    )
-    sums = []
-    for path in sorted(
-        (item for item in package.rglob("*") if item.is_file()),
-        key=lambda item: item.relative_to(package).as_posix(),
-    ):
-        relative = path.relative_to(package).as_posix()
-        if relative == "SHA256SUMS":
-            continue
-        sums.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {relative}\n")
-    (package / "SHA256SUMS").write_text("".join(sums), encoding="utf-8")
-
-
-def mutate_receipt_artifact(
-    receipt: dict[str, object],
-    name: str,
-    change: Callable[[dict[str, object]], None],
-) -> None:
-    artifacts = receipt["acceptance_artifacts"]
-    assert isinstance(artifacts, dict)
-    row = artifacts[name]
-    assert isinstance(row, dict)
-    value = json.loads(row["content"])
-    change(value)
-    data = (json.dumps(value, sort_keys=True, indent=2) + "\n").encode()
-    row["content"] = data.decode()
-    row["sha256"] = hashlib.sha256(data).hexdigest()
-    row["bytes"] = len(data)
-
-
-def mutate_packaged_artifact(
-    package: Path,
-    name: str,
-    change: Callable[[dict[str, object]], None],
-) -> None:
-    receipt_path = package / "check-receipt.json"
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    row = receipt["acceptance_artifacts"][name]
-    value = json.loads(row["content"])
-    change(value)
-    data = (json.dumps(value, sort_keys=True, indent=2) + "\n").encode()
-    row["content"] = data.decode()
-    row["sha256"] = hashlib.sha256(data).hexdigest()
-    row["bytes"] = len(data)
-    index = json.loads((package / "package-index.json").read_text(encoding="utf-8"))
-    relative = next(
-        item["path"] for item in index["acceptance"]["artifacts"] if item["name"] == name
-    )
-    (package / relative).write_bytes(data)
-    receipt_path.write_text(
-        json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8"
-    )
-    reseal_package(package)
-
-
-def mutate_packaged_receipt(
-    package: Path, change: Callable[[dict[str, object]], None]
-) -> None:
-    receipt_path = package / "check-receipt.json"
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    change(receipt)
-    receipt_path.write_text(
-        json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8"
-    )
-    reseal_package(package)
-
-
-def assert_plan(
-    plan: dict[str, object], expected: list[tuple[str, list[str]]]
-) -> None:
-    assert plan["schema_version"] == 1
-    assert plan["state"] == "planned"
-    assert plan["returncode"] is None
-    assert plan["results"] == []
-    steps = plan["steps"]
-    assert isinstance(steps, list)
-    assert [(step["name"], step["argv"]) for step in steps] == expected
-    assert all(Path(step["cwd"]).is_absolute() for step in steps)
-    assert all(isinstance(step["env"], dict) for step in steps)
-    for step in steps:
-        assert step["read_only"] is (step["effect"] == "read-only")
-        assert step["mutating"] is (step["effect"] != "read-only")
-        assert isinstance(step["timeout_seconds"], int) and step["timeout_seconds"] > 0
-
-
-def durable(path: Path, receipt: dict[str, object]) -> None:
-    assert path.is_file() and not path.is_symlink()
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    assert json.loads(path.read_text(encoding="utf-8")) == receipt
-
-
-with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
-    sandbox = Path(temporary)
-    home = sandbox / "home"
-    home.mkdir()
-    for key in list(os.environ):
-        if key.startswith("GIT_"):
-            os.environ.pop(key)
-    os.environ.update(
-        {
-            "HOME": str(home),
-            "XDG_CONFIG_HOME": str(home / ".config"),
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_SYSTEM": os.devnull,
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_TERMINAL_PROMPT": "0",
-            "GH_TOKEN": "must-not-reach-parallel-stage",
-            "GITHUB_TOKEN": "must-not-reach-parallel-stage",
-            "GIT_ASKPASS": "/must/not/reach/parallel-stage",
-            "SSH_ASKPASS": "/must/not/reach/parallel-stage",
-            "SSH_AUTH_SOCK": "/must/not/reach/parallel-stage",
-            "LC_ALL": "C.UTF-8",
+    def environment(self, prefix: Path, base=None) -> dict[str, str]:
+        return {
+            "DPREFIX": str(prefix),
+            "DARLING_PREFIX": str(prefix),
+            "DARLING_RUNTIME_ROOT": str(self.root),
         }
-    )
 
-    repo = sandbox / "active-manifest"
-    outside = sandbox / "durable-evidence"
+
+def make_repo(root: Path) -> tuple[Path, Path]:
+    repo = root / "manifest"
+    source = root / "darling"
+    source.mkdir()
+    (source / "README").write_text("source fixture\n", encoding="utf-8")
+    (source / ".gitignore").write_text("docs/\n", encoding="utf-8")
     repo.mkdir()
-    outside.mkdir()
-    fake_west = repo / "fixture-bin" / "west-authority"
-    oracle = repo / "tests" / "patch_stack_immutable_oracle.py"
-    tier_runner = repo / "ci" / "run-test-tier.sh"
-    bootstrap = repo / "ci" / "bootstrap-west.sh"
-    capture = repo / "ci" / "patch_stack_acceptance.py"
-    compare = repo / "ci" / "patch_stack_lock_first_acceptance.py"
-    mapping = repo / "locks" / "patch-stack" / "lock-first-series-v2.yml"
-    executable(fake_west, FAKE_WEST)
-    executable(oracle, FAKE_ORACLE)
-    executable(tier_runner, FAKE_TIER)
-    executable(bootstrap, FAKE_ACCEPTANCE)
-    executable(capture, FAKE_ACCEPTANCE)
-    executable(compare, FAKE_ACCEPTANCE)
-    module_repo = sandbox / "fixture" / "module"
-    module_repo.mkdir(parents=True)
-    git(module_repo, "init", "-q")
-    git(module_repo, "config", "user.name", "Fixture Module")
-    git(module_repo, "config", "user.email", "fixture-module@example.invalid")
-    (module_repo / "base.txt").write_text("base\n", encoding="utf-8")
-    git(module_repo, "add", ".")
-    git(module_repo, "commit", "-qm", "fixture base")
-    module_base = git(module_repo, "rev-parse", "HEAD")
-    (module_repo / "fixture.txt").write_text("fixture\n", encoding="utf-8")
-    git(module_repo, "add", ".")
-    git(module_repo, "commit", "-qm", "fixture change")
-    module_source = git(module_repo, "rev-parse", "HEAD")
-    module_tree = git(module_repo, "rev-parse", "HEAD^{tree}")
-    fixture_ids = {
-        "base": module_base,
-        "source": module_source,
-        "tree": module_tree,
-        "module_repo": str(module_repo),
-    }
-    (repo / "fixture-ids.json").write_text(
-        json.dumps(fixture_ids, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    mapping.parent.mkdir(parents=True)
-    mapping.write_text(
-        json.dumps(
-            {
-                "schema_version": 2,
-                "profile": "homebrew",
-                "batch_id": "dev-check-contract-batch",
-                "expected_count": 1,
-                "series": [
-                    {
-                        "profile": "homebrew",
-                        "module": "fixture/module",
-                        "patch": "fixture/change.patch",
-                        "lock": "fixture.lock.yml",
-                    }
-                ],
-            },
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    (mapping.parent / "lock-first-profiles-v1.yml").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "profiles": [
-                    {
-                        "profile": "homebrew",
-                        "mapping": mapping.name,
-                    }
-                ],
-            },
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    (mapping.parent / "fixture.lock.yml").write_text(
-        json.dumps(
-            {
-                "schema_version": 2,
-                "project": {"name": "fixture-module", "path": "."},
-                "upstream": {"url": str(module_repo), "base_commit": module_base},
-                "mirror": {
-                    "url": str(module_repo),
-                    "base_ref": f"refs/tags/patch-stack/v1/bases/{module_base}",
-                    "base_oid": module_base,
-                    "source_ref": f"refs/tags/patch-stack/v1/sources/{module_source}",
-                    "source_oid": module_source,
-                },
-                "source_commit": module_source,
-                "ordered_commits": [module_source],
-                "expected_tree": module_tree,
-            },
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    (repo / "west.yml").write_text("manifest: {}\n", encoding="utf-8")
-    (repo / "west.lock.yml").write_text("manifest: {}\n", encoding="utf-8")
-    for profile in ("focused", "homebrew"):
-        patch_dir = repo / "patches" / profile
-        patch_dir.mkdir(parents=True)
-        patch_data = f"{profile} fixture\n"
-        patch_path = patch_dir / "fixture.patch"
-        patch_path.write_text(patch_data, encoding="utf-8")
-        (patch_dir / "patches.yml").write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "patches": [
-                        {
-                            "path": "fixture.patch",
-                            "sha256sum": hashlib.sha256(
-                                patch_data.encode("utf-8")
-                            ).hexdigest(),
-                        }
-                    ],
-                },
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        if profile == "homebrew":
-            (patch_dir / "west.lock.yml").write_text(
-                "manifest:\n  projects: []\n", encoding="utf-8"
-            )
-    (repo / "fixture.txt").write_text("manifest fixture\n", encoding="utf-8")
-    (repo / ".gitignore").write_text(
-        "locks/patch-stack/*.ignored\n", encoding="utf-8"
-    )
-    git(repo, "init", "-q")
+    (repo / "west.yml").write_text("manifest:\n  projects: []\n", encoding="utf-8")
+    (repo / "fixture.txt").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
     git(repo, "config", "user.name", "Dev Check Contract")
     git(repo, "config", "user.email", "dev-check-contract@example.invalid")
     git(repo, "add", ".")
-    git(repo, "commit", "-qm", "committed manifest fixture")
-    assert git(repo, "status", "--porcelain") == ""
-
-    log = outside / "authority.jsonl"
-    os.environ["DEV_CHECK_FAKE_LOG"] = str(log)
-    os.environ["DEV_CHECK_FAKE_MODE"] = "pass"
-    west = [str(fake_west)]
-    prefix = sandbox / "runtime-prefix"
-    build_dir = sandbox / "runtime-build"
-    prefix.mkdir()
-    build_dir.mkdir()
-    descendant_result = dev_check._run_process(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import subprocess, time; "
-                "subprocess.Popen("
-                "['sleep', '60'], stdin=subprocess.DEVNULL, "
-                "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
-                "time.sleep(0.05)"
-            ),
-        ],
-        sandbox,
-        10,
-        {},
-    )
-    assert descendant_result["returncode"] == 125
-    assert descendant_result["process_group_quiescent"] is False
+    git(repo, "commit", "-qm", "fixture")
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    git(source, "config", "user.name", "Dev Check Contract")
+    git(source, "config", "user.email", "dev-check-contract@example.invalid")
+    dependency = source / "dependency"
+    dependency.mkdir()
+    (dependency / "README").write_text("tracked dependency fixture\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(dependency)], check=True)
+    git(dependency, "config", "user.name", "Dev Check Contract")
+    git(dependency, "config", "user.email", "dev-check-contract@example.invalid")
+    git(dependency, "add", ".")
+    git(dependency, "commit", "-qm", "dependency fixture")
+    git(source, "add", ".")
+    git(source, "commit", "-qm", "source fixture")
+    docs = source / "docs" / "standalone"
+    docs.mkdir(parents=True)
+    (docs / "README").write_text("independent West docs fixture\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(docs)], check=True)
+    git(docs, "config", "user.name", "Dev Check Contract")
+    git(docs, "config", "user.email", "dev-check-contract@example.invalid")
+    git(docs, "add", ".")
+    git(docs, "commit", "-qm", "independent docs fixture")
+    return repo, source
 
 
-    quick_evidence = outside / "quick-plan.json"
-    quick = dev_check.build_check_plan(
-        repo,
-        west,
-        "quick",
-        "focused",
-        "core-bead",
-        "series/one.patch",
-        quick_evidence,
-        None,
-        None,
+def build_plan(repo: Path, west: list[str], tier: str, evidence: Path, *, workloads=(), runtime_root=None, prefix=None, source_root=None, build_dir=None):
+    return dev_check.build_check_plan(
+        manifest_repo=repo,
+        west_argv=west,
+        tier=tier,
+        workloads=list(workloads),
+        runtime_root=runtime_root,
+        bead=None,
+        evidence=evidence,
+        prefix=prefix,
+        build_dir=build_dir,
+        source_root=source_root,
     )
-    assert_plan(
-        quick,
-        [
-            (
-                "patch-check",
-                [
-                    *west,
-                    "patch",
-                    "check",
-                    "--profile",
-                    "focused",
-                    "--strict",
-                    "--strict-quality",
-                ],
-            ),
-            (
-                "patch-export-check",
-                [
-                    *west,
-                    "patch",
-                    "export",
-                    "--profile",
-                    "focused",
-                    "--patch",
-                    "series/one.patch",
-                    "--check",
-                ],
-            ),
-            (
-                "test-list",
-                [
-                    *west,
-                    "test",
-                    "--profile",
-                    "focused",
-                    "--bead",
-                    "core-bead",
-                    "--patch",
-                    "series/one.patch",
-                    "--list",
-                ],
-            ),
-        ],
-    )
-    assert not quick_evidence.exists()
-    clear_log(log)
-    quick_receipt = dev_check.execute_check(quick)
-    assert quick_receipt["state"] == "committed"
-    assert quick_receipt["returncode"] == 0
-    selection = quick_receipt["results"][2]["selection_oracle"]
-    assert selection == {
-        "required": True,
-        "observed_listing_rows": 1,
-        "selected": True,
-    }
-    durable(quick_evidence, quick_receipt)
-    assert load_log(log) == [
-        {"authority": "west", "argv": argv[1:]}
-        for _name, argv in [
-            (step["name"], step["argv"]) for step in quick["steps"]
-        ]
-    ]
-    clear_log(log)
 
-    check_receipt_path = outside / "canonical-check.json"
-    canonical = dev_check.build_check_plan(
-        repo,
-        west,
-        "canonical",
-        "homebrew",
-        None,
-        None,
-        check_receipt_path,
-        None,
-        None,
-    )
-    canonical_expected = [
-        (
-            "patch-check",
-            [
-                *west,
-                "patch",
-                "check",
-                "--profile",
-                "homebrew",
-                "--strict",
-                "--strict-quality",
-            ],
-        ),
-        (
-            "patch-export-check",
-            [
-                *west,
-                "patch",
-                "export",
-                "--profile",
-                "homebrew",
-                "--check",
-            ],
-        ),
-        (
-            "test-list",
-            [*west, "test", "--profile", "homebrew", "--list"],
-        ),
-        (
-            "patch-verify",
-            [*west, "patch", "verify", "--profile", "homebrew"],
-        ),
-        (
-            "host-materialized-test",
-            [
-                *west,
-                "test",
-                "--profile",
-                "homebrew",
-                "--env",
-                "host",
-                "--materialize-profile",
-            ],
-        ),
-    ]
-    assert_plan(canonical, canonical_expected)
-    canonical_receipt = dev_check.execute_check(canonical)
-    assert canonical_receipt["state"] == "committed"
-    assert canonical_receipt["returncode"] == 0
-    assert [row["name"] for row in canonical_receipt["results"]] == [
-        name for name, _argv in canonical_expected
-    ]
-    package_snapshot = canonical_receipt["inputs"]["package_snapshot"]
-    assert package_snapshot["manifest_repo"] == str(repo)
-    assert package_snapshot["dirty"] is False
-    assert set(package_snapshot["content"]) == {
-        "west.yml",
-        "west.lock.yml",
-        "patches/homebrew",
-        "locks/patch-stack",
-    }
-    final_tier_barrier = outside / "final-tier-barrier"
-    os.environ["DEV_CHECK_FINAL_TIER_BARRIER"] = str(final_tier_barrier)
-    final_tier_cleanup = outside / "final-tier-cleanup"
-    os.environ["DEV_CHECK_FINAL_TIER_CLEANUP"] = str(final_tier_cleanup)
-    durable(check_receipt_path, canonical_receipt)
-    assert load_log(log) == [
-        {"authority": "west", "argv": argv[1:]} for _name, argv in canonical_expected
-    ]
 
-    parallel_barrier = outside / "parallel-barrier"
-    os.environ["DEV_CHECK_PARALLEL_BARRIER"] = str(parallel_barrier)
-    acceptance_path = outside / "acceptance-check.json"
-    acceptance = dev_check.build_check_plan(
-        repo,
-        west,
-        "acceptance",
-        "homebrew",
-        None,
-        None,
-        acceptance_path,
-        prefix,
-        build_dir,
-    )
-    scratch = outside / f".dev-check-{acceptance['transaction_id']}"
-    control_parent = scratch / "control"
-    control = control_parent / "darling-workspace"
-    candidate_parent = scratch / "lock-first"
-    candidate = candidate_parent / "darling-workspace"
-    checkpoint_key = acceptance["inputs"]["acceptance_checkpoint"]["key"]
-    checkpoint_root = Path(
-        acceptance["inputs"]["acceptance_checkpoint"]["path"]
-    ).parent
-    materialized_root = checkpoint_root / "materialized-v2" / "homebrew"
-    guest_parent = materialized_root / "guest"
-    guest = guest_parent / "darling-workspace"
-    artifacts = scratch / "evidence"
-    oracle_output = artifacts / "immutable-oracle.json"
-    modules = artifacts / "lock-first-modules.json"
-    manifest = artifacts / "lock-first-manifest.json"
-    lock_evidence = artifacts / "lock-first-evidence.json"
-    comparison = artifacts / "acceptance-result.json"
-    candidate_cache = (
-        Path(acceptance["inputs"]["acceptance_checkpoint"]["path"]).parent
-        / f"candidate-{acceptance['inputs']['acceptance_checkpoint']['key']}"
-    )
-    head = acceptance["inputs"]["package_snapshot"]["manifest_head"]
-    acceptance_seed = checkpoint_root / "manifest-seed-v1"
-    acceptance_helper = repo / "ci" / "patch_stack_lock_first_acceptance.py"
-    acceptance_expected = [
-        (
-            "patch-check",
-            [
-                *west,
-                "patch",
-                "check",
-                "--profile",
-                "homebrew",
-                "--strict",
-                "--strict-quality",
-            ],
-        ),
-        (
-            "patch-export-check",
-            [*west, "patch", "export", "--profile", "homebrew", "--check"],
-        ),
-        ("test-list", [*west, "test", "--profile", "homebrew", "--list"]),
-        (
-            "doctor",
-            [
-                *west,
-                "darling-doctor",
-                "--prefix",
-                str(prefix),
-                "--build-dir",
-                str(build_dir),
-                "--full",
-            ],
-        ),
-        (
-            "acceptance-clone-control",
-            [
-                str(Path(sys.executable).resolve()),
-                str(acceptance_helper),
-                "clone-acceptance-seed",
-                "--source",
-                str(repo),
-                "--seed",
-                str(acceptance_seed),
-                "--revision",
-                head,
-                "--destination",
-                str(control),
-            ],
-        ),
-        (
-            "acceptance-clone-candidate",
-            [
-                str(Path(sys.executable).resolve()),
-                str(acceptance_helper),
-                "clone-acceptance-seed",
-                "--source",
-                str(repo),
-                "--seed",
-                str(acceptance_seed),
-                "--revision",
-                head,
-                "--destination",
-                str(candidate),
-            ],
-        ),
-        (
-            "acceptance-checkout-control",
-            ["git", "-C", str(control), "checkout", "--detach", head],
-        ),
-        (
-            "acceptance-checkout-candidate",
-            ["git", "-C", str(candidate), "checkout", "--detach", head],
-        ),
-        (
-            "acceptance-bootstrap-candidate",
-            [str(candidate / "ci" / "bootstrap-west.sh")],
-        ),
-        (
-            "acceptance-configure-candidate-identity",
-            [
-                *west,
-                "forall",
-                "-c",
-                "git config user.name 'West Dev Acceptance' && "
-                "git config user.email 'west-dev-acceptance@example.invalid'",
-            ],
-        ),
-        (
-            "acceptance-seed-candidate-refs",
-            [
-                str(Path(sys.executable).resolve()),
-                str(
-                    candidate
-                    / "ci"
-                    / "patch_stack_lock_first_acceptance.py"
-                ),
-                "seed-source-refs",
-                "--source-workspace",
-                str(repo.parent),
-                "--candidate-workspace",
-                str(candidate_parent),
-                "--profile",
-                "homebrew",
-            ],
-        ),
-        (
-            "patch-verify",
-            [*west, "patch", "verify", "--profile", "homebrew"],
-        ),
-        (
-            "host-materialized-test",
-            [
-                *west,
-                "test",
-                "--profile",
-                "homebrew",
-                "--env",
-                "host",
-                "--materialize-profile",
-            ],
-        ),
-        (
-            "immutable-oracle",
-            [
-                str(Path(sys.executable).resolve()),
-                str(control / "tests" / "patch_stack_immutable_oracle.py"),
-                "--workspace",
-                str(control),
-                "--profile",
-                "homebrew",
-                "--mapping",
-                str(control / "locks" / "patch-stack" / "lock-first-series-v2.yml"),
-                "--output",
-                str(oracle_output),
-            ],
-        ),
-        (
-            "acceptance-candidate-apply",
-            [
-                str(Path(sys.executable).resolve()),
-                str(candidate / "ci" / "patch_stack_lock_first_acceptance.py"),
-                "materialize-candidate",
-                "--manifest-workspace",
-                str(candidate),
-                "--candidate-workspace",
-                str(candidate_parent),
-                "--profile",
-                "homebrew",
-                "--cache",
-                str(candidate_cache),
-                "--key",
-                acceptance["inputs"]["acceptance_checkpoint"]["key"],
-                "--lock-evidence",
-                str(lock_evidence),
-                "--modules",
-                str(modules),
-                "--candidate-manifest",
-                str(manifest),
-                "--west-command",
-                *west,
-            ],
-        ),
-        (
-            "acceptance-capture",
-            [
-                str(Path(sys.executable).resolve()),
-                str(candidate / "ci" / "patch_stack_acceptance.py"),
-                "capture",
-                "--workspace",
-                str(candidate),
-                "--profile",
-                "homebrew",
-                "--modules",
-                str(modules),
-                "--manifest",
-                str(manifest),
-            ],
-        ),
-        (
-            "acceptance-compare",
-            [
-                str(Path(sys.executable).resolve()),
-                str(candidate / "ci" / "patch_stack_lock_first_acceptance.py"),
-                "compare-immutable-oracle",
-                "--oracle",
-                str(oracle_output),
-                "--candidate",
-                str(modules),
-                "--candidate-manifest",
-                str(manifest),
-                "--evidence",
-                str(lock_evidence),
-                "--mapping",
-                str(candidate / "locks" / "patch-stack" / "lock-first-series-v2.yml"),
-                "--candidate-workspace",
-                str(candidate_parent),
-                "--manifest-workspace",
-                str(candidate),
-                "--transaction-root",
-                str(scratch),
-                "--result",
-                str(comparison),
-            ],
-        ),
-        (
-            "acceptance-publish-candidate-cache",
-            [
-                str(Path(sys.executable).resolve()),
-                str(candidate / "ci" / "patch_stack_lock_first_acceptance.py"),
-                "publish-candidate-cache",
-                "--manifest-workspace",
-                str(candidate),
-                "--candidate-workspace",
-                str(candidate_parent),
-                "--profile",
-                "homebrew",
-                "--cache",
-                str(candidate_cache),
-                "--key",
-                acceptance["inputs"]["acceptance_checkpoint"]["key"],
-                "--lock-evidence",
-                str(lock_evidence),
-                "--modules",
-                str(modules),
-                "--candidate-manifest",
-                str(manifest),
-            ],
-        ),
-        (
-            "acceptance-clone-guest-candidate",
-            [
-                str(Path(sys.executable).resolve()),
-                str(candidate / "ci" / "patch_stack_lock_first_acceptance.py"),
-                "clone-tier-workspace",
-                "--source-workspace",
-                str(candidate_parent),
-                "--destination-workspace",
-                str(guest_parent),
-                "--profile",
-                "homebrew",
-                "--candidate-manifest",
-                str(manifest),
-            ],
-        ),
-        (
-            "acceptance-host-tier",
-            [str(guest / "ci" / "run-test-tier.sh"), "host"],
-        ),
-        (
-            "acceptance-guest-smoke",
-            [str(guest / "ci" / "run-test-tier.sh"), "guest-smoke"],
-        ),
-        (
-            "acceptance-final-cleanup",
-            [str(candidate / "ci" / "run-test-tier.sh"), "acceptance-cleanup"],
-        ),
-    ]
-    assert_plan(acceptance, acceptance_expected)
-    def isolated_env(stage: str) -> dict[str, str]:
-        environment = dict(
-            acceptance["inputs"]["acceptance_checkpoint"]["identity"][
-                "parallel_environment"
-            ]
+def assert_no_profiles(steps) -> None:
+    for step in steps:
+        text = " ".join(step["argv"])
+        assert "--profile" not in text
+        assert "--patch" not in text
+        assert "--materialize-profile" not in text
+        assert "patch" not in step["name"]
+
+
+def selected_source_contract(
+    root: Path, repo: Path, source: Path, west: list[str],
+    runtime_root: Path, prefix: Path, runtime: FakeRuntime,
+) -> None:
+    outside = root / "outside"
+    candidate = root / "selected-product"
+    canonical_before = git(source, "diff", "--binary", "HEAD", "--")
+    canonical_head = git(source, "rev-parse", "HEAD")
+    unrelated = root / "unrelated-source"
+    unrelated.mkdir()
+    (unrelated / "README").write_text("not the Darling product\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(unrelated)], check=True)
+    git(unrelated, "config", "user.name", "Unrelated Source Fixture")
+    git(unrelated, "config", "user.email", "unrelated@example.invalid")
+    git(unrelated, "add", ".")
+    git(unrelated, "commit", "-qm", "unrelated source fixture")
+    try:
+        build_plan(
+            repo, west, "quick", outside / "unrelated-context.json", source_root=unrelated
         )
-        environment.update(
-            {
-                "CCACHE_DIR": str(scratch / "cache" / stage / "ccache"),
-                "GIT_CONFIG_COUNT": "0",
-                "GIT_CONFIG_GLOBAL": "/dev/null",
-                "GIT_CONFIG_NOSYSTEM": "1",
-                "GIT_TERMINAL_PROMPT": "0",
-                "HOME": str(scratch / "home" / stage),
-                "TMPDIR": "/tmp",
-                "XDG_CACHE_HOME": str(scratch / "cache" / stage),
-                "XDG_CONFIG_HOME": str(scratch / "config" / stage),
-            }
-        )
-        return environment
-
-    host_env = isolated_env("host")
-    oracle_env = isolated_env("oracle")
-    candidate_env = isolated_env("candidate")
-    bootstrap_env = dict(candidate_env)
-    bootstrap_env.update(
-        {
-            "DARLING_WEST_UPDATE_JOBS": str(dev_check._ACCEPTANCE_BOOTSTRAP_JOBS),
-            "DARLING_WEST_UPDATE_PATH_CACHE": str(repo.parent),
-        }
-    )
-    guest_workspace_lock = materialized_root / ".guest.lock"
-    final_host_env = isolated_env("final-host")
-    final_host_env["CCACHE_DIR"] = str(checkpoint_root / "host-ccache-v1")
-    final_host_env["CCACHE_MAXSIZE"] = "2G"
-    final_host_env["WEST_HOST_CONTRACT_CACHE_DIR"] = str(
-        checkpoint_root / "host-contract-cache-v1"
-    )
-    final_host_env["WEST_HOST_CONTRACT_CACHE_KEY"] = checkpoint_key
-    final_host_env["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(guest_workspace_lock)
-    final_host_env["WEST_PREMATERIALIZED_PROFILE"] = "homebrew"
-    guest_env = isolated_env("guest")
-    guest_env.update(
-        dev_check.RuntimeBuildService.derive_ccache_environment(guest_env)
-    )
-    guest_env["CCACHE_DIR"] = str(checkpoint_root / "runtime-ccache-v1")
-    guest_env["CCACHE_MAXSIZE"] = "4G"
-    guest_env["DARLING_TIER_DEFER_GLOBAL_CLEANUP"] = "1"
-    guest_prepare_env = dict(candidate_env)
-    guest_prepare_env["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(
-        guest_workspace_lock
-    )
-    stable_runtime_key = hashlib.sha256(
-        b"west-runtime-build-v2:homebrew"
-    ).hexdigest()
-    guest_env["WEST_RUNTIME_BUILD_CACHE_DIR"] = str(
-        checkpoint_root / "runtime-build-v2" / "homebrew"
-    )
-    guest_env["WEST_RUNTIME_BUILD_CACHE_KEY"] = stable_runtime_key
-    guest_env["WEST_MATERIALIZED_WORKSPACE_LOCK"] = str(guest_workspace_lock)
-    guest_env["WEST_PREMATERIALIZED_RUNTIME_SOURCE_ROOT"] = str(
-        guest_parent / "darling"
-    )
-    workspace_identity = hashlib.sha256(
-        str(repo.resolve()).encode("utf-8")
-    ).hexdigest()[:12]
-    guest_env["DARLING_SMOKE_PREFIX"] = (
-        f"/tmp/darling-rootless-smoke-{workspace_identity}-homebrew"
-    )
-    assert [(step["cwd"], step["env"]) for step in acceptance["steps"]] == [
-        *((str(repo), {}) for _ in range(4)),
-        (str(control_parent), oracle_env),
-        (str(candidate_parent), candidate_env),
-        (str(control), oracle_env),
-        (str(candidate), candidate_env),
-        (str(candidate), bootstrap_env),
-        *((str(candidate), candidate_env) for _ in range(3)),
-        (str(repo), host_env),
-        (str(control), oracle_env),
-        *((str(candidate), candidate_env) for _ in range(4)),
-        (str(candidate), guest_prepare_env),
-        (str(guest), final_host_env),
-        (str(guest), guest_env),
-        (str(candidate), candidate_env),
-    ]
-    clear_log(log)
-    acceptance_receipt = dev_check.execute_check(acceptance)
-    assert acceptance_receipt["state"] == "committed", (
-        acceptance_receipt.get("error"),
-        [
-            (
-                result["name"],
-                result["returncode"],
-                result.get("stderr_tail"),
-            )
-            for result in acceptance_receipt["results"]
-            if result["returncode"] != 0
-        ],
-    )
-    ready_names = {path.name for path in parallel_barrier.glob("*.ready")}
-    assert ready_names == {
-        "patch-verify.ready",
-        "host-materialized-test.ready",
-        "immutable-oracle.ready",
-    }, ready_names
-    assert acceptance_receipt["state"] == "committed", next(
-        (
-            result.get("stderr_tail")
-            for result in acceptance_receipt["results"]
-            if result["name"] == "acceptance-final-cleanup"
-        ),
-        acceptance_receipt.get("error"),
-    )
-    assert acceptance_receipt["returncode"] == 0
-    assert acceptance_receipt["scratch"]["state"] == "cleaned"
-    assert set(acceptance_receipt["acceptance_artifacts"]) == {
-        "immutable_oracle",
-        "lock_first_evidence",
-        "comparison",
-        "module_map",
-        "candidate_manifest",
-    }
-    assert {
-        path.name for path in final_tier_barrier.glob("*.ready")
-    } == {
-        "acceptance-host-tier.ready",
-        "acceptance-guest-smoke.ready",
-    }
-    for name, artifact in acceptance_receipt["acceptance_artifacts"].items():
-        raw = artifact["content"].encode("utf-8")
-        assert artifact["bytes"] == len(raw)
-        assert artifact["sha256"] == hashlib.sha256(raw).hexdigest()
-        embedded = json.loads(raw)
-        if name == "immutable_oracle":
-            assert embedded["verdict"] == "VALID"
-            assert embedded["oracle_schema_version"] == 2
-            assert embedded["mode"] == "immutable-cherry-pick-oracle"
-            assert embedded["profile"] == "homebrew"
-        elif name in {"lock_first_evidence", "comparison"}:
-            assert embedded["verdict"] == "VALID"
-            assert embedded["evidence_schema_version"] == 2
-        elif name == "module_map":
-            assert embedded["profile"] == "homebrew"
-            assert embedded["modules"]
-        else:
-            assert embedded["workspace_commit"] == head
-    semantic_receipt = json.loads(json.dumps(acceptance_receipt))
-    parent_module = "fixture/module"
-    child_module = "fixture/module/nested"
-    parent_candidate_tree = "d" * 40
-    child_tree = "e" * 40
-    child_commit = "f" * 40
-    child_patch = "fixture/nested-change.patch"
-
-    def add_oracle_child(value: dict[str, object]) -> None:
-        batch = value["batches"][-1]
-        batch["expected_count"] = 2
-        batch["module_order"].append(child_module)
-        batch["series_order"].append(
-            {"module": child_module, "patch": child_patch}
-        )
-        child_series = dict(batch["series"][0])
-        child_series.update(
-            {
-                "module": child_module,
-                "patch": child_patch,
-                "canonical_tree": child_tree,
-                "applied_commit": child_commit,
-                "applied_tree": child_tree,
-            }
-        )
-        batch["series"].append(child_series)
-        value["modules"].append(
-            {"module": child_module, "commit": child_commit, "tree": child_tree}
-        )
-        value["clean_odb"]["module_count"] = 2
-        value["clean_odb"]["immutable_fetch_transactions"] = 2
-
-    def add_candidate_child(value: dict[str, object]) -> None:
-        value["expected_count"] = 2
-        value["module_order"].append(child_module)
-        value["series_order"].append(
-            {"module": child_module, "patch": child_patch}
-        )
-        child_series = dict(value["series"][0])
-        child_series.update(
-            {
-                "module": child_module,
-                "patch": child_patch,
-                "canonical_tree": child_tree,
-                "applied_commit": child_commit,
-                "applied_tree": child_tree,
-            }
-        )
-        value["series"].append(child_series)
-
-    mutate_receipt_artifact(semantic_receipt, "immutable_oracle", add_oracle_child)
-    mutate_receipt_artifact(semantic_receipt, "lock_first_evidence", add_candidate_child)
-    mutate_receipt_artifact(
-        semantic_receipt,
-        "comparison",
-        lambda value: (
-            value.__setitem__("expected_count", 2),
-            value["module_order"].append(child_module),
-            value.__setitem__("module_count", 2),
-        ),
-    )
-
-    def add_candidate_module(value: dict[str, object]) -> None:
-        value["modules"][0]["tree"] = parent_candidate_tree
-        value["modules"].append(
-            {
-                "module": child_module,
-                "west_name": "fixture-module-nested",
-                "path": child_module,
-                "integration_profile": "homebrew",
-                "integration_oid": child_commit,
-                "tree": child_tree,
-                "status": "",
-            }
-        )
-
-    mutate_receipt_artifact(semantic_receipt, "module_map", add_candidate_module)
-    mutate_receipt_artifact(
-        semantic_receipt,
-        "candidate_manifest",
-        lambda value: value.__setitem__(
-            "validated_nested_children", {parent_module: []}
-        ),
-    )
-    dev_check._validate_acceptance_closure(semantic_receipt, "homebrew")
-    invalid_semantic_receipt = json.loads(json.dumps(semantic_receipt))
-    mutate_receipt_artifact(
-        invalid_semantic_receipt,
-        "module_map",
-        lambda value: value["modules"][1].__setitem__("tree", "a" * 40),
-    )
-    must_reject(
-        lambda: dev_check._validate_acceptance_closure(
-            invalid_semantic_receipt, "homebrew"
-        ),
-        "module trees differ",
-    )
-
-    durable(acceptance_path, acceptance_receipt)
-    assert not scratch.exists()
-    fake_kinds = {
-        "patch-check": ("west", 1),
-        "patch-export-check": ("west", 1),
-        "test-list": ("west", 1),
-        "patch-verify": ("west", 1),
-        "host-materialized-test": ("west", 1),
-        "doctor": ("west", 1),
-        "acceptance-clone-control": ("manifest-clone", 2),
-        "acceptance-clone-candidate": ("manifest-clone", 2),
-        "acceptance-bootstrap-candidate": ("bootstrap", 1),
-        "acceptance-configure-candidate-identity": ("west", 1),
-        "acceptance-seed-candidate-refs": ("seed", 2),
-        "immutable-oracle": ("oracle", 2),
-        "acceptance-candidate-apply": ("candidate-materialize", 2),
-        "acceptance-capture": ("capture", 2),
-        "acceptance-compare": ("compare", 2),
-        "acceptance-publish-candidate-cache": ("candidate-publish", 2),
-        "acceptance-clone-guest-candidate": ("clone-tier", 2),
-        "acceptance-host-tier": ("tier", 1),
-        "acceptance-guest-smoke": ("tier", 1),
-        "acceptance-final-cleanup": ("tier", 1),
-    }
-    expected_acceptance_log = []
-    for name, argv in acceptance_expected:
-        if name in fake_kinds:
-            authority, stripped = fake_kinds[name]
-            expected_acceptance_log.append(
-                {"authority": authority, "argv": argv[stripped:]}
-            )
-            if name == "acceptance-candidate-apply":
-                expected_acceptance_log.append(
-                    {
-                        "authority": "west",
-                        "argv": [
-                            "patch",
-                            "apply",
-                            "--profile",
-                            "homebrew",
-                            "--lock-first-evidence",
-                            str(lock_evidence),
-                        ],
-                    }
-                )
-    observed_acceptance_log = load_log(log)
-    initial_serial_end = 4
-    clone_end = initial_serial_end + 2
-    assert observed_acceptance_log[:initial_serial_end] == expected_acceptance_log[
-        :initial_serial_end
-    ]
-    assert sorted(
-        observed_acceptance_log[initial_serial_end:clone_end],
-        key=lambda row: row["argv"],
-    ) == sorted(
-        expected_acceptance_log[initial_serial_end:clone_end],
-        key=lambda row: row["argv"],
-    )
-    pre_checkpoint_end = clone_end + 3
-    assert observed_acceptance_log[clone_end:pre_checkpoint_end] == (
-        expected_acceptance_log[clone_end:pre_checkpoint_end]
-    )
-    parallel_start = pre_checkpoint_end
-    parallel_end = parallel_start + len(dev_check._CHECKPOINT_STEP_NAMES)
-    assert sorted(
-        observed_acceptance_log[parallel_start:parallel_end],
-        key=lambda row: (row["authority"], row["argv"]),
-    ) == sorted(
-        expected_acceptance_log[parallel_start:parallel_end],
-        key=lambda row: (row["authority"], row["argv"]),
-    )
-    final_parallel_start = parallel_end + 5
-    final_parallel_end = final_parallel_start + len(dev_check._FINAL_TIER_STEP_NAMES)
-    assert observed_acceptance_log[parallel_end:final_parallel_start] == (
-        expected_acceptance_log[parallel_end:final_parallel_start]
-    ), (
-        [
-            row["authority"]
-            for row in observed_acceptance_log[parallel_end:final_parallel_start]
-        ],
-        [
-            row["authority"]
-            for row in expected_acceptance_log[parallel_end:final_parallel_start]
-        ],
-    )
-    assert sorted(
-        observed_acceptance_log[final_parallel_start:final_parallel_end],
-        key=lambda row: (row["authority"], row["argv"]),
-    ) == sorted(
-        expected_acceptance_log[final_parallel_start:final_parallel_end],
-        key=lambda row: (row["authority"], row["argv"]),
-    )
-    assert observed_acceptance_log[final_parallel_end:] == (
-        expected_acceptance_log[final_parallel_end:]
-    ), (
-        observed_acceptance_log[final_parallel_end:],
-        expected_acceptance_log[final_parallel_end:],
-    )
-
-    checkpoint_binding = acceptance["inputs"]["acceptance_checkpoint"]
-    assert set(checkpoint_binding) == {
-        "schema_version",
-        "key",
-        "path",
-        "identity",
-    }
-    checkpoint_identity = checkpoint_binding["identity"]
-    assert set(checkpoint_identity) == {
-        "schema_version",
-        "tool_version",
-        "workspace_commit",
-        "west_argv",
-        "west_version",
-        "parallel_environment",
-        "west_package",
-        "workspace_tree",
-        "tool_files",
-        "host_tools",
-        "profile",
-        "profile_graph",
-        "mappings",
-        "patches",
-        "locks",
-        "frozen_manifest_sha256",
-    }
-    assert checkpoint_identity["workspace_commit"] == head
-    assert checkpoint_identity["west_argv"] == west
-    assert checkpoint_identity["west_version"] == "West version: fixture-1.0"
-    assert checkpoint_identity["west_package"] is None
-    assert checkpoint_identity["parallel_environment"]["LC_ALL"] == "C.UTF-8"
-    assert "GH_TOKEN" not in checkpoint_identity["parallel_environment"]
-    assert checkpoint_identity["profile"] == "homebrew"
-    assert [row["profile"] for row in checkpoint_identity["profile_graph"]] == [
-        "homebrew"
-    ]
-    assert checkpoint_identity["tool_files"]
-    for row in checkpoint_identity["tool_files"]:
-        path = Path(row["path"])
-        assert path.is_file()
-        assert hashlib.sha256(path.read_bytes()).hexdigest() == row["sha256"]
-        assert path.stat().st_size == row["bytes"]
-    assert {"cc", "cxx", "cmake", "ctest", "bash"}.issubset(
-        {row["name"] for row in checkpoint_identity["host_tools"]}
-    )
-    for row in checkpoint_identity["host_tools"]:
-        path = Path(row["path"])
-        assert path.is_file()
-        assert hashlib.sha256(path.read_bytes()).hexdigest() == row["sha256"]
-        assert path.stat().st_size == row["bytes"]
-    assert checkpoint_identity["mappings"]
-    assert checkpoint_identity["patches"]
-    for field in ("profile_graph", "mappings", "patches", "locks"):
-        for row in checkpoint_identity[field]:
-            path = repo / row.get("manifest", row.get("path", ""))
-            assert hashlib.sha256(path.read_bytes()).hexdigest() == row["sha256"]
-    identity_repo = outside / "identity-manifest"
-    subprocess.run(
-        ["git", "clone", "-q", str(repo), str(identity_repo)],
-        check=True,
-        stdin=subprocess.DEVNULL,
-    )
-    git(identity_repo, "config", "user.email", "dev-check@example.invalid")
-    git(identity_repo, "config", "user.name", "Dev Check")
-    identity_patch = identity_repo / "patches" / "homebrew" / "fixture.patch"
-    identity_patch.write_text(
-        identity_patch.read_text(encoding="utf-8") + "identity change\n",
-        encoding="utf-8",
-    )
-    identity_manifest_path = (
-        identity_repo / "patches" / "homebrew" / "patches.yml"
-    )
-    identity_manifest = json.loads(
-        identity_manifest_path.read_text(encoding="utf-8")
-    )
-    identity_manifest["patches"][0]["sha256sum"] = hashlib.sha256(
-        identity_patch.read_bytes()
-    ).hexdigest()
-    identity_manifest_path.write_text(
-        json.dumps(identity_manifest, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    git(identity_repo, "add", "patches/homebrew")
-    git(identity_repo, "commit", "-qm", "change checkpoint identity")
-    changed_identity_plan = dev_check.build_check_plan(
-        identity_repo,
-        west,
-        "acceptance",
-        "homebrew",
-        None,
-        None,
-        outside / "changed-identity-check.json",
-        prefix,
-        build_dir,
-    )
-    changed_binding = changed_identity_plan["inputs"]["acceptance_checkpoint"]
-    assert changed_binding["key"] != checkpoint_binding["key"]
-    assert changed_binding["identity"]["patches"] != checkpoint_identity["patches"]
-    alternate_launcher_plan = dev_check.build_check_plan(
-        repo,
-        [*west, "--alternate-launcher"],
-        "acceptance",
-        "homebrew",
-        None,
-        None,
-        outside / "alternate-launcher-check.json",
-        prefix,
-        build_dir,
-    )
-    alternate_binding = alternate_launcher_plan["inputs"][
-        "acceptance_checkpoint"
-    ]
-    assert alternate_binding["key"] != checkpoint_binding["key"]
-    assert alternate_binding["identity"]["west_argv"] != (
-        checkpoint_identity["west_argv"]
-    )
-    previous_cflags = os.environ.get("CFLAGS")
-    os.environ["CFLAGS"] = "-Ocheckpoint-environment"
-    changed_environment_plan = dev_check.build_check_plan(
-        repo,
-        west,
-        "acceptance",
-        "homebrew",
-        None,
-        None,
-        outside / "changed-environment-check.json",
-        prefix,
-        build_dir,
-    )
-    if previous_cflags is None:
-        os.environ.pop("CFLAGS")
+    except dev_check.DevCheckError as error:
+        assert "active West pin" in str(error)
     else:
-        os.environ["CFLAGS"] = previous_cflags
-    changed_environment_binding = changed_environment_plan["inputs"][
-        "acceptance_checkpoint"
-    ]
-    assert changed_environment_binding["key"] != checkpoint_binding["key"]
-    assert changed_environment_binding["identity"]["parallel_environment"] != (
-        checkpoint_identity["parallel_environment"]
+        raise AssertionError("an unrelated repository was accepted as the selected product")
+    git(source, "worktree", "add", "--detach", str(candidate), "HEAD")
+    git(
+        source / "dependency", "worktree", "add", "--detach",
+        str(candidate / "dependency"), "HEAD",
     )
-    assert checkpoint_identity["locks"]
-    checkpoint_path = Path(checkpoint_binding["path"])
-    assert checkpoint_path.is_file() and not checkpoint_path.is_symlink()
-    assert stat.S_IMODE(checkpoint_path.stat().st_mode) == 0o600
-    assert acceptance_receipt["checkpoint"]["state"] == "published"
-    assert acceptance_receipt["checkpoint"]["reason"] == "published"
-
-    reused_path = outside / "acceptance-check-reused.json"
-    reused_plan = dev_check.build_check_plan(
-        repo,
-        west,
-        "acceptance",
-        "homebrew",
-        None,
-        None,
-        reused_path,
-        prefix,
-        build_dir,
+    (candidate / "README").write_text("committed candidate product change\n", encoding="utf-8")
+    git(candidate, "add", "README")
+    git(candidate, "commit", "-qm", "candidate product change")
+    nested = candidate / "dependency"
+    (nested / "README").write_text("nested tracked change A\n", encoding="utf-8")
+    frozen = build_plan(
+        repo, west, "quick", outside / "nested-frozen.json", source_root=candidate
     )
-    assert (
-        reused_plan["inputs"]["acceptance_checkpoint"]["key"]
-        == checkpoint_binding["key"]
-    )
-    clear_log(log)
-    progress_events = []
-    clone_barrier = threading.Barrier(2, timeout=5)
-    real_run_process_for_clones = dev_check._run_process
-
-    def require_parallel_initial_clones(
-        argv: list[str],
-        cwd: Path,
-        timeout_seconds: int,
-        env_overrides: dict[str, str],
-        stdout_full_limit: int = 0,
-        cancellation: object | None = None,
-        sanitize_environment: bool = False,
-    ) -> dict[str, object]:
-        if argv[:2] == ["git", "clone"]:
-            clone_barrier.wait()
-        return real_run_process_for_clones(
-            argv,
-            cwd,
-            timeout_seconds,
-            env_overrides,
-            stdout_full_limit,
-            cancellation,
-            sanitize_environment,
-        )
-
-    dev_check._run_process = require_parallel_initial_clones
+    snapshot = frozen["inputs"]["package_snapshot"]
+    projects = {row["name"]: row for row in snapshot["projects"]}
+    assert frozen["inputs"]["source_root"] == str(candidate)
+    assert projects["darling"]["path"] == str(candidate)
+    assert projects["darling"]["canonical_path"] == str(source)
+    assert projects["darling"]["sha"] == canonical_head
+    assert projects["darling"]["head"] == git(candidate, "rev-parse", "HEAD")
+    assert projects["darling"]["head"] != projects["darling"]["sha"]
+    assert projects["darling-dependency"]["path"] == str(nested)
+    docs = source / "docs" / "standalone"
+    assert projects["darling-docs"]["path"] == str(docs)
+    assert not (candidate / "docs" / "standalone").exists()
+    assert [entry["project"] for entry in snapshot["project_changes"]] == ["darling-dependency"]
+    before_root = snapshot["source_changes"]
+    (nested / "README").write_text("nested tracked change B\n", encoding="utf-8")
+    after_root = dev_check._git_changes_snapshot(candidate, "selected product")
+    assert after_root == before_root, "fixture must defeat a root-only -dirty snapshot"
     try:
-        reused_receipt = dev_check.execute_check(
-            reused_plan, progress=progress_events.append
-        )
-    finally:
-        dev_check._run_process = real_run_process_for_clones
-    assert reused_receipt["state"] == "committed", reused_receipt.get("error")
-    assert reused_receipt["checkpoint"] == {
-        "schema_version": 1,
-        "key": checkpoint_binding["key"],
-        "path": str(checkpoint_path),
-        "state": "reused",
-        "reason": "valid",
-    }
-    reused_results = {
-        result["name"]: result for result in reused_receipt["results"]
-    }
-    assert [
-        name
-        for name in dev_check._CHECKPOINT_STEP_NAMES
-        if reused_results[name].get("checkpoint_reused") is True
-    ] == list(dev_check._CHECKPOINT_STEP_NAMES)
-    assert [
-        event["name"] for event in progress_events if event["phase"] == "reuse"
-    ] == [
-        "acceptance-seed-candidate-refs",
-        *dev_check._CHECKPOINT_STEP_NAMES,
-        "acceptance-capture",
-        "acceptance-publish-candidate-cache",
-    ]
-    assert all(
-        reused_results[name].get("warm_cache_pruned") is True
-        for name in dev_check._CANDIDATE_CACHE_PRUNED_STEPS
-    )
-    original_results = {
-        result["name"]: result for result in acceptance_receipt["results"]
-    }
-    for name in dev_check._CHECKPOINT_STEP_NAMES:
-        assert reused_results[name]["stdout"] == original_results[name]["stdout"]
-        assert reused_results[name]["stderr"] == original_results[name]["stderr"]
-    assert not {
-        event["name"]
-        for event in progress_events
-        if event["phase"] == "start"
-    }.intersection(
-        set(dev_check._CHECKPOINT_STEP_NAMES)
-        | set(dev_check._CANDIDATE_CACHE_PRUNED_STEPS)
-    )
-    assert {
-        "acceptance-candidate-apply",
-        "acceptance-compare",
-        "acceptance-clone-guest-candidate",
-        "acceptance-host-tier",
-        "acceptance-guest-smoke",
-        "acceptance-final-cleanup",
-    }.issubset(
-        {
-            event["name"]
-            for event in progress_events
-            if event["phase"] == "start"
-        }
-    )
-    observed_reuse_log = load_log(log)
-    expected_reuse_log = []
-    for step in reused_plan["steps"]:
-        name = step["name"]
-        if (
-            name in fake_kinds
-            and name not in dev_check._CHECKPOINT_STEP_NAMES
-            and name not in dev_check._CANDIDATE_CACHE_PRUNED_STEPS
-        ):
-            authority, stripped = fake_kinds[name]
-            expected_reuse_log.append(
-                {"authority": authority, "argv": step["argv"][stripped:]}
-            )
-            if name == "acceptance-candidate-apply":
-                expected_reuse_log.append(
-                    {
-                        "authority": "west",
-                        "argv": [
-                            "patch",
-                            "apply",
-                            "--profile",
-                            "homebrew",
-                            "--lock-first-evidence",
-                            step["argv"][
-                                step["argv"].index("--lock-evidence") + 1
-                            ],
-                        ],
-                    }
-                )
-    reuse_clone_start = next(
-        index
-        for index, row in enumerate(expected_reuse_log)
-        if row["authority"] == "manifest-clone"
-    )
-    reuse_clone_end = reuse_clone_start + len(
-        dev_check._INITIAL_CLONE_STEP_NAMES
-    )
-    reuse_parallel_start = next(
-        index
-        for index, row in enumerate(expected_reuse_log)
-        if row["authority"] == "clone-tier"
-    )
-    reuse_parallel_end = reuse_parallel_start + len(
-        dev_check._FINAL_TIER_STEP_NAMES
-    )
-    assert len(observed_reuse_log) == len(expected_reuse_log)
-    assert observed_reuse_log[:reuse_clone_start] == (
-        expected_reuse_log[:reuse_clone_start]
-    )
-    assert sorted(
-        observed_reuse_log[reuse_clone_start:reuse_clone_end],
-        key=lambda row: (row["authority"], row["argv"]),
-    ) == sorted(
-        expected_reuse_log[reuse_clone_start:reuse_clone_end],
-        key=lambda row: (row["authority"], row["argv"]),
-    )
-    assert observed_reuse_log[reuse_clone_end:reuse_parallel_start] == (
-        expected_reuse_log[reuse_clone_end:reuse_parallel_start]
-    )
-    assert sorted(
-        observed_reuse_log[reuse_parallel_start:reuse_parallel_end],
-        key=lambda row: (row["authority"], row["argv"]),
-    ) == sorted(
-        expected_reuse_log[reuse_parallel_start:reuse_parallel_end],
-        key=lambda row: (row["authority"], row["argv"]),
-    )
-    assert observed_reuse_log[reuse_parallel_end:] == (
-        expected_reuse_log[reuse_parallel_end:]
-    )
-    assert (
-        reused_receipt["acceptance_artifacts"]["immutable_oracle"]["sha256"]
-        == acceptance_receipt["acceptance_artifacts"]["immutable_oracle"]["sha256"]
-    )
-    durable(reused_path, reused_receipt)
-    acceptance_path = reused_path
-    acceptance_receipt = reused_receipt
+        dev_check.execute_check(frozen)
+    except dev_check.DevCheckError:
+        pass
+    else:
+        raise AssertionError("nested tracked A-to-B mutation escaped the frozen check")
 
-    invalid_checkpoint_receipt = json.loads(json.dumps(reused_receipt))
-    invalid_checkpoint_receipt["checkpoint"]["state"] = "published"
-    must_reject(
-        lambda: dev_check._validate_checkpoint_receipt(
-            invalid_checkpoint_receipt,
-            invalid_checkpoint_receipt["inputs"],
-            invalid_checkpoint_receipt["results"],
-        ),
-        "verdict",
+    staged_module = nested / "new-module.c"
+    staged_module.write_text("int STAGED_NESTED_SOURCE = 1;\n", encoding="utf-8")
+    git(nested, "add", staged_module.name)
+    staged_module.write_text("int STAGED_NESTED_SOURCE = 2;\n", encoding="utf-8")
+    index_frozen = build_plan(
+        repo, west, "quick", outside / "nested-index-frozen.json", source_root=candidate
     )
-    invalid_reuse_receipt = json.loads(json.dumps(reused_receipt))
-    reused_patch_verify = next(
-        result
-        for result in invalid_reuse_receipt["results"]
-        if result["name"] == "patch-verify"
-    )
-    del reused_patch_verify["checkpoint_source_duration_ns"]
-    must_reject(
-        lambda: dev_check._validate_checkpoint_receipt(
-            invalid_reuse_receipt,
-            invalid_reuse_receipt["inputs"],
-            invalid_reuse_receipt["results"],
-        ),
-        "provenance",
-    )
-    corrupt_path = outside / "acceptance-check-corrupt-cache.json"
-    corrupt_plan = dev_check.build_check_plan(
-        repo,
-        west,
-        "acceptance",
-        "homebrew",
-        None,
-        None,
-        corrupt_path,
-        prefix,
-        build_dir,
-    )
-    corrupt_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    corrupt_oracle = json.loads(corrupt_checkpoint["oracle"]["content"])
-    corrupt_oracle["clean_odb"]["alternates"] = 1
-    corrupt_content = json.dumps(corrupt_oracle, sort_keys=True) + "\n"
-    corrupt_checkpoint["oracle"] = {
-        "bytes": len(corrupt_content.encode("utf-8")),
-        "sha256": hashlib.sha256(corrupt_content.encode("utf-8")).hexdigest(),
-        "content": corrupt_content,
-    }
-    checkpoint_path.write_text(
-        json.dumps(corrupt_checkpoint, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    shutil.rmtree(parallel_barrier)
-    clear_log(log)
-    corrupt_receipt = dev_check.execute_check(corrupt_plan)
-    assert corrupt_receipt["state"] == "committed"
-    assert corrupt_receipt["checkpoint"]["state"] == "published"
-    assert corrupt_receipt["checkpoint"]["reason"] == "published"
-    assert {
-        path.name for path in parallel_barrier.glob("*.ready")
-    } == {
-        "patch-verify.ready",
-        "host-materialized-test.ready",
-        "immutable-oracle.ready",
-    }
-    assert checkpoint_path.is_file()
-    assert json.loads(checkpoint_path.read_text(encoding="utf-8"))["key"] == (
-        checkpoint_binding["key"]
-    )
-    checkpoint_data = checkpoint_path.read_bytes()
-
-    safe_checkpoint = checkpoint_path.with_suffix(".safe")
-    checkpoint_path.rename(safe_checkpoint)
-    checkpoint_path.symlink_to(safe_checkpoint)
-    unsafe_path = outside / "acceptance-check-unsafe-cache.json"
-    unsafe_plan = dev_check.build_check_plan(
-        repo,
-        west,
-        "acceptance",
-        "homebrew",
-        None,
-        None,
-        unsafe_path,
-        prefix,
-        build_dir,
-    )
-    unsafe_receipt = dev_check.execute_check(unsafe_plan)
-    assert unsafe_receipt["state"] == "failed"
-    assert unsafe_receipt["returncode"] == 1
-    assert "checkpoint path is unsafe" in unsafe_receipt["error"]
-    assert unsafe_receipt["scratch"]["state"] == "cleaned"
-    assert not (
-        outside / f".dev-check-{unsafe_plan['transaction_id']}"
-    ).exists()
-    checkpoint_path.unlink()
-    safe_checkpoint.rename(checkpoint_path)
-    checkpoint_path.unlink()
-    checkpoint_path.symlink_to(outside / "missing-checkpoint-target")
-    dangling_path = outside / "acceptance-check-dangling-cache.json"
-    dangling_plan = dev_check.build_check_plan(
-        repo,
-        west,
-        "acceptance",
-        "homebrew",
-        None,
-        None,
-        dangling_path,
-        prefix,
-        build_dir,
-    )
-    dangling_receipt = dev_check.execute_check(dangling_plan)
-    assert dangling_receipt["state"] == "failed"
-    assert "checkpoint path is unsafe" in dangling_receipt["error"]
-    assert dangling_receipt["scratch"]["state"] == "cleaned"
-
-    checkpoint_path.unlink()
-    shutil.rmtree(parallel_barrier)
-    clear_log(log)
-    os.environ["DEV_CHECK_FAKE_MODE"] = "fail-parallel"
-    parallel_cleanup = outside / "parallel-cleanup"
-    os.environ["DEV_CHECK_PARALLEL_CLEANUP"] = str(parallel_cleanup)
-    failed_parallel_path = outside / "acceptance-check-parallel-failure.json"
-    failed_parallel_plan = dev_check.build_check_plan(
-        repo,
-        west,
-        "acceptance",
-        "homebrew",
-        None,
-        None,
-        failed_parallel_path,
-        prefix,
-        build_dir,
-    )
-    failed_parallel_receipt = dev_check.execute_check(failed_parallel_plan)
-    os.environ["DEV_CHECK_FAKE_MODE"] = "pass"
-    assert failed_parallel_receipt["state"] == "failed"
-    assert failed_parallel_receipt["returncode"] == 43
-    assert failed_parallel_receipt["duration_ms"] < 10_000
-    assert failed_parallel_receipt["scratch"]["state"] == "cleaned"
-    failed_parallel_results = {
-        result["name"]: result for result in failed_parallel_receipt["results"]
-    }
-    assert failed_parallel_results["patch-verify"]["returncode"] == 43
-    for name in ("host-materialized-test", "immutable-oracle"):
-        assert failed_parallel_results[name]["returncode"] == 125
-        assert failed_parallel_results[name]["cancelled_by_peer"] is True
-        assert failed_parallel_results[name]["process_group_quiescent"] is True
-    assert "acceptance-candidate-apply" not in failed_parallel_results
-    expected_parallel_cleanup = {
-        "host-materialized-test.cleaned",
-        "immutable-oracle.cleaned",
-    }
-    observed_parallel_cleanup = wait_for_markers(
-        parallel_cleanup, expected_parallel_cleanup
-    )
-    assert observed_parallel_cleanup == expected_parallel_cleanup, observed_parallel_cleanup
-    assert not list(parallel_cleanup.glob("*.orphan"))
-    assert not checkpoint_path.exists()
-
-    shutil.rmtree(parallel_barrier)
-    shutil.rmtree(parallel_cleanup)
-    clear_log(log)
-    os.environ["DEV_CHECK_FAKE_MODE"] = "interrupt-parallel"
-    interrupted_parallel_path = (
-        outside / "acceptance-check-parallel-interrupt.json"
-    )
-    interrupted_parallel_plan = dev_check.build_check_plan(
-        repo,
-        west,
-        "acceptance",
-        "homebrew",
-        None,
-        None,
-        interrupted_parallel_path,
-        prefix,
-        build_dir,
-    )
-    interrupted_parallel_receipt = dev_check.execute_check(
-        interrupted_parallel_plan
-    )
-    os.environ["DEV_CHECK_FAKE_MODE"] = "pass"
-    assert interrupted_parallel_receipt["state"] == "interrupted"
-    assert interrupted_parallel_receipt["returncode"] == 130
-    assert interrupted_parallel_receipt["scratch"]["state"] == "cleaned"
-    interrupted_parallel_results = {
-        result["name"]: result
-        for result in interrupted_parallel_receipt["results"]
-    }
-    assert set(dev_check._CHECKPOINT_STEP_NAMES).issubset(
-        interrupted_parallel_results
-    )
-    for name in dev_check._CHECKPOINT_STEP_NAMES:
-        assert interrupted_parallel_results[name][
-            "process_group_quiescent"
-        ] is True
-    assert "acceptance-candidate-apply" not in interrupted_parallel_results
-    expected_interrupted_cleanup = {
-        "host-materialized-test.cleaned",
-        "immutable-oracle.cleaned",
-    }
-    assert (
-        wait_for_markers(parallel_cleanup, expected_interrupted_cleanup)
-        == expected_interrupted_cleanup
-    )
-    assert not list(parallel_cleanup.glob("*.orphan"))
-
-    checkpoint_path.write_bytes(checkpoint_data)
-    checkpoint_path.chmod(0o600)
-    for final_mode, expected_state, expected_returncode in (
-        ("fail-final-tier", "failed", 43),
-        ("interrupt-final-tier", "interrupted", 130),
-    ):
-        shutil.rmtree(final_tier_barrier, ignore_errors=True)
-        shutil.rmtree(parallel_barrier, ignore_errors=True)
-        shutil.rmtree(final_tier_cleanup, ignore_errors=True)
-        clear_log(log)
-        os.environ["DEV_CHECK_FAKE_MODE"] = final_mode
-        final_path = outside / f"acceptance-check-{final_mode}.json"
-        final_plan = dev_check.build_check_plan(
-            repo,
-            west,
-            "acceptance",
-            "homebrew",
-            None,
-            None,
-            final_path,
-            prefix,
-            build_dir,
-        )
-        final_receipt = dev_check.execute_check(final_plan)
-        os.environ["DEV_CHECK_FAKE_MODE"] = "pass"
-        assert final_receipt["state"] == expected_state
-        assert final_receipt["returncode"] == expected_returncode
-        assert final_receipt["scratch"]["state"] == "cleaned"
-        final_results = {
-            result["name"]: result for result in final_receipt["results"]
-        }
-        assert final_results["acceptance-final-cleanup"]["returncode"] == 0
-        for name in dev_check._FINAL_TIER_STEP_NAMES:
-            assert final_results[name]["process_group_quiescent"] is True
-        assert final_results["acceptance-guest-smoke"]["cancelled_by_peer"] is True
-        assert (
-            wait_for_markers(final_tier_cleanup, {"acceptance-guest-smoke.cleaned"})
-            == {"acceptance-guest-smoke.cleaned"}
-        )
-        assert (final_tier_cleanup / "final-cleanup").is_file()
-        assert not list(final_tier_cleanup.glob("*.orphan"))
-        assert not list(final_tier_cleanup.glob("*.holding"))
-
-    def acceptance_plan(
-        *,
-        profile: str = "homebrew",
-        bead: str | None = None,
-        patch: str | None = None,
-        selected_prefix: Path | None = prefix,
-        selected_build: Path | None = build_dir,
-    ) -> object:
-        return dev_check.build_check_plan(
-            repo,
-            west,
-            "acceptance",
-            profile,
-            bead,
-            patch,
-            outside / "rejected-acceptance.json",
-            selected_prefix,
-            selected_build,
-        )
-
-    must_reject(lambda: acceptance_plan(profile="focused"), "require profile 'homebrew'")
-    must_reject(lambda: acceptance_plan(bead="one"), "cannot be narrowed")
-    must_reject(lambda: acceptance_plan(patch="one.patch"), "cannot be narrowed")
-    must_reject(lambda: acceptance_plan(selected_prefix=None), "require both prefix")
-    must_reject(lambda: acceptance_plan(selected_build=None), "require both prefix")
-    must_reject(
-        lambda: dev_check.build_check_plan(
-            repo,
-            west,
-            "quick",
-            "homebrew",
-            None,
-            None,
-            repo / "inside-repo.json",
-            None,
-            None,
-        ),
-        "outside the active manifest repository",
-    )
-    manifest_fixture = repo / "fixture.txt"
-    manifest_fixture.write_text("dirty manifest fixture\n", encoding="utf-8")
-    must_reject(
-        lambda: acceptance_plan(),
-        "acceptance checks require a clean manifest repository",
-    )
-    manifest_fixture.write_text("manifest fixture\n", encoding="utf-8")
-    assert git(repo, "status", "--porcelain") == ""
-
-    ignored_input = repo / "locks" / "patch-stack" / "fixture.ignored"
-    ignored_input.write_text("ignored package input\n", encoding="utf-8")
-    assert git(repo, "status", "--porcelain") == ""
-    must_reject(
-        lambda: acceptance_plan(),
-        "acceptance package inputs contain ignored files",
-    )
-    ignored_input.unlink()
-
-    failure_path = outside / "failed-check.json"
-    failure_plan = dev_check.build_check_plan(
-        repo,
-        west,
-        "quick",
-        "homebrew",
-        None,
-        None,
-        failure_path,
-        None,
-        None,
-    )
-    clear_log(log)
-    os.environ["DEV_CHECK_FAKE_MODE"] = "fail-check"
-    failed = dev_check.execute_check(failure_plan)
-    durable(failure_path, failed)
-    assert failed["state"] == "failed"
-    assert failed["returncode"] == 37
-    assert len(failed["results"]) == 1
-    failure_result = failed["results"][0]
-    assert failure_result["name"] == "patch-check"
-    assert failure_result["returncode"] == 37
-    stdout_data = ("O" * 20000 + "\nSTDOUT-END\n").encode()
-    stderr_data = ("E" * 21000 + "\nSTDERR-END\n").encode()
-    for capture, raw, ending in (
-        (failure_result["stdout"], stdout_data, "STDOUT-END\n"),
-        (failure_result["stderr"], stderr_data, "STDERR-END\n"),
-    ):
-        assert capture["bytes"] == len(raw)
-        assert capture["sha256"] == hashlib.sha256(raw).hexdigest()
-        assert capture["truncated"] is True
-        assert capture["tail"].endswith(ending)
-        assert len(capture["tail"].encode()) <= 16 * 1024
-    assert load_log(log) == [
-        {"authority": "west", "argv": failure_plan["steps"][0]["argv"][1:]}
-    ]
-
-    interrupt_path = outside / "interrupted-check.json"
-    interrupt_plan = dev_check.build_check_plan(
-        repo,
-        west,
-        "quick",
-        "homebrew",
-        None,
-        None,
-        interrupt_path,
-        None,
-        None,
-    )
-    markers = outside / "interrupt-markers"
-    ready = outside / "interrupt-descendant.pid"
-    os.environ["DEV_CHECK_INTERRUPT_MARKERS"] = str(markers)
-    os.environ["DEV_CHECK_INTERRUPT_READY"] = str(ready)
-    os.environ["DEV_CHECK_FAKE_MODE"] = "interrupt"
-    clear_log(log)
-    interrupted = dev_check.execute_check(interrupt_plan)
-    durable(interrupt_path, interrupted)
-    assert interrupted["state"] == "interrupted"
-    assert interrupted["returncode"] == 130
-    assert interrupted["results"][0]["returncode"] == 130
-    assert interrupted["results"][0]["interrupted"] is True
-    assert (markers / "leader").read_text(encoding="utf-8") == "SIGINT\n"
-    assert (markers / "descendant").read_text(encoding="utf-8") == "SIGINT\n"
-
-    raced_check_evidence = outside / "raced-check-evidence.json"
-    raced_check_plan = dev_check.build_check_plan(
-        repo,
-        west,
-        "quick",
-        "homebrew",
-        None,
-        None,
-        raced_check_evidence,
-        None,
-        None,
-    )
-    foreign_evidence = b"foreign evidence survives\n"
-    real_create_json = dev_check._create_json
-    evidence_race_injected = [False]
-
-    def inject_foreign_evidence(
-        path: Path, payload: dict[str, object], directory_fd: int
-    ) -> dict[str, int]:
-        if path == raced_check_evidence and not evidence_race_injected[0]:
-            evidence_race_injected[0] = True
-            path.write_bytes(foreign_evidence)
-        return real_create_json(path, payload, directory_fd)
-
-    dev_check._create_json = inject_foreign_evidence
+    index_snapshot = index_frozen["inputs"]["package_snapshot"]
+    before_index = index_snapshot["project_changes"][0]["changes"]
+    git(nested, "add", staged_module.name)
+    after_index = dev_check._git_changes_snapshot(nested, "selected nested project")
+    assert after_index["working_tree_diff"] == before_index["working_tree_diff"]
+    assert after_index["staged_diff"] != before_index["staged_diff"]
+    assert dev_check._git_changes_snapshot(candidate, "selected product") == index_snapshot["source_changes"]
     try:
-        must_reject(
-            lambda: dev_check.execute_check(raced_check_plan),
-            "appeared before initial publication",
+        dev_check.execute_check(index_frozen)
+    except dev_check.DevCheckError:
+        pass
+    else:
+        raise AssertionError("nested index-only mutation escaped the frozen check")
+
+    docs_frozen = build_plan(
+        repo, west, "quick", outside / "docs-frozen.json", source_root=candidate
+    )
+    (docs / "README").write_text("independent docs tracked change\n", encoding="utf-8")
+    try:
+        dev_check.execute_check(docs_frozen)
+    except dev_check.DevCheckError:
+        pass
+    else:
+        raise AssertionError("independent active West docs mutation escaped the frozen check")
+
+    build = root / "selected-build"
+    build.mkdir()
+    (build / "CMakeCache.txt").write_text(
+        f"CMAKE_HOME_DIRECTORY:INTERNAL={candidate}\n", encoding="utf-8"
+    )
+    from_build = build_plan(
+        repo, west, "quick", outside / "build-context.json", build_dir=build
+    )
+    assert from_build["inputs"]["source_root"] == str(candidate)
+    original_identity = runtime.identity
+    try:
+        runtime.identity = {
+            "fixture": "installed-runtime", "source": {"directory": str(candidate)}
+        }
+        from_receipt = build_plan(
+            repo, west, "quick", outside / "receipt-context.json", runtime_root=runtime_root
         )
+        assert from_receipt["inputs"]["source_root"] == str(candidate)
+        (build / "CMakeCache.txt").write_text(
+            f"CMAKE_HOME_DIRECTORY:INTERNAL={source}\n", encoding="utf-8"
+        )
+        build_precedence = build_plan(
+            repo, west, "quick", outside / "build-precedence.json",
+            runtime_root=runtime_root, build_dir=build,
+        )
+        assert build_precedence["inputs"]["source_root"] == str(source)
+        explicit_precedence = build_plan(
+            repo, west, "quick", outside / "explicit-precedence.json",
+            runtime_root=runtime_root, build_dir=build, source_root=candidate,
+        )
+        assert explicit_precedence["inputs"]["source_root"] == str(candidate)
     finally:
-        dev_check._create_json = real_create_json
-    assert evidence_race_injected == [True]
-    assert raced_check_evidence.read_bytes() == foreign_evidence
+        runtime.identity = original_identity
 
-    real_rename_exchange = dev_check._rename_exchange
-    for exchange_race_mode in ("unlink", "replace"):
-        exchange_evidence = outside / f"exchange-{exchange_race_mode}.json"
-        exchange_plan = dev_check.build_check_plan(
-            repo,
-            west,
-            "quick",
-            "homebrew",
-            None,
-            None,
-            exchange_evidence,
-            None,
-            None,
+    acceptance = build_plan(
+        repo, west, "acceptance", outside / "selected-acceptance.json",
+        workloads=["homebrew-source"], runtime_root=runtime_root, prefix=prefix,
+        source_root=candidate,
+    )
+    receipt = dev_check.execute_check(acceptance)
+    assert receipt["state"] == "committed"
+    package = outside / "selected-review-package"
+    planned = dev_check.build_package_plan(
+        manifest_repo=repo, west_argv=west,
+        receipt=outside / "selected-acceptance.json", output=package,
+        evidence=outside / "selected-package.json", required_tier="acceptance",
+    )
+    packaged = dev_check.execute_package(planned)
+    assert packaged["state"] == "committed"
+    assert dev_check.verify_package(package)["state"] == "valid"
+    module_files = sorted(path.name for path in (package / "changes" / "projects").iterdir())
+    assert module_files == [
+        "project-darling-dependency-staged.diff",
+        "project-darling-dependency-working.diff",
+        "project-darling-docs-staged.diff",
+        "project-darling-docs-working.diff",
+    ]
+    assert b"nested tracked change B" in (
+        package / "changes" / "projects" / "project-darling-dependency-working.diff"
+    ).read_bytes()
+    assert b"STAGED_NESTED_SOURCE = 2" in (
+        package / "changes" / "projects" / "project-darling-dependency-staged.diff"
+    ).read_bytes()
+    assert b"independent docs tracked change" in (
+        package / "changes" / "projects" / "project-darling-docs-working.diff"
+    ).read_bytes()
+    tampered = outside / "tampered-module"
+    shutil.copytree(package, tampered)
+    module_diff = tampered / "changes" / "projects" / "project-darling-dependency-working.diff"
+    module_diff.write_bytes(module_diff.read_bytes() + b"tampered module diff\n")
+    try:
+        dev_check.verify_package(tampered)
+    except dev_check.DevCheckError:
+        pass
+    else:
+        raise AssertionError("tampered nested-project diff was accepted")
+    assert git(source, "rev-parse", "HEAD") == canonical_head
+    assert git(source, "diff", "--binary", "HEAD", "--") == canonical_before
+
+
+def main() -> None:
+    with tempfile.TemporaryDirectory(prefix="dev-check-contract-") as temporary:
+        root = Path(temporary)
+        repo, source = make_repo(root)
+        runtime_root = root / "runtime"
+        prefix = root / "prefix"
+        prefix.mkdir()
+        fake_west = root / "west"
+        fake_west.write_text(FAKE_WEST, encoding="utf-8")
+        fake_west.chmod(fake_west.stat().st_mode | stat.S_IXUSR)
+        log = root / "west.jsonl"
+        os.environ.update(
+            {
+                "DEV_CHECK_FAKE_LOG": str(log),
+                "DEV_CHECK_MANIFEST_REPO": str(repo),
+                "DEV_CHECK_SOURCE_ROOT": str(source),
+                "DEV_CHECK_SOURCE_HEAD": git(source, "rev-parse", "HEAD"),
+                "DEV_CHECK_MANIFEST_HEAD": git(repo, "rev-parse", "HEAD"),
+                "DEV_CHECK_DEPENDENCY_HEAD": git(source / "dependency", "rev-parse", "HEAD"),
+                "DEV_CHECK_DOCS_HEAD": git(source / "docs" / "standalone", "rev-parse", "HEAD"),
+            }
         )
-        exchange_race_injected = [False]
-        exchange_foreign = b"foreign after exchange\n"
-
-        def race_destination_after_exchange(
-            directory_fd: int, left: str, right: str
-        ) -> None:
-            real_rename_exchange(directory_fd, left, right)
-            if (
-                not exchange_race_injected[0]
-                and right == exchange_evidence.name
-            ):
-                exchange_race_injected[0] = True
-                os.unlink(right, dir_fd=directory_fd)
-                if exchange_race_mode == "replace":
-                    descriptor = os.open(
-                        right,
-                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                        0o600,
-                        dir_fd=directory_fd,
-                    )
-                    try:
-                        os.write(descriptor, exchange_foreign)
-                        os.fsync(descriptor)
-                    finally:
-                        os.close(descriptor)
-
-        dev_check._rename_exchange = race_destination_after_exchange
+        runtime = FakeRuntime(runtime_root)
+        original_resolver = dev_check.resolve_runtime
+        dev_check.resolve_runtime = lambda root=None: runtime
         try:
-            must_reject(
-                lambda: dev_check.execute_check(exchange_plan),
-                "evidence identity changed",
+            outside = root / "outside"
+            outside.mkdir()
+            quick = build_plan(repo, [str(fake_west)], "quick", outside / "quick.json")
+            assert quick["inputs"]["workloads"] == []
+            assert quick["inputs"]["source_root"] == str(source)
+            assert "profile" not in quick["inputs"]
+            assert "patch" not in quick["inputs"]
+            assert [step["name"] for step in quick["steps"]] == ["test-list"]
+            assert_no_profiles(quick["steps"])
+            assert "--source-root" in quick["steps"][0]["argv"]
+            clean_snapshot = quick["inputs"]["package_snapshot"]
+            secret = b"PRIVATE_UNTRACKED_EVIDENCE_MUST_NOT_BE_ARCHIVED"
+            for checkout in (repo, source, source / "dependency"):
+                generated = checkout / ".west-state"
+                generated.mkdir()
+                (generated / "private.bin").write_bytes(secret)
+                os.mkfifo(generated / "blocked-pipe")
+                (generated / "external-link").symlink_to(outside, target_is_directory=True)
+                with (generated / "large-state.bin").open("wb") as stream:
+                    stream.truncate(32 * 1024 * 1024)
+            new_manifest = repo / "new-source.py"
+            new_source = source / "new-source.c"
+            new_manifest.write_text("STAGED_MANIFEST_SOURCE = True\n", encoding="utf-8")
+            new_source.write_text("int STAGED_PRODUCT_SOURCE = 1;\n", encoding="utf-8")
+            untracked = build_plan(
+                repo, [str(fake_west)], "quick", outside / "untracked.json"
+            )
+            assert untracked["inputs"]["package_snapshot"] == clean_snapshot
+            for changes in (clean_snapshot, clean_snapshot["source_changes"]):
+                assert changes["dirty"] is False
+                assert changes["untracked"] == {
+                    "coverage": "excluded",
+                    "inventory": "not-collected",
+                    "new_source": "stage-before-review",
+                }
+            (repo / ".west-state" / "private.bin").write_bytes(secret + b"-changed")
+            (source / ".west-state" / "extra-evidence.txt").write_bytes(secret)
+            (source / "dependency" / ".west-state" / "more-state.txt").write_bytes(secret)
+            churned = build_plan(
+                repo, [str(fake_west)], "quick", outside / "untracked-churned.json"
+            )
+            assert churned["inputs"]["package_snapshot"] == clean_snapshot
+            quick_receipt = dev_check.execute_check(quick)
+            assert quick_receipt["state"] == "committed"
+            assert quick_receipt["returncode"] == 0
+            assert quick_receipt["results"][0]["selection_oracle"] == {
+                "required": True,
+                "selected": True,
+            }
+
+            canonical = build_plan(repo, [str(fake_west)], "canonical", outside / "canonical.json")
+            assert [step["name"] for step in canonical["steps"]] == ["test-list", "host-test"]
+            assert_no_profiles(canonical["steps"])
+            canonical_receipt = dev_check.execute_check(canonical)
+            assert canonical_receipt["state"] == "committed"
+            assert canonical_receipt["returncode"] == 0
+
+            git(repo, "add", new_manifest.name)
+            git(source, "add", new_source.name)
+            (repo / "fixture.txt").write_text("tracked manifest change\n", encoding="utf-8")
+            (source / "README").write_text("tracked product change\n", encoding="utf-8")
+
+            acceptance = build_plan(
+                repo,
+                [str(fake_west)],
+                "acceptance",
+                outside / "acceptance.json",
+                workloads=["homebrew-source"],
+                runtime_root=runtime_root,
+                prefix=prefix,
+            )
+            assert [step["name"] for step in acceptance["steps"]] == [
+                "test-list",
+                "host-test",
+                "workload:homebrew-source",
+            ]
+            workload = acceptance["steps"][-1]["argv"]
+            assert "--workload" in workload
+            assert "--runtime-root" in workload
+            assert "--prefix" in workload
+            assert "--source-root" in workload
+            assert_no_profiles(acceptance["steps"])
+            reviewed_snapshot = acceptance["inputs"]["package_snapshot"]
+            assert reviewed_snapshot != clean_snapshot
+            for changes in (reviewed_snapshot, reviewed_snapshot["source_changes"]):
+                assert changes["dirty"] is True
+                assert changes["working_tree_diff"]["bytes"] > 0
+                assert changes["staged_diff"]["bytes"] > 0
+            acceptance_receipt = dev_check.execute_check(acceptance)
+            assert acceptance_receipt["state"] == "committed"
+            assert acceptance_receipt["returncode"] == 0
+            receipt_path = outside / "acceptance.json"
+
+            package_plan = dev_check.build_package_plan(
+                manifest_repo=repo,
+                west_argv=[str(fake_west)],
+                receipt=receipt_path,
+                output=outside / "review-package",
+                evidence=outside / "package.json",
+                required_tier="acceptance",
+            )
+            assert "profile" not in package_plan["inputs"]
+            assert "patch" not in package_plan["inputs"]
+            (repo / ".west-state" / "late-evidence.txt").write_bytes(secret)
+            (source / ".west-state" / "private.bin").unlink()
+            package_receipt = dev_check.execute_package(package_plan)
+            assert package_receipt["state"] == "committed"
+            package = outside / "review-package"
+            assert (package / "check-receipt.json").is_file()
+            assert (package / "source-review.json").is_file()
+            assert (package / "manifest" / "west.yml").is_file()
+            assert not (package / "changes" / "untracked").exists()
+            assert not (package / "changes" / "source-untracked").exists()
+            for path in package.rglob("*"):
+                if path.is_file():
+                    assert secret not in path.read_bytes(), path
+            assert b"STAGED_MANIFEST_SOURCE" in (
+                package / "changes" / "manifest-staged.diff"
+            ).read_bytes()
+            assert b"STAGED_PRODUCT_SOURCE" in (
+                package / "changes" / "source-staged.diff"
+            ).read_bytes()
+            assert b"tracked manifest change" in (
+                package / "changes" / "manifest-working.diff"
+            ).read_bytes()
+            assert b"tracked product change" in (
+                package / "changes" / "source-working.diff"
+            ).read_bytes()
+            verified = dev_check.verify_package(package)
+            assert verified["state"] == "valid"
+            assert verified["operation"] == "package-verify"
+
+            tampered = outside / "tampered"
+            shutil.copytree(package, tampered)
+            with (tampered / "source-review.json").open("a", encoding="utf-8") as stream:
+                stream.write("tamper\n")
+            try:
+                dev_check.verify_package(tampered)
+            except dev_check.DevCheckError:
+                pass
+            else:
+                raise AssertionError("tampered package was accepted")
+
+            tampered_diff = outside / "tampered-source-diff"
+            shutil.copytree(package, tampered_diff)
+            with (tampered_diff / "changes" / "source-staged.diff").open("ab") as stream:
+                stream.write(b"tampered staged addition\n")
+            try:
+                dev_check.verify_package(tampered_diff)
+            except dev_check.DevCheckError:
+                pass
+            else:
+                raise AssertionError("tampered staged source diff was accepted")
+
+            racing_output = outside / "racing-package"
+            racing = dev_check.build_package_plan(
+                manifest_repo=repo,
+                west_argv=[str(fake_west)],
+                receipt=receipt_path,
+                output=racing_output,
+                evidence=outside / "racing-package.json",
+                required_tier="acceptance",
+            )
+            racing_output.mkdir()
+            sentinel = racing_output / "foreign.txt"
+            sentinel.write_bytes(b"other publisher owns this output\n")
+            try:
+                dev_check.execute_package(racing)
+            except dev_check.DevCheckError:
+                pass
+            else:
+                raise AssertionError("package publication overwrote an existing output")
+            assert list(racing_output.iterdir()) == [sentinel]
+            assert sentinel.read_bytes() == b"other publisher owns this output\n"
+
+            source_changed = build_plan(
+                repo, [str(fake_west)], "quick", outside / "source-changed.json"
+            )
+            (source / "README").write_text("later tracked source change\n", encoding="utf-8")
+            try:
+                dev_check.execute_check(source_changed)
+            except dev_check.DevCheckError:
+                pass
+            else:
+                raise AssertionError("changed tracked product source plan was executed")
+
+            before = (repo / "west.yml").read_text(encoding="utf-8")
+            changed = build_plan(
+                repo, [str(fake_west)], "quick", outside / "changed.json"
+            )
+            (repo / "west.yml").write_text(before + "# changed\n", encoding="utf-8")
+            try:
+                dev_check.execute_check(changed)
+            except dev_check.DevCheckError:
+                pass
+            else:
+                raise AssertionError("changed source plan was executed")
+            selected_source_contract(
+                root, repo, source, [str(fake_west)], runtime_root, prefix, runtime
             )
         finally:
-            dev_check._rename_exchange = real_rename_exchange
-        assert exchange_race_injected == [True]
-        if exchange_race_mode == "replace":
-            assert exchange_evidence.read_bytes() == exchange_foreign
-        else:
-            assert not exchange_evidence.exists()
-
-    substituted_temp_evidence = outside / "substituted-temp-evidence.json"
-    substituted_temp_plan = dev_check.build_check_plan(
-        repo,
-        west,
-        "quick",
-        "homebrew",
-        None,
-        None,
-        substituted_temp_evidence,
-        None,
-        None,
-    )
-    real_write_json_temp = dev_check._write_json_temp
-    temp_write_count = [0]
-    substituted_temp_path: list[Path] = []
-    foreign_temp_data = b"foreign temporary evidence\n"
-
-    def substitute_closed_temp(
-        directory_fd: int, name: str, data: bytes
-    ) -> int:
-        descriptor = real_write_json_temp(directory_fd, name, data)
-        temp_write_count[0] += 1
-        if temp_write_count[0] == 2:
-            os.unlink(name, dir_fd=directory_fd)
-            foreign_descriptor = os.open(
-                name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                0o600,
-                dir_fd=directory_fd,
-            )
-            try:
-                os.write(foreign_descriptor, foreign_temp_data)
-                os.fsync(foreign_descriptor)
-            finally:
-                os.close(foreign_descriptor)
-            substituted_temp_path.append(outside / name)
-        return descriptor
-
-    dev_check._write_json_temp = substitute_closed_temp
-    try:
-        must_reject(
-            lambda: dev_check.execute_check(substituted_temp_plan),
-            "temporary identity changed before update",
-        )
-    finally:
-        dev_check._write_json_temp = real_write_json_temp
-    assert temp_write_count == [2]
-    assert len(substituted_temp_path) == 1
-    assert substituted_temp_path[0].read_bytes() == foreign_temp_data
-
-    os.environ["DEV_CHECK_FAKE_MODE"] = "package-ok"
-    must_reject(
-        lambda: dev_check.build_package_plan(
-            repo,
-            west,
-            "homebrew",
-            check_receipt_path,
-            outside / "weak-gate-output",
-            outside / "weak-gate-receipt.json",
-            "quick",
-        ),
-        "requires an acceptance check receipt",
-    )
-    must_reject(
-        lambda: dev_check.build_package_plan(
-            repo,
-            west,
-            "homebrew",
-            check_receipt_path,
-            outside / "too-weak-output",
-            outside / "too-weak-receipt.json",
-            "acceptance",
-        ),
-        "below required tier",
-    )
-    must_reject(
-        lambda: dev_check.build_package_plan(
-            repo,
-            west,
-            "focused",
-            acceptance_path,
-            outside / "wrong-profile-output",
-            outside / "wrong-profile-receipt.json",
-            "acceptance",
-        ),
-        "profile does not match",
-    )
-    must_reject(
-        lambda: dev_check.build_package_plan(
-            repo,
-            west,
-            "focused",
-            quick_evidence,
-            outside / "narrowed-output",
-            outside / "narrowed-package-receipt.json",
-            "quick",
-        ),
-        "requires an acceptance check receipt",
-    )
-
-    existing_output = outside / "existing-output"
-    existing_output.mkdir()
-    existing_marker = existing_output / "preserve"
-    existing_marker.write_text("preexisting\n", encoding="utf-8")
-    must_reject(
-        lambda: dev_check.build_package_plan(
-            repo,
-            west,
-            "homebrew",
-            acceptance_path,
-            existing_output,
-            outside / "existing-output-receipt.json",
-            "canonical",
-        ),
-        "already exists",
-    )
-    assert existing_marker.read_text(encoding="utf-8") == "preexisting\n"
-    must_reject(
-        lambda: dev_check.build_package_plan(
-            repo,
-            west,
-            "homebrew",
-            acceptance_path,
-            repo / "forbidden-package",
-            outside / "forbidden-package-receipt.json",
-            "canonical",
-        ),
-        "outside the active manifest repository",
-    )
-
-    package_module_state = [0, 0]
-    package_module_lock = threading.Lock()
-
-    def verify_module_concurrently(module):
-        with package_module_lock:
-            package_module_state[0] += 1
-            package_module_state[1] = max(
-                package_module_state[1], package_module_state[0]
-            )
-        time.sleep(0.05)
-        with package_module_lock:
-            package_module_state[0] -= 1
-        return module.upper()
-
-    assert dev_check._parallel_package_modules(
-        ["first", "second"], verify_module_concurrently
-    ) == ["FIRST", "SECOND"]
-    assert package_module_state[1] == 2
-
-    export_cache_path, export_cache_key = dev_check._package_export_cache_path(
-        repo, acceptance_receipt
-    )
-    equivalent_receipt = json.loads(json.dumps(acceptance_receipt))
-    equivalent_receipt["inputs"]["acceptance_checkpoint"]["key"] = "b" * 64
-    equivalent_path, equivalent_key = dev_check._package_export_cache_path(
-        repo, equivalent_receipt
-    )
-    assert (equivalent_path, equivalent_key) == (
-        export_cache_path,
-        export_cache_key,
-    )
-    changed_export_receipt = json.loads(json.dumps(acceptance_receipt))
-    changed_export_receipt["inputs"]["package_snapshot"]["content"][
-        "locks/patch-stack"
-    ]["sha256"] = "c" * 64
-    _changed_path, changed_key = dev_check._package_export_cache_path(
-        repo, changed_export_receipt
-    )
-    assert changed_key != export_cache_key
-
-    package_output = outside / "package"
-    package_receipt_path = outside / "package-receipt.json"
-    check_receipt_digest = hashlib.sha256(acceptance_path.read_bytes()).hexdigest()
-    package_plan = dev_check.build_package_plan(
-        repo,
-        west,
-        "homebrew",
-        acceptance_path,
-        package_output,
-        package_receipt_path,
-        "acceptance",
-    )
-    assert package_plan["inputs"]["receipt_sha256"] == check_receipt_digest
-    assert package_plan["inputs"]["receipt_transaction_id"] == acceptance_receipt[
-        "transaction_id"
-    ]
-    assert package_plan["inputs"]["output"] == str(package_output)
-    package_root = Path(package_plan["inputs"]["staging_root"])
-    package_staging = Path(package_plan["inputs"]["staging"])
-    package_marker = Path(package_plan["inputs"]["marker"])
-    assert package_root.parent == package_output.parent
-    assert package_staging.parent == package_root
-    assert package_marker.parent == package_root
-    assert_plan(
-        package_plan,
-        [
-            (
-                "patch-export-locks",
-                [
-                    *west,
-                    "patch",
-                    "export-locks",
-                    "--profile",
-                    "homebrew",
-                    "--output",
-                    str(package_staging),
-                ],
-            )
-        ],
-    )
-    clear_log(log)
-    packaged = dev_check.execute_package(package_plan)
-    durable(package_receipt_path, packaged)
-    assert packaged["state"] == "committed", packaged.get("error")
-    assert packaged["returncode"] == 0
-    assert packaged["results"][0]["returncode"] == 0
-    assert [phase["name"] for phase in packaged["phases"]] == [
-        "export-locks",
-        "validate-export-and-inputs",
-        "build-source-closure-and-index",
-        "durable-prepublication-integrity",
-        "atomic-publication-identity-check",
-    ]
-    assert all(phase["elapsed_ms"] >= 0 for phase in packaged["phases"])
-    assert packaged["package_cache"]["state"] == "published"
-    assert packaged["staging"]["path"] == str(package_staging)
-    assert packaged["staging"]["state"] == "published"
-    assert packaged["ownership"]["root"] == str(package_root)
-    assert packaged["ownership"]["marker"] == str(package_marker)
-    assert packaged["ownership"]["state"] == "retained-through-durable-commit"
-    assert not package_root.exists()
-    assert not package_staging.exists() and not package_marker.exists()
-    package_binding = packaged["package"]
-    assert package_binding["output"] == str(package_output)
-
-    verified = dev_check.verify_package(package_output)
-    assert verified["schema_version"] == 1
-    assert verified["operation"] == "package-verify"
-    assert verified["state"] == "valid"
-    assert verified["returncode"] == 0
-    assert verified["profile"] == "homebrew"
-    package_index = verified["package_index"]
-    cached_package_output = outside / "package-cached"
-    cached_package_receipt = outside / "package-cached-receipt.json"
-    cached_package_plan = dev_check.build_package_plan(
-        repo,
-        west,
-        "homebrew",
-        acceptance_path,
-        cached_package_output,
-        cached_package_receipt,
-        "acceptance",
-    )
-    cached_packaged = dev_check.execute_package(cached_package_plan)
-    durable(cached_package_receipt, cached_packaged)
-    assert cached_packaged["state"] == "committed", cached_packaged.get("error")
-    assert cached_packaged["package_cache"]["state"] == "reused"
-    assert cached_packaged["results"][0]["package_cache_reused"] is True
-    assert dev_check.verify_package(cached_package_output)["state"] == "valid"
-    assert package_index["manifest"]["commit"] == acceptance_receipt["inputs"][
-        "package_snapshot"
-    ]["manifest_head"]
-    assert package_index["manifest"]["tree"] == acceptance_receipt["inputs"][
-        "package_snapshot"
-    ]["manifest_tree"]
-    assert set(package_index["source_closure"]) == {
-        "paths",
-        "generated_locks",
-        "manifest_bundle",
-        "module_bundles",
-        "lock_bindings",
-    }
-    assert package_index["acceptance"]["cleanup"] == "complete"
-    assert package_index["checks"]
-    assert (package_output / "package-index.json").is_file()
-    assert (package_output / "SHA256SUMS").is_file()
-    assert (package_output / "check-receipt.json").read_bytes() == acceptance_path.read_bytes()
-    generated_binding = package_index["source_closure"]["generated_locks"][0]
-    assert (
-        package_output / generated_binding["path"]
-    ).read_bytes() == (
-        package_output / generated_binding["source_copy"]
-    ).read_bytes()
-    assert (
-        package_output / generated_binding["path"]
-    ).read_bytes() != (
-        package_output / "source" / generated_binding["source_path"]
-    ).read_bytes()
-
-    extra_package = package_copy(package_output, outside / "verify-extra")
-    (extra_package / "foreign").write_text("foreign\n", encoding="utf-8")
-    must_reject(lambda: dev_check.verify_package(extra_package), "extra files")
-
-    missing_package = package_copy(package_output, outside / "verify-missing")
-    (missing_package / "evidence.json").unlink()
-    must_reject(lambda: dev_check.verify_package(missing_package), "files are missing")
-    assert package_index["integrity_boundary"] == {
-        "mode": "local-owner-mutable",
-        "publication": (
-            "content-verified-before-rename-and-identity-verified-after"
-        ),
-        "consumer_requirement": "verify-package immediately before use",
-        "verify_operation": "package-verify",
-    }
-    candidate_module = package_index["source_closure"]["module_bundles"][0]
-    assert candidate_module["candidate_object_authority"] == (
-        "validated-acceptance-receipt"
-    )
-    assert candidate_module["candidate_integration_commit"] != module_source
-    assert (
-        subprocess.run(
-            [
-                "git",
-                "cat-file",
-                "-e",
-                f"{candidate_module['candidate_integration_commit']}^{{commit}}",
-            ],
-            cwd=module_repo,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        ).returncode
-        != 0
-    )
-
-    tampered_package = package_copy(package_output, outside / "verify-tampered")
-    tampered_mbox = tampered_package / package_index["export"]["mboxes"][0]
-    tampered_mbox.write_bytes(tampered_mbox.read_bytes() + b"tampered\n")
-    must_reject(lambda: dev_check.verify_package(tampered_package), "digest mismatch")
-
-    stale_log_package = package_copy(package_output, outside / "verify-stale-log")
-    mutate_packaged_receipt(
-        stale_log_package,
-        lambda value: (
-            value["results"][0]["stdout"].__setitem__("tail", "stale"),
-            value["results"][0].__setitem__("stdout_tail", "stale"),
-        ),
-    )
-    must_reject(
-        lambda: dev_check.verify_package(stale_log_package),
-        "index bindings",
-    )
-
-    mismatch_package = package_copy(package_output, outside / "verify-receipt-mismatch")
-    mutate_packaged_receipt(
-        mismatch_package,
-        lambda value: value.__setitem__("transaction_id", "0" * 32),
-    )
-    must_reject(lambda: dev_check.verify_package(mismatch_package), "steps differ")
-
-    wrong_module_package = package_copy(package_output, outside / "verify-module")
-    mutate_packaged_artifact(
-        wrong_module_package,
-        "module_map",
-        lambda value: value["modules"][0].__setitem__("tree", "9" * 40),
-    )
-    must_reject(
-        lambda: dev_check.verify_package(wrong_module_package),
-        "module trees differ",
-    )
-
-    wrong_manifest_package = package_copy(package_output, outside / "verify-manifest")
-    mutate_packaged_artifact(
-        wrong_manifest_package,
-        "candidate_manifest",
-        lambda value: value.__setitem__("workspace_commit", "9" * 40),
-    )
-    must_reject(
-        lambda: dev_check.verify_package(wrong_manifest_package),
-        "manifest commit differs",
-    )
-    missing_generated_package = package_copy(
-        package_output, outside / "verify-generated-missing"
-    )
-    mutate_packaged_artifact(
-        missing_generated_package,
-        "candidate_manifest",
-        lambda value: value.__setitem__("generated_profile_locks", []),
-    )
-    mutate_packaged_receipt(
-        missing_generated_package,
-        lambda value: value["acceptance_artifacts"]["candidate_manifest"].__setitem__(
-            "generated_locks", []
-        ),
-    )
-    must_reject(
-        lambda: dev_check.verify_package(missing_generated_package),
-        "candidate generated lock extension is invalid",
-    )
-
-    duplicate_generated_package = package_copy(
-        package_output, outside / "verify-generated-duplicate"
-    )
-    mutate_packaged_artifact(
-        duplicate_generated_package,
-        "immutable_oracle",
-        lambda value: value["generated_profile_locks"].append(
-            dict(value["generated_profile_locks"][0])
-        ),
-    )
-    mutate_packaged_artifact(
-        duplicate_generated_package,
-        "candidate_manifest",
-        lambda value: value["generated_profile_locks"].append(
-            dict(value["generated_profile_locks"][0])
-        ),
-    )
-    mutate_packaged_receipt(
-        duplicate_generated_package,
-        lambda value: value["acceptance_artifacts"]["candidate_manifest"][
-            "generated_locks"
-        ].append(
-            dict(
-                value["acceptance_artifacts"]["candidate_manifest"][
-                    "generated_locks"
-                ][0]
-            )
-        ),
-    )
-    must_reject(
-        lambda: dev_check.verify_package(duplicate_generated_package),
-        "invalid or duplicated",
-    )
+            dev_check.resolve_runtime = original_resolver
+    print("dev check source workflow contract: PASS")
 
 
-    wrong_lock_package = package_copy(package_output, outside / "verify-lock")
-    mutate_packaged_artifact(
-        wrong_lock_package,
-        "lock_first_evidence",
-        lambda value: value["series"][0].__setitem__("base", "9" * 40),
-    )
-    must_reject(
-        lambda: dev_check.verify_package(wrong_lock_package),
-        "lock-first evidence base differs",
-    )
-
-    wrong_mapping_package = package_copy(package_output, outside / "verify-mapping")
-    rewrite_package_index(
-        wrong_mapping_package,
-        lambda value: value["source_closure"]["paths"][3].__setitem__(
-            "sha256", "9" * 64
-        ),
-    )
-    must_reject(
-        lambda: dev_check.verify_package(wrong_mapping_package),
-        "package source closure index differs from packaged bytes",
-    )
-
-    incomplete_cleanup_package = package_copy(
-        package_output, outside / "verify-incomplete-cleanup"
-    )
-    assert package_binding["publication_verification"] == {
-        "verified_after_rename": True,
-        "package_index_sha256": verified["package_index_sha256"],
-        "output_identity": package_binding["output_identity"],
-    }
-    assert package_binding["verify_before_use"]["argv"] == [
-        *west,
-        "dev",
-        "verify-package",
-        str(package_output),
-        "--json",
-    ]
-    assert "local package files remain mutable" in package_binding[
-        "verify_before_use"
-    ]["reason"]
-    mutate_packaged_receipt(
-        incomplete_cleanup_package,
-        lambda value: value["scratch"].__setitem__("state", "cleanup-failed"),
-    )
-    must_reject(
-        lambda: dev_check.verify_package(incomplete_cleanup_package),
-        "cleanup verdict is incomplete",
-    )
-    assert package_binding["check_receipt"] == {
-        "path": str(package_output / "check-receipt.json"),
-        "source_path": str(acceptance_path),
-        "sha256": check_receipt_digest,
-        "transaction_id": acceptance_receipt["transaction_id"],
-        "tier": "acceptance",
-    }
-    assert package_binding["package_snapshot"] == acceptance_receipt["inputs"][
-        "package_snapshot"
-    ]
-    assert package_binding["output_identity"] == {
-        "device": package_output.stat().st_dev,
-        "inode": package_output.stat().st_ino,
-    }
-    export_evidence_path = package_output / "evidence.json"
-    export_evidence_data = export_evidence_path.read_bytes()
-    assert package_binding["export_evidence"]["path"] == str(export_evidence_path)
-    assert package_binding["export_evidence"]["evidence_sha256"] == hashlib.sha256(
-        export_evidence_data
-    ).hexdigest()
-    exported = json.loads(export_evidence_data)
-    series = exported["series"][0]
-    source_tamper_package = package_copy(
-        package_output, outside / "verify-source-resealed"
-    )
-    source_mapping = (
-        source_tamper_package
-        / "source"
-        / "locks"
-        / "lock-first-series-v2.yml"
-    )
-    source_mapping.write_bytes(source_mapping.read_bytes() + b" ")
-    reseal_package(source_tamper_package)
-    must_reject(
-        lambda: dev_check.verify_package(source_tamper_package),
-        "packaged source bytes differ",
-    )
-
-    bundle_tamper_package = package_copy(
-        package_output, outside / "verify-bundle-resealed"
-    )
-    module_bundle = bundle_tamper_package / "bundles" / "modules" / "0000.bundle"
-    module_bundle.write_bytes(module_bundle.read_bytes() + b"tampered")
-    reseal_package(bundle_tamper_package)
-    must_reject(
-        lambda: dev_check.verify_package(bundle_tamper_package),
-        "package Git bundle is invalid",
-    )
-
-    mbox = package_output / series["mbox"]
-    assert series["sha256"] == hashlib.sha256(mbox.read_bytes()).hexdigest()
-    assert load_log(log) == [
-        {"authority": "west", "argv": package_plan["steps"][0]["argv"][1:]}
-    ]
-    shutil.rmtree(Path(packaged["package_cache"]["path"]))
-
-    neighbor = outside / "neighbor"
-    neighbor.mkdir()
-    neighbor_marker = neighbor / "preserve"
-    neighbor_marker.write_text("neighbor-owned\n", encoding="utf-8")
-
-    semantic_output = outside / "semantic-lie-package"
-    semantic_receipt = outside / "semantic-lie-receipt.json"
-    semantic_plan = dev_check.build_package_plan(
-        repo,
-        west,
-        "homebrew",
-        acceptance_path,
-        semantic_output,
-        semantic_receipt,
-        "acceptance",
-    )
-    os.environ["DEV_CHECK_FAKE_MODE"] = "package-semantic-lie"
-    semantic_result = dev_check.execute_package(semantic_plan)
-    durable(semantic_receipt, semantic_result)
-    assert semantic_result["state"] == "failed"
-    assert semantic_result["returncode"] == 1
-    assert "semantic identity differs" in semantic_result["error"]
-    assert not semantic_output.exists()
-    assert not Path(semantic_plan["inputs"]["staging_root"]).exists()
-    assert neighbor_marker.read_text(encoding="utf-8") == "neighbor-owned\n"
-
-    mutation_output = outside / "boundary-mutation-package"
-    mutation_receipt = outside / "boundary-mutation-receipt.json"
-    mutation_plan = dev_check.build_package_plan(
-        repo,
-        west,
-        "homebrew",
-        acceptance_path,
-        mutation_output,
-        mutation_receipt,
-        "acceptance",
-    )
-    real_fsync_package_tree = dev_check._fsync_package_tree
-    mutation_injected = [False]
-
-    def mutate_child_after_fsync(package: Path) -> None:
-        real_fsync_package_tree(package)
-        if not mutation_injected[0]:
-            mutation_injected[0] = True
-            evidence_path = package / "evidence.json"
-            evidence_path.write_bytes(evidence_path.read_bytes() + b" ")
-
-    os.environ["DEV_CHECK_FAKE_MODE"] = "package-ok"
-    dev_check._fsync_package_tree = mutate_child_after_fsync
-    try:
-        mutation_result = dev_check.execute_package(mutation_plan)
-    finally:
-        dev_check._fsync_package_tree = real_fsync_package_tree
-    durable(mutation_receipt, mutation_result)
-    assert mutation_injected == [True]
-    assert mutation_result["state"] == "failed"
-    assert mutation_result["returncode"] == 1
-    assert "digest mismatch" in mutation_result["error"]
-    assert not mutation_output.exists()
-    assert not Path(mutation_plan["inputs"]["staging_root"]).exists()
-
-    publish_failure_output = outside / "publish-failure-package"
-    publish_failure_receipt = outside / "publish-failure-receipt.json"
-    publish_failure_plan = dev_check.build_package_plan(
-        repo,
-        west,
-        "homebrew",
-        acceptance_path,
-        publish_failure_output,
-        publish_failure_receipt,
-        "acceptance",
-    )
-    publish_failure_staging = Path(publish_failure_plan["inputs"]["staging"])
-    publish_failure_marker = Path(publish_failure_plan["inputs"]["marker"])
-    real_atomic_json = dev_check._atomic_json
-    injected = [False]
-
-    def fail_first_committed_package_write(
-        path: Path,
-        payload: dict[str, object],
-        directory_fd: int,
-        expected_identity: dict[str, int],
-    ) -> dict[str, int]:
-        if (
-            not injected[0]
-            and path == publish_failure_receipt
-            and payload.get("operation") == "package"
-            and payload.get("state") == "committed"
-        ):
-            injected[0] = True
-            raise OSError("injected durable commit failure")
-        return real_atomic_json(
-            path, payload, directory_fd, expected_identity
-        )
-
-    os.environ["DEV_CHECK_FAKE_MODE"] = "package-ok"
-    clear_log(log)
-    dev_check._atomic_json = fail_first_committed_package_write
-    try:
-        publish_failure = dev_check.execute_package(publish_failure_plan)
-    finally:
-        dev_check._atomic_json = real_atomic_json
-    assert injected == [True]
-    durable(publish_failure_receipt, publish_failure)
-    assert publish_failure["state"] == "failed"
-    assert publish_failure["returncode"] == 1
-    assert publish_failure["results"][0]["returncode"] == 0
-    assert publish_failure["staging"]["state"] == "cleaned"
-    assert publish_failure["ownership"]["state"] == "cleaned"
-    assert not publish_failure_output.exists()
-    assert not publish_failure_staging.exists()
-    assert not publish_failure_marker.exists()
-    assert neighbor_marker.read_text(encoding="utf-8") == "neighbor-owned\n"
-    assert publish_failure["package_cache"]["state"] == "reused"
-    assert load_log(log) == []
-
-    post_commit_output = outside / "post-commit-interrupt-package"
-    post_commit_receipt = outside / "post-commit-interrupt-receipt.json"
-    post_commit_plan = dev_check.build_package_plan(
-        repo,
-        west,
-        "homebrew",
-        acceptance_path,
-        post_commit_output,
-        post_commit_receipt,
-        "acceptance",
-    )
-    post_commit_root = Path(post_commit_plan["inputs"]["staging_root"])
-    post_commit_interrupt = [False]
-
-    def interrupt_after_committed_package_write(
-        path: Path,
-        payload: dict[str, object],
-        directory_fd: int,
-        expected_identity: dict[str, int],
-    ) -> dict[str, int]:
-        identity = real_atomic_json(
-            path, payload, directory_fd, expected_identity
-        )
-        if (
-            not post_commit_interrupt[0]
-            and path == post_commit_receipt
-            and payload.get("operation") == "package"
-            and payload.get("state") == "committed"
-        ):
-            post_commit_interrupt[0] = True
-            signal.raise_signal(signal.SIGINT)
-        return identity
-
-    os.environ["DEV_CHECK_FAKE_MODE"] = "package-ok"
-    dev_check._atomic_json = interrupt_after_committed_package_write
-    try:
-        post_commit_result = dev_check.execute_package(post_commit_plan)
-    finally:
-        dev_check._atomic_json = real_atomic_json
-    assert post_commit_interrupt == [True]
-    durable(post_commit_receipt, post_commit_result)
-    assert post_commit_result["state"] == "committed"
-    assert post_commit_result["returncode"] == 0
-    assert post_commit_output.is_dir()
-    assert not post_commit_root.exists()
-    shutil.rmtree(Path(packaged["package_cache"]["path"]))
-
-    failed_output = outside / "failed-package"
-    failed_package_receipt = outside / "failed-package-receipt.json"
-    failure_package_plan = dev_check.build_package_plan(
-        repo,
-        west,
-        "homebrew",
-        acceptance_path,
-        failed_output,
-        failed_package_receipt,
-        "acceptance",
-    )
-    failed_root = Path(failure_package_plan["inputs"]["staging_root"])
-    failed_staging = Path(failure_package_plan["inputs"]["staging"])
-    failed_marker = Path(failure_package_plan["inputs"]["marker"])
-    foreign_staging_file = failed_staging / "foreign"
-    real_run_process = dev_check._run_process
-    staging_race_injected = [False]
-
-    def inject_staging_after_export_failure(
-        argv: list[str],
-        cwd: Path,
-        timeout_seconds: int,
-        environment: dict[str, str],
-        stdout_full_limit: int = 0,
-    ) -> dict[str, object]:
-        outcome = real_run_process(
-            argv, cwd, timeout_seconds, environment, stdout_full_limit
-        )
-        if (
-            not staging_race_injected[0]
-            and argv == failure_package_plan["steps"][0]["argv"]
-        ):
-            staging_race_injected[0] = True
-            (failed_staging / "partial").unlink()
-            failed_staging.rmdir()
-            failed_staging.mkdir()
-            foreign_staging_file.write_text(
-                "foreign staging survives\n", encoding="utf-8"
-            )
-        return outcome
-
-    os.environ["DEV_CHECK_FAKE_MODE"] = "package-fail"
-    clear_log(log)
-    dev_check._run_process = inject_staging_after_export_failure
-    try:
-        failed_package = dev_check.execute_package(failure_package_plan)
-    finally:
-        dev_check._run_process = real_run_process
-    durable(failed_package_receipt, failed_package)
-    assert failed_package["state"] == "failed"
-    assert failed_package["returncode"] == 41
-    assert failed_package["results"][0]["returncode"] == 41
-    assert not failed_output.exists() and not failed_output.is_symlink()
-    assert staging_race_injected == [True]
-    assert failed_root.is_dir() and failed_marker.is_file()
-    assert foreign_staging_file.read_text(encoding="utf-8") == "foreign staging survives\n"
-    assert neighbor_marker.read_text(encoding="utf-8") == "neighbor-owned\n"
-    assert existing_marker.read_text(encoding="utf-8") == "preexisting\n"
-    assert package_output.is_dir() and package_receipt_path.is_file()
-    assert load_log(log) == [
-        {
-            "authority": "west",
-            "argv": failure_package_plan["steps"][0]["argv"][1:],
-        }
-    ]
-
-    swap_parent = outside / "swapped-output-parent"
-    swap_parent.mkdir()
-    saved_swap_parent = outside / "original-output-parent"
-    swap_output = swap_parent / "package"
-    swap_receipt = outside / "swapped-output-parent-receipt.json"
-    swap_plan = dev_check.build_package_plan(
-        repo,
-        west,
-        "homebrew",
-        acceptance_path,
-        swap_output,
-        swap_receipt,
-        "acceptance",
-    )
-    swap_staging = Path(swap_plan["inputs"]["staging"])
-    swap_root_name = Path(swap_plan["inputs"]["staging_root"]).name
-    foreign_parent_file = swap_parent / "foreign"
-    parent_swap_injected = [False]
-
-    def swap_output_parent_during_export(
-        argv: list[str],
-        cwd: Path,
-        timeout_seconds: int,
-        environment: dict[str, str],
-        stdout_full_limit: int = 0,
-    ) -> dict[str, object]:
-        if (
-            not parent_swap_injected[0]
-            and argv == swap_plan["steps"][0]["argv"]
-        ):
-            parent_swap_injected[0] = True
-            swap_parent.rename(saved_swap_parent)
-            swap_parent.mkdir()
-            foreign_parent_file.write_text("foreign parent survives\n", encoding="utf-8")
-        return real_run_process(
-            argv, cwd, timeout_seconds, environment, stdout_full_limit
-        )
-
-    os.environ["DEV_CHECK_FAKE_MODE"] = "package-ok"
-    dev_check._run_process = swap_output_parent_during_export
-    try:
-        swapped_package = dev_check.execute_package(swap_plan)
-    finally:
-        dev_check._run_process = real_run_process
-    durable(swap_receipt, swapped_package)
-    assert parent_swap_injected == [True]
-    assert swapped_package["state"] == "failed"
-    assert swapped_package["returncode"] == 1
-    assert not swap_output.exists()
-    assert foreign_parent_file.read_text(encoding="utf-8") == "foreign parent survives\n"
-    assert swap_staging.is_dir()
-    assert not (saved_swap_parent / swap_root_name).exists()
-
-    evidence_parent = outside / "swapped-evidence-parent"
-    evidence_parent.mkdir()
-    saved_evidence_parent = outside / "original-evidence-parent"
-    swapped_evidence = evidence_parent / "check.json"
-    evidence_parent_plan = dev_check.build_check_plan(
-        repo,
-        west,
-        "quick",
-        "homebrew",
-        None,
-        None,
-        swapped_evidence,
-        None,
-        None,
-    )
-    evidence_parent_swap = [False]
-    foreign_evidence_after_swap = b"foreign replacement evidence\n"
-
-    def swap_evidence_parent_after_step(
-        argv: list[str],
-        cwd: Path,
-        timeout_seconds: int,
-        environment: dict[str, str],
-        stdout_full_limit: int = 0,
-    ) -> dict[str, object]:
-        outcome = real_run_process(
-            argv, cwd, timeout_seconds, environment, stdout_full_limit
-        )
-        if (
-            not evidence_parent_swap[0]
-            and argv == evidence_parent_plan["steps"][0]["argv"]
-        ):
-            evidence_parent_swap[0] = True
-            evidence_parent.rename(saved_evidence_parent)
-            evidence_parent.mkdir()
-            swapped_evidence.write_bytes(foreign_evidence_after_swap)
-        return outcome
-
-    os.environ["DEV_CHECK_FAKE_MODE"] = "pass"
-    dev_check._run_process = swap_evidence_parent_after_step
-    try:
-        must_reject(
-            lambda: dev_check.execute_check(evidence_parent_plan),
-            "evidence parent changed",
-        )
-    finally:
-        dev_check._run_process = real_run_process
-    assert evidence_parent_swap == [True]
-    assert swapped_evidence.read_bytes() == foreign_evidence_after_swap
-    pinned_evidence = saved_evidence_parent / swapped_evidence.name
-    assert json.loads(pinned_evidence.read_text(encoding="utf-8"))["state"] != "committed"
-
-    swapped_inode_evidence = outside / "swapped-evidence-inode.json"
-    evidence_inode_plan = dev_check.build_check_plan(
-        repo,
-        west,
-        "quick",
-        "homebrew",
-        None,
-        None,
-        swapped_inode_evidence,
-        None,
-        None,
-    )
-    evidence_inode_swap = [False]
-    foreign_evidence_inode = b"foreign evidence inode survives\n"
-
-    def swap_evidence_inode_after_step(
-        argv: list[str],
-        cwd: Path,
-        timeout_seconds: int,
-        environment: dict[str, str],
-        stdout_full_limit: int = 0,
-    ) -> dict[str, object]:
-        outcome = real_run_process(
-            argv, cwd, timeout_seconds, environment, stdout_full_limit
-        )
-        if (
-            not evidence_inode_swap[0]
-            and argv == evidence_inode_plan["steps"][0]["argv"]
-        ):
-            evidence_inode_swap[0] = True
-            # Create the foreign file first and move it into place. Unlinking
-            # the evidence file and writing a new one lets the allocator hand
-            # the freed inode number straight back, and then the replacement
-            # carries the identity dev check is looking for, so the injection
-            # disappears. Allocating both inodes at once keeps them distinct.
-            foreign_inode = swapped_inode_evidence.with_name(
-                "foreign-evidence-inode.json"
-            )
-            foreign_inode.write_bytes(foreign_evidence_inode)
-            os.replace(foreign_inode, swapped_inode_evidence)
-        return outcome
-
-    dev_check._run_process = swap_evidence_inode_after_step
-    try:
-        must_reject(
-            lambda: dev_check.execute_check(evidence_inode_plan),
-            "evidence identity changed",
-        )
-    finally:
-        dev_check._run_process = real_run_process
-    assert evidence_inode_swap == [True]
-    assert swapped_inode_evidence.read_bytes() == foreign_evidence_inode
-
-    assert git(repo, "status", "--porcelain") == ""
-    assert all(
-        not path.is_relative_to(repo)
-        for path in (
-            quick_evidence,
-            check_receipt_path,
-            acceptance_path,
-            failure_path,
-            interrupt_path,
-            package_output,
-            package_receipt_path,
-            publish_failure_output,
-            publish_failure_receipt,
-            failed_package_receipt,
-        )
-    )
-
-print("west dev check contract: PASS")
+if __name__ == "__main__":
+    main()

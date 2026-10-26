@@ -1,4 +1,4 @@
-"""Doctor distinguishes first-boot preparation from runtime postconditions."""
+"""Doctor allows product-owned first use and validates existing guest state without mutation."""
 import tempfile
 import sys
 import types
@@ -27,13 +27,19 @@ def check(prefix):
     doctor.inf = lambda message: None
     doctor.wrn = lambda message: None
     doctor.err = lambda message: None
-    doctor._check_prefix_boot_prereqs(Namespace(prefix=str(prefix), extra_prefix=[]))
+    doctor._check_prefix_boot_prereqs(Namespace(prefix=prefix))
     return doctor.fail
 
 
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
-    assert check(prefix) == 1, "untyped empty prefix must not pass"
+    assert check(prefix) == 0, "empty guest state must be available for ordinary launcher initialization"
+    absent = prefix / "not-created"
+    assert check(absent) == 0 and not absent.exists(), "doctor must not initialize absent guest state"
+    link = prefix / "guest-link"
+    link.symlink_to(prefix, target_is_directory=True)
+    assert check(link) == 1, "a symlink guest prefix must be rejected"
+    link.unlink()
     identity = prefix.stat()
     state = prefix / ".darling-prefix-state-v2"
     state.write_text(
@@ -66,6 +72,6 @@ with tempfile.TemporaryDirectory() as temp:
         (prefix / rel).chmod(0o1777)
     for rel in ("private/var/db/launchd.db/com.apple.launchd", "var/run"):
         (prefix / rel).mkdir(parents=True)
-    assert check(prefix) == 0, "complete legacy prefix must remain accepted"
+    assert check(prefix) == 0, "an ordinary guest directory is not an installed runtime tree"
 
 print("PASS west-doctor-prefix-contract")

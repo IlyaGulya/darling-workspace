@@ -14,10 +14,8 @@ from typing import Any
 
 if __package__:
     from .evidence_storage import EvidenceError, compress_file, compress_paths, payload_metadata, verify_stored
-    from .runtime_artifacts import COMPONENTS
 else:
     from evidence_storage import EvidenceError, compress_file, compress_paths, payload_metadata, verify_stored
-    from runtime_artifacts import COMPONENTS
 
 
 def _sha256(path: Path) -> str:
@@ -88,7 +86,7 @@ def _write_json(path: Path, value: Any) -> None:
 
 def _preserve_images(unit: Path, images: Path, record_root: Path) -> dict[str, Any]:
     build = unit / "build"
-    candidates = {build / component.source for component in COMPONENTS.values()}
+    candidates: set[Path] = set()
     for directory, dirs, files in os.walk(build / "src", followlinks=False):
         dirs[:] = [name for name in dirs if name not in {"CMakeFiles", ".git"}]
         candidates.update(Path(directory) / name for name in files)

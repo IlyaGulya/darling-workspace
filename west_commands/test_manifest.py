@@ -1,9 +1,15 @@
-"""Patch test manifest normalization helpers."""
+"""Source-independent workload declarations consumed by the structured test runners.
+
+The catalog contains fully expanded runner inputs, not source or installation
+recipes. A module names the current workspace source used by a host fixture;
+guest workloads always consume the caller's one selected installed runtime.
+"""
 
 from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import re
 from typing import Any
 
 import yaml
@@ -13,508 +19,165 @@ class ManifestError(ValueError):
     pass
 
 
-def load_test_profile(path: Path) -> dict[str, Any]:
-    data = yaml.safe_load(path.read_text()) or {}
+_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
+_SOURCE_AUTHORITY = frozenset({
+    "patches", "patch", "patch-path", "source-branch", "source-base",
+    "source-commit", "source-revision", "source-ref", "source-patches",
+    "source-modules", "base-profile", "test-profiles", "artifact-profiles",
+    "resource-profiles", "fixture-profiles", "source-mode", "runtime-artifacts",
+    "build-targets", "deploy", "use", "extends", "artifacts", "resources",
+    "fixtures", "materialize-profile", "ctest-source-override",
+    "profile", "runtime-mode", "runtime-root", "bootstrap", "launcher-env",
+    "guest-toolchain", "source-worktree",
+})
+_OWNER_ENVIRONMENT = frozenset({
+    "DARLING_ROOTLESS", "DARLING_NOOVERLAYFS", "DARLING_EUNION",
+    "DARLING_RUNTIME_ROOT", "DARLING_SYSTEM_ROOT", "DARLING_LAUNCHER",
+    "DARLING", "DPREFIX", "DARLING_PREFIX",
+    "WEST_TEST_PREFIX_LEASE", "WEST_TEST_PREFIX_LEASE_FD",
+})
+
+
+def load_workloads(path: Path) -> dict[str, Any]:
+    """Load a flat catalog, failing before selection on source authority."""
+
+    try:
+        data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    except yaml.YAMLError as error:
+        raise ManifestError(f"{path}: invalid workload YAML: {error}") from error
+    return normalize_workloads(data)
+
+
+def normalize_workloads(data: Any) -> dict[str, Any]:
+    """Validate runner declarations without resolving profiles or source refs."""
+
     if not isinstance(data, dict):
-        raise ManifestError(f"{path}: profile must be a mapping")
-    return normalize_test_profile(data)
-
-
-def normalize_test_profile(data: dict[str, Any]) -> dict[str, Any]:
+        raise ManifestError("workload catalog must be a mapping")
+    _reject_source_authority(data, "catalog")
+    if data.get("version") != 1:
+        raise ManifestError("workload catalog version must be 1")
+    unknown = data.keys() - {"version", "workloads", "aliases"}
+    if unknown:
+        raise ManifestError(f"unknown workload catalog fields: {', '.join(sorted(unknown))}")
+    entries = data.get("workloads")
+    if not isinstance(entries, list):
+        raise ManifestError("workloads must be a list")
     normalized = deepcopy(data)
-    test_profiles = _mapping(normalized.get("test-profiles"), "test-profiles")
-    artifact_profiles = _mapping(normalized.get("artifact-profiles"), "artifact-profiles")
-    resource_profiles = _mapping(normalized.get("resource-profiles"), "resource-profiles")
-    fixture_profiles = _mapping(normalized.get("fixture-profiles"), "fixture-profiles")
-    for patch in normalized.get("patches", []) or []:
-        tests = patch.get("tests")
-        if tests is None:
-            continue
-        if not isinstance(tests, list):
-            continue
-        patch["tests"] = [
-            normalize_test(
-                test,
-                test_profiles,
-                artifact_profiles,
-                resource_profiles,
-                fixture_profiles,
-                index=index,
-            )
-            if isinstance(test, dict)
-            else test
-            for index, test in enumerate(tests, start=1)
-        ]
+    identifiers: set[str] = set()
+    for index, test in enumerate(normalized["workloads"], 1):
+        location = f"workloads[{index}]"
+        if not isinstance(test, dict):
+            raise ManifestError(f"{location}: workload must be a mapping")
+        identifier = test.get("id")
+        _identifier(identifier, f"{location}.id")
+        if identifier in identifiers:
+            raise ManifestError(f"duplicate workload id: {identifier}")
+        identifiers.add(identifier)
+        for field in ("module",):
+            if not isinstance(test.get(field), str) or not test[field].strip():
+                raise ManifestError(f"{location}: {field} must be a non-empty string")
+        test.setdefault("name", identifier)
+        if not isinstance(test["name"], str) or not test["name"].strip():
+            raise ManifestError(f"{location}: name must be a non-empty string")
+        binding = test.get("ctest-label") or test.get("ctest-name")
+        if not binding:
+            test.setdefault("env", "host")
+            test.setdefault("diag", "bare")
+        if test.get("env") not in {None, "host", "darling", "macos"}:
+            raise ManifestError(f"{location}: env must be host, darling, or macos")
+        if test.get("runner") == "source-profile-script":
+            raise ManifestError(f"{location}: source-profile-script is retired; use source-script-fixture")
+        for field in ("ctest-label", "ctest-name"):
+            if field in test and (not isinstance(test[field], str) or not test[field].strip()):
+                raise ManifestError(f"{location}: {field} must be a non-empty string")
+        if test.get("ctest-name") and test.get("runner") not in {None, "ctest"}:
+            raise ManifestError(f"{location}: ctest-name requires a CTest registration binding")
+        if binding and test.get("runner") in {None, "ctest"} and test.get("command"):
+            raise ManifestError(f"{location}: a CTest registration binding cannot override command")
+        if test.get("runner") in {"guest-c-fixture", "guest-command-fixture", "guest-macho-fixture", "guest-argv-fixture"} and test.get("env") != "darling":
+            raise ManifestError(f"{location}: {test['runner']} only supports env:darling")
+        if test.get("runner") == "source-script-fixture":
+            if not isinstance(test.get("source-script"), str) or not test["source-script"].strip():
+                raise ManifestError(f"{location}: source-script-fixture requires source-script")
+            if not isinstance(test.get("cases"), list) or not test["cases"]:
+                raise ManifestError(f"{location}: source-script-fixture requires non-empty cases")
+        controller = test.get("prefix-controller", False)
+        if not isinstance(controller, bool):
+            raise ManifestError(f"{location}: prefix-controller must be a boolean")
+        if controller and (
+            test.get("runner") not in {"guest-runtime-script", "script", "python", "source-script-fixture"}
+            or test.get("env") != "darling"
+            or bool(test.get("command"))
+            or not isinstance(test.get("requires"), list)
+            or not all(isinstance(resource, str) for resource in test.get("requires", ()))
+            or not set(test.get("requires", ())) & {"darling-prefix", "darling-eunion-prefix"}
+        ):
+            raise ManifestError(f"{location}: prefix-controller requires a host controller runner, env:darling and a declared prefix resource")
+        features = test.get("requires-build-features", {})
+        if not isinstance(features, dict):
+            raise ManifestError(f"{location}: requires-build-features must be a mapping")
+        for key, value in features.items():
+            if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+                raise ManifestError(f"{location}: build feature names must be CMake variable names")
+            if not isinstance(value, (str, bool, int)) or isinstance(value, str) and not value.strip():
+                raise ManifestError(f"{location}: build feature values must be non-empty scalars")
+        installed_paths = test.get("requires-installed-paths", [])
+        if not isinstance(installed_paths, list):
+            raise ManifestError(f"{location}: requires-installed-paths must be a list")
+        for path in installed_paths:
+            if not isinstance(path, str) or not path or Path(path).is_absolute() or ".." in Path(path).parts or path == ".":
+                raise ManifestError(f"{location}: installed prerequisite paths must stay relative to the runtime root")
+        proof = test.get("red-proof")
+        if proof is not None and (not isinstance(proof, dict) or proof.get("mode") != "self"):
+            raise ManifestError(f"{location}: only self-contained model proofs are supported")
+        _default_coverage_tier(test)
+    aliases = normalized.setdefault("aliases", {})
+    if not isinstance(aliases, dict):
+        raise ManifestError("aliases must be a mapping")
+    for alias, members in aliases.items():
+        _identifier(alias, "workload alias")
+        if alias in identifiers:
+            raise ManifestError(f"workload alias conflicts with id: {alias}")
+        if not isinstance(members, list) or not members:
+            raise ManifestError(f"alias {alias!r} must contain workload ids")
+        for member in members:
+            if not isinstance(member, str) or member not in identifiers:
+                raise ManifestError(f"alias {alias!r}: unknown workload id {member!r}")
+        if len(members) != len(set(members)):
+            raise ManifestError(f"alias {alias!r} contains duplicate workload ids")
     return normalized
 
 
-def normalize_test(
-    test: dict[str, Any],
-    test_profiles: dict[str, Any],
-    artifact_profiles: dict[str, Any],
-    resource_profiles: dict[str, Any] | None = None,
-    fixture_profiles: dict[str, Any] | None = None,
-    *,
-    index: int = 0,
-) -> dict[str, Any]:
-    resource_profiles = resource_profiles or {}
-    fixture_profiles = fixture_profiles or {}
-    refs = test.get("use", test.get("extends"))
-    profile_names = _as_list(refs)
-    merged: dict[str, Any] = {}
-    stack: list[str] = []
-    for name in profile_names:
-        merged = _deep_merge(
-            merged,
-            _resolve_test_profile(
-                str(name),
-                test_profiles,
-                artifact_profiles,
-                resource_profiles,
-                fixture_profiles,
-                stack,
-            ),
-        )
-    override = {key: value for key, value in test.items() if key not in {"use", "extends"}}
-    merged = _deep_merge(merged, override)
-    _expand_compact_axes(merged, index=index)
-    _expand_artifacts(merged, artifact_profiles, index=index)
-    _expand_resources(merged, resource_profiles, index=index)
-    _expand_fixtures(merged, fixture_profiles, index=index)
-    _default_coverage_tier(merged)
-    _default_red_failure_phase(merged)
-    return merged
+def _identifier(value: Any, location: str) -> None:
+    if not isinstance(value, str) or not _IDENTIFIER.fullmatch(value):
+        raise ManifestError(f"{location}: expected a stable workload identifier")
 
 
-def _resolve_test_profile(
-    name: str,
-    test_profiles: dict[str, Any],
-    artifact_profiles: dict[str, Any],
-    resource_profiles: dict[str, Any],
-    fixture_profiles: dict[str, Any],
-    stack: list[str],
-) -> dict[str, Any]:
-    if name in stack:
-        chain = " -> ".join([*stack, name])
-        raise ManifestError(f"cyclic test profile inheritance: {chain}")
-    if name not in test_profiles:
-        raise ManifestError(f"unknown test profile {name!r}")
-    profile = test_profiles[name]
-    if not isinstance(profile, dict):
-        raise ManifestError(f"test profile {name!r} must be a mapping")
-    stack.append(name)
-    refs = profile.get("use", profile.get("extends"))
-    merged: dict[str, Any] = {}
-    for parent in _as_list(refs):
-        merged = _deep_merge(
-            merged,
-            _resolve_test_profile(
-                str(parent),
-                test_profiles,
-                artifact_profiles,
-                resource_profiles,
-                fixture_profiles,
-                stack,
-            ),
-        )
-    body = {key: value for key, value in profile.items() if key not in {"use", "extends"}}
-    merged = _deep_merge(merged, body)
-    _expand_compact_axes(merged)
-    _expand_artifacts(merged, artifact_profiles)
-    _expand_resources(merged, resource_profiles)
-    _expand_fixtures(merged, fixture_profiles)
-    _default_coverage_tier(merged)
-    _default_red_failure_phase(merged)
-    stack.pop()
-    return merged
-
-
-def _expand_compact_axes(test: dict[str, Any], *, index: int = 0) -> None:
-    location = f"tests[{index}]" if index else "test profile"
-    if "needs" in test:
-        raise ManifestError(
-            f"{location}: needs is not part of the compact test DSL; "
-            "use artifacts/resources/fixtures"
-        )
-    if "ctest" in test:
-        if "ctest-label" in test and test["ctest-label"] != test["ctest"]:
-            raise ManifestError(f"{location}: ctest conflicts with ctest-label")
-        test["ctest-label"] = test.pop("ctest")
-    for reference in ("ctest-label", "ctest-name"):
-        if reference in test and (not isinstance(test[reference], str) or not test[reference].strip()):
-            raise ManifestError(f"{location}: {reference} must be a non-empty string")
-    if test.get("ctest-name") and test.get("runner") not in {None, "ctest"}:
-        raise ManifestError(f"{location}: ctest-name requires a CTest registration binding")
-    if (
-        (test.get("ctest-label") or test.get("ctest-name"))
-        and test.get("runner") in {None, "ctest"}
-        and test.get("command")
-    ):
-        raise ManifestError(f"{location}: a CTest registration binding cannot override command")
-    if "build-target" in test:
-        if "target" in test and test["target"] != test["build-target"]:
-            raise ManifestError(f"{location}: build-target conflicts with target")
-        test["target"] = test.pop("build-target")
-    runs = test.pop("runs", None)
-    if runs is not None:
-        runs_map = {"host": "host", "guest": "darling", "macos": "macos"}
-        if not isinstance(runs, str) or runs not in runs_map:
-            raise ManifestError(f"{location}: runs must be host, guest, or macos")
-        env = runs_map[str(runs)]
-        if "env" in test and test["env"] != env:
-            raise ManifestError(f"{location}: runs conflicts with env")
-        test["env"] = env
-        if runs == "guest":
-            _append_unique(test, "requires", ["darling-prefix"])
-    if (
-        test.get("runner") in {"guest-c-fixture", "guest-command-fixture", "guest-macho-fixture"}
-        and test.get("env") not in {None, "darling"}
-    ):
-        raise ManifestError(
-            f"{location}: {test['runner']} only supports env:darling; "
-            "use a CTest registration reference for other environments"
-        )
-    proof = test.get("red-proof")
-    if isinstance(proof, str):
-        proof_map = {
-            "source": {"mode": "source-base"},
-            "runtime": {
-                "mode": "guest-runtime-deploy",
-                "bad-profile": "current-minus-patch",
-            },
-            "self": {"mode": "self"},
-            "none": None,
-        }
-        if proof not in proof_map:
-            raise ManifestError(
-                f"{location}: red-proof must be source, runtime, self, none, or a mapping"
-            )
-        expanded = proof_map[proof]
-        if expanded is None:
-            test.pop("red-proof", None)
-            test["red"] = False
-        else:
-            test["red-proof"] = expanded
-            test.setdefault("red", True)
-    elif proof is not None and not isinstance(proof, dict):
-        raise ManifestError(
-            f"{location}: red-proof must be source, runtime, self, none, or a mapping"
-        )
-
-
-def _default_red_failure_phase(test: dict[str, Any]) -> None:
-    """Fill the deterministic failing stage implied by compact test axes.
-
-    A RED proof must not accept an arbitrary non-zero exit.  The runner emits
-    one of these stable stage markers only at the failing operation and checks
-    the expanded value before accepting RED.  Explicit manifest values always
-    win for unusual runners.
-    """
-
-    proof = test.get("red-proof")
-    if not isinstance(proof, dict) or proof.get("expect-failure-phase"):
-        return
-    mode = proof.get("mode")
-    if mode == "guest-runtime-deploy":
-        red_runner = proof.get("red-runner")
-        runner = (
-            red_runner.get("runner")
-            if isinstance(red_runner, dict)
-            else test.get("runner")
-        )
-        if runner in {"guest-c-fixture", "guest-command-fixture"}:
-            proof["expect-failure-phase"] = "run"
-        elif runner == "ctest" or ((test.get("ctest-label") or test.get("ctest-name")) and not runner):
-            proof["expect-failure-phase"] = "run"
-        else:
-            proof["expect-failure-phase"] = "script"
-        return
-    if mode == "self":
-        proof["expect-failure-phase"] = "self"
-        return
-    if mode != "source-base":
-        return
-
-    runner = test.get("runner")
-    tier = test.get("coverage-tier")
-    if runner == "object-symbol-fixture":
-        proof["expect-failure-phase"] = "inspect"
-    elif runner == "ctest" or ((test.get("ctest-label") or test.get("ctest-name")) and not runner):
-        proof["expect-failure-phase"] = "ctest"
-    elif runner in {"source-contract-script", "source-profile-script", "source-script-fixture"}:
-        proof["expect-failure-phase"] = "script"
-    elif runner == "source-build-fixture":
-        proof["expect-failure-phase"] = "build" if tier == "compile" else "run"
-    elif runner in {"cmake-configure-fixture", "darling-cmake-target-fixture"}:
-        proof["expect-failure-phase"] = "configure" if tier != "compile" else "build"
-    elif runner == "c-fixture":
-        proof["expect-failure-phase"] = "compile" if tier == "compile" else "run"
-    else:
-        proof["expect-failure-phase"] = "script"
+def _reject_source_authority(value: Any, location: str) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise ManifestError(f"{location}: mapping keys must be strings")
+            if key in _OWNER_ENVIRONMENT and location.endswith((".env-vars", ".guest-env-vars")):
+                raise ManifestError(f"{location}.{key}: installed runtime and prefix selection belong to the caller")
+            if key in _SOURCE_AUTHORITY or key.endswith(("-profile", "-profiles")) or key.startswith("current-minus-"):
+                raise ManifestError(f"{location}.{key}: source/runtime selection authority is retired")
+            _reject_source_authority(child, f"{location}.{key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value, 1):
+            _reject_source_authority(child, f"{location}[{index}]")
 
 
 def _default_coverage_tier(test: dict[str, Any]) -> None:
-    """Materialize one conservative coverage class in normalized metadata.
-
-    Compact manifests may omit a tier when it follows directly from their
-    structured runner.  Consumers never re-derive it: they receive the same
-    explicit normalized field regardless of whether it came from a test
-    profile, the test entry, or this schema default.
-    """
-
-    explicit_tier = test.get("coverage-tier")
-    if explicit_tier:
+    if test.get("coverage-tier"):
         return
     runner = test.get("runner")
-    source_runner = runner in {
-        "source-contract-script",
-        "source-profile-script",
-        "source-script-fixture",
-    }
-    if source_runner or test.get("kind") == "source-contract":
-        if source_runner:
-            test["kind"] = "source-contract"
+    if runner in {"source-contract-script", "source-script-fixture"} or test.get("kind") == "source-contract":
+        test["kind"] = "source-contract"
         test["coverage-tier"] = "source"
-    elif (
-        test.get("env") in {"darling", "macos"}
-        or test.get("kind") == "guest"
-        or runner == "guest-c-fixture"
-    ):
+    elif test.get("env") in {"darling", "macos"} or test.get("kind") == "guest":
         test["coverage-tier"] = "runtime"
     elif runner in {"c-fixture", "object-symbol-fixture", "west-build"} or test.get("kind") == "build":
         test["coverage-tier"] = "compile"
     else:
         test["coverage-tier"] = "host"
-
-
-def _expand_artifacts(
-    test: dict[str, Any],
-    artifact_profiles: dict[str, Any],
-    *,
-    index: int = 0,
-) -> None:
-    refs = test.pop("artifacts", None)
-    if refs is None:
-        return
-    artifacts = []
-    for ref in _as_list(refs):
-        if isinstance(ref, dict):
-            artifacts.append(deepcopy(ref))
-            continue
-        name = str(ref)
-        if name not in artifact_profiles:
-            location = f"tests[{index}]" if index else "test profile"
-            raise ManifestError(f"{location}: unknown artifact profile {name!r}")
-        artifact = artifact_profiles[name]
-        if isinstance(artifact, list):
-            artifacts.extend(deepcopy(artifact))
-        elif isinstance(artifact, dict):
-            artifacts.append(deepcopy(artifact))
-        else:
-            raise ManifestError(f"artifact profile {name!r} must be a mapping or list")
-    if not artifacts:
-        return
-    proof = test.setdefault("red-proof", {})
-    if not isinstance(proof, dict):
-        raise ManifestError("red-proof must be a mapping when artifacts are used")
-    existing = proof.get("runtime-artifacts", [])
-    if existing and not isinstance(existing, list):
-        raise ManifestError("red-proof.runtime-artifacts must be a list")
-    proof["runtime-artifacts"] = [*deepcopy(existing), *artifacts]
-
-
-def _expand_resources(
-    test: dict[str, Any],
-    resource_profiles: dict[str, Any],
-    *,
-    index: int = 0,
-) -> None:
-    refs = test.pop("resources", None)
-    if refs is None:
-        return
-    for ref in _as_list(refs):
-        profile = _resolve_named_profile(
-            ref,
-            resource_profiles,
-            "resource",
-            index=index,
-        )
-        _merge_typed_resource(test, profile, index=index)
-
-
-def _expand_fixtures(
-    test: dict[str, Any],
-    fixture_profiles: dict[str, Any],
-    *,
-    index: int = 0,
-) -> None:
-    refs = test.pop("fixtures", None)
-    if refs is None:
-        return
-    for ref in _as_list(refs):
-        profile = _resolve_named_profile(
-            ref,
-            fixture_profiles,
-            "fixture",
-            index=index,
-        )
-        _merge_typed_fixture(test, profile, index=index)
-
-
-def _resolve_named_profile(
-    ref: Any,
-    profiles: dict[str, Any],
-    profile_type: str,
-    *,
-    index: int = 0,
-) -> dict[str, Any]:
-    if isinstance(ref, dict):
-        if "use" not in ref:
-            return deepcopy(ref)
-        name = str(ref["use"])
-        override = {key: value for key, value in ref.items() if key != "use"}
-    else:
-        name = str(ref)
-        override = {}
-    if name not in profiles:
-        location = f"tests[{index}]" if index else "test profile"
-        raise ManifestError(f"{location}: unknown {profile_type} profile {name!r}")
-    profile = profiles[name]
-    if not isinstance(profile, dict):
-        raise ManifestError(f"{profile_type} profile {name!r} must be a mapping")
-    return _deep_merge(profile, override)
-
-
-def _merge_typed_resource(
-    test: dict[str, Any],
-    profile: dict[str, Any],
-    *,
-    index: int = 0,
-) -> None:
-    location = f"tests[{index}]" if index else "test profile"
-    kind = profile.get("kind")
-    body = {key: value for key, value in profile.items() if key != "kind"}
-    if kind == "dcc-cache":
-        _merge_single_mapping(test, "dcc-cache", body, location)
-    elif kind == "host-trace-files":
-        _extend_list_field(test, "host-trace-files", body.get("files", []), location)
-        if body.get("oracle") is not None:
-            test["host-trace-oracle"] = bool(body["oracle"])
-    elif kind == "host-stat-deltas":
-        _extend_list_field(test, "host-stat-deltas", body.get("fields", []), location)
-    elif kind == "homebrew-lz4":
-        if body:
-            raise ManifestError(f"{location}: homebrew-lz4 takes no options; its inputs are pinned")
-        _append_unique(test, "requires", ["darling-prefix", "homebrew-lz4"])
-    else:
-        raise ManifestError(
-            f"{location}: resource profile kind must be dcc-cache, "
-            "host-trace-files, host-stat-deltas, or homebrew-lz4"
-        )
-
-
-def _merge_typed_fixture(
-    test: dict[str, Any],
-    profile: dict[str, Any],
-    *,
-    index: int = 0,
-) -> None:
-    location = f"tests[{index}]" if index else "test profile"
-    kind = profile.get("kind")
-    body = {key: value for key, value in profile.items() if key != "kind"}
-    if kind == "eunion-overlay":
-        _append_unique(test, "requires", ["darling-eunion-prefix"])
-        _extend_list_field(test, "eunion-template-files", body.get("template-files", []), location)
-        _extend_list_field(test, "eunion-template-symlinks", body.get("template-symlinks", []), location)
-        _extend_list_field(test, "eunion-upper-files", body.get("upper-files", []), location)
-        _extend_list_field(test, "eunion-cleanup-dirs", body.get("cleanup-dirs", []), location)
-        _extend_list_field(
-            test,
-            "eunion-forbid-template-paths",
-            body.get("forbid-template-paths", []),
-            location,
-        )
-        _extend_list_field(
-            test,
-            "eunion-require-upper-paths",
-            body.get("require-upper-paths", []),
-            location,
-        )
-        if body.get("verify-template-files-after") is not None:
-            test["eunion-verify-template-files-after"] = bool(
-                body["verify-template-files-after"]
-            )
-    else:
-        raise ManifestError(f"{location}: fixture profile kind must be eunion-overlay")
-
-
-def _merge_single_mapping(
-    test: dict[str, Any],
-    field: str,
-    value: dict[str, Any],
-    location: str,
-) -> None:
-    if not isinstance(value, dict):
-        raise ManifestError(f"{location}: {field} resource body must be a mapping")
-    if field in test and test[field]:
-        if not isinstance(test[field], dict):
-            raise ManifestError(f"{location}: {field} must be a mapping")
-        test[field] = _deep_merge(test[field], value)
-    else:
-        test[field] = deepcopy(value)
-
-
-def _extend_list_field(
-    test: dict[str, Any],
-    field: str,
-    values: Any,
-    location: str,
-) -> None:
-    if values is None:
-        return
-    if not isinstance(values, list):
-        raise ManifestError(f"{location}: {field} profile data must be a list")
-    if not values:
-        return
-    existing = test.get(field, [])
-    if existing and not isinstance(existing, list):
-        raise ManifestError(f"{location}: {field} must be a list")
-    test[field] = [*deepcopy(existing), *deepcopy(values)]
-
-
-def _append_unique(test: dict[str, Any], field: str, values: list[Any]) -> None:
-    existing = list(_as_list(test.get(field)))
-    for value in values:
-        if value not in existing:
-            existing.append(value)
-    test[field] = existing
-
-
-def _mapping(value: Any, name: str) -> dict[str, Any]:
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise ManifestError(f"{name} must be a mapping")
-    return value
-
-
-def _as_list(value: Any) -> list[Any]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return value
-    return [value]
-
-
-def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    result = deepcopy(base)
-    for key, value in override.items():
-        if (
-            key in result
-            and isinstance(result[key], dict)
-            and isinstance(value, dict)
-        ):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = deepcopy(value)
-    return result

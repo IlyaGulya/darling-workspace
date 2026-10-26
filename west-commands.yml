@@ -9,11 +9,6 @@ west-commands:
       - name: dw
         class: DarlingWorkspace
         help: Darling workspace coordination and handoff
-  - file: west_commands/patch.py
-    commands:
-      - name: patch
-        class: DarlingPatch
-        help: Apply tracked Darling patch profiles
   - file: west_commands/test.py
     commands:
       - name: test
@@ -23,7 +18,7 @@ west-commands:
     commands:
       - name: darling-doctor
         class: DarlingDoctor
-        help: Verify manifest/build/deploy alignment before building or booting
+        help: Verify West source alignment and ordinary installed Darling integrity
   - file: west_commands/darling_prefix_repair.py
     commands:
       - name: darling-prefix-repair
@@ -43,12 +38,12 @@ west-commands:
     commands:
       - name: darling-build
         class: DarlingBuild
-        help: Doctor-gated ninja build of dyld + closure, with opt-in deploy
+        help: Build configured Darling and optionally publish its complete CMake installation
   - file: west_commands/darling_bootstrap.py
     commands:
       - name: darling-bootstrap
         class: DarlingBootstrap
-        help: Fill a rootless prefix from an explicit build dir, without a runtime profile
+        help: Initialize guest state from a normal Darling installation with optional build and CLT provisioning
   - file: west_commands/darling_source_worktree.py
     commands:
       - name: darling-source-worktree

@@ -128,9 +128,9 @@ expect_absent_xattr(const char* path, const char* name)
 int
 main(void)
 {
-	const char* opaque = "/private/var/tmp/west-eunion-xattr/opaque";
-	const char* path_remove = "/private/var/tmp/west-eunion-xattr/path_remove.txt";
-	const char* fd_remove = "/private/var/tmp/west-eunion-xattr/fd_remove.txt";
+	const char* opaque = "/usr/share/darling/tests/eunion/xattr-policy/opaque";
+	const char* path_remove = "/usr/share/darling/tests/eunion/xattr-policy/path_remove.txt";
+	const char* fd_remove = "/usr/share/darling/tests/eunion/xattr-policy/fd_remove.txt";
 
 	if (rmdir(opaque) != 0) {
 		printf("rmdir lower opaque directory failed: %s\n", strerror(errno));

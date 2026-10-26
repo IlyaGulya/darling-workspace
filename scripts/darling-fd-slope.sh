@@ -21,10 +21,14 @@
 set -u
 
 PREFIX=""; THREADS="1,8,16,32"; HOLD=30; HARNESS="scripts/darling-boot-run.sh"
+RUNTIME_ROOT=""
+DARLING_WORKSPACE_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+. "$DARLING_WORKSPACE_ROOT/scripts/darling-runtime.sh"
 HOLDER="stress_pool"; HOLDER_ITERS=400
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--prefix) PREFIX="$2"; shift 2 ;;
+		--runtime-root) RUNTIME_ROOT="$2"; shift 2 ;;
 		--threads) THREADS="$2"; shift 2 ;;
 		--hold-seconds) HOLD="$2"; shift 2 ;;
 		--holder) HOLDER="$2"; shift 2 ;;
@@ -34,6 +38,7 @@ while [ $# -gt 0 ]; do
 	esac
 done
 [ -n "$PREFIX" ] || { echo "--prefix is required" >&2; exit 2; }
+darling_resolve_runtime "$RUNTIME_ROOT" || exit $?
 
 classify() { # $1 = /proc/<pid>/fd/N
 	local target
@@ -61,8 +66,13 @@ count_side() { # $1 = label, $2 = pid
 	echo "FD-SAMPLE side=$label pid=$pid total=$total$line"
 }
 
-# The server is found by its EXE (a guest cmdline carries the in-guest path, the rule this project paid for once).
-find_server() { local p; for p in /proc/[0-9]*; do [ "$(readlink "$p/exe" 2>/dev/null)" = "$PREFIX/bin/darlingserver" ] && { echo "${p#/proc/}"; return; }; done; }
+# Scope shared installed server processes through the prefix owner's capability rule.
+find_server() {
+	local pid
+	for pid in $("$DARLING_WORKSPACE_ROOT/scripts/darling-boot-run.sh" --prefix "$PREFIX" --list-owned 2>/dev/null); do
+		[ "$(readlink "/proc/$pid/exe" 2>/dev/null)" = "$DARLING_RUNTIME_ROOT/bin/darlingserver" ] && { echo "$pid"; return; }
+	done
+}
 find_guest() {
 	# exe AND cmdline. MEASURED: an exe-only match found nothing on any size (guest_peak=0) -- the holder's exe is not
 	# the workload binary in this setup, while its cmdline names it. This project's own rule for identifying a process
@@ -86,7 +96,7 @@ for n in ${THREADS//,/ }; do
 	# (guest_peak=0 on every size, VERDICT FAIL x4) and a custom --cmd prints none of the workload's own lines, so the
 	# wait could only time out. The tool owns prefix start/stop, hands the mode and its args to the guest workload and
 	# judges that workload's OWN line.
-	scripts/dwdiag verdict --prefix "$PREFIX" --mode "$HOLDER" --args "$n $HOLDER_ITERS" --wait "$HOLD" >"$LOG" 2>&1 &
+	scripts/dwdiag verdict --runtime-root "$DARLING_RUNTIME_ROOT" --prefix "$PREFIX" --mode "$HOLDER" --args "$n $HOLDER_ITERS" --wait "$HOLD" >"$LOG" 2>&1 &
 	hz=$!
 	server=""; guest=""; peak_server=0; peak_guest=0; samples=0
 	while kill -0 "$hz" 2>/dev/null; do

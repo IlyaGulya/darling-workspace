@@ -24,17 +24,6 @@ from dev_check import (
 )
 from dev_start import build_start_plan, execute_start, recover_start
 from dev_status import collect_status
-from profile_catalog import (
-    ALL_PROFILE_KIND,
-    PATCH_PROFILE_KIND,
-    PROFILE_KINDS,
-    PROFILE_OPTION,
-    RUNTIME_PROFILE_KIND,
-    add_profile_argument,
-    bash_profile_completion,
-    collect_profile_catalog,
-    profile_names,
-)
 
 
 _TIERS = ("quick", "canonical", "acceptance")
@@ -116,6 +105,7 @@ def _status_json_command(
     for option, key in (
         ("--bead", "bead"),
         ("--prefix", "prefix"),
+        ("--runtime-root", "runtime_root"),
         ("--build-dir", "build_dir"),
     ):
         value = inputs.get(key)
@@ -124,21 +114,6 @@ def _status_json_command(
     argv.append("--json")
     return shlex.join(argv)
 
-
-def _profiles_json_command(
-    kind: str,
-    purposes: list[str] | None = None,
-    current_west_argv: list[str] | None = None,
-) -> str:
-    argv = [
-        *(current_west_argv or _west_argv()),
-        "dev",
-        "profiles",
-        f"--kind={kind}",
-    ]
-    argv.extend(f"--purpose={purpose}" for purpose in purposes or [])
-    argv.append("--json")
-    return shlex.join(argv)
 
 
 def _planned_json_command(
@@ -166,13 +141,14 @@ def _planned_json_command(
             "dev",
             "check",
             str(inputs["tier"]),
-            f"{PROFILE_OPTION}={inputs['profile']}",
         ]
+        argv.extend(f"--workload={name}" for name in inputs.get("workloads", []))
         for option, key in (
             ("--bead", "bead"),
-            ("--patch", "patch"),
+            ("--runtime-root", "runtime_root"),
             ("--prefix", "prefix"),
             ("--build-dir", "build_dir"),
+            ("--source-root", "source_root"),
         ):
             value = inputs.get(key)
             if value is not None:
@@ -183,7 +159,6 @@ def _planned_json_command(
             *west,
             "dev",
             "package",
-            f"{PROFILE_OPTION}={inputs['profile']}",
             f"--receipt={inputs['receipt']}",
             f"--output={inputs['output']}",
             f"--evidence={inputs['evidence']}",
@@ -218,42 +193,6 @@ def _render_human(
 ) -> None:
     operation = payload.get("operation", "dev")
     state = payload.get("state", "unknown")
-    if operation == "profiles":
-        profiles = payload.get("profiles", [])
-        runtime_count = sum(
-            profile.get("kind") != PATCH_PROFILE_KIND for profile in profiles
-        )
-        command.inf(f"west dev profiles: {state} runtime={runtime_count}")
-        command.inf(
-            "details: "
-            + _profiles_json_command(
-                payload.get("inputs", {}).get("kind", ALL_PROFILE_KIND),
-                payload.get("inputs", {}).get("purposes"),
-                current_west_argv,
-            )
-        )
-        for profile in profiles[:_HUMAN_PREVIEW_LIMIT]:
-            if profile.get("kind") == PATCH_PROFILE_KIND:
-                base = profile.get("base_profile")
-                base_text = f" base={base}" if base else ""
-                description = " ".join(profile["description"].split())
-                line = (
-                    f"patch   {profile['name']} patches={profile['patch_count']}"
-                    f"{base_text} path={profile['path']}"
-                )
-                if description:
-                    line += f" description={description}"
-            else:
-                line = (
-                    f"runtime {profile['name']} source={profile['source_profile']}"
-                    f":{profile['source_module']} purpose={profile['purpose']}"
-                    f" path={profile['path']}"
-                )
-            command.inf(_truncate(line, _HUMAN_ITEM_CHARACTER_LIMIT))
-        omitted = len(profiles) - min(len(profiles), _HUMAN_PREVIEW_LIMIT)
-        if omitted:
-            command.inf(f"... {omitted} additional profiles omitted")
-        return
     transaction = payload.get("transaction_id")
     suffix = f" transaction={transaction}" if transaction else ""
     command.inf(f"west dev {operation}: {state}{suffix}")
@@ -396,25 +335,9 @@ class DarlingDev(WestCommand):
         from dev_scenarios import add_scenario_parsers
         add_scenario_parsers(subparsers)
 
-        profiles = subparsers.add_parser(
-            "profiles", help="discover CTest runtime profiles and their purposes"
-        )
-        profiles.add_argument(
-            "--kind", choices=PROFILE_KINDS, default=RUNTIME_PROFILE_KIND
-        )
-        profiles.add_argument(
-            "--purpose",
-            action="append",
-            default=[],
-            help="include only runtime profiles with this purpose (repeatable)",
-        )
-        profile_output = profiles.add_mutually_exclusive_group()
-        profile_output.add_argument("--json", action="store_true")
-        profile_output.add_argument("--names", action="store_true")
-        profile_output.add_argument("--completion", choices=("bash",))
-
         status = subparsers.add_parser("status", help="summarize local feature-work state")
         status.add_argument("--bead")
+        status.add_argument("--runtime-root", type=Path)
         status.add_argument("--prefix", type=Path)
         status.add_argument("--build-dir", type=Path)
         status.add_argument("--json", action="store_true")
@@ -446,21 +369,20 @@ class DarlingDev(WestCommand):
 
         check = subparsers.add_parser("check", help="run a named verification tier")
         check.add_argument("tier", choices=_TIERS)
-        add_profile_argument(
-            check, PROFILE_OPTION, PATCH_PROFILE_KIND, default="homebrew"
-        )
+        check.add_argument("--workload", action="append", default=[])
+        check.add_argument("--runtime-root", type=Path)
         check.add_argument("--bead")
-        check.add_argument("--patch")
         check.add_argument("--prefix", type=Path)
         check.add_argument("--build-dir", type=Path)
+        check.add_argument(
+            "--source-root", type=Path,
+            help="Darling source checkout (otherwise selected build/runtime receipt, then active West)",
+        )
         check.add_argument("--evidence", type=Path, required=True)
         check.add_argument("--dry-run", action="store_true")
         check.add_argument("--json", action="store_true")
 
         package = subparsers.add_parser("package", help="create a checked local review package")
-        add_profile_argument(
-            package, PROFILE_OPTION, PATCH_PROFILE_KIND, default="homebrew"
-        )
         package.add_argument("--receipt", type=Path, required=True)
         package.add_argument("--output", type=Path, required=True)
         package.add_argument("--evidence", type=Path, required=True)
@@ -502,25 +424,19 @@ class DarlingDev(WestCommand):
             except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
                 self.die(str(error))
             return
-        if args.action == "profiles" and args.completion == "bash":
-            self.inf(bash_profile_completion().rstrip("\n"))
-            return
         manifest_repo = Path(self.manifest.repo_abspath).resolve()
         topdir = Path(self.topdir).resolve()
         west_argv: list[str] | None = None
         try:
             west_argv = _west_argv()
-            if args.action == "profiles":
-                result = collect_profile_catalog(
-                    manifest_repo, args.kind, args.purpose
-                )
-            elif args.action == "status":
+            if args.action == "status":
                 result = collect_status(
                     topdir=topdir,
                     manifest_repo=manifest_repo,
                     manifest=self.manifest,
                     bead=args.bead,
                     prefix=args.prefix.resolve() if args.prefix else None,
+                    runtime_root=args.runtime_root,
                     build_dir=args.build_dir.resolve() if args.build_dir else None,
                     west_argv=west_argv,
                 )
@@ -551,12 +467,13 @@ class DarlingDev(WestCommand):
                     manifest_repo=manifest_repo,
                     west_argv=west_argv,
                     tier=args.tier,
-                    profile=args.profile,
+                    workloads=args.workload,
+                    runtime_root=args.runtime_root,
                     bead=args.bead,
-                    patch=args.patch,
                     evidence=args.evidence.absolute(),
                     prefix=args.prefix.resolve() if args.prefix else None,
                     build_dir=args.build_dir.resolve() if args.build_dir else None,
+                    source_root=args.source_root.resolve() if args.source_root else None,
                 )
                 if args.dry_run:
                     result = plan
@@ -571,7 +488,6 @@ class DarlingDev(WestCommand):
                 plan = build_package_plan(
                     manifest_repo=manifest_repo,
                     west_argv=west_argv,
-                    profile=args.profile,
                     receipt=args.receipt.resolve(),
                     output=args.output.absolute(),
                     evidence=args.evidence.absolute(),
@@ -592,11 +508,6 @@ class DarlingDev(WestCommand):
             self.die(str(error))
             return
 
-        if args.action == "profiles" and args.names:
-            names = profile_names(result)
-            if names:
-                self.inf("\n".join(names))
-            return
         self._emit(result, args.json, west_argv)
         returncode = result.get("returncode", 0)
         if returncode:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import fcntl
 import resource
 import shutil
@@ -19,9 +20,11 @@ from typing import Callable, Iterable, Iterator, Mapping
 try:
     from .test_guest_execution import run_guest_argv, run_guest_shell, shutdown_guest_prefix
     from .test_execution import process_output_text, run_bounded
+    from .runtime_install import RuntimeInstallationError, prefix_path_is_safe, resolve_runtime
 except ImportError:
     from test_guest_execution import run_guest_argv, run_guest_shell, shutdown_guest_prefix
     from test_execution import process_output_text, run_bounded
+    from runtime_install import RuntimeInstallationError, prefix_path_is_safe, resolve_runtime
 
 ProcessEntry = tuple[int, int, str]
 
@@ -55,10 +58,95 @@ class RootlessRuntimeSocketCleanupResult:
         return not self.problems
 
 
+def prefix_lease_path(prefix: str | Path) -> Path:
+    """Return the persistent external lease pathname for one safe guest prefix."""
+    if not prefix_path_is_safe(prefix):
+        raise ValueError(f"refusing lease for unsafe Darling prefix path: {prefix}")
+    path = Path(prefix)
+    leaf_digest = hashlib.sha256(os.fsencode(path.name)).hexdigest()
+    return path.parent / f".west-prefix-lease-{leaf_digest}"
+
+
+def validate_borrowed_prefix_lease(prefix: str | Path) -> int | None:
+    """Accept only an inherited descriptor holding this prefix's exclusive lease."""
+    marker = os.environ.get("WEST_TEST_PREFIX_LEASE")
+    if marker is None:
+        return None
+    if marker != os.fspath(prefix):
+        raise ValueError("borrowed prefix lease does not match the requested prefix")
+    lease = prefix_lease_path(prefix)
+    descriptor = int(os.environ.get("WEST_TEST_PREFIX_LEASE_FD", "8"))
+    metadata = os.fstat(descriptor)
+    expected = os.open(lease, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        selected = os.fstat(expected)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or (metadata.st_dev, metadata.st_ino) != (selected.st_dev, selected.st_ino)
+        ):
+            raise ValueError(f"borrowed descriptor is not the owned prefix lease: {lease}")
+    finally:
+        os.close(expected)
+    # fdinfo describes locks on this open-file description, unlike a pathname
+    # probe which could mistake a different process's lock for our own.
+    with open(f"/proc/self/fdinfo/{descriptor}", encoding="ascii") as info:
+        for line in info:
+            fields = line.split()
+            if (
+                len(fields) == 9 and fields[0] == "lock:"
+                and fields[2:5] == ["FLOCK", "ADVISORY", "WRITE"]
+                and fields[7:] == ["0", "EOF"]
+            ):
+                return descriptor
+    raise ValueError(f"borrowed prefix lease descriptor is not exclusively locked: {lease}")
+
+
+@contextmanager
+def prefix_lease(
+    prefix: str | Path, *, log: Callable[[str], None] | None = None,
+) -> Iterator[int]:
+    """Hold the shared external lease without creating anything in the prefix."""
+    borrowed = validate_borrowed_prefix_lease(prefix)
+    if borrowed is not None:
+        yield borrowed
+        return
+    lease = prefix_lease_path(prefix)
+    lease.parent.mkdir(parents=True, exist_ok=True)
+    if not prefix_path_is_safe(prefix):
+        raise ValueError(f"refusing lock for unsafe Darling prefix path: {prefix}")
+    parent_descriptor = os.open(
+        lease.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    try:
+        descriptor = os.open(
+            lease.name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600, dir_fd=parent_descriptor,
+        )
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid():
+                raise ValueError(f"Darling prefix lease is not a regular file owned by the current user: {lease}")
+            if log is not None:
+                log(f"lock Darling prefix: {prefix}")
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            try:
+                yield descriptor
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(parent_descriptor)
+
+
+
 def _runtime_retains_prefix(process_dir: Path, prefix: Path) -> bool:
     try:
+        if process_dir.stat().st_uid != os.geteuid():
+            return False
         executable = os.readlink(process_dir / "exe").removesuffix(" (deleted)")
-        if Path(executable).name not in {"mldr", "darlingserver"}:
+        if Path(executable).name not in {"darling", "mldr", "darlingserver"}:
             return False
         descriptors = list((process_dir / "fd").iterdir())
     except OSError:
@@ -90,9 +178,8 @@ def rootless_prefix_process_snapshot(
     """
 
     current_pid = os.getpid() if current_pid is None else current_pid
-    prefix_marker = f"DARLING_PREFIX={prefix}".encode()
-    rootless_marker = b"DARLING_ROOTLESS=1"
-    resolved_prefix = prefix.resolve(strict=False)
+    if not prefix_path_is_safe(prefix):
+        return []
     entries: list[str] = []
     try:
         process_dirs = sorted(proc_root.iterdir(), key=lambda path: int(path.name) if path.name.isdigit() else -1)
@@ -104,23 +191,10 @@ def rootless_prefix_process_snapshot(
         pid = int(process_dir.name)
         if pid == current_pid:
             continue
-        try:
-            environment = set((process_dir / "environ").read_bytes().split(b"\0"))
-        except OSError:
-            continue
-        owns_prefix = rootless_marker in environment and prefix_marker in environment
-        if not owns_prefix:
-            owns_prefix = _runtime_retains_prefix(process_dir, prefix)
-        if not owns_prefix and rootless_marker in environment:
-            for proc_link in (process_dir / "cwd", process_dir / "exe"):
-                try:
-                    proc_target = proc_link.resolve(strict=False)
-                    proc_target.relative_to(resolved_prefix)
-                except (OSError, ValueError):
-                    continue
-                owns_prefix = True
-                break
-        if not owns_prefix:
+        # Environment variables are inherited by host observers and can be
+        # unreadable on a real runtime. Only the retained capability identifies
+        # ownership, even when no environment can be inspected.
+        if not _runtime_retains_prefix(process_dir, prefix):
             continue
         try:
             argv = [part.decode(errors="replace") for part in (process_dir / "cmdline").read_bytes().split(b"\0") if part]
@@ -128,6 +202,30 @@ def rootless_prefix_process_snapshot(
             argv = []
         entries.append(f"{pid} {' '.join(argv) if argv else '[unknown]'}")
     return entries
+
+def _prefix_marked_runtime_snapshot(prefix: Path) -> list[str]:
+    """Report possible residue without granting marker-only signal authority."""
+    marker = b"DARLING_PREFIX=" + os.fsencode(prefix)
+    entries = []
+    for process_dir in Path("/proc").iterdir():
+        if not process_dir.name.isdigit():
+            continue
+        try:
+            if process_dir.stat().st_uid != os.geteuid():
+                continue
+            executable = os.readlink(process_dir / "exe").removesuffix(" (deleted)")
+            if Path(executable).name not in {"darling", "mldr", "darlingserver"}:
+                continue
+            if marker not in (process_dir / "environ").read_bytes().split(b"\0"):
+                continue
+            argv = (process_dir / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except PermissionError:
+            continue
+        entries.append(f"{process_dir.name} {argv.strip() or '[unknown]'}")
+    return entries
+
 
 
 def cleanup_rootless_prefix_processes(
@@ -172,18 +270,19 @@ def cleanup_rootless_prefix_processes(
 
 def _server_owns_prefix(pid: int, args: str, prefix: Path) -> bool:
     argv = args.split()
-    return len(argv) >= 2 and Path(argv[0]).name == "darlingserver" and (
-        argv[1] == str(prefix) or _runtime_retains_prefix(Path("/proc") / str(pid), prefix)
-    )
+    return bool(argv) and Path(argv[0]).name == "darlingserver" and _runtime_retains_prefix(Path("/proc") / str(pid), prefix)
 
 
 def prefix_process_snapshot(prefix: Path, entries: Iterable[ProcessEntry]) -> list[str]:
     """Return the darlingserver process tree rooted at ``prefix``.
 
-    The server carries either a prefix pathname argument or a retained directory
-    capability. Children need neither, so find server roots before walking the
-    process parent graph.
+    The server retains the exact prefix directory capability. Children need
+    neither markers nor that FD, so find verified server roots before walking
+    the process parent graph.
     """
+
+    if not prefix_path_is_safe(prefix):
+        return []
 
     children: dict[int, list[int]] = {}
     args_by_pid: dict[int, str] = {}
@@ -206,7 +305,88 @@ def prefix_process_snapshot(prefix: Path, entries: Iterable[ProcessEntry]) -> li
     return [f"{pid} {args_by_pid[pid]}" for pid in sorted(seen) if pid in args_by_pid]
 
 
+def system_process_entries() -> list[ProcessEntry]:
+    result = subprocess.run(
+        ["ps", "-eo", "pid=,ppid=,args="], capture_output=True, text=True, check=True,
+    )
+    entries = []
+    for line in result.stdout.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            entries.append((int(parts[0]), int(parts[1]), parts[2]))
+    return entries
+
+
+def prefix_process_ownership_snapshot(
+    prefix: Path, entries: Iterable[ProcessEntry] | None = None,
+) -> list[str]:
+    """Share runtime capabilities, server descendants and local image ownership."""
+    if not prefix_path_is_safe(prefix):
+        raise ValueError(f"unsafe Darling prefix path: {prefix}")
+    entries = system_process_entries() if entries is None else entries
+    if not isinstance(entries, (list, tuple)):
+        entries = tuple(entries)
+    parents = {pid: ppid for pid, ppid, _ in entries}
+    ancestors: set[int] = set()
+    caller = os.getpid()
+    while caller and caller not in ancestors:
+        ancestors.add(caller)
+        caller = parents.get(caller, 0)
+    reports = {}
+    for row in prefix_process_snapshot(prefix, entries):
+        reports[int(row.split(" ", 1)[0])] = row
+    for row in rootless_prefix_process_snapshot(prefix):
+        reports[int(row.split(" ", 1)[0])] = row
+    runtime_comms = {"mldr", "launchd", "vchroot", "shellspawn", "darlingserver"}
+    for process in Path("/proc").iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            if process.stat().st_uid != os.geteuid():
+                continue
+        except OSError:
+            continue
+        try:
+            executable = os.readlink(process / "exe").removesuffix(" (deleted)")
+        except OSError:
+            executable = ""
+        pid = int(process.name)
+        try:
+            arguments = [part.decode(errors="replace") for part in (process / "cmdline").read_bytes().split(b"\0") if part]
+        except OSError:
+            arguments = []
+        if Path(executable).name == "fuse-overlayfs":
+            layer = False
+            for argument in arguments:
+                if not argument.startswith("/"):
+                    continue
+                try:
+                    if Path(argument).samefile(prefix):
+                        layer = True
+                        break
+                except OSError:
+                    continue
+            if layer:
+                reports.pop(pid, None)
+                continue
+        local_image = bool(executable) and (Path(executable) == prefix or prefix in Path(executable).parents)
+        if not local_image:
+            try:
+                comm = (process / "comm").read_text().strip()
+                if comm not in runtime_comms:
+                    continue
+                maps = (process / "maps").read_text(errors="replace")
+            except OSError:
+                continue
+            if f" {prefix}/" not in maps:
+                continue
+        reports[pid] = f"{pid} {' '.join(arguments) or '[unknown]'}"
+    return [reports[pid] for pid in sorted(reports) if pid not in ancestors]
+
+
 def darlingserver_pids_for_prefix(prefix: Path, entries: Iterable[ProcessEntry]) -> list[int]:
+    if not prefix_path_is_safe(prefix):
+        return []
     pids: list[int] = []
     for pid, _, args in entries:
         if _server_owns_prefix(pid, args, prefix):
@@ -301,23 +481,10 @@ class PrefixLifecycleOwner:
     def ps_entries(self) -> list[ProcessEntry]:
         if self.process_entries is not None:
             return self.process_entries()
-        result = subprocess.run(
-            ["ps", "-eo", "pid=,ppid=,args="],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        entries = []
-        for line in result.stdout.splitlines():
-            parts = line.strip().split(None, 2)
-            if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
-                entries.append((int(parts[0]), int(parts[1]), parts[2]))
-        return entries
+        return system_process_entries()
 
     def process_snapshot(self, prefix: Path) -> list[str]:
-        entries = prefix_process_snapshot(prefix, self.ps_entries())
-        entries.extend(rootless_prefix_process_snapshot(prefix))
-        return sorted(set(entries))
+        return prefix_process_ownership_snapshot(prefix, self.ps_entries())
 
     def _kill_server(self, prefix: Path) -> None:
         pids = darlingserver_pids_for_prefix(prefix, self.ps_entries())
@@ -346,6 +513,13 @@ class PrefixLifecycleOwner:
             time.sleep(1)
 
     def finalize(self, prefix: Path) -> bool:
+        if not prefix_path_is_safe(prefix):
+            self.err(f"refusing cleanup for unsafe Darling prefix path: {prefix}")
+            return False
+        prefix = Path(prefix)
+        rescued = bool(self.process_snapshot(prefix))
+        if rescued:
+            self.err(f"product shutdown left live prefix process(es) for {prefix}; external cleanup is rescue, not PASS")
         self._kill_server(prefix)
         rootless_cleanup = cleanup_rootless_prefix_processes(prefix)
         for message in rootless_cleanup.changed:
@@ -359,6 +533,16 @@ class PrefixLifecycleOwner:
                 self.err(f"  {entry}")
             return False
         if not rootless_cleanup.success:
+            return False
+        try:
+            unverified = _prefix_marked_runtime_snapshot(prefix)
+        except OSError as error:
+            self.err(f"cannot verify residual Darling processes for {prefix}: {error}")
+            return False
+        if unverified:
+            self.err(f"unverified runtime residue for {prefix}; prefix markers do not authorize a signal:")
+            for entry in unverified:
+                self.err(f"  {entry}")
             return False
         mount_cleanup = self.cleanup_mounts(prefix)
         for message in mount_cleanup.changed:
@@ -375,7 +559,7 @@ class PrefixLifecycleOwner:
             self.inf(f"cleanup rootless Darling prefix: {message}")
         for message in socket_cleanup.problems:
             self.err(message)
-        return socket_cleanup.success
+        return socket_cleanup.success and not rescued
 
     def shutdown(
         self,
@@ -384,8 +568,14 @@ class PrefixLifecycleOwner:
         keep_running: bool = False,
         extra_env: Mapping[str, str] | None = None,
     ) -> bool:
+        if not prefix_path_is_safe(prefix):
+            self.err(f"refusing shutdown for unsafe Darling prefix path: {prefix}")
+            return False
+        prefix = Path(prefix)
         if keep_running:
             return True
+        if not self.process_snapshot(prefix):
+            return self.finalize(prefix)
         shutdown_ok = True
         launcher = self.resolve_launcher(str(prefix))
         if launcher:
@@ -408,17 +598,8 @@ class PrefixLifecycleOwner:
                     timeout_seconds=timeout_seconds,
                 )
                 if result.returncode == 0 and not result.timed_out:
-                    shutdown_ok = True
                     break
                 detail = process_output_text(result).strip()
-                if (
-                    result.returncode != 0
-                    and not result.timed_out
-                    and "Darling container is not running" in detail
-                ):
-                    self.inf(f"Darling prefix already stopped: {prefix}")
-                    shutdown_ok = True
-                    break
                 if result.timed_out:
                     self.err(f"Darling prefix shutdown timed out for {prefix}; forcing cleanup")
                 else:
@@ -441,27 +622,9 @@ class PrefixLifecycleOwner:
         return shutdown_ok and final_ok
 
     @contextmanager
-    def locked(self, prefix: Path) -> Iterator[None]:
-        parent = prefix.expanduser().parent
-        parent.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(
-            parent,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
-        )
-        try:
-            self.inf(f"lock Darling prefix: {prefix}")
-            # The product lifecycle must be able to observe a genuinely empty
-            # prefix. Lock the already-open parent directory rather than
-            # injecting a West-owned file into the product state machine.
-            # Directory flock is released with this capability and leaves no
-            # pathname behind.
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-        finally:
-            os.close(descriptor)
+    def locked(self, prefix: str | Path) -> Iterator[int]:
+        with prefix_lease(prefix, log=self.inf) as descriptor:
+            yield descriptor
 
 
 # The runtime records a failed bootstrap has to hand back, and the name each one is
@@ -480,65 +643,33 @@ class PrefixLifecycleMixin:
 
     def _resolve_prefix(self, args) -> str | None:
         self._prefix_env = {}
-        if args.no_overlayfs:
-            self._prefix_env["DARLING_NOOVERLAYFS"] = "1"
-        if args.prefix and args.prefix_profile:
-            self.die("--prefix and --prefix-profile are mutually exclusive")
-        prefix = None
-        if args.prefix:
-            prefix = args.prefix
-            if prefix.startswith("existing:"):
-                prefix = prefix.removeprefix("existing:")
-        elif args.prefix_profile:
-            profiles = {
-                "homebrew": "~/work/darling-prefix-homebrew-test",
-                "smoke": "~/work/darling-prefix-smoke",
-            }
-            if args.prefix_profile == "homebrew":
-                self._prefix_env["DARLING_NOOVERLAYFS"] = "1"
-            prefix = profiles.get(args.prefix_profile, args.prefix_profile)
-        elif os.environ.get("DPREFIX"):
-            prefix = os.environ["DPREFIX"]
+        prefix = args.prefix or os.environ.get("DPREFIX")
         if prefix is None:
             return None
-        resolved = str(Path(prefix).expanduser())
-        self._load_retained_prefix_env(Path(resolved))
-        return resolved
+        raw = os.path.expanduser(os.fspath(prefix))
+        if not prefix_path_is_safe(raw):
+            self.die(f"unsafe Darling prefix path: {raw}")
+        return raw
 
     def _resolve_darling_launcher(self, prefix: str | None) -> str | None:
-        """Resolve the launcher for one prefix, or for the ambient environment.
+        """Resolve the selected installation independently of writable state."""
 
-        Shared by every command that must own or stop a prefix, so the two paths cannot drift: an explicit
-        prefix is a runtime identity, and falling back to another prefix's launcher would silently mix
-        launcher and DPREFIX.
-        """
-
-        if prefix:
-            candidate = Path(prefix).expanduser() / "bin" / "darling"
-            if candidate.exists():
-                return str(candidate)
-            # An explicit prefix is a runtime identity, not just an artifact
-            # directory. Falling back to another prefix's launcher silently
-            # mixes launcher and DPREFIX, which can make a broken named prefix
-            # appear usable for one test lifecycle.
+        runtime = getattr(self, "_runtime", None)
+        if runtime is not None:
+            return str(runtime.launcher)
+        root = getattr(self, "_runtime_root", None)
+        if not (root or os.environ.get("DARLING_RUNTIME_ROOT")
+                or os.environ.get("DARLING_LAUNCHER") or shutil.which("darling")):
             return None
-        if os.environ.get("DARLING"):
-            return os.environ["DARLING"]
-        if os.environ.get("DARLING_LAUNCHER"):
-            return os.environ["DARLING_LAUNCHER"]
-        candidate = Path("~/work/darling-prefix/bin/darling").expanduser()
-        if candidate.exists():
-            return str(candidate)
-        return None
+        try:
+            runtime = resolve_runtime(root)
+        except RuntimeInstallationError as error:
+            self.die(str(error))
+        self._runtime = runtime
+        return str(runtime.launcher)
 
     def _darling_prefix_env(self, prefix: str | Path) -> dict[str, str]:
-        prefix_text = str(prefix)
-        env = {
-            "DPREFIX": prefix_text,
-            "DARLING_PREFIX": prefix_text,
-        }
-        env.update(getattr(self, "_prefix_env", {}))
-        return env
+        return self._installed_runtime().environment(prefix)
 
     def _verify_prefix_idle(self) -> bool:
         """Run the host-side idle oracle after a guest test claims shutdown."""
@@ -594,10 +725,10 @@ class PrefixLifecycleMixin:
                 sample_name="eunion-bootstrap",
                 label=f"{invocation['name']}: E-UNION bootstrap",
             )
-        result = self._run_guest_argv(
+        result = run_guest_shell(
             str(launcher),
             prefix,
-            ["/usr/bin/true"],
+            "/usr/bin/true",
             cwd=Path.cwd(),
             env=child_env,
             timeout_seconds=timeout_seconds,
@@ -627,8 +758,7 @@ class PrefixLifecycleMixin:
                     returncode=result.returncode,
                     command=[
                         str(launcher),
-                        "exec",
-                        "/usr/bin/true",
+                        "shell", "/bin/bash", "--login", "-c", "/usr/bin/true",
                     ],
                     output=output,
                     artifacts=[
@@ -666,211 +796,105 @@ class PrefixLifecycleMixin:
         if not prefix_text:
             self.die(f"{invocation['name']}: darling-eunion-prefix needs DPREFIX")
         prefix = Path(prefix_text)
-        marker = prefix / ".union-work"
-        created_marker = False
-        created_template_files: list[Path] = []
-        created_template_symlinks: list[Path] = []
-        created_template_dirs: list[Path] = []
-        created_upper_files: list[Path] = []
-        created_upper_dirs: list[Path] = []
-        cleanup_dirs: list[tuple[Path, Path]] = []
-        template_assertions: list[dict] = []
-        forbidden_template_paths = list(invocation.get("eunion_forbid_template_paths", []))
-        required_upper_paths = list(invocation.get("eunion_require_upper_paths", []))
-        probe_dirs: list[tuple[Path, Path]] = []
-        blocked_upper_files: list[Path] = []
+        runtime = self._installed_runtime()
+        namespace = Path("/usr/share/darling/tests/eunion")
+        assertions = []
+        symlink_assertions = []
+        roots: set[Path] = set()
 
-        def cleanup_fixture_state() -> None:
-            for path in reversed(created_upper_files):
-                try:
-                    path.unlink()
-                except FileNotFoundError:
-                    pass
-            for path in reversed(created_template_files):
-                try:
-                    path.unlink()
-                except FileNotFoundError:
-                    pass
-            for path in reversed(created_template_symlinks):
-                try:
-                    path.unlink()
-                except FileNotFoundError:
-                    pass
-            for path in reversed(created_upper_dirs):
-                try:
-                    path.rmdir()
-                except OSError:
-                    pass
-            for path in reversed(created_template_dirs):
-                try:
-                    path.rmdir()
-                except OSError:
-                    pass
-            for upper_dir, lower_dir in reversed(cleanup_dirs):
-                shutil.rmtree(upper_dir, ignore_errors=True)
-                shutil.rmtree(lower_dir, ignore_errors=True)
-            for upper_dir, lower_dir in reversed(probe_dirs):
-                shutil.rmtree(upper_dir, ignore_errors=True)
-                shutil.rmtree(lower_dir, ignore_errors=True)
-            if created_marker:
-                try:
-                    marker.rmdir()
-                except OSError:
-                    self.err(f"{invocation['name']}: preserving non-empty E-UNION marker {marker}")
-
-        try:
-            if marker.exists() and not marker.is_dir():
-                self.die(f"{invocation['name']}: E-UNION marker is not a directory: {marker}")
-            if not marker.exists():
-                marker.mkdir(parents=True, mode=0o700)
-                created_marker = True
-
-            for index, guest_path in enumerate(invocation.get("eunion_cleanup_dirs", [])):
-                guest_path = str(guest_path)
-                if (
-                    not guest_path.startswith("/private/var/tmp/west-")
-                    or ".." in Path(guest_path).parts
-                ):
-                    self.die(
-                        f"{invocation['name']}: eunion-cleanup-dirs[{index}] needs "
-                        "an absolute /private/var/tmp/west-* guest path without '..'"
-                    )
-                rel = Path(guest_path.lstrip("/"))
-                cleanup_dirs.append((prefix / rel, prefix / "libexec/darling" / rel))
-
-            self._shutdown_runtime_prefix(prefix)
-            self._boot_eunion_runtime_prefix(invocation, env, prefix)
-
-            for index, spec in enumerate(invocation.get("eunion_template_files", [])):
-                if not isinstance(spec, dict):
-                    self.die(f"{invocation['name']}: eunion-template-files entries must be mappings")
-                guest_path = str(spec.get("guest-path", ""))
-                if not guest_path.startswith("/") or ".." in Path(guest_path).parts:
-                    self.die(
-                        f"{invocation['name']}: eunion-template-files[{index}] needs "
-                        "an absolute guest-path without '..'"
-                    )
-                rel = Path(guest_path.lstrip("/"))
-                upper_path = prefix / rel
-                lower_path = prefix / "libexec/darling" / rel
-                if upper_path.exists():
-                    blocked_upper_files.append(upper_path)
-                    continue
-                created_template_dirs.extend(
-                    self._mkdirs_for_fixture(lower_path.parent, prefix / "libexec/darling")
-                )
-                if not lower_path.exists():
-                    lower_path.write_text(str(spec.get("contents", "")))
-                    created_template_files.append(lower_path)
-                if "mode" in spec:
-                    lower_path.chmod(self._parse_file_mode(invocation, "eunion-template-files", index, spec["mode"]))
-                for name, value in (spec.get("xattrs") or {}).items():
-                    try:
-                        os.setxattr(lower_path, str(name).encode(), str(value).encode())
-                    except OSError as exc:
-                        self.die(
-                            f"{invocation['name']}: failed to set E-UNION template xattr "
-                            f"{name} on {lower_path}: {exc}"
-                        )
-                template_assertions.append(
-                    {
-                        "path": lower_path,
-                        "contents": str(spec.get("contents", "")),
-                        "mode": spec.get("mode"),
-                        "xattrs": {str(k): str(v) for k, v in (spec.get("xattrs") or {}).items()},
-                        "absent_xattrs": [str(item) for item in spec.get("absent-xattrs", [])],
-                    }
-                )
-            if blocked_upper_files:
-                self.die(
-                    f"{invocation['name']}: E-UNION lower fixture would be shadowed by "
-                    f"upper file(s): {', '.join(str(path) for path in blocked_upper_files)}"
-                )
-
-            for index, spec in enumerate(invocation.get("eunion_template_symlinks", [])):
-                if not isinstance(spec, dict):
-                    self.die(f"{invocation['name']}: eunion-template-symlinks entries must be mappings")
-                guest_path = str(spec.get("guest-path", ""))
-                target = str(spec.get("target", ""))
-                if not guest_path.startswith("/") or ".." in Path(guest_path).parts:
-                    self.die(
-                        f"{invocation['name']}: eunion-template-symlinks[{index}] needs "
-                        "an absolute guest-path without '..'"
-                    )
-                allow_parent_target = bool(spec.get("allow-parent-target", False))
-                if not target or target.startswith("/") or (
-                    not allow_parent_target and ".." in Path(target).parts
-                ):
-                    self.die(
-                        f"{invocation['name']}: eunion-template-symlinks[{index}] needs "
-                        "a non-empty relative target without '..' unless "
-                        "allow-parent-target is true"
-                    )
-                rel = Path(guest_path.lstrip("/"))
-                upper_path = prefix / rel
-                lower_path = prefix / "libexec/darling" / rel
-                if upper_path.exists() or upper_path.is_symlink():
-                    self.die(f"{invocation['name']}: E-UNION symlink fixture shadowed by upper path: {upper_path}")
-                created_template_dirs.extend(
-                    self._mkdirs_for_fixture(lower_path.parent, prefix / "libexec/darling")
-                )
-                if lower_path.exists() or lower_path.is_symlink():
-                    self.die(f"{invocation['name']}: E-UNION symlink fixture already exists: {lower_path}")
-                lower_path.symlink_to(target)
-                created_template_symlinks.append(lower_path)
-
-            for index, spec in enumerate(invocation.get("eunion_upper_files", [])):
-                if not isinstance(spec, dict):
-                    self.die(f"{invocation['name']}: eunion-upper-files entries must be mappings")
-                guest_path = str(spec.get("guest-path", ""))
-                if not guest_path.startswith("/") or ".." in Path(guest_path).parts:
-                    self.die(
-                        f"{invocation['name']}: eunion-upper-files[{index}] needs "
-                        "an absolute guest-path without '..'"
-                    )
-                upper_path = prefix / guest_path.lstrip("/")
-                if upper_path.exists():
-                    self.die(f"{invocation['name']}: E-UNION upper fixture already exists: {upper_path}")
-                created_upper_dirs.extend(self._mkdirs_for_fixture(upper_path.parent, prefix))
-                upper_path.write_text(str(spec.get("contents", "")))
-                created_upper_files.append(upper_path)
-            self._verify_eunion_runtime_prefix(invocation, env, prefix, probe_dirs)
-        except BaseException:
-            self._shutdown_runtime_prefix(prefix)
-            cleanup_fixture_state()
-            raise
-
-        try:
-            yield
-        finally:
+        def fixture_paths(guest_path):
+            path = Path(str(guest_path))
             try:
+                relative = path.relative_to(namespace)
+            except ValueError:
+                self.die(f"{invocation['name']}: E-UNION fixture path must be under {namespace}: {path}")
+            if not relative.parts or ".." in relative.parts:
+                self.die(f"{invocation['name']}: invalid E-UNION fixture path: {path}")
+            roots.add(prefix / namespace.relative_to("/") / relative.parts[0])
+            return prefix / path.relative_to("/"), runtime.system_root / path.relative_to("/")
+
+        for spec in invocation.get("eunion_template_files", []):
+            if not isinstance(spec, dict):
+                self.die(f"{invocation['name']}: eunion-template-files entries must be mappings")
+            upper, lower = fixture_paths(spec.get("guest-path", ""))
+            if os.path.lexists(upper):
+                self.die(f"{invocation['name']}: E-UNION lower fixture would be shadowed by upper file: {upper}")
+            if not lower.is_file() or lower.is_symlink():
+                self.die(
+                    f"{invocation['name']}: installed E-UNION input is missing: {lower}; "
+                    "install the optional product tests-data component before publication (--with-test-data)"
+                )
+            assertions.append({
+                "path": lower, "contents": str(spec.get("contents", "")),
+                "mode": spec.get("mode"), "xattrs": spec.get("xattrs") or {},
+                "absent_xattrs": spec.get("absent-xattrs") or [],
+            })
+        self._verify_eunion_template_files_after(invocation, assertions)
+        for spec in invocation.get("eunion_template_symlinks", []):
+            if not isinstance(spec, dict):
+                self.die(f"{invocation['name']}: eunion-template-symlinks entries must be mappings")
+            upper, lower = fixture_paths(spec.get("guest-path", ""))
+            target = str(spec.get("target", ""))
+            if os.path.lexists(upper):
+                self.die(f"{invocation['name']}: E-UNION symlink fixture shadowed by upper path: {upper}")
+            if not lower.is_symlink() or os.readlink(lower) != target:
+                self.die(f"{invocation['name']}: installed E-UNION symlink input mismatch: {lower}; install tests-data before publication")
+            symlink_assertions.append((lower, target))
+        upper_files = []
+        for spec in invocation.get("eunion_upper_files", []):
+            if not isinstance(spec, dict):
+                self.die(f"{invocation['name']}: eunion-upper-files entries must be mappings")
+            upper, _ = fixture_paths(spec.get("guest-path", ""))
+            upper_files.append((upper, str(spec.get("contents", ""))))
+        for path in invocation.get("eunion_cleanup_dirs", []):
+            fixture_paths(path)
+        for path in invocation.get("eunion_forbid_template_paths", []):
+            fixture_paths(path)
+        for path in invocation.get("eunion_require_upper_paths", []):
+            fixture_paths(path)
+        for root in roots:
+            if os.path.lexists(root):
+                self.die(f"{invocation['name']}: E-UNION case upper state already exists: {root}")
+
+        self._shutdown_runtime_prefix(prefix)
+        created_roots = []
+        probe_dirs = []
+        try:
+            self._boot_eunion_runtime_prefix(invocation, env, prefix)
+            for root in sorted(roots):
+                root.mkdir(parents=True)
+                created_roots.append(root)
+            for upper, contents in upper_files:
+                upper.parent.mkdir(parents=True, exist_ok=True)
+                upper.write_text(contents)
+            self._verify_eunion_runtime_prefix(invocation, env, prefix, probe_dirs)
+            try:
+                yield
+            finally:
                 self._verify_eunion_forbidden_template_paths_after(
-                    invocation,
-                    prefix,
-                    forbidden_template_paths,
+                    invocation, runtime.system_root, invocation.get("eunion_forbid_template_paths", []),
                 )
                 self._verify_eunion_upper_paths_after(
-                    invocation,
-                    prefix,
-                    required_upper_paths,
+                    invocation, prefix, invocation.get("eunion_require_upper_paths", []),
                 )
+        finally:
+            self._shutdown_runtime_prefix(prefix)
+            try:
+                self._verify_eunion_template_files_after(invocation, assertions)
+                for lower, target in symlink_assertions:
+                    if not lower.is_symlink() or os.readlink(lower) != target:
+                        self.die(f"{invocation['name']}: installed E-UNION symlink input changed: {lower}")
             finally:
-                self._shutdown_runtime_prefix(prefix)
-                try:
-                    if invocation.get("eunion_verify_template_files_after"):
-                        self._verify_eunion_template_files_after(invocation, template_assertions)
-                finally:
-                    cleanup_fixture_state()
+                for root in reversed(probe_dirs + created_roots):
+                    if root.is_symlink() or root.is_file():
+                        root.unlink()
+                    elif root.exists():
+                        shutil.rmtree(root)
 
     def _eunion_bootstrap_timeout_seconds(self, invocation) -> int:
         override = getattr(self, "_bootstrap_timeout_seconds", None)
         if override is not None:
             return override
-        profile_name = invocation.get("runtime-profile")
-        if profile_name:
-            definition = self._ctest_runtime_profile_definitions().get(profile_name)
-            if definition is not None:
-                return int(definition["bootstrap-smoke-timeout-seconds"])
         return 15
 
     def _bootstrap_diagnostic_dir(self) -> Path | None:
@@ -1140,12 +1164,12 @@ class PrefixLifecycleMixin:
     def _verify_eunion_forbidden_template_paths_after(
         self,
         invocation,
-        prefix: Path,
+        system_root: Path,
         guest_paths: list[str],
     ) -> None:
         for guest_path in guest_paths:
             rel = Path(str(guest_path).lstrip("/"))
-            lower_path = prefix / "libexec/darling" / rel
+            lower_path = system_root / rel
             if os.path.lexists(lower_path):
                 self.die(
                     f"{invocation['name']}: forbidden E-UNION template path was created: "
@@ -1176,15 +1200,19 @@ class PrefixLifecycleMixin:
         if not launcher:
             self.die(f"{invocation['name']}: darling-eunion-prefix needs a Darling launcher")
 
-        name = f"west-eunion-probe-{os.getpid()}-{int(time.time() * 1000)}"
-        guest_dir = f"/private/var/tmp/{name}"
-        upper_dir = prefix / "private/var/tmp" / name
-        lower_dir = prefix / "libexec/darling/private/var/tmp" / name
+        guest_dir = "/usr/share/darling/tests/eunion/probe"
+        upper_dir = prefix / guest_dir.lstrip("/")
+        lower_dir = self._installed_runtime().system_root / guest_dir.lstrip("/")
+        if os.path.lexists(upper_dir):
+            self.die(f"{invocation['name']}: E-UNION probe upper state already exists: {upper_dir}")
+        try:
+            probe_inputs = ((lower_dir / "lower.txt").read_text(), (lower_dir / "shadow.txt").read_text())
+        except OSError as error:
+            self.die(f"{invocation['name']}: installed E-UNION probe inputs missing; install tests-data before publication: {error}")
+        if probe_inputs != ("LOWER\n", "LOWER_SHADOW\n"):
+            self.die(f"{invocation['name']}: installed E-UNION probe inputs mismatch; install tests-data before publication")
         upper_dir.mkdir(parents=True)
-        lower_dir.mkdir(parents=True)
-        probe_dirs.append((upper_dir, lower_dir))
-        (lower_dir / "lower.txt").write_text("LOWER\n")
-        (lower_dir / "shadow.txt").write_text("LOWER_SHADOW\n")
+        probe_dirs.append(upper_dir)
         (upper_dir / "upper.txt").write_text("UPPER\n")
         (upper_dir / "shadow.txt").write_text("UPPER_SHADOW\n")
 
@@ -1196,7 +1224,7 @@ class PrefixLifecycleMixin:
             f"test \"$(cat {quote(guest_dir + '/upper.txt')})\" = UPPER; "
             f"test \"$(cat {quote(guest_dir + '/shadow.txt')})\" = UPPER_SHADOW"
         )
-        output_path = lower_dir / "probe-output.txt"
+        output_path = upper_dir / "probe-output.txt"
         with output_path.open("w+") as output:
             result = run_guest_shell(
                 str(launcher),
@@ -1248,3 +1276,65 @@ class PrefixLifecycleMixin:
             kind = "socket" if stat.S_ISSOCK(mode) else "file"
             lines.append(f"{relative}: {kind} mode={oct(stat.S_IMODE(mode))}")
         return "\n".join(lines)
+
+
+def _lease_exec() -> None:
+    """Exec a shell lifecycle owner with lease FD 8; runtime children close it."""
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(description="Hold one prefix lease while executing its lifecycle owner.")
+    parser.add_argument("--prefix", required=True)
+    parser.add_argument("--list-owned", action="store_true")
+    parser.add_argument(
+        "--list-residual", action="store_true",
+        help="read-only residual PID census, including unverified markers; not signal authority",
+    )
+    parser.add_argument("--validate-lease", action="store_true")
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    command = args.command
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command and not args.list_owned and not args.list_residual and not args.validate_lease:
+        parser.error("a command is required after --")
+    if not prefix_path_is_safe(args.prefix):
+        parser.error(f"unsafe Darling prefix path: {args.prefix}")
+    if args.list_owned or args.list_residual:
+        if command or (args.list_owned and args.list_residual):
+            parser.error("select one process census without a command")
+        try:
+            rows = prefix_process_ownership_snapshot(Path(args.prefix))
+            if args.list_residual:
+                rows += _prefix_marked_runtime_snapshot(Path(args.prefix))
+            for pid in sorted({int(row.split(" ", 1)[0]) for row in rows}):
+                print(pid)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            print(f"prefix census unavailable: {error}", file=sys.stderr)
+            raise SystemExit(2)
+        return
+    if args.validate_lease:
+        if command or args.list_owned or args.list_residual:
+            parser.error("--validate-lease cannot execute a command or list processes")
+        try:
+            if validate_borrowed_prefix_lease(args.prefix) is None:
+                raise ValueError("no inherited prefix lease was supplied")
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
+        return
+    try:
+        with prefix_lease(args.prefix) as descriptor:
+            if descriptor == 8:
+                os.set_inheritable(descriptor, True)
+            else:
+                os.dup2(descriptor, 8, inheritable=True)
+                os.set_inheritable(descriptor, False)
+            environment = dict(os.environ, WEST_TEST_PREFIX_LEASE=args.prefix, WEST_TEST_PREFIX_LEASE_FD="8")
+            os.execvpe(command[0], command, environment)
+    except (OSError, ValueError) as error:
+        print(f"prefix lease: {error}", file=sys.stderr)
+        raise SystemExit(2)
+
+
+if __name__ == "__main__":
+    _lease_exec()

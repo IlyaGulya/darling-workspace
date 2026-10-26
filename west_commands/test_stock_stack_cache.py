@@ -210,113 +210,29 @@ def guest_toolchain_identity(
     }
 
 
-def runtime_identity_digest(
-    *,
-    prefix: Path,
-    manifest_repo: Path,
-    topdir: Path,
-    profile_name: str | None,
-) -> str | None:
-    """Return the deployed runtime identity digest, or ``None`` when unknown.
+def runtime_identity_digest(runtime) -> str | None:
+    """Fingerprint the selected installed runtime; unknown provenance cannot reuse."""
 
-    The prefix's retained runtime marker is the authoritative record: a
-    ``guest-runtime-script`` invocation does not carry the profile name, and the
-    deployed provider in the prefix is what the stack actually runs against. A
-    caller that names a profile the prefix does not retain gets nothing, so a
-    mismatch can never reuse another provider's stack. ``None`` means the run
-    cannot be keyed, and no snapshot is reused.
-    """
-
-    marker = prefix / ".west-runtime-profile.json"
-    if marker.is_file() and not marker.is_symlink():
-        try:
-            record = json.loads(marker.read_text())
-        except (OSError, json.JSONDecodeError):
-            record = None
-        if isinstance(record, dict) and record.get("schema") == 2:
-            fingerprint = record.get("fingerprint")
-            if isinstance(fingerprint, dict) and fingerprint:
-                if profile_name is not None and record.get("profile") != profile_name:
-                    return None
-                return canonical_digest(fingerprint)
-    if not profile_name:
+    if runtime.identity is None:
         return None
-    try:
-        try:
-            from .test_runtime import load_ctest_runtime_profiles
-            from .test_runtime_identity import runtime_identity
-        except ImportError:
-            from test_runtime import load_ctest_runtime_profiles
-            from test_runtime_identity import runtime_identity
-        definitions = load_ctest_runtime_profiles(
-            manifest_repo / "testkit/runtime-profiles.yml"
-        )
-        definition = definitions.get(profile_name)
-        if not isinstance(definition, dict):
-            return None
-        launcher = prefix / "bin/darling"
-        if not launcher.is_file():
-            return None
-        return canonical_digest(
-            runtime_identity(
-                topdir=topdir,
-                manifest_repo=manifest_repo,
-                profile_name=profile_name,
-                definition=definition,
-                launcher=launcher,
-            )
-        )
-    except (OSError, ValueError, ImportError):
-        return None
-
-
-def retained_profile_name(prefix: Path) -> str | None:
-    """Return the profile name a prefix's retained marker records, if any.
-
-    The marker names the profile that provisioned the prefix, which is the
-    bootstrap provider. A deployed profile never matches it, so a caller asking
-    the prefix for its runtime identity must ask under the retained name rather
-    than the profile the test deploys: naming the deployed profile is what made
-    every test that consumes the stock stack unkeyable.
-    """
-
-    marker = prefix / ".west-runtime-profile.json"
-    if not marker.is_file() or marker.is_symlink():
-        return None
-    try:
-        record = json.loads(marker.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(record, dict) or record.get("schema") != 2:
-        return None
-    name = record.get("profile")
-    return name if isinstance(name, str) and name else None
+    return canonical_digest(runtime.identity)
 
 
 def stack_request(
     *,
     prefix: Path,
-    manifest_repo: Path,
-    topdir: Path,
-    profile_name: str | None,
     environ: Mapping[str, str],
+    runtime=None,
 ) -> dict[str, Any] | None:
-    """Return the identity inputs that are knowable before the stack is staged.
+    """Key stock inputs by the selected installation, toolchain and pinned inputs."""
 
-    Resolved formula versions are not part of the request: they are an output of
-    the pinned revisions and are recorded in the snapshot itself. The versions
-    this host can vouch for without a prefix -- the pinned lz4 and portable Ruby
-    the resource stages -- are declared, and a restore refuses a snapshot whose
-    recorded versions disagree with them. ``profile_name`` is a cross-check when
-    the caller has one; the prefix's retained runtime marker is authoritative.
-    """
-
-    runtime = runtime_identity_digest(
-        prefix=prefix,
-        manifest_repo=manifest_repo,
-        topdir=topdir,
-        profile_name=profile_name,
-    )
+    if runtime is None:
+        try:
+            from .runtime_install import resolve_runtime
+        except ImportError:
+            from runtime_install import resolve_runtime
+        runtime = resolve_runtime(environ.get("DARLING_RUNTIME_ROOT"))
+    runtime = runtime_identity_digest(runtime)
     if runtime is None:
         return None
     return {
@@ -720,12 +636,11 @@ def _receipt_problems(root: Path, marker: Mapping[str, Any]) -> list[str]:
     return problems
 
 
-def completed_work_directory(prefix: Path) -> Path | None:
-    """Return the completed staged resource work directory, or ``None``.
+def staged_work_directory(prefix: Path, *, require_complete: bool) -> Path | None:
+    """Find one provenance-matched input staging directory.
 
-    A capture is only attempted for a complete resource state: exactly one work
-    directory under the prefix whose staged inputs agree with the pinned inputs
-    and which carries both round trip markers the resource script writes.
+    Cache capture requires both real roundtrip markers. Resource handoff may
+    consume prepared inputs without claiming that their source build completed.
     """
 
     temporary = prefix / "private/var/tmp"
@@ -743,7 +658,7 @@ def completed_work_directory(prefix: Path) -> Path | None:
             continue
         if not isinstance(recorded, dict):
             continue
-        if recorded.get("homebrew-core-commit") != pinned["homebrew-core-commit"]:
+        if recorded.get("homebrew-core-commit") != pinned["homebrew-core-commit"] or recorded.get("brew-commit") != pinned["brew-commit"]:
             continue
         staged = {
             entry.get("filename"): entry.get("sha256")
@@ -752,10 +667,11 @@ def completed_work_directory(prefix: Path) -> Path | None:
         }
         if staged != pinned["inputs"]:
             continue
-        if not (directory / "install-roundtrip.ok").is_file():
-            continue
-        if not (directory / "reuse-roundtrip.ok").is_file():
-            continue
+        if require_complete:
+            if not (directory / "install-roundtrip.ok").is_file():
+                continue
+            if not (directory / "reuse-roundtrip.ok").is_file():
+                continue
         candidates.append(directory)
     if len(candidates) != 1:
         return None
@@ -784,7 +700,7 @@ def capture(
         return {"captured": False, "reason": "disabled"}
     if request is None:
         return {"captured": False, "reason": "unknown-identity"}
-    work = completed_work_directory(prefix)
+    work = staged_work_directory(prefix, require_complete=True)
     if work is None:
         return {"captured": False, "reason": "incomplete-resource"}
     max_bytes = store_max_bytes(environ)
@@ -1009,28 +925,34 @@ def stock_stack_context(
     if not prefix_text:
         raise ValueError("homebrew-lz4 requires West DPREFIX and DARLING_LAUNCHER")
     prefix = Path(prefix_text)
+    environment = command._installed_runtime().environment(prefix, environment)
+    cache_environment.update(environment)
     manifest_repo = Path(
         getattr(getattr(command, "manifest", None), "repo_abspath", Path.cwd())
     )
-    topdir = Path(getattr(command, "topdir", manifest_repo))
     store = store_root(manifest_repo, cache_environment)
     request = None
     if store is not None and prefix.is_dir():
         request = stack_request(
             prefix=prefix,
-            manifest_repo=manifest_repo,
-            topdir=topdir,
-            # A metadata test carries no runtime_profile here, so the prefix's
-            # retained fingerprint is the identity. A caller that does name a
-            # deployed profile gets no request, because the marker records the
-            # bootstrap provider and the two never match.
-            profile_name=invocation.get("runtime_profile"),
             environ=cache_environment,
+            runtime=command._installed_runtime(),
         )
 
     @contextlib.contextmanager
     def staged_stack() -> Iterator[dict[str, str] | None]:
-        with homebrew_lz4_context(environment) as staged:
+        prepared = staged_work_directory(prefix, require_complete=False)
+        if prepared is None:
+            resource = homebrew_lz4_context(environment)
+        else:
+            prepared_env = {
+                **environment,
+                "DARLING_HOMEBREW_LZ4_WORK": _guest_path(prefix, prepared),
+                "DARLING_HOMEBREW_LZ4_INPUTS": str(prepared / "inputs.json"),
+            }
+            log("stock stack resource: consuming prepared pinned inputs; no completed verdict reused")
+            resource = contextlib.nullcontext(prepared_env)
+        with resource as staged:
             yield staged
         try:
             outcome = capture(store, prefix, request=request, environ=cache_environment)
@@ -1051,10 +973,7 @@ def stock_stack_context(
     if store is None:
         log(store_report(store, cache_environment))
     elif request is None:
-        log(
-            "stock stack cache: no deployed-runtime identity for "
-            f"profile={invocation.get('runtime_profile')!r}; staging from source"
-        )
+        log("stock stack cache: selected installation has no runtime identity; staging from source")
     else:
         log(cache_report(store, cache_environment))
     if request is None:
@@ -1090,11 +1009,11 @@ def stock_stack_context(
         f"stock stack cache: miss reason={restored['reason']} "
         f"{cache_report(store, cache_environment)}"
     )
-    conflict = conflicting_homebrew(prefix) if prefix.is_dir() else None
+    conflict = conflicting_homebrew(prefix, command._installed_runtime().system_root) if prefix.is_dir() else None
     if conflict is not None:
         # Staging would refuse this prefix, and the stack it already holds is the
         # one the replay phase is about to consume. Adopt it and capture it.
-        work = completed_work_directory(prefix)
+        work = staged_work_directory(prefix, require_complete=False)
         adopted = dict(environment)
         if work is not None:
             adopted["DARLING_HOMEBREW_LZ4_WORK"] = _guest_path(prefix, work)

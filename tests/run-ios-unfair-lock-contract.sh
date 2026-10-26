@@ -33,10 +33,10 @@ boot_run="$workspace_root/scripts/darling-boot-run.sh"
 	echo "ios-unfair-lock: DARLING_BUILD_DIR must name a configured build" >&2
 	exit 2
 }
-[ -n "$prefix" ] && [ -x "$prefix/bin/darling" ] || {
-	echo "ios-unfair-lock: DPREFIX must name a booted Darling prefix" >&2
-	exit 2
-}
+[ -n "$prefix" ] || { echo "ios-unfair-lock: DPREFIX must select guest state" >&2; exit 2; }
+DARLING_WORKSPACE_ROOT="$workspace_root"
+. "$workspace_root/scripts/darling-runtime.sh"
+darling_resolve_runtime "${DARLING_RUNTIME_ROOT:-}" || exit $?
 [ -f "$fixture_src" ] || { echo "ios-unfair-lock: fixture source not found: $fixture_src" >&2; exit 2; }
 
 workdir="$(mktemp -d)"

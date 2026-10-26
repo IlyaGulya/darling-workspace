@@ -18,8 +18,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
-LEGACY = ROOT / "locks" / "patch-stack" / "legacy-runtime-profile-inventory-v1.json"
-FORENSIC = ROOT / "locks" / "patch-stack" / "archive-forensic-exceptions-v1.yml"
 INVENTORY = ROOT / "lifecycle" / "namespace-writer-inventory-v1.json"
 AUDIT = ROOT / "lifecycle" / "namespace-writer-candidate-audit-v1.json"
 
@@ -74,63 +72,15 @@ def write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def legacy_inventory() -> dict:
-    return json.loads(LEGACY.read_text(encoding="utf-8"))
-
-
 def candidate_audit() -> dict:
     return json.loads(AUDIT.read_text(encoding="utf-8"))
 
 
 def main() -> None:
-    require_current("generate_legacy_runtime_inventory.py")
-    require_current("generate_archive_forensic_exceptions.py")
     require_current("generate_namespace_writer_registry.py")
 
     with tempfile.TemporaryDirectory(prefix="registry-derivation-contract-") as temporary:
         scratch = Path(temporary)
-
-        drifted = legacy_inventory()
-        drifted["profiles"][1]["ordered_commit_count"] += 1
-        legacy_number = scratch / "legacy-number.json"
-        write_json(legacy_number, drifted)
-        require_drift(
-            "generate_legacy_runtime_inventory.py",
-            ["--registry", str(legacy_number)],
-            "profiles[1].ordered_commit_count",
-            legacy_number,
-            "registry=",
-        )
-
-        stale = legacy_inventory()
-        stale["profiles"][0]["modules"].append(
-            {"path": "darling/src/external/vanished", "series_count": 1, "ordered_commit_count": 1}
-        )
-        legacy_stale = scratch / "legacy-stale.json"
-        write_json(legacy_stale, stale)
-        require_drift(
-            "generate_legacy_runtime_inventory.py",
-            ["--registry", str(legacy_stale)],
-            "profiles[0].modules[8].path",
-            legacy_stale,
-            "only in registry",
-        )
-
-        forensic = FORENSIC.read_text(encoding="utf-8").replace(
-            "missing_blob: 024ca655535df09af16e052c927001ac50484aff",
-            "missing_blob: 024ca655535df09af16e052c927001ac50484af0",
-        )
-        if forensic == FORENSIC.read_text(encoding="utf-8"):
-            fail("perf forensic exception fixture did not match the registry")
-        forensic_path = scratch / "archive-forensic-exceptions-v1.yml"
-        forensic_path.write_text(forensic, encoding="utf-8")
-        require_drift(
-            "generate_archive_forensic_exceptions.py",
-            ["--registry", str(forensic_path)],
-            "exceptions[0].missing_blob",
-            forensic_path,
-            "registry=",
-        )
 
         inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
         digest = inventory["excluded_mutations"][0]["sha256"]

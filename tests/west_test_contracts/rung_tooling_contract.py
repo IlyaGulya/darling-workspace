@@ -5,9 +5,9 @@ The rung loop was five hand steps per rung, repeated for four rungs.  These are 
 replaced it, and this covers the decisions they make, because each one is a decision that was made
 wrong by hand at least once:
 
-  * the declaration source is the generated MANIFEST (dar-a0ty), reconciled against the CMake text in
-    both directions, so a payload-only declaration is not invisible and a CMake declaration the
-    manifest does not carry is reported instead of trusted;
+  * declarations come from the ordinary CMake install manifest and configured runtime root,
+    including expanded payload/framework/data installs, missing recorded files and the explicit
+    missing-install prerequisite; source-only build targets remain heuristic routes;
   * the wave sweep's route for a missing install name (weak-only, declaration, payload, source,
     substitute) and the two non-gap routes (Xcode-provided, no-referrer), each with its evidence --
     where a source rung must hold an implementation of a demanded name and not merely a matching
@@ -26,6 +26,8 @@ require no LLVM.
 from __future__ import annotations
 
 import importlib.util
+import contextlib
+import io
 import json
 from pathlib import Path
 import shutil
@@ -65,92 +67,71 @@ def write(path, text):
 def declaration_fixture(tmp):
     darling = tmp / "darling"
     build = tmp / "build"
-    write(darling / "CMakeLists.txt", """\
-set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
-\tWidget
-\tGadget
-)
-if(DARLING_ROOTLESS_TOOLCHAIN)
-\tstring(APPEND _extra
-\t\t",\\n    {\\"target\\": \\"framework_Widget\\", \\"guest_path\\": \\"/System/Library/Frameworks/Widget.framework/Versions/A/Widget\\", \\"host_path\\": \\"$<TARGET_FILE:Widget>\\"}")
-\tstring(APPEND _extra
-\t\t",\\n    {\\"target\\": \\"installer\\", \\"guest_path\\": \\"/usr/bin/installer\\", \\"host_path\\": \\"$<TARGET_FILE:installer>\\"}")
-endif()
-""")
-    write(darling / "cmake" / "Spelling.cmake", """\
-foreach(_pair IN ITEMS "Gadget|/usr/lib/libGadget.dylib")
-\tstring(APPEND _extra ",\\n    {\\"target\\": \\"${_pair}\\"}")
-endforeach()
-""")
-    manifest = {
-        "schema": 1,
-        "entrypoints": [
-            {"target": "framework_Widget", "guest_path": "/System/Library/Frameworks/Widget.framework/Versions/A/Widget",
-             "host_path": "/build/Widget"},
-            {"target": "Gadget", "guest_path": "/usr/lib/libGadget.dylib", "host_path": "/build/libGadget.dylib"},
-            {"target": "swift_libswiftWidget_dylib", "guest_path": "/usr/lib/swift/libswiftWidget.dylib",
-             "host_path": "/build/rootless-toolchain-resources/usr/lib/swift/libswiftWidget.dylib"},
-            {"target": "installer", "guest_path": "/usr/bin/installer", "host_path": "/build/installer"},
-        ],
-        "resources": [
-            {"target": "homebrew-perl:AppendToPath", "guest_path": "/Library/Perl/5.18/AppendToPath",
-             "host_path": "/build/perl/AppendToPath"},
-            {"target": "locale_src", "guest_path": "/usr/share/locale/en_US.UTF-8/LC_TIME",
-             "host_path": "/build/locale/LC_TIME"},
-        ],
-    }
-    write(build / "darling-rootless-toolchain.json", json.dumps(manifest, indent=1))
-    write(build / "darling-rootless-bootstrap.json", json.dumps({
-        "schema": 2,
-        "entrypoints": [{"target": "mldr", "guest_path": "/usr/libexec/darling/mldr", "host_path": "/b/mldr"}],
-        "resources": [],
-    }))
+    runtime = tmp / "installed runtime"
+    write(darling / "CMakeLists.txt",
+          "add_library(Widget SHARED widget.c)\nadd_library(Gadget SHARED gadget.c)\n"
+          "add_executable(installer installer.c)\n")
+    write(build / "CMakeCache.txt", f"CMAKE_INSTALL_PREFIX:PATH={runtime}\n")
+    guest_paths = [
+        "/usr/include/Gadget.h",
+        "/System/Library/Frameworks/Widget.framework/Versions/A/Widget",
+        "/usr/lib/libGadget.dylib",
+        "/usr/lib/swift/libswiftWidget.dylib",
+        "/usr/bin/installer",
+        "/Library/Perl/5.18/AppendToPath",
+        "/usr/share/locale/en_US.UTF-8/LC_TIME",
+    ]
+    installed = [write(runtime / "libexec/darling" / path.lstrip("/"), "installed bytes")
+                 for path in guest_paths]
+    alias = runtime / "libexec/darling/System/Library/Frameworks/Widget.framework/Widget"
+    alias.symlink_to("Versions/A/Widget")
+    installed.append(alias)
+    # Host launcher and a similarly prefixed non-guest directory are not guest Mach-O declarations.
+    installed.extend([write(runtime / "bin/darling", "host launcher"),
+                      write(runtime / "libexec/darling-other/not-a-guest-image", "host data")])
+    write(build / "install_manifest.txt",
+          "\n".join(str(path) for path in [*installed, installed[1]]) + "\n")
     return darling, build
 
 
 def test_declarations(tmp):
     darling, build = declaration_fixture(tmp)
     sources = ca.declaration_sources(str(darling), str(build))
-    kinds = sources["manifest_only_kind"]
-    check(sources["text_only"] == [],
-          f"every CMake-text declaration is in the manifest, got {sources['text_only']}")
-    check(sorted(sources["declared_by_text"]) == ["Gadget", "framework_Widget", "installer"],
-          f"text declarations read: {sources['declared_by_text']}")
-    check(kinds["payload"] == ["swift_libswiftWidget_dylib"],
-          f"payload-only declarations: {kinds['payload']}")
-    check(kinds["staged"] == ["homebrew-perl:AppendToPath"],
-          f"staged declarations: {kinds['staged']}")
-    check(kinds["unexplained"] == ["locale_src"],
-          f"unexplained declarations: {kinds['unexplained']}")
-    check([t for t, _ in sources["text_elsewhere"]] == [],
-          "a bootstrap manifest absent from --build names nothing; nothing should be elsewhere")
-    # The manifest is the declaration source: a payload-only target resolves, and a LOCK_TARGETS
-    # entry naming it needs no hand-written declaration anywhere.
-    name, decl = ca.resolve_decl("swift_libswiftWidget_dylib", sources["decls"])
+    by_target, by_install = sources["manifest"]
+    check(len(by_install) == 8, f"normal guest paths are indexed and deduplicated: {by_install}")
+    check("Gadget" in by_target and "Widget" in by_target,
+          "source-owned target names are recovered as component hints")
+    check(by_target["Gadget"]["guest_path"] == "/usr/lib/libGadget.dylib",
+          "an earlier installed header with the same stem must not shadow the image reference")
+    check(sources["runtime_root"] == str(tmp / "installed runtime"),
+          "the configured absolute install root is preserved, including spaces")
+    name, decl = ca.resolve_decl("libswiftWidget", sources["decls"])
     check(decl is not None and decl["install_name"] == "/usr/lib/swift/libswiftWidget.dylib",
-          "the manifest declares the payload dylib and resolve_decl finds it")
-
-    # The other direction: a CMake declaration the manifest does not carry is a deployment gap.
-    manifest_path = build / "darling-rootless-toolchain.json"
-    data = json.loads(manifest_path.read_text())
-    data["entrypoints"] = [e for e in data["entrypoints"] if e["target"] != "Gadget"]
-    manifest_path.write_text(json.dumps(data, indent=1))
-    sources = ca.declaration_sources(str(darling), str(build))
-    check([t for t, _ in sources["text_only"]] == ["Gadget"],
-          f"the manifest gap is reported, got {sources['text_only']}")
-
-    # And a declaration of ANOTHER component is not this component's gap.
-    data["entrypoints"].append({"target": "mldr", "guest_path": "/usr/libexec/darling/mldr",
-                                "host_path": "/b/mldr"})
-    manifest_path.write_text(json.dumps(data, indent=1))
-    write(darling / "CMakeLists.txt", (darling / "CMakeLists.txt").read_text() + """\
-string(APPEND _boot ",\\n    {\\"target\\": \\"mldr\\", \\"guest_path\\": \\"/usr/libexec/darling/mldr\\", \\"host_path\\": \\"$<TARGET_FILE:mldr>\\"}")
-""")
-    sources = ca.declaration_sources(str(darling), str(build))
-    check([t for t, _ in sources["text_elsewhere"]] == [] and
-          [t for t, _ in sources["text_only"]] == ["Gadget"],
-          "the bootstrap manifest only subtracts when --build carries it")
-    print("PASS declarations: manifest is the source, both directions reported")
+          "expanded payload installs need no bespoke descriptor or handwritten file list")
+    check("/Library/Perl/5.18/AppendToPath" in by_install
+          and "/usr/share/locale/en_US.UTF-8/LC_TIME" in by_install,
+          "ordinary data installs are not hidden by a component-specific deployment manifest")
+    alias_name = "/System/Library/Frameworks/Widget.framework/Widget"
+    alias_decl = {"target": "Widget", "cmake_target": "Widget", "install_name": alias_name}
+    check(ca.resolve_artifact(sources["manifest"], alias_decl) == by_install[alias_name]["host_path"],
+          "an exact framework alias resolves before a same-target different install path")
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        check(ca.report_declarations(sources, str(darling)) == 0,
+              "a complete ordinary installation has no missing recorded files")
+        Path(by_install["/usr/lib/libGadget.dylib"]["host_path"]).unlink()
+        report = io.StringIO()
+        with contextlib.redirect_stdout(report):
+            check(ca.report_declarations(sources, str(darling)) == 1,
+                  "missing files in an immutable installed image are reported as drift")
+        check("MISSING: /usr/lib/libGadget.dylib" in report.getvalue(),
+              "the exact missing guest path is retained")
+        (build / "install_manifest.txt").unlink()
+        missing = ca.declaration_sources(str(darling), str(build))
+        check(missing["manifest"] is None and not missing["decls"],
+              "source target discovery must not fabricate a completed installation")
+        check(ca.report_declarations(missing, str(darling)) == 2,
+              "a missing normal install is an explicit prerequisite, not success")
+    print("PASS declarations: normal install authority, payload/data/aliases, drift and prerequisite")
 
 
 # --------------------------------------------------------------------------- sweep routes
@@ -185,13 +166,13 @@ def test_routes(tmp):
     def refs(*weak):
         return [{"image": f"/x/{i}.dylib", "weak": w, "upward": False} for i, w in enumerate(weak)]
 
-    # The manifest's own declaration is authoritative and says so, not "[heuristic]".
+    # An exact ordinary install record is authoritative about the installed guest path.
     route, why = ca.classify_route("/usr/lib/libGadget.dylib", refs(False), ctx)
-    check(route == ca.ROUTE_DECL and why.startswith("[manifest]"),
-          f"an exact manifest guest_path match is authoritative: {route} ({why})")
+    check(route == ca.ROUTE_DECL and why.startswith("[install-manifest]"),
+          f"an exact normal install path is authoritative: {route} ({why})")
     route, why = ca.classify_route("/System/Library/Frameworks/Widget.framework/Versions/A/Widget",
                                    refs(False), ctx)
-    check(route == ca.ROUTE_DECL and why.startswith("[manifest]"),
+    check(route == ca.ROUTE_DECL and why.startswith("[install-manifest]"),
           f"the declared framework is a declaration rung: {route} ({why})")
 
     # A CMake build target with no manifest entry is a declaration rung; the evidence names it.
@@ -300,6 +281,7 @@ def test_sweep(tmp):
     ctx = classify_fixture(tmp)
     prefix = tmp / "empty-prefix"
     prefix.mkdir(parents=True, exist_ok=True)
+    roots = ca.GuestRoots(str(prefix), str(tmp / "selected-runtime"))
     edges = {
         "/x/one.dylib": [
             ("@rpath/Widget.framework/Versions/A/Widget", False, False),
@@ -309,7 +291,7 @@ def test_sweep(tmp):
              False, False),
         ],
     }
-    rows = {row["install_name"]: row for row in ca.sweep_missing(edges, str(prefix), ctx)}
+    rows = {row["install_name"]: row for row in ca.sweep_missing(edges, roots, ctx)}
     check(len(rows) == 4, f"every missing name is a row, got {sorted(rows)}")
     check(rows["@rpath/Widget.framework/Versions/A/Widget"]["route"] == ca.ROUTE_XCODE,
           "Xcode-provided names are their own group")
@@ -325,7 +307,7 @@ def test_sweep(tmp):
     deployed = prefix / "usr/lib/libGadget.dylib"
     deployed.parent.mkdir(parents=True, exist_ok=True)
     deployed.write_bytes(b"present")
-    rows = {row["install_name"] for row in ca.sweep_missing(edges, str(prefix), ctx)}
+    rows = {row["install_name"] for row in ca.sweep_missing(edges, roots, ctx)}
     check("/usr/lib/libGadget.dylib" not in rows,
           "a name the prefix carries is not part of the wave")
     print("PASS sweep: the whole missing set groups by route in one pass")
@@ -395,17 +377,24 @@ def test_demand_split(tmp):
     check(demanded_table == {} and per_referrer_table == {"/x/StrongClient.dylib": {}},
           f"an unreadable referrer demands nothing rather than a wrong name: {per_referrer_table}")
 
-    # The deployed copy is resolved the way the deploy fills the prefix: both roots.
+    # A fresh independent prefix needs only the product's lower system deployment.
     prefix = tmp / "prefix"
-    write(prefix / "usr/lib/libDeployed.dylib", "d")
-    write(prefix / "libexec/darling/System/Library/Frameworks/Widget.framework/Versions/A/Widget", "w")
-    check(ca.deployed_path(str(prefix), "/usr/lib/libDeployed.dylib") is not None,
-          "a prefix copy under the root is found")
-    check(ca.deployed_path(str(prefix),
-                           "/System/Library/Frameworks/Widget.framework/Versions/A/Widget") is not None,
-          "a prefix copy under libexec/darling is found")
-    check(ca.deployed_path(str(prefix), "/usr/lib/libAbsent.dylib") is None,
-          "an install name the prefix does not carry has no deployed copy")
+    runtime = tmp / "runtime"
+    roots = ca.GuestRoots(str(prefix), str(runtime))
+    upper = write(prefix / "usr/lib/libDeployed.dylib", "upper")
+    lower = write(runtime / "libexec/darling/usr/lib/libDeployed.dylib", "lower")
+    framework = write(
+        runtime / "libexec/darling/System/Library/Frameworks/Widget.framework/Versions/A/Widget", "w")
+    check(ca.deployed_path(roots, "/usr/lib/libDeployed.dylib") == str(upper),
+          "an explicit writable-upper override wins without modifying the installed lower")
+    upper.unlink()
+    check(ca.deployed_path(roots, "/usr/lib/libDeployed.dylib") == str(lower),
+          "the installed system library is visible with no duplicate in a fresh upper")
+    check(ca.deployed_path(
+        roots, "/System/Library/Frameworks/Widget.framework/Versions/A/Widget") == str(framework),
+          "frameworks resolve from the separately installed lower")
+    check(ca.deployed_path(roots, "/usr/lib/libAbsent.dylib") is None,
+          "a name absent from both selected roots remains missing")
     print("PASS verifier demand: a re-export and a weak/upward referrer are tolerated, a strong "
           "absence still fails")
 
@@ -625,14 +614,15 @@ def test_cover(tmp):
     check(events[0]["symbol"] == "_gone" and events[1]["install_name"] == "/p/absent",
           f"the eager symbol of the dependency precedes the entry's eager image: {events}")
 
-    # The resolver reads BOTH prefix roots and says None for a name that is nowhere.
+    # The resolver combines an independent upper with the selected installed lower.
     prefix = tmp / "pfx"
+    runtime = tmp / "runtime"
     write(prefix / "usr/lib/libA.dylib", "a")
-    write(prefix / "libexec/darling/usr/lib/libB.dylib", "b")
-    resolve = ca.guest_resolver(str(prefix))
-    check(resolve("/usr/lib/libA.dylib") is not None, "the prefix root is searched")
-    check(resolve("/usr/lib/libB.dylib") is not None, "libexec/darling is searched too")
-    check(resolve("/usr/lib/libNowhere.dylib") is None, "a name in neither root resolves to None")
+    write(runtime / "libexec/darling/usr/lib/libB.dylib", "b")
+    resolve = ca.guest_resolver(ca.GuestRoots(str(prefix), str(runtime)))
+    check(resolve("/usr/lib/libA.dylib") is not None, "the writable upper is searched")
+    check(resolve("/usr/lib/libB.dylib") is not None, "the separate installed lower is searched")
+    check(resolve("/usr/lib/libNowhere.dylib") is None, "a name absent from both roots stays missing")
     # A guest entry path is mapped to the host (the Xcode mount, and the host-root mount) when it
     # names a file that exists there.
     xcode = tmp / "xc"
@@ -885,6 +875,32 @@ def test_pin_sync(tmp):
     print("PASS pin sync: forward moves, refusals, no-ops, and a one-line rewrite")
 
 
+def test_pin_worktree(tmp):
+    super_repo, manifest, old, new, _high = pin_fixture(tmp)
+    selected_ref = git_out("rev-parse", "HEAD", cwd=super_repo)
+    worktree = tmp / "linked-worktree"
+    git("worktree", "add", "--detach", str(worktree), selected_ref, cwd=super_repo)
+    check((worktree / ".git").is_file(), "the fixture must use Git's linked-worktree metadata")
+    # Move the primary checkout's gitlink elsewhere: sync must read the selected
+    # committed tree through the linked worktree, not the primary checkout/index.
+    git("update-index", "--cacheinfo",
+        f"160000,{old},src/external/matching", cwd=super_repo)
+    commit(super_repo, "primary checkout moved")
+    before = manifest.read_text()
+    out = run_pin("sync", "--manifest", str(manifest), "--darling", str(worktree),
+                  "--ref", selected_ref, "--project", "child-matching")
+    check(out.returncode == 0, f"sync must accept a linked worktree: {out.stdout}{out.stderr}")
+    expected = before.replace(f"    revision: {old}  # hand pinned",
+                              f"    revision: {new}  # hand pinned")
+    check(manifest.read_text() == expected,
+          "worktree sync must change only the selected nested pin, leaving the root pin alone")
+    check(git_out("rev-parse", "HEAD", cwd=worktree) == selected_ref,
+          "sync must not move the linked worktree's HEAD")
+    check(git_out("ls-tree", "HEAD", "src/external/matching", cwd=super_repo).split()[2] == old,
+          "sync must not change the primary checkout's gitlink")
+    print("PASS pin worktree: selected committed gitlinks, nested-only rewrite, no checkout mutation")
+
+
 def test_pin_selection(tmp):
     """An unmatched --project must fail loudly, and a matched one must say what it examined."""
     super_repo, manifest, old, new, high = pin_fixture(tmp / "pin-selection")
@@ -994,7 +1010,8 @@ def test_cli(tmp):
     out = subprocess.run([sys.executable, "-B", str(SCRIPTS / "closure_analyze.py"), "--declarations",
                           "--darling", str(tmp / "nope"), "--build", str(tmp / "nope")],
                          capture_output=True, text=True)
-    check(out.returncode == 0, f"--declarations on an empty tree must still report: {out.stderr}")
+    check(out.returncode == 2 and "cmake --install" in out.stderr,
+          f"--declarations must name the missing normal-install prerequisite: {out.stderr}")
     out = subprocess.run([sys.executable, "-B", str(SCRIPTS / "rung-driver.py"), "stop",
                           "--log", str(tmp / "missing.log")], capture_output=True, text=True)
     check(out.returncode == 2, f"a missing log is refused: {out.stderr}")
@@ -1003,7 +1020,7 @@ def test_cli(tmp):
     out = subprocess.run([sys.executable, "-B", str(SCRIPTS / "rung-driver.py"), "stop",
                           "--log", str(log), "--xcode", str(tmp)], capture_output=True, text=True)
     check(out.returncode == 1, f"a run without a loader stop reports that state: {out.stdout}{out.stderr}")
-    print("PASS cli: --help for each tool, and the driver's two non-errors")
+    print("PASS cli: help, missing normal install, unreadable log and file-only no-stop result")
 
 
 def main():
@@ -1020,6 +1037,7 @@ def main():
         test_loader_stop(tmp / "stop")
         test_unresolved_stop_referrer(tmp / "unresolved-stop")
         test_pin_sync(tmp / "pin")
+        test_pin_worktree(tmp / "pin-worktree")
         test_pin_selection(tmp / "pin-selection")
         test_cover_json_cli(tmp / "cover-cli")
         test_cli(tmp / "cli")

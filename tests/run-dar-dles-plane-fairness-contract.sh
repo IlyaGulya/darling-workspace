@@ -69,10 +69,10 @@ boot_run="$workspace_root/scripts/darling-boot-run.sh"
 	echo "dar-dles-plane-fairness: harness not found: $boot_run" >&2
 	exit 2
 }
-[ -n "$prefix" ] && [ -x "$prefix/bin/darling" ] || {
-	echo "dar-dles-plane-fairness: --prefix/DPREFIX must name a booted Darling prefix" >&2
-	exit 2
-}
+[ -n "$prefix" ] || { echo "dar-dles-plane-fairness: --prefix/DPREFIX must select guest state" >&2; exit 2; }
+DARLING_WORKSPACE_ROOT="$workspace_root"
+. "$workspace_root/scripts/darling-runtime.sh"
+darling_resolve_runtime "${DARLING_RUNTIME_ROOT:-}" || exit $?
 [ -n "$fixture" ] || fixture="$prefix/private/var/tmp/ring_mach_msg_test"
 [ -x "$fixture" ] || {
 	echo "dar-dles-plane-fairness: fixture not found or not executable: $fixture" >&2

@@ -6,20 +6,60 @@ import errno
 import os
 import shutil
 import stat
+import subprocess
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from prefix_repair import cleanup_prefix_mounts, repair_prefix_boot_prerequisites
-from test_prefix import cleanup_rootless_prefix_processes, cleanup_rootless_runtime_sockets, rootless_prefix_process_snapshot
+from prefix_repair import cleanup_prefix_mounts
+from test_prefix import cleanup_rootless_prefix_processes, cleanup_rootless_runtime_sockets, prefix_process_ownership_snapshot
+
+try:
+    from .runtime_install import InstalledRuntime, RuntimeInstallationError, prefix_path_is_safe, resolve_runtime
+except ImportError:  # Loaded as a West extension module, not a package.
+    from runtime_install import InstalledRuntime, RuntimeInstallationError, prefix_path_is_safe, resolve_runtime
 
 
 _PREFIX_NAME = "darling-fresh-prefix-"
-_PREFIX_STATE_FILENAME = ".darling-prefix-state-v2"
 _FICLONE = 0x40049409
 _REFLINK_UNAVAILABLE = frozenset(
     {errno.EINVAL, errno.EOPNOTSUPP, errno.ENOTTY, errno.EXDEV}
 )
+
+
+class PrefixCloneError(RuntimeError):
+    """The selected product launcher refused to bind a copied guest prefix."""
+
+
+def bind_prefix_clone(
+    runtime: InstalledRuntime,
+    destination: str | Path,
+    base: str | Path,
+    *,
+    runner=subprocess.run,
+) -> None:
+    """Bind a copied guest state tree through the product's checked clone operation.
+
+    The launcher owns the prefix lifecycle record: it validates the stable BASE
+    record, publishes the clone's own identity and generation, and refuses an
+    unusable base. Workspace Python never parses or rewrites that record.
+    """
+
+    runtime.environment(base)
+    environment = runtime.environment(destination)
+    completed = runner(
+        [str(runtime.launcher), "bind-clone", str(base)],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise PrefixCloneError(
+            f"{runtime.launcher} bind-clone {base} -> {destination} failed "
+            f"(rc={completed.returncode}): {detail or 'no diagnostic output'}"
+        )
 
 
 @dataclass
@@ -33,15 +73,17 @@ class FreshPrefixResult:
         return not self.problems
 
 
-def disposable_prefix_path(path: Path, *, temp_root: Path) -> Path:
+def disposable_prefix_path(path: str | Path, *, temp_root: Path) -> Path:
     """Validate a narrowly-scoped disposable prefix path."""
 
-    root = temp_root.resolve()
-    candidate = path.expanduser().resolve(strict=False)
+    raw_root = os.path.expanduser(os.fspath(temp_root))
+    raw_candidate = os.path.expanduser(os.fspath(path))
+    if not prefix_path_is_safe(raw_root) or not prefix_path_is_safe(raw_candidate):
+        raise ValueError(f"unsafe fresh-prefix root or path: {raw_root}, {raw_candidate}")
+    root = Path(raw_root)
+    candidate = Path(raw_candidate)
     if candidate.parent != root or not candidate.name.startswith(_PREFIX_NAME):
         raise ValueError(f"fresh prefix must be directly under {root}/{_PREFIX_NAME}*")
-    if candidate.is_symlink():
-        raise ValueError(f"fresh prefix cannot be a symlink: {candidate}")
     return candidate
 
 
@@ -177,21 +219,38 @@ def _copy_file(source: str, destination: str, *, reflink: bool) -> str:
 
 
 def create_fresh_prefix(
-    baseline: Path,
+    baseline: str | Path,
     *,
-    destination: Path | None = None,
+    destination: str | Path | None = None,
     temp_root: Path,
     reserve_bytes: int = 8 * 1024**3,
+    runtime: InstalledRuntime | None = None,
+    runtime_root: str | Path | None = None,
 ) -> FreshPrefixResult:
-    """Copy a baseline prefix into a disposable path after an honest space check."""
+    """Copy writable guest state, then bind it through the selected product launcher.
 
-    source = baseline.expanduser().resolve()
-    if not source.is_dir() or source.is_symlink():
+    The runtime image is immutable and separate; copying a guest-state prefix never
+    copies or repairs a launcher. A copied prefix is a different prefix, and only the
+    product's checked ``bind-clone`` operation may publish its lifecycle identity.
+    """
+
+    raw_source = os.path.expanduser(os.fspath(baseline))
+    try:
+        selected = runtime or resolve_runtime(runtime_root)
+        selected.environment(raw_source)
+    except RuntimeInstallationError as error:
+        return FreshPrefixResult(problems=[str(error)])
+    source = Path(raw_source)
+    if not source.is_dir():
         return FreshPrefixResult(problems=[f"baseline is not a real directory: {source}"])
     target = disposable_prefix_path(
         destination or temp_root / f"{_PREFIX_NAME}{uuid.uuid4().hex[:12]}",
         temp_root=temp_root,
     )
+    try:
+        selected.environment(target)
+    except RuntimeInstallationError as error:
+        return FreshPrefixResult(problems=[str(error)])
     if target.exists():
         return FreshPrefixResult(problems=[f"fresh prefix already exists: {target}"])
     required = prefix_tree_size(source) + reserve_bytes
@@ -215,35 +274,22 @@ def create_fresh_prefix(
     except (OSError, shutil.Error) as error:
         shutil.rmtree(target, ignore_errors=True)
         return FreshPrefixResult(problems=[f"failed to copy baseline {source}: {error}"])
-    # A COPY OF A PREFIX IS A DIFFERENT PREFIX. The lifecycle record binds the prefix to the
-    # device/inode of the directory it describes; carrying the source's numbers into the copy makes
-    # the launcher refuse it ("runtime prefix state belongs to another prefix: recreation required"),
-    # which is a 30 s watchdog timeout in a run, not a diagnosable error. Rebind exactly as a lane does.
-    state_path = target / _PREFIX_STATE_FILENAME
-    if state_path.exists():
-        try:
-            from lane import rebind_prefix_state
-            stat = target.stat()
-            state_path.write_text(
-                rebind_prefix_state(state_path.read_text(), stat.st_dev, stat.st_ino,
-                                    (os.getuid(), os.getgid()))
-            )
-            os.chmod(state_path, 0o600)
-        except Exception as error:  # the copy is unusable if its identity cannot be rebound
-            shutil.rmtree(target, ignore_errors=True)
-            return FreshPrefixResult(problems=[f"cannot rebind the prefix lifecycle record: {error}"])
+    try:
+        bind_prefix_clone(selected, target, source)
+    except (OSError, subprocess.SubprocessError, PrefixCloneError, RuntimeInstallationError) as error:
+        shutil.rmtree(target, ignore_errors=True)
+        return FreshPrefixResult(
+            problems=[f"cannot bind the copied guest prefix through {selected.launcher}: {error}"]
+        )
     strategy = "reflink" if reflink else f"byte-copy (reflink unavailable: {reflink_detail})"
-    result = FreshPrefixResult(
+    return FreshPrefixResult(
         path=target,
         changed=[
-            f"copied baseline {source} -> {target} using {strategy}; "
-            "excluded transient private/tmp, special files, and stale CommandLineTools.* repairs"
+            f"copied guest state {source} -> {target} using {strategy}; "
+            "excluded transient private/tmp, special files, and stale CommandLineTools.* repairs",
+            f"bound the copy through {selected.launcher} bind-clone {source}",
         ],
     )
-    result_provision = repair_prefix_boot_prerequisites(target)
-    result.changed.extend(result_provision.changed)
-    result.problems.extend(result_provision.problems)
-    return result
 
 
 def remove_fresh_prefix(path: Path, *, temp_root: Path) -> FreshPrefixResult:
@@ -259,7 +305,7 @@ def remove_fresh_prefix(path: Path, *, temp_root: Path) -> FreshPrefixResult:
     mount_cleanup = cleanup_prefix_mounts(target)
     result.changed.extend(mount_cleanup.changed)
     result.problems.extend(mount_cleanup.problems)
-    if rootless_prefix_process_snapshot(target):
+    if prefix_process_ownership_snapshot(target):
         result.problems.append(f"rootless process remains for fresh prefix: {target}")
     if result.problems:
         return result

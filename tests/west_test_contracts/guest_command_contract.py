@@ -45,11 +45,11 @@ resolved = resolve_guest_execution(
     name="guest_resolution_fallback_contract",
     env={},
     fallback_prefix="/fallback-prefix",
-    resolve_launcher=lambda prefix: f"{prefix}/bin/darling",
+    resolve_launcher=lambda _prefix: "/installed-runtime/bin/darling",
     die=fail,
 )
 assert resolved.prefix == "/fallback-prefix"
-assert resolved.launcher == "/fallback-prefix/bin/darling"
+assert resolved.launcher == "/installed-runtime/bin/darling"
 
 
 calls = []

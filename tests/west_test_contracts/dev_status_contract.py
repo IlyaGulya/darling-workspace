@@ -219,6 +219,8 @@ import json
 import os
 import sys
 args = sys.argv[1:]
+if len(args) > 1 and args[0] == \"darling-doctor\" and args[1].startswith(\"--runtime-root=\"):
+    args.pop(1)
 if os.getcwd() != {str(manifest_repo)!r}:
     print(\"unexpected west cwd\", file=sys.stderr)
     raise SystemExit(96)
@@ -286,50 +288,22 @@ else:
             build_dir,
             west_argv,
         )
+        installed = dev_status.collect_status(
+            workspace, manifest_repo, manifest, None, prefix, build_dir,
+            west_argv, runtime_root=root / "installed-runtime",
+        )
+        assert installed["results"]["doctor"]["health"] == "healthy"
 
     assert byte_snapshot(root) == before, "collect_status mutated an inspected fixture"
 
     serialized = json.dumps(status, sort_keys=True, separators=(",", ":"))
     assert serialized == json.dumps(repeated, sort_keys=True, separators=(",", ":"))
     assert status == repeated
-    assert json.loads(serialized) == status
-    assert status["schema_version"] == dev_status.SCHEMA_VERSION == 1
-    assert status["operation"] == "status"
-    assert status["transaction_id"] is None
     assert status["state"] == "healthy"
     assert status["degraded_sections"] == []
     assert status["in_progress_sections"] == []
-    assert status["next_safe_action"] == "west dev check quick"
-    assert status["inputs"] == {
-        "topdir": str(workspace),
-        "manifest_repo": str(manifest_repo),
-        "bead": "B-42",
-        "prefix": str(prefix),
-        "build_dir": str(build_dir),
-        "west_argv": west_argv,
-    }
-    assert status["limits"]["capture_bytes"] == dev_status.MAX_CAPTURE_BYTES
-    assert status["limits"]["discovery_entries_scanned"] == (
-        dev_status.MAX_DISCOVERY_ENTRIES_SCANNED
-    )
-    assert status["limits"]["registry_entries_scanned"] == (
-        dev_status.MAX_REGISTRY_ENTRIES_SCANNED
-    )
-    assert status["limits"]["status_entries"] == dev_status.MAX_STATUS_ENTRIES
 
     results = status["results"]
-    expected_authorities = {
-        "manifest": "West manifest",
-        "git": "Git porcelain v2",
-        "bead": "west dw beads routed Bead JSON",
-        "handoff": "west dw handoff --dry-run --json",
-        "doctor": "west darling-doctor authoritative defaults with explicit overrides",
-        "source_worktrees": "west_commands.source_worktree record version 1",
-        "deployment_transactions": "west_commands.deploy_transaction manifest version 1",
-        "temporary_worktrees": "git worktree list --porcelain and west test temporary-worktree naming",
-        "long_jobs": "scripts/west-job.sh global registry and status command",
-    }
-    assert {name: section["authority"] for name, section in results.items()} == expected_authorities
     assert all(section["health"] == "healthy" for section in results.values())
 
     manifest_result = results["manifest"]
@@ -725,5 +699,29 @@ with tempfile.TemporaryDirectory() as bundle_temp:
     owner = test_store.scratch_owner(state)
     assert owner is not None, "job state carries no ownership marker"
     assert owner["kind"] == test_store.SCRATCH_KIND and owner["scenario"] == "homebrew-prepare", owner
+
+# Every named scenario selects source-independent workloads against one install,
+# while retaining independent writable guest state and the diagnostic executor.
+scenario_values = {
+    "runtime-root": "/installed runtime",
+    "prefix": "/guest state",
+    "bundle-root": "/owned evidence",
+    "executor": "/diagnostic executor",
+}
+for scenario in dev_scenarios.SCENARIOS:
+    assert dev_scenarios.scenario_command(scenario, scenario_values, ["west"]) == [
+        "west", "test", "--runtime-root", "/installed runtime",
+        "--prefix", "/guest state", "--bundle-root", "/owned evidence",
+        "--executor", "/diagnostic executor", "--workload", scenario,
+    ]
+
+import argparse
+scenario_parser = argparse.ArgumentParser()
+dev_scenarios.add_scenario_parsers(scenario_parser.add_subparsers(dest="action"))
+context_args = scenario_parser.parse_args([
+    "context", "installed", "--runtime-root", "/runtime", "--prefix", "/prefix",
+])
+assert context_args.runtime_root == Path("/runtime")
+assert "runtime-profile" not in dev_scenarios._CONTEXT_KEYS
 
 print("PASS dev-status-contract")

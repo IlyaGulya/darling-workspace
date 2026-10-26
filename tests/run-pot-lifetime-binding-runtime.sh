@@ -2,7 +2,10 @@
 set -euo pipefail
 
 : "${DPREFIX:?set DPREFIX}"
-launcher="${DARLING_LAUNCHER:-${DARLING:-$DPREFIX/bin/darling}}"
+DARLING_WORKSPACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$DARLING_WORKSPACE_ROOT/scripts/darling-runtime.sh"
+darling_resolve_runtime "${DARLING_RUNTIME_ROOT:-}" "$DPREFIX"
+launcher="$DARLING_LAUNCHER"
 if [ ! -x "$launcher" ]; then
 	echo "Darling launcher not executable: $launcher" >&2
 	exit 2

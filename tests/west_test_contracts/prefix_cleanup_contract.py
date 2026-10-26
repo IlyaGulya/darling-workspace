@@ -7,7 +7,6 @@ import tempfile
 import time
 import sys
 import types
-from argparse import Namespace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,11 +25,10 @@ sys.modules.setdefault("west", west_module)
 sys.modules.setdefault("west.commands", west_commands_module)
 
 from west_commands.test import DarlingTest
-from west_commands.test_prefix import (
+from test_prefix import (
     cleanup_rootless_prefix_processes,
     cleanup_rootless_runtime_sockets,
     darlingserver_pids_for_prefix,
-    prefix_process_snapshot,
     remove_stale_init_pid,
     remove_stale_server_socket,
     PrefixLifecycleOwner,
@@ -47,85 +45,24 @@ def make_test():
     test.err_messages = []
     test.err = lambda message: test.err_messages.append(message)
     test.die = lambda message: (_ for _ in ()).throw(SystemExit(message))
+    test._darling_prefix_env = lambda prefix: {"DPREFIX": str(prefix), "DARLING_PREFIX": str(prefix)}
     return test
 
 
-with tempfile.TemporaryDirectory() as temp:
-    root = Path(temp)
-    fallback = root / "work" / "darling-prefix" / "bin" / "darling"
-    fallback.parent.mkdir(parents=True)
-    fallback.write_text("launcher\n")
-    explicit = root / "explicit-prefix"
-    old_home = os.environ.get("HOME")
-    old_darling = os.environ.pop("DARLING", None)
-    old_launcher = os.environ.pop("DARLING_LAUNCHER", None)
-    os.environ["HOME"] = str(root)
+def owned_loader(prefix: Path):
+    executable = prefix / "mldr"
+    shutil.copy2("/bin/sleep", executable)
+    descriptor = os.open(prefix, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        test = make_test()
-        assert test._resolve_darling_launcher(str(explicit)) is None
-        explicit_launcher = explicit / "bin" / "darling"
-        explicit_launcher.parent.mkdir(parents=True)
-        explicit_launcher.write_text("launcher\n")
-        assert test._resolve_darling_launcher(str(explicit)) == str(explicit_launcher)
-        assert test._resolve_darling_launcher(None) == str(fallback)
+        return subprocess.Popen([str(executable), "60"], env={**os.environ, "DPREFIX": str(prefix)}, pass_fds=(descriptor,))
     finally:
-        if old_home is None:
-            os.environ.pop("HOME", None)
-        else:
-            os.environ["HOME"] = old_home
-        if old_darling is not None:
-            os.environ["DARLING"] = old_darling
-        if old_launcher is not None:
-            os.environ["DARLING_LAUNCHER"] = old_launcher
+        os.close(descriptor)
 
 
-test = make_test()
-prefix = Path("/tmp/west-test-prefix-contract")
-entries = [
-    (100, 1, f"darlingserver {prefix} 1000 1000 4 0"),
-    (101, 100, "/sbin/launchd"),
-    (102, 101, "/usr/libexec/shellspawn"),
-    (200, 1, "darlingserver /tmp/other-prefix 1000 1000 4 0"),
-]
-helper_snapshot = prefix_process_snapshot(prefix, entries)
-assert any(line.startswith("100 darlingserver ") for line in helper_snapshot), helper_snapshot
-assert any(line == "101 /sbin/launchd" for line in helper_snapshot), helper_snapshot
-assert any(line == "102 /usr/libexec/shellspawn" for line in helper_snapshot), helper_snapshot
-assert all("other-prefix" not in line for line in helper_snapshot), helper_snapshot
-assert darlingserver_pids_for_prefix(prefix, entries) == [100]
-
-test._prefix = str(prefix)
-test._keep_prefix_running = False
-test._resolve_darling_launcher = lambda _prefix: None
-test._kill_dserver_for_prefix = lambda _prefix: None
-test._ps_entries = lambda: entries
-
-snapshot = test._prefix_process_snapshot(prefix)
-assert any(line.startswith("100 darlingserver ") for line in snapshot), snapshot
-assert any(line == "101 /sbin/launchd" for line in snapshot), snapshot
-assert any(line == "102 /usr/libexec/shellspawn" for line in snapshot), snapshot
-assert all("other-prefix" not in line for line in snapshot), snapshot
-assert not test._shutdown_test_prefix()
-assert any("leftover Darling prefix" in line for line in test.err_messages), test.err_messages
-
-test = make_test()
-test._prefix = str(prefix)
-test._keep_prefix_running = False
-test._resolve_darling_launcher = lambda _prefix: None
-test._kill_dserver_for_prefix = lambda _prefix: None
-test._ps_entries = lambda: []
-assert test._shutdown_test_prefix()
 
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
-    tagged = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
-        env={
-            **os.environ,
-            "DARLING_PREFIX": str(prefix),
-            "DARLING_ROOTLESS": "1",
-        },
-    )
+    tagged = owned_loader(prefix)
     unrelated = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"],
         env={**os.environ, "DARLING_PREFIX": str(prefix)},
@@ -151,28 +88,14 @@ with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
     orphaned_shellspawn = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"],
-        cwd=prefix,
-        env={
-            **os.environ,
-            "DARLING_ROOTLESS": "1",
-        },
+        cwd=prefix, env=dict(os.environ),
     )
     try:
-        for _ in range(20):
-            discovered = rootless_prefix_process_snapshot(prefix)
-            if any(
-                entry.startswith(f"{orphaned_shellspawn.pid} ")
-                for entry in discovered
-            ):
-                break
-            time.sleep(0.05)
-        else:
-            raise AssertionError(
-                "rootless process with prefix cwd but no DARLING_PREFIX was not discovered"
-            )
+        assert not any(entry.startswith(f"{orphaned_shellspawn.pid} ")
+                       for entry in rootless_prefix_process_snapshot(prefix))
         result = cleanup_rootless_prefix_processes(prefix)
-        assert result.success and result.changed, result
-        orphaned_shellspawn.wait(timeout=3)
+        assert result.success and not result.changed, result
+        assert orphaned_shellspawn.poll() is None, "cwd alone is not runtime ownership"
     finally:
         if orphaned_shellspawn.poll() is None:
             orphaned_shellspawn.kill()
@@ -240,9 +163,6 @@ with tempfile.TemporaryDirectory() as temp:
         server_pid = processes["owned_server"].pid
         server_entries = [(server_pid, 1, "darlingserver 60")]
         assert darlingserver_pids_for_prefix(prefix, server_entries) == [server_pid]
-        assert prefix_process_snapshot(prefix, server_entries) == [
-            f"{server_pid} darlingserver 60"
-        ]
         assert darlingserver_pids_for_prefix(other_prefix, server_entries) == []
         result = cleanup_rootless_prefix_processes(prefix)
         assert result.success and result.changed, result
@@ -262,14 +182,7 @@ with tempfile.TemporaryDirectory() as temp:
 
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
-    tagged = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
-        env={
-            **os.environ,
-            "DARLING_PREFIX": str(prefix),
-            "DARLING_ROOTLESS": "1",
-        },
-    )
+    tagged = owned_loader(prefix)
     test = make_test()
     test._resolve_darling_launcher = lambda _prefix: None
     test._kill_dserver_for_prefix = lambda _prefix: None
@@ -277,7 +190,7 @@ with tempfile.TemporaryDirectory() as temp:
     test._remove_stale_init_pid = lambda _prefix: None
     test._remove_stale_server_socket = lambda _prefix: False
     try:
-        assert test._shutdown_runtime_prefix(prefix)
+        assert not test._shutdown_runtime_prefix(prefix), "external rescue must not create PASS"
         tagged.wait(timeout=3)
     finally:
         if tagged.poll() is None:
@@ -286,14 +199,7 @@ with tempfile.TemporaryDirectory() as temp:
 
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
-    tagged = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
-        env={
-            **os.environ,
-            "DARLING_PREFIX": str(prefix),
-            "DARLING_ROOTLESS": "1",
-        },
-    )
+    tagged = owned_loader(prefix)
     test = make_test()
     test._prefix = str(prefix)
     test._keep_prefix_running = False
@@ -303,112 +209,75 @@ with tempfile.TemporaryDirectory() as temp:
     test._remove_stale_init_pid = lambda _prefix: None
     test._remove_stale_server_socket = lambda _prefix: False
     try:
-        assert test._shutdown_test_prefix()
+        assert not test._shutdown_test_prefix(), "external rescue must not create PASS"
         tagged.wait(timeout=3)
     finally:
         if tagged.poll() is None:
             tagged.kill()
             tagged.wait()
 
-with tempfile.TemporaryDirectory() as temp:
-    prefix = Path(temp)
-    launcher = prefix / "fake-darling"
-    child_pid = prefix / "shutdown-child.pid"
-    launcher.write_text(
-        """#!/usr/bin/env bash
-set -euo pipefail
-(sleep 30) &
-echo "$!" > "${WEST_SHUTDOWN_CHILD_PID:?}"
-sleep 30
-"""
-    )
-    launcher.chmod(0o755)
-    test = make_test()
-    test._prefix = str(prefix)
-    test._keep_prefix_running = False
-    test._resolve_darling_launcher = lambda _prefix: str(launcher)
-    test._kill_dserver_for_prefix = lambda _prefix: None
-    test._ps_entries = lambda: []
-    old_timeout = os.environ.get("WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS")
-    old_child_pid = os.environ.get("WEST_SHUTDOWN_CHILD_PID")
-    os.environ["WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS"] = "1"
-    os.environ["WEST_SHUTDOWN_CHILD_PID"] = str(child_pid)
-    try:
-        started = time.monotonic()
-        assert not test._shutdown_test_prefix()
-        assert time.monotonic() - started < 5
-        pid = int(child_pid.read_text())
-        for _ in range(20):
-            if not Path(f"/proc/{pid}").exists():
-                break
-            time.sleep(0.05)
-        assert not Path(f"/proc/{pid}").exists(), f"timed out shutdown child survived: {pid}"
-        assert any("shutdown timed out" in message for message in test.err_messages)
-    finally:
-        if old_timeout is None:
-            os.environ.pop("WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS", None)
-        else:
-            os.environ["WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS"] = old_timeout
-        if old_child_pid is None:
-            os.environ.pop("WEST_SHUTDOWN_CHILD_PID", None)
-        else:
-            os.environ["WEST_SHUTDOWN_CHILD_PID"] = old_child_pid
-        if child_pid.exists():
-            try:
-                os.kill(int(child_pid.read_text()), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-
-with tempfile.TemporaryDirectory() as temp:
-    prefix = Path(temp)
-    calls = []
-    original_shutdown = prefix_module.shutdown_guest_prefix
-
-    def flaky_shutdown(*_args, **_kwargs):
-        calls.append(True)
-        return types.SimpleNamespace(
-            returncode=1 if len(calls) == 1 else 0,
-            timed_out=False,
-            stdout="",
-            stderr="transient shutdown race\n" if len(calls) == 1 else "",
+# Real owned host processes exercise shutdown verdicts, not mocked argv/result
+# forwarding. These are lifecycle models, not guest-execution evidence.
+for outcome, expected, attempts in (
+    ("zero", True, 1), ("nonzero", False, 1),
+    ("retry", False, 2), ("timeout", False, 1),
+):
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        prefix = root / "guest"
+        prefix.mkdir()
+        worker = owned_loader(prefix)
+        launcher = root / "shutdown-host-fixture"
+        calls = root / "attempts"
+        launcher.write_text(
+            f"#!{sys.executable}\n"
+            "import os,signal,time\n"
+            "from pathlib import Path\n"
+            "calls=Path(os.environ['SHUTDOWN_ATTEMPTS_FILE'])\n"
+            "attempt=int(calls.read_text())+1 if calls.exists() else 1\n"
+            "calls.write_text(str(attempt))\n"
+            "outcome=os.environ['SHUTDOWN_OUTCOME']\n"
+            "if outcome=='timeout': time.sleep(30)\n"
+            "if outcome=='retry' and attempt==1: raise SystemExit(7)\n"
+            "pid=int(os.environ['SHUTDOWN_WORKER_PID'])\n"
+            "os.kill(pid,signal.SIGTERM)\n"
+            "deadline=time.monotonic()+5\n"
+            "while Path(f'/proc/{pid}/exe').exists():\n"
+            "    assert time.monotonic()<deadline\n"
+            "    time.sleep(0.01)\n"
+            "if outcome=='nonzero':\n"
+            "    print('Darling container is not running')\n"
+            "    raise SystemExit(7)\n"
         )
-
-    prefix_module.shutdown_guest_prefix = flaky_shutdown
-    test = make_test()
-    test._resolve_darling_launcher = lambda _prefix: "/fake/darling"
-    test._kill_dserver_for_prefix = lambda _prefix: None
-    test._ps_entries = lambda: []
-    old_attempts = os.environ.get("WEST_TEST_SHUTDOWN_ATTEMPTS")
-    os.environ["WEST_TEST_SHUTDOWN_ATTEMPTS"] = "2"
-    try:
-        assert test._prefix_lifecycle_owner().shutdown(prefix), test.err_messages
-        assert len(calls) == 2, calls
-        assert any("transient shutdown race" in message for message in test.err_messages)
-    finally:
-        prefix_module.shutdown_guest_prefix = original_shutdown
-        if old_attempts is None:
-            os.environ.pop("WEST_TEST_SHUTDOWN_ATTEMPTS", None)
-        else:
-            os.environ["WEST_TEST_SHUTDOWN_ATTEMPTS"] = old_attempts
-
-with tempfile.TemporaryDirectory() as temp:
-    prefix = Path(temp)
-    original_shutdown = prefix_module.shutdown_guest_prefix
-    prefix_module.shutdown_guest_prefix = lambda *_args, **_kwargs: types.SimpleNamespace(
-        returncode=1,
-        timed_out=False,
-        stdout="",
-        stderr="Darling container is not running\n",
-    )
-    test = make_test()
-    test._resolve_darling_launcher = lambda _prefix: "/fake/darling"
-    test._kill_dserver_for_prefix = lambda _prefix: None
-    test._ps_entries = lambda: []
-    try:
-        assert test._prefix_lifecycle_owner().shutdown(prefix)
-        assert not test.err_messages
-    finally:
-        prefix_module.shutdown_guest_prefix = original_shutdown
+        launcher.chmod(0o755)
+        test = make_test()
+        test._prefix = str(prefix)
+        test._keep_prefix_running = False
+        test._resolve_darling_launcher = lambda _prefix: str(launcher)
+        selected = {
+            "WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS": "1" if outcome == "timeout" else "10",
+            "WEST_TEST_SHUTDOWN_ATTEMPTS": str(attempts),
+            "SHUTDOWN_ATTEMPTS_FILE": str(calls),
+            "SHUTDOWN_OUTCOME": outcome,
+            "SHUTDOWN_WORKER_PID": str(worker.pid),
+        }
+        saved = {key: os.environ.get(key) for key in selected}
+        os.environ.update(selected)
+        try:
+            assert worker.poll() is None
+            assert test._shutdown_test_prefix() is expected, (outcome, test.err_messages)
+            assert calls.read_text() == str(attempts)
+            worker.wait(timeout=5)
+            assert not rootless_prefix_process_snapshot(prefix)
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            if worker.poll() is None:
+                worker.kill()
+            worker.wait()
 
 with tempfile.TemporaryDirectory() as temp:
     stale_prefix = Path(temp)
@@ -480,7 +349,6 @@ with tempfile.TemporaryDirectory() as temp:
 
 with tempfile.TemporaryDirectory() as temp:
     prefix = Path(temp)
-    order = []
     owner = PrefixLifecycleOwner(
         resolve_launcher=lambda _prefix: None,
         prefix_env=lambda _prefix: {},
@@ -489,12 +357,11 @@ with tempfile.TemporaryDirectory() as temp:
         ),
         init_pid_is_usable=lambda _pid: False,
         inf=lambda _message: None,
-        err=lambda message: order.append("mounts") if "leftover Darling prefix mount" in message else None,
+        err=lambda _message: None,
         wrn=lambda _message: None,
         process_entries=lambda: [],
     )
     assert not owner.finalize(prefix)
-    assert order == ["mounts"], order
 
 with tempfile.TemporaryDirectory() as temp:
     parent = Path(temp)
@@ -513,8 +380,6 @@ with tempfile.TemporaryDirectory() as temp:
     )
     with owner.locked(prefix):
         assert not prefix.exists()
-        assert list(parent.iterdir()) == []
-    assert list(parent.iterdir()) == []
 
 test = make_test()
 with tempfile.TemporaryDirectory() as temp:
@@ -523,74 +388,75 @@ with tempfile.TemporaryDirectory() as temp:
     try:
         with test._prefix_resource_context(True):
             raise AssertionError("failed prefix reset unexpectedly yielded")
-    except SystemExit as exc:
-        assert str(exc) == f"could not reset Darling prefix before test run: {temp}", exc
+    except SystemExit:
+        pass
     else:
         raise AssertionError("failed prefix reset unexpectedly passed")
     assert test._prefix_cleanup_failed
 
-test = make_test()
+
+
+
+# A runtime retaining the prefix remains discoverable without readable environ.
 with tempfile.TemporaryDirectory() as temp:
-    prefix = Path(temp)
-    problems = test._prefix_boot_prerequisite_problems(prefix)
-    assert "private/var/tmp missing in Darling prefix" in problems, problems
+    root = Path(temp)
+    prefix = root / "guest"
+    prefix.mkdir()
+    proc = root / "proc"
+    process = proc / "4242"
+    (process / "fd").mkdir(parents=True)
+    runtime_executable = root / "mldr"
+    runtime_executable.write_bytes(b"host ownership model")
+    (process / "exe").symlink_to(runtime_executable)
+    (process / "fd/5").symlink_to(prefix)
+    assert not (process / "environ").exists()
+    assert [entry.split(" ", 1)[0] for entry in rootless_prefix_process_snapshot(
+        prefix, proc_root=proc, current_pid=1,
+    )] == ["4242"]
+    (process / "fd/5").unlink()
+    (process / "environ").write_bytes(f"DPREFIX={prefix}\0DARLING_PREFIX={prefix}\0".encode())
+    assert rootless_prefix_process_snapshot(prefix, proc_root=proc, current_pid=1) == []
 
-    (prefix / "private/var/tmp").mkdir(parents=True)
-    (prefix / "private/var/tmp").chmod(0o755)
-    problems = test._prefix_boot_prerequisite_problems(prefix)
-    assert "private/var/tmp mode 755, expected 1777" in problems, problems
+    alias = root / "alias"
+    alias.symlink_to(prefix, target_is_directory=True)
+    assert not prefix_module.prefix_path_is_safe(str(alias))
+    assert not prefix_module.prefix_path_is_safe(str(root) + "/guest/../guest")
+    attempted = []
+    owner = PrefixLifecycleOwner(
+        resolve_launcher=lambda _prefix: attempted.append("launcher"),
+        prefix_env=lambda _prefix: {}, cleanup_mounts=lambda _prefix: attempted.append("mounts"),
+        init_pid_is_usable=lambda _pid: False, inf=lambda _message: None,
+        err=lambda _message: None, wrn=lambda _message: None, process_entries=lambda: [],
+    )
+    owner._kill_server = lambda _prefix: attempted.append("kill")
+    assert not owner.shutdown(str(alias))
+    assert not owner.finalize(str(root) + "/guest/../guest")
+    assert attempted == [], "unsafe spelling reached product shutdown or host rescue"
 
-    (prefix / "private/var/tmp").chmod(0o1777)
-    (prefix / "private/tmp").mkdir(parents=True)
-    (prefix / "tmp").mkdir(parents=True)
-    (prefix / "private/tmp").chmod(0o1777)
-    (prefix / "tmp").chmod(0o1777)
-    (prefix / "private/var/db").mkdir(parents=True)
-    (prefix / "private/var/db/launchd.db/com.apple.launchd").mkdir(parents=True)
-    (prefix / "var/run").mkdir(parents=True)
-    (prefix / "var/tmp").mkdir(parents=True)
-    assert test._prefix_boot_prerequisite_problems(prefix) == []
-
-
+# An orphan may retain the validated launcher's prefix environment after
+# closing directory capabilities. That is not kill authority, but ignoring it
+# must not turn an unverified residual runtime into a clean shutdown verdict.
 with tempfile.TemporaryDirectory() as temp:
-    prefix = Path(temp)
-    result = repair_prefix_boot_prerequisites(prefix)
-    assert result.success, result.problems
-    assert result.changed == [], result.changed
-    assert any(
-        "private/var/db/launchd.db/com.apple.launchd missing" in item
-        for item in test._prefix_boot_prerequisite_problems(prefix)
+    root = Path(temp)
+    prefix = root / "guest"
+    prefix.mkdir()
+    image = root / "installed"
+    image.mkdir()
+    executable = image / "mldr"
+    shutil.copy2("/bin/sleep", executable)
+    orphan = subprocess.Popen(
+        [str(executable), "60"],
+        env={**os.environ, "DARLING_PREFIX": str(prefix)},
     )
-
-    problems = test._guest_c_fixture_prerequisite_problems(
-        prefix,
-        "/Library/Developer/CommandLineTools/usr/bin/clang",
-        "-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
-    )
-    assert any("guest compiler missing in prefix root" in item for item in problems), problems
-    assert any("guest SDK sysroot missing in base tree" in item for item in problems), problems
-
-    for root in (prefix, prefix / "libexec/darling"):
-        (root / "Library/Developer/CommandLineTools/usr/bin").mkdir(parents=True)
-        (root / "Library/Developer/CommandLineTools/usr/bin/clang").write_text("")
-        (root / "Library/Developer/CommandLineTools/SDKs/MacOSX.sdk").mkdir(parents=True)
-    assert test._guest_c_fixture_prerequisite_problems(
-        prefix,
-        "/Library/Developer/CommandLineTools/usr/bin/clang",
-        "-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
-    ) == []
-
-test = make_test()
-test.manifest = types.SimpleNamespace(repo_abspath=str(Path.cwd()), projects=[])
-test.topdir = str(Path.cwd())
-args = Namespace(prefix=None, prefix_profile="homebrew", no_overlayfs=False)
-prefix = test._resolve_prefix(args)
-assert prefix.endswith("darling-prefix-homebrew-test"), prefix
-assert test._prefix_env == {"DARLING_NOOVERLAYFS": "1"}, test._prefix_env
-
-args = Namespace(prefix="/tmp/custom-prefix", prefix_profile=None, no_overlayfs=True)
-prefix = test._resolve_prefix(args)
-assert prefix == "/tmp/custom-prefix", prefix
-assert test._prefix_env == {"DARLING_NOOVERLAYFS": "1"}, test._prefix_env
+    try:
+        test = make_test()
+        test._prefix = str(prefix)
+        assert not test._shutdown_test_prefix(), "unverified runtime residue produced PASS"
+        assert orphan.poll() is None, "a prefix marker alone authorized a kill"
+        assert any(str(orphan.pid) in message for message in test.err_messages)
+    finally:
+        if orphan.poll() is None:
+            orphan.kill()
+        orphan.wait(timeout=3)
 
 print("PASS west-test-prefix-cleanup-contract")

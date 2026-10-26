@@ -2,7 +2,7 @@
 set -euo pipefail
 
 : "${DPREFIX:?west must provide the test prefix}"
-: "${DARLING_LAUNCHER:?west must provide the deployed launcher}"
+: "${DARLING_LAUNCHER:?west must provide the installed launcher}"
 repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$repo/testkit/scripts/darling-guest-shell.sh"
 

@@ -39,12 +39,10 @@ def arguments(
     return argparse.Namespace(
         prefix=str(root / "prefix with space"),
         build_dir=str(root / "build's output"),
-        expect_dyld_md5=None,
-        expect_mldr_md5=None,
-        expect_dserver_md5=None,
-        no_baseline_file=False,
+        runtime_root=root / "installed runtime",
+        source_root=root / "prepared source",
+        boot_smoke=False,
         allow_drift=["-project"],
-        extra_prefix=[],
         full=full,
         json=json_output,
         scope=scope,
@@ -81,8 +79,8 @@ def run_case(
     doctor._check_manifest_drift = MethodType(first, doctor)
     doctor._check_build_prefix = MethodType(remaining_with_topdir, doctor)
     doctor._check_prefix_boot_prereqs = MethodType(remaining, doctor)
-    doctor._check_baseline = MethodType(remaining, doctor)
-    doctor._check_extra_prefixes = MethodType(remaining, doctor)
+    doctor._check_installation = MethodType(remaining, doctor)
+    doctor._check_boot_smoke = MethodType(lambda self, args: None, doctor)
     exit_code = 0
     with (
         mock.patch.dict(os.environ, {}, clear=True),
@@ -188,8 +186,10 @@ with tempfile.TemporaryDirectory(prefix="doctor-output-contract-") as temporary:
     assert shlex.split(detail_lines[0].removeprefix("details: ")) == [
         "/opt/west launcher",
         "darling-doctor",
+        "--runtime-root=" + str(root / "installed runtime"),
         f"--prefix={root / 'prefix with space'}",
         "--build-dir=" + str(root / "build's output"),
+        "--source-root=" + str(root / "prepared source"),
         "--allow-drift=-project",
         "--full",
     ]
@@ -206,6 +206,13 @@ with tempfile.TemporaryDirectory(prefix="doctor-output-contract-") as temporary:
     doctor_parser = command.do_add_parser(parser_adder)
     parsed = root_parser.parse_args(["darling-doctor", "--full"])
     assert parsed.full is True and parsed.json is False
+    selected = root_parser.parse_args([
+        "darling-doctor", "--runtime-root", "/runtime", "--prefix", "/guest",
+        "--build-dir", "/build", "--source-root", "/prepared",
+    ])
+    assert selected.runtime_root == Path("/runtime") and selected.prefix == Path("/guest")
+    assert selected.source_root == Path("/prepared")
+    assert not hasattr(selected, "extra_prefix") and not hasattr(selected, "receipt_mode")
     try:
         doctor_parser.parse_args(["--full", "--json"])
     except SystemExit as error:
@@ -232,7 +239,7 @@ with tempfile.TemporaryDirectory(prefix="doctor-output-contract-") as temporary:
         assert replay.scope == scope
         assert payload["inputs"]["scope"] == scope
         if scope == "runtime" and runtime_checker is operational:
-            assert len(payload["errors"]) == 4
+            assert len(payload["errors"]) == 3
             assert all(error["type"] == "OSError" for error in payload["errors"])
 
 print("PASS doctor-output-contract")

@@ -1,195 +1,21 @@
-"""Durable development deployment receipt.
-
-The manifest-driven workflow makes a ``darling-workspace`` commit the product
-revision (see ``docs/adr/0001-workspace-manifest-is-the-product.md``). The
-post-deploy doctor must therefore verify the deployed bytes against the build
-that actually produced them, not against a historical known-good md5 set: a
-deliberate development deployment is supposed to differ from the historical
-baseline, and comparing it to that baseline rolls back correct work.
-
-A receipt is written by every deploy path that retains its result. It records:
-
-* the workspace identity (manifest commit and dirty state),
-* the source revisions of the components whose artifacts were built,
-* the build directory, and
-* one row per deployed file: destination, deployed sha256, build source and the
-  built source sha256.
-
-The doctor's default (``current``) receipt mode verifies ``sha256(deployed)``
-against the recorded digest for each row, and reports a row as a problem when
-the build artifact has moved on since the deploy (the deployed bytes are then
-stale relative to the current build). Historical ``deploy-baseline.md5``
-comparison remains available as an explicit regression mode.
-
-This module deliberately owns no orchestration: it is a small, read/write
-receipt used by the existing deploy paths and doctor checks.
-"""
-
+"""Immutable normal-install provenance, independent of mutable build and guest trees."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import stat
 import subprocess
-from pathlib import Path
-from typing import Any, Iterable
-
-try:
-    from .deploy_transaction import sha256_file
-except ImportError:
-    from deploy_transaction import sha256_file
+import uuid
+from pathlib import Path, PurePosixPath
+from typing import Any
 
 RECEIPT_FILENAME = ".darling-deploy-receipt.json"
-SCHEMA_VERSION = 1
-
-# Components recorded by default. These are the worktrees whose sources feed a
-# Darling runtime closure; each is recorded only when it is a live Git
-# worktree, so a partial checkout still produces an honest receipt.
-DEFAULT_COMPONENT_PATHS = (
-    "darling",
-    "darling/src/external/darlingserver",
-    "darling/src/external/xnu",
-    "darling/src/external/dyld",
-    "darling/src/external/libsystem",
-)
-
-
-def receipt_path(prefix: Path) -> Path:
-    """Return the receipt location for a prefix."""
-    return Path(prefix) / RECEIPT_FILENAME
-
-
-def _git(cwd: Path, *args: str) -> str | None:
-    result = subprocess.run(
-        ["git", "-C", str(cwd), *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip()
-
-
-def _worktree_identity(path: Path) -> dict[str, Any] | None:
-    if not (path / ".git").exists():
-        return None
-    revision = _git(path, "rev-parse", "HEAD")
-    if revision is None:
-        return None
-    # DIRTY AND UNTRACKED ARE DIFFERENT FACTS and the receipt must not conflate them: a component
-    # whose only difference is an untracked file (measured: `darling/docs/`, a West project path
-    # materialized INSIDE the darling repository) is not a component with uncommitted edits, and a
-    # gate that cannot tell them apart cannot say which one it saw.
-    status = _git(path, "status", "--porcelain") or ""
-    entries = [line for line in status.splitlines() if line.strip()]
-    untracked = [line for line in entries if line.startswith("??")]
-    return {
-        "revision": revision,
-        "dirty": bool(entries) and len(untracked) != len(entries),
-        "untracked": len(untracked),
-    }
-
-
-def workspace_identity(manifest_repo: Path) -> dict[str, Any]:
-    """Record the product revision: the manifest commit plus its dirty state."""
-    manifest_repo = Path(manifest_repo)
-    commit = _git(manifest_repo, "rev-parse", "HEAD")
-    status = _git(manifest_repo, "status", "--porcelain")
-    return {
-        "manifest_commit": commit,
-        "dirty": bool(status) if status is not None else None,
-    }
-
-
-def component_identity(
-    topdir: Path,
-    relative_paths: Iterable[str] = DEFAULT_COMPONENT_PATHS,
-) -> list[dict[str, Any]]:
-    """Record the HEAD of each component worktree that exists under ``topdir``."""
-    components: list[dict[str, Any]] = []
-    for relative in relative_paths:
-        path = Path(topdir) / relative
-        identity = _worktree_identity(path)
-        if identity is None:
-            continue
-        components.append({"path": relative, **identity})
-    return components
-
-
-def build_receipt(
-    *,
-    manifest_repo: Path,
-    topdir: Path,
-    build_dir: Path,
-    prefix: Path,
-    deployed: Iterable[tuple[Path, Path]],
-    component_paths: Iterable[str] = DEFAULT_COMPONENT_PATHS,
-    runtime_verdict: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build a receipt from deployed ``(source, destination)`` pairs."""
-    build_dir = Path(build_dir)
-    artifacts: list[dict[str, Any]] = []
-    for source, destination in deployed:
-        source = Path(source)
-        destination = Path(destination)
-        source_digest = sha256_file(source) if source.is_file() else None
-        artifacts.append(
-            {
-                "destination": str(destination),
-                "deployed_sha256": sha256_file(destination)
-                if destination.is_file()
-                else None,
-                "source": str(source),
-                "source_sha256": source_digest,
-            }
-        )
-    receipt = {
-        "schema_version": SCHEMA_VERSION,
-        "workspace": workspace_identity(manifest_repo),
-        "components": component_identity(topdir, component_paths),
-        "build_dir": str(build_dir),
-        "prefix": str(prefix),
-        "artifacts": artifacts,
-    }
-    if runtime_verdict is not None:
-        # The verdict the deployment was accepted with, recorded by whoever owns it (the workload
-        # runner), never guessed here. `west manifest --freeze` stays DERIVED evidence: it is
-        # reproducible from workspace.manifest_commit, which is the product revision.
-        receipt["runtime_verdict"] = runtime_verdict
-    return receipt
-
-
-def write_receipt(prefix: Path, receipt: dict[str, Any]) -> Path:
-    """Atomically write a receipt under ``prefix``."""
-    path = receipt_path(prefix)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(
-        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    os.replace(temporary, path)
-    return path
-
-
-def read_receipt(prefix: Path) -> dict[str, Any] | None:
-    """Read a receipt from ``prefix``; ``None`` when absent, raise when malformed."""
-    path = receipt_path(prefix)
-    if not path.is_file():
-        return None
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError(f"deployment receipt is not an object: {path}")
-    if payload.get("schema_version") != SCHEMA_VERSION:
-        raise ValueError(
-            f"deployment receipt schema {payload.get('schema_version')!r} "
-            f"is not supported (expected {SCHEMA_VERSION}): {path}"
-        )
-    return payload
+SCHEMA_VERSION = 2
 
 
 class ReceiptProblem:
-    """One doctor-actionable mismatch found while verifying a receipt."""
-
+    """One actionable installed-image integrity problem."""
     __slots__ = ("label", "message")
 
     def __init__(self, label: str, message: str) -> None:
@@ -197,108 +23,271 @@ class ReceiptProblem:
         self.message = message
 
 
-def stale_source_problems(receipt: dict[str, Any]) -> list[ReceiptProblem]:
-    """Report deployed files whose build source no longer matches the receipt.
+def receipt_path(runtime_root: Path) -> Path:
+    return Path(runtime_root) / RECEIPT_FILENAME
 
-    A deploy copies bytes out of the build tree, and the build tree keeps moving. When a recorded
-    source exists but its current digest differs from the recorded one, the deployed chain and the
-    build it came from have diverged. MEASURED: after a targeted build the deployed chain stopped
-    booting (shellspawn never became ready) and no check named the artifact that had gone stale,
-    which cost a prefix recreation; the cure is a deploy from the current build, or a re-bootstrap,
-    which deploys a consistent set.
-    """
-    problems: list[ReceiptProblem] = []
-    for row in receipt.get("artifacts") or []:
-        if not isinstance(row, dict):
+
+def _git(directory: Path, *arguments: str) -> str | None:
+    result = subprocess.run(
+        ["git", "-C", str(directory), *arguments], capture_output=True,
+        text=True, check=False,
+    )
+    return result.stdout.rstrip("\n") if result.returncode == 0 else None
+
+
+def _worktree_identity(directory: Path) -> dict[str, Any]:
+    if not (directory / ".git").exists():
+        return {"revision": None, "dirty": None, "untracked": None}
+    status = _git(directory, "status", "--porcelain", "--untracked-files=normal")
+    entries = status.splitlines() if status is not None else []
+    return {
+        "revision": _git(directory, "rev-parse", "HEAD"),
+        "dirty": any(not line.startswith("??") for line in entries) if status is not None else None,
+        "untracked": sum(line.startswith("??") for line in entries) if status is not None else None,
+    }
+
+
+def workspace_identity(manifest_repo: Path) -> dict[str, Any]:
+    identity = _worktree_identity(Path(manifest_repo))
+    return {"directory": str(manifest_repo), "manifest_commit": identity.pop("revision"), **identity}
+
+
+def _source_identity(source: Path) -> dict[str, Any]:
+    gitlinks: list[dict[str, Any]] = []
+
+    def visit(repository: Path, relative: Path) -> None:
+        if not (repository / ".git").exists():
+            return
+        tree = _git(repository, "ls-tree", "-rz", "HEAD")
+        if tree is None:
+            raise ValueError(f"cannot record source gitlinks at {repository}")
+        for record in tree.split("\0"):
+            if not record:
+                continue
+            metadata, path = record.split("\t", 1)
+            mode, kind, revision = metadata.split(" ")
+            if mode != "160000" or kind != "commit":
+                continue
+            child = repository / path
+            child_relative = relative / path
+            gitlinks.append({
+                "path": child_relative.as_posix(), "gitlink_revision": revision,
+                **_worktree_identity(child),
+            })
+            visit(child, child_relative)
+
+    visit(source, Path())
+    return {"directory": str(source), **_worktree_identity(source), "gitlinks": gitlinks}
+
+
+def _cache_configuration(cache: Path) -> dict[str, str]:
+    configuration: dict[str, str] = {}
+    for line in cache.read_text(encoding="utf-8").splitlines():
+        if line.startswith(("#", "//")) or ":" not in line or "=" not in line:
             continue
-        source = row.get("source")
-        recorded = row.get("source_sha256")
-        if not source or not recorded:
-            continue
-        src = Path(str(source))
-        if not src.is_file():
-            continue
-        actual = sha256_file(src)
-        if actual != recorded:
-            problems.append(
-                ReceiptProblem(
-                    f"build source {src.name}",
-                    f"the prefix does not hold the current build: {src} is {actual[:12]} while the "
-                    f"receipt recorded {str(recorded)[:12]} for the deployed bytes, so the chain and "
-                    f"the build tree have diverged. This is the normal state right after a "
-                    f"bootstrap, which deploys the profile's own runtime and rebuilds the build "
-                    f"tree, so a development change is in the prefix only after an explicit "
-                    f"deploy: run west darling-build --deploy (or re-bootstrap and redeploy) so "
-                    f"the whole chain comes from one build",
-                )
+        key, value = line.split("=", 1)
+        configuration[key.split(":", 1)[0]] = value
+    return configuration
+
+
+def _relative_path(value: object) -> PurePosixPath:
+    if not isinstance(value, str) or not value or "\0" in value:
+        raise ValueError("inventory path must be a nonempty relative pathname")
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(part in ("", ".", "..") for part in value.split("/")):
+        raise ValueError(f"unsafe inventory path: {value!r}")
+    return path
+
+
+def _installed_entry(runtime_root: Path, relative: str) -> dict[str, Any]:
+    """Walk directory capabilities without following any installed guest symlink."""
+    parts = _relative_path(relative).parts
+    descriptor = os.open(runtime_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        for component in parts[:-1]:
+            child = os.open(
+                component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=descriptor,
             )
-    return problems
+            os.close(descriptor)
+            descriptor = child
+        metadata = os.stat(parts[-1], dir_fd=descriptor, follow_symlinks=False)
+        entry: dict[str, Any] = {"path": relative, "mode": stat.S_IMODE(metadata.st_mode)}
+        if stat.S_ISLNK(metadata.st_mode):
+            entry.update(kind="symlink", target=os.readlink(parts[-1], dir_fd=descriptor))
+        elif stat.S_ISREG(metadata.st_mode):
+            file_descriptor = os.open(
+                parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=descriptor,
+            )
+            with os.fdopen(file_descriptor, "rb") as stream:
+                opened = os.fstat(stream.fileno())
+                if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+                    raise ValueError(f"installed file changed while recording {relative}")
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            entry.update(kind="file", sha256=digest, size=metadata.st_size)
+        else:
+            raise ValueError(f"install manifest names a non-file artifact: {relative}")
+        return entry
+    except OSError as error:
+        raise OSError(error.errno, error.strerror, str(runtime_root / relative)) from error
+    finally:
+        os.close(descriptor)
 
 
-def verify_receipt(receipt: dict[str, Any]) -> tuple[list[ReceiptProblem], list[str]]:
-    """Verify deployed bytes against the receipt.
+def write_receipt(runtime_root: Path, payload: dict[str, Any]) -> Path:
+    """Publish one schema-2 receipt atomically; caller owns installation lifecycle."""
+    root = Path(runtime_root)
+    path = receipt_path(root)
+    temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
 
-    Returns ``(problems, notes)``. A problem means the deployed state does not
-    match the recorded deployment; a note is informational.
-    """
+
+def read_receipt(runtime_root: Path) -> dict[str, Any] | None:
+    path = receipt_path(runtime_root)
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+        payload = json.load(stream)
+    if not isinstance(payload, dict) or payload.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(f"unsupported installed-runtime receipt schema at {path}; expected {SCHEMA_VERSION}")
+    if payload.get("runtime_root") != str(Path(runtime_root).resolve()):
+        raise ValueError(f"receipt installation root differs from {runtime_root}")
+    return payload
+
+
+def _installed_paths(root: Path) -> set[str]:
+    """Enumerate the complete image, including normal install-hook outputs."""
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    paths: set[str] = set()
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
+    try:
+        for directory, directories, files, directory_fd in os.fwalk(
+            ".", dir_fd=descriptor, follow_symlinks=False, onerror=raise_walk_error,
+        ):
+            base = Path(directory)
+            for name in directories:
+                if stat.S_ISLNK(os.stat(name, dir_fd=directory_fd, follow_symlinks=False).st_mode):
+                    paths.add((base / name).as_posix())
+            for name in files:
+                relative = (base / name).as_posix()
+                if relative != RECEIPT_FILENAME:
+                    paths.add(relative)
+    finally:
+        os.close(descriptor)
+    return paths
+
+
+def publish_install_receipt(
+    runtime_root: Path, build_dir: Path, manifest_repo: Path,
+    *, install_manifests: tuple[Path, ...] | None = None,
+) -> dict[str, Any]:
+    """Bind complete installed bytes to the actual normal CMake install manifests."""
+    root = Path(runtime_root).resolve()
+    build = Path(build_dir).resolve()
+    manifest = Path(manifest_repo).resolve()
+    cache = build / "CMakeCache.txt"
+    configuration = _cache_configuration(cache)
+    configured = configuration.get("CMAKE_INSTALL_PREFIX")
+    source_directory = configuration.get("CMAKE_HOME_DIRECTORY")
+    if not configured or Path(configured).resolve() != root:
+        raise ValueError(f"CMake build is not configured to install into {root}")
+    if not source_directory or not Path(source_directory).is_dir():
+        raise ValueError("CMake cache does not identify an available source directory")
+    manifests = install_manifests or (build / "install_manifest.txt",)
+    paths: set[str] = set()
+    manifest_identities = []
+    for install_manifest in manifests:
+        contents = Path(install_manifest).read_bytes()
+        manifest_identities.append({
+            "name": Path(install_manifest).name,
+            "sha256": hashlib.sha256(contents).hexdigest(),
+        })
+        for line in contents.decode("utf-8").splitlines():
+            installed = Path(line)
+            if not installed.is_absolute():
+                raise ValueError(f"install manifest entry is not absolute: {line!r}")
+            try:
+                relative = installed.relative_to(root).as_posix()
+            except ValueError as error:
+                raise ValueError(f"install manifest entry escapes runtime root: {line}") from error
+            _relative_path(relative)
+            if relative == RECEIPT_FILENAME:
+                raise ValueError("install manifest must not include its own provenance receipt")
+            paths.add(relative)
+    if not paths:
+        raise ValueError("normal install manifest contains no installed files")
+    paths.update(_installed_paths(root))
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "runtime_root": str(root),
+        "workspace": workspace_identity(manifest),
+        "source": _source_identity(Path(source_directory).resolve()),
+        "build": {
+            "directory": str(build),
+            "cache_sha256": hashlib.sha256(cache.read_bytes()).hexdigest(),
+            "configuration": configuration,
+            "install_manifests": manifest_identities,
+        },
+        "artifacts": [_installed_entry(root, relative) for relative in sorted(paths)],
+    }
+    write_receipt(root, payload)
+    return payload
+
+
+def verify_receipt(payload: dict[str, Any]) -> tuple[list[ReceiptProblem], list[str]]:
+    """Verify installed bytes only; rebuilding or removing the build never invalidates an image."""
     problems: list[ReceiptProblem] = []
     notes: list[str] = []
-    artifacts = receipt.get("artifacts")
+    if not isinstance(payload, dict) or payload.get("schema_version") != SCHEMA_VERSION:
+        return [ReceiptProblem("install receipt", "unsupported installed-runtime receipt schema")], notes
+    raw_root = payload.get("runtime_root")
+    if not isinstance(raw_root, str) or not Path(raw_root).is_absolute():
+        return [ReceiptProblem("install receipt", "receipt records no absolute runtime root")], notes
+    root = Path(raw_root)
+    artifacts = payload.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
-        problems.append(
-            ReceiptProblem("deployment receipt", "receipt records no deployed artifacts")
-        )
-        return problems, notes
+        return [ReceiptProblem("install receipt", "receipt records no installed artifacts")], notes
+    seen: set[str] = set()
     for row in artifacts:
         if not isinstance(row, dict):
-            problems.append(
-                ReceiptProblem("deployment receipt", f"malformed artifact row: {row!r}")
-            )
+            problems.append(ReceiptProblem("install receipt", "malformed inventory entry"))
             continue
-        destination = Path(str(row.get("destination", "")))
-        deployed_expected = row.get("deployed_sha256")
-        label = f"deployed {destination.name or destination}"
-        if not destination.is_file():
-            problems.append(
-                ReceiptProblem(label, f"missing at {destination} (recorded by the receipt)")
-            )
-            continue
-        deployed_actual = sha256_file(destination)
-        if deployed_expected is None:
-            problems.append(
-                ReceiptProblem(
-                    label,
-                    f"receipt records no deployed digest for {destination}",
-                )
-            )
-            continue
-        if deployed_actual != deployed_expected:
-            problems.append(
-                ReceiptProblem(
-                    label,
-                    f"deployed sha256 {deployed_actual[:12]} != receipt "
-                    f"{str(deployed_expected)[:12]} ({destination})",
-                )
-            )
-            continue
-        source = row.get("source")
-        source_expected = row.get("source_sha256")
-        if source and source_expected:
-            source_path = Path(str(source))
-            if not source_path.is_file():
-                notes.append(
-                    f"{label}: build source absent ({source}); deploy receipt accepted"
-                )
-            elif sha256_file(source_path) != source_expected:
-                problems.append(
-                    ReceiptProblem(
-                        label,
-                        f"build artifact changed since deploy ({source}); redeploy "
-                        "or rebuild the receipt",
-                    )
-                )
-            else:
-                notes.append(f"{label} matches deploy receipt")
-        else:
-            notes.append(f"{label} matches deploy receipt (no build source recorded)")
+        relative = row.get("path")
+        label = f"installed {relative}"
+        try:
+            _relative_path(relative)
+            if relative in seen:
+                raise ValueError("duplicate inventory pathname")
+            seen.add(relative)
+            actual = _installed_entry(root, relative)
+            if row != actual:
+                problems.append(ReceiptProblem(label, f"installed kind, mode, target or content differs from receipt: {root / relative}"))
+        except (OSError, ValueError) as error:
+            problems.append(ReceiptProblem(label, str(error)))
+    try:
+        unexpected = _installed_paths(root) - seen
+        for relative in sorted(unexpected):
+            problems.append(ReceiptProblem(f"installed {relative}", f"unreceipted artifact in immutable runtime: {root / relative}"))
+    except OSError as error:
+        problems.append(ReceiptProblem("install receipt", f"cannot enumerate installed image {root}: {error}"))
+    if not problems:
+        notes.append(f"{len(artifacts)} installed files/symlinks match schema-{SCHEMA_VERSION} receipt at {root}")
     return problems, notes

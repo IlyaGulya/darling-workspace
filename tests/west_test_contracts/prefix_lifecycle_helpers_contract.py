@@ -1,67 +1,28 @@
-"""Contract for the prefix lifecycle helpers that moved out of ``test.py``.
-
-``PrefixLifecycleMixin`` owns prefix resolution, the retained-provider marker
-check, the bootstrap diagnostics that must survive prefix cleanup, and the
-E-UNION fixture assertions.  These assertions cover that observable behaviour,
-including the exact refusals that keep a stale or wrong prefix from being
-silently accepted.
-"""
+"""Installed-runtime prefix resolution, diagnostic capture and fixture assertions."""
 
 from __future__ import annotations
 
-import json
+import fcntl
 import os
 import stat
+import subprocess
 import sys
 import tempfile
-import types
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "west_commands"))
 
-west_module = types.ModuleType("west")
-west_commands_module = types.ModuleType("west.commands")
-
-
-class WestCommand:
-    pass
+import test_prefix as prefix_module
+from test_prefix import PrefixLifecycleMixin
+from runtime_install import InstalledRuntime
+from test_execution import run_bounded
 
 
-west_commands_module.WestCommand = WestCommand
-sys.modules.setdefault("west", west_module)
-sys.modules.setdefault("west.commands", west_commands_module)
-
-import west_commands.test as test_module  # noqa: E402
-
-# Importing the facade puts ``west_commands`` on sys.path, so the top-level
-# names below are the very modules the facade resolves at call time.
-import test_prefix as prefix_module  # noqa: E402
-from west_commands.test import (  # noqa: E402
-    DarlingTest,
-    # Taken from the facade: its inheritance resolves these from the top-level
-    # module names, so a package-relative import would be a second class object.
-    RETAINED_RUNTIME_PROFILE_MARKER,
-    RuntimeProfileDeployment,
-)
-
-PROFILE_DEFINITION = {
-    "source-profile": "homebrew",
-    "source-module": "darling/src/external/xnu",
-    "source-modules": ["darling"],
-    "runtime-artifacts": [
-        {
-            "build-targets": ["system_kernel"],
-            "deploy": ["usr/lib/system/libsystem_kernel.dylib"],
-        }
-    ],
-    "launcher-env": {"DARLING_NOOVERLAYFS": "1"},
-}
-
-
-def new_test(**attributes) -> DarlingTest:
-    test = DarlingTest.__new__(DarlingTest)
+def new_test(**attributes) -> PrefixLifecycleMixin:
+    test = PrefixLifecycleMixin.__new__(PrefixLifecycleMixin)
     test.inf = lambda _message: None
     test.err = lambda _message: None
     test.wrn = lambda _message: None
@@ -85,88 +46,188 @@ def expect_die(call, needle: str) -> None:
     raise AssertionError(f"expected a refusal containing {needle!r}")
 
 
-# --- _resolve_prefix ------------------------------------------------------
-test = new_test()
-assert test._resolve_prefix(SimpleNamespace(
-    no_overlayfs=False, prefix=None, prefix_profile=None
-)) is None, "no prefix source must resolve to no prefix"
-
-test = new_test()
-assert test._resolve_prefix(SimpleNamespace(
-    no_overlayfs=False, prefix="existing:/tmp/west-prefix", prefix_profile=None
-)) == "/tmp/west-prefix", "the existing: marker must be stripped"
-assert test._prefix_env == {}
-
-test = new_test()
-test._resolve_prefix(SimpleNamespace(
-    no_overlayfs=True, prefix="/tmp/west-prefix", prefix_profile=None
-))
-assert test._prefix_env == {"DARLING_NOOVERLAYFS": "1"}
-
-test = new_test(topdir="/workspace")
-test._load_retained_prefix_env = lambda prefix: None
-assert test._resolve_prefix(SimpleNamespace(
-    no_overlayfs=False, prefix=None, prefix_profile="smoke"
-)).endswith("darling-prefix-smoke")
-assert test._prefix_env == {}
-
-test = new_test(topdir="/workspace")
-test._load_retained_prefix_env = lambda prefix: None
-assert test._resolve_prefix(SimpleNamespace(
-    no_overlayfs=False, prefix=None, prefix_profile="homebrew"
-)).endswith("darling-prefix-homebrew-test")
-assert test._prefix_env == {"DARLING_NOOVERLAYFS": "1"}
-
-test = new_test()
-expect_die(
-    lambda: test._resolve_prefix(SimpleNamespace(
-        no_overlayfs=False, prefix="/tmp/p", prefix_profile="homebrew"
-    )),
-    "--prefix and --prefix-profile are mutually exclusive",
-)
-
-previous = os.environ.get("DPREFIX")
-os.environ["DPREFIX"] = "/tmp/west-dprefix"
+# Prefix resolution does not inspect retired parser flags or provision state.
+saved_prefix = os.environ.pop("DPREFIX", None)
 try:
     test = new_test()
-    assert test._resolve_prefix(SimpleNamespace(
-        no_overlayfs=False, prefix=None, prefix_profile=None
-    )) == "/tmp/west-dprefix"
-finally:
-    if previous is None:
-        del os.environ["DPREFIX"]
-    else:
-        os.environ["DPREFIX"] = previous
-
-# --- _darling_prefix_env --------------------------------------------------
-test = new_test(_prefix_env={"DARLING_NOOVERLAYFS": "1"})
-assert test._darling_prefix_env(Path("/tmp/west-prefix")) == {
-    "DPREFIX": "/tmp/west-prefix",
-    "DARLING_PREFIX": "/tmp/west-prefix",
-    "DARLING_NOOVERLAYFS": "1",
-}
-
-# --- _load_retained_prefix_env -------------------------------------------
-with tempfile.TemporaryDirectory(prefix="west-retained-") as raw:
-    prefix = Path(raw)
-    test = new_test(_ctest_runtime_profile_definitions=lambda: {"extra": PROFILE_DEFINITION})
-    (prefix / RETAINED_RUNTIME_PROFILE_MARKER).write_text(
-        json.dumps({"schema": 2, "profile": "extra", "source-profile": "homebrew"})
-    )
-    test._load_retained_prefix_env(prefix)
-    assert test._prefix_env == {"DARLING_NOOVERLAYFS": "1"}, test._prefix_env
-
-    test = new_test(_ctest_runtime_profile_definitions=lambda: {"extra": PROFILE_DEFINITION})
-    (prefix / RETAINED_RUNTIME_PROFILE_MARKER).write_text(
-        json.dumps({"schema": 2, "profile": "extra", "source-profile": "other"})
-    )
-    test._load_retained_prefix_env(prefix)
-    assert test._prefix_env == {}, "a foreign retained profile must not contribute flags"
-
-    test = new_test(_ctest_runtime_profile_definitions=lambda: {"extra": PROFILE_DEFINITION})
-    (prefix / RETAINED_RUNTIME_PROFILE_MARKER).write_text("{not json")
-    test._load_retained_prefix_env(prefix)
+    assert test._resolve_prefix(SimpleNamespace(prefix=None)) is None
+    expect_die(lambda: test._resolve_prefix(SimpleNamespace(prefix="/state/guest/../guest")), "unsafe Darling prefix path")
+    expect_die(lambda: test._resolve_prefix(SimpleNamespace(prefix="/state/./guest")), "unsafe Darling prefix path")
     assert test._prefix_env == {}
+    os.environ["DPREFIX"] = "/state/from-environment"
+    assert test._resolve_prefix(SimpleNamespace(prefix=None)) == "/state/from-environment"
+    assert test._resolve_prefix(SimpleNamespace(prefix="/state/explicit")) == "/state/explicit"
+finally:
+    if saved_prefix is None:
+        os.environ.pop("DPREFIX", None)
+    else:
+        os.environ["DPREFIX"] = saved_prefix
+
+runtime = InstalledRuntime(Path("/opt/darling"), Path("/opt/darling/bin/darling"),
+                           Path("/opt/darling/libexec/darling"), None)
+test = new_test(_runtime=runtime, _installed_runtime=lambda: runtime)
+environment = test._darling_prefix_env("/state/guest")
+assert environment["DPREFIX"] == "/state/guest"
+assert environment["DARLING_PREFIX"] == "/state/guest"
+assert environment["DARLING_LAUNCHER"] == "/opt/darling/bin/darling"
+assert environment["DARLING_RUNTIME_ROOT"] == "/opt/darling"
+assert test._resolve_darling_launcher("/state/guest") == str(runtime.launcher)
+assert test._resolve_darling_launcher("/state/another-guest") == str(runtime.launcher)
+
+
+# A lease is external to a virgin guest prefix and independent of its siblings.
+with tempfile.TemporaryDirectory(prefix="west-prefix-lease-contract-") as temporary:
+    parent = Path(temporary)
+    first = parent / "first"
+    sibling = parent / "second"
+    owner = prefix_module.PrefixLifecycleOwner(
+        resolve_launcher=lambda _prefix: None,
+        prefix_env=lambda _prefix: {},
+        cleanup_mounts=lambda _prefix: SimpleNamespace(changed=[], problems=[], success=True),
+        init_pid_is_usable=lambda _pid: False,
+        inf=lambda _message: None, err=lambda _message: None, wrn=lambda _message: None,
+        process_entries=lambda: [],
+    )
+    first_lease = prefix_module.prefix_lease_path(first)
+    sibling_lease = prefix_module.prefix_lease_path(sibling)
+    assert first_lease.parent == parent and first_lease != sibling_lease
+    with owner.locked(first):
+        assert not first.exists(), "leasing must not initialize or decorate guest state"
+        inode = first_lease.stat().st_ino
+        descriptor = os.open(first_lease, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pass
+            else:
+                raise AssertionError("the same prefix acquired a second lease")
+        finally:
+            os.close(descriptor)
+        descriptor = os.open(
+            sibling_lease, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
+        )
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+    assert first_lease.stat().st_ino == inode
+    with owner.locked(first):
+        assert first_lease.stat().st_ino == inode
+    first_lease.unlink()
+    victim = parent / "unrelated"
+    victim.write_text("preserve\n")
+    first_lease.symlink_to(victim)
+    try:
+        with owner.locked(first):
+            raise AssertionError("symlink lease was accepted")
+    except OSError:
+        pass
+    assert victim.read_text() == "preserve\n"
+    first_lease.unlink()
+    os.mkfifo(first_lease, 0o600)
+    try:
+        with owner.locked(first):
+            raise AssertionError("nonregular lease was accepted")
+    except ValueError:
+        pass
+    first_lease.unlink()
+    with patch.object(prefix_module.os, "fstat", return_value=SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o600, st_uid=os.geteuid() + 1,
+    )):
+        try:
+            with owner.locked(first):
+                raise AssertionError("another user's lease was accepted")
+        except ValueError:
+            pass
+
+# Real CTest descendants borrow the same open-file description without releasing
+# its ancestor's lock. Ordinary subprocesses receive neither token nor lease FD.
+with tempfile.TemporaryDirectory(prefix="west-borrowed-prefix-contract-") as temporary:
+    parent = Path(temporary)
+    prefix = parent / "guest"
+    lease = prefix_module.prefix_lease_path(prefix)
+    child = parent / "borrow.py"
+    sentinel = parent / "borrowed"
+    child.write_text(
+        "import os,sys\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(0, {str(ROOT / 'west_commands')!r})\n"
+        "from test_prefix import prefix_lease,validate_borrowed_prefix_lease\n"
+        "from test_execution import run_bounded\n"
+        "prefix=sys.argv[1]\n"
+        "descriptor=validate_borrowed_prefix_lease(prefix)\n"
+        "assert descriptor is not None\n"
+        "with prefix_lease(prefix) as borrowed:\n"
+        "    assert borrowed == descriptor\n"
+        "metadata=os.fstat(descriptor)\n"
+        "probe='import os,sys; from pathlib import Path; "
+        "assert not any(k in os.environ for k in (\"WEST_TEST_PREFIX_LEASE\",\"WEST_TEST_PREFIX_LEASE_FD\")); "
+        "expected=(int(sys.argv[1]),int(sys.argv[2])); "
+        "entries=list(Path(\"/proc/self/fd\").iterdir())\\n"
+        "for entry in entries:\\n"
+        " try: actual=entry.stat()\\n"
+        " except OSError: continue\\n"
+        " assert (actual.st_dev,actual.st_ino)!=expected\\n'\n"
+        "result=run_bounded([sys.executable,'-c',probe,str(metadata.st_dev),str(metadata.st_ino)],"
+        "cwd=Path.cwd(),env=dict(os.environ),timeout_seconds=10,capture_output=True)\n"
+        "assert result.returncode == 0, result.stdout+result.stderr\n"
+        "Path(sys.argv[2]).write_text('borrowed without releasing ancestor\\n')\n"
+    )
+    suite = parent / "suite"
+    suite.mkdir()
+    (suite / "CTestTestfile.cmake").write_text(
+        "add_test(borrowed_prefix " + " ".join(
+            f"[=[{argument}]=]" for argument in (sys.executable, str(child), str(prefix), str(sentinel))
+        ) + ")\n"
+    )
+    def assert_ancestor_still_locked():
+        contender = os.open(lease, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            try:
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return
+            raise AssertionError("borrowed child released the ancestor's lease")
+        finally:
+            os.close(contender)
+    with prefix_module.prefix_lease(prefix) as descriptor:
+        environment = dict(os.environ, WEST_TEST_PREFIX_LEASE=str(prefix),
+                           WEST_TEST_PREFIX_LEASE_FD=str(descriptor))
+        result = run_bounded(
+            ["ctest", "--test-dir", str(suite), "--output-on-failure"],
+            cwd=parent, env=environment, timeout_seconds=30,
+            capture_output=True, pass_fds=(descriptor,),
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert sentinel.read_text() == "borrowed without releasing ancestor\n"
+        assert_ancestor_still_locked()
+        sentinel.unlink()
+        unlocked = os.open(lease, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+        other = os.open(parent / "other-lease", os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+        try:
+            fcntl.flock(other, fcntl.LOCK_EX)
+            missing_descriptor = dict(environment)
+            missing_descriptor.pop("WEST_TEST_PREFIX_LEASE_FD")
+            cases = [
+                (str(prefix), missing_descriptor, ()),
+                (str(prefix), {**environment, "WEST_TEST_PREFIX_LEASE_FD": str(other)}, (other,)),
+                (str(prefix), {**environment, "WEST_TEST_PREFIX_LEASE_FD": str(unlocked)}, (unlocked,)),
+                (str(prefix) + "/../different", environment, (descriptor,)),
+            ]
+            for requested, selected, inherited in cases:
+                refused = subprocess.run(
+                    [sys.executable, str(child), requested, str(sentinel)],
+                    cwd=parent, env=selected, pass_fds=inherited,
+                    capture_output=True, text=True, timeout=10, check=False,
+                )
+                assert refused.returncode != 0, refused.stdout + refused.stderr
+                assert not sentinel.exists() and not prefix.exists()
+                assert_ancestor_still_locked()
+        finally:
+            os.close(other)
+            os.close(unlocked)
 
 # --- _parse_file_mode ----------------------------------------------------
 test = new_test()
@@ -177,82 +238,6 @@ expect_die(
     "eunion-template-files[2] has invalid mode",
 )
 
-# --- _retained_runtime_profile -------------------------------------------
-with tempfile.TemporaryDirectory(prefix="west-retained-profile-") as raw:
-    root = Path(raw)
-    prefix = root / "prefix"
-    (prefix / "bin").mkdir(parents=True)
-    launcher = prefix / "bin" / "darling"
-    launcher.write_text("#!/bin/sh\n")
-
-    test = new_test(
-        topdir=str(root),
-        manifest=SimpleNamespace(repo_abspath=str(root)),
-        _ctest_runtime_profile_definitions=lambda: {"extra": PROFILE_DEFINITION},
-    )
-    expect_die(
-        lambda: test._retained_runtime_profile("extra"),
-        "--reuse-prefix-runtime requires --prefix or DPREFIX",
-    )
-
-    test._prefix = str(prefix)
-    expect_die(
-        lambda: test._retained_runtime_profile("extra"),
-        "needs a retained provider marker",
-    )
-    marker = prefix / RETAINED_RUNTIME_PROFILE_MARKER
-    marker.write_text(json.dumps({"schema": 2, "profile": "extra", "source-profile": "homebrew"}))
-
-    original_identity = test_module.runtime_identity
-    test_module.runtime_identity = lambda **_kwargs: "fingerprint"
-    try:
-        expect_die(
-            lambda: test._retained_runtime_profile("extra"),
-            "retained provider fingerprint mismatch",
-        )
-
-        marker.write_text(
-            json.dumps(
-                {
-                    "schema": 2,
-                    "profile": "extra",
-                    "source-profile": "homebrew",
-                    "fingerprint": "fingerprint",
-                }
-            )
-        )
-        deployment = test._retained_runtime_profile("extra")
-        assert isinstance(deployment, RuntimeProfileDeployment)
-        assert deployment.name == "extra"
-        assert deployment.prefix == prefix
-        assert deployment.build_root == prefix
-        assert deployment.env["DPREFIX"] == str(prefix)
-        assert deployment.env["DARLING"] == str(launcher)
-        assert deployment.env["DARLING_LAUNCHER"] == str(launcher)
-        assert deployment.env["DARLING_NOOVERLAYFS"] == "1"
-
-        marker.write_text(
-            json.dumps(
-                {
-                    "schema": 2,
-                    "profile": "extra",
-                    "source-profile": "homebrew",
-                    "fingerprint": "different",
-                }
-            )
-        )
-        expect_die(
-            lambda: test._retained_runtime_profile("extra"),
-            "retained provider fingerprint mismatch",
-        )
-    finally:
-        test_module.runtime_identity = original_identity
-
-    test._ctest_runtime_profile_definitions = lambda: {}
-    expect_die(
-        lambda: test._retained_runtime_profile("extra"),
-        "unknown retained runtime profile: extra",
-    )
 
 # --- _verify_prefix_idle -------------------------------------------------
 errors: list[str] = []
@@ -271,7 +256,7 @@ try:
     with tempfile.TemporaryDirectory(prefix="west-bootstrap-state-") as raw:
         prefix = Path(raw)
         (prefix / ".darlingserver.stat.sock").write_text("")
-        state = DarlingTest._bootstrap_runtime_state(prefix)
+        state = PrefixLifecycleMixin._bootstrap_runtime_state(prefix)
 finally:
     prefix_module.rootless_prefix_process_snapshot = original_snapshot
 lines = state.splitlines()
@@ -323,7 +308,7 @@ with tempfile.TemporaryDirectory(prefix="west-eunion-assertions-") as raw:
     prefix = Path(raw)
     test = new_test()
 
-    lower = prefix / "libexec/darling/private/var/tmp/west-contract/template.txt"
+    lower = prefix / "usr/share/darling/tests/eunion/contract/template.txt"
     lower.parent.mkdir(parents=True)
     lower.write_text("contents\n")
     lower.chmod(0o644)
@@ -374,14 +359,14 @@ with tempfile.TemporaryDirectory(prefix="west-eunion-assertions-") as raw:
         raise AssertionError("a missing required E-UNION upper path must be refused")
 
     # A forbidden path is one that only the disposable template owns.
-    forbidden = prefix / "libexec/darling/private/var/tmp/west-contract/forbidden.txt"
+    forbidden = prefix / "usr/share/darling/tests/eunion/contract/forbidden.txt"
     test._verify_eunion_forbidden_template_paths_after(
-        {"name": "eunion"}, prefix, ["/private/var/tmp/west-contract/forbidden.txt"]
+        {"name": "eunion"}, prefix, ["/usr/share/darling/tests/eunion/contract/forbidden.txt"]
     )
     forbidden.write_text("created\n")
     try:
         test._verify_eunion_forbidden_template_paths_after(
-            {"name": "eunion"}, prefix, ["/private/var/tmp/west-contract/forbidden.txt"]
+            {"name": "eunion"}, prefix, ["/usr/share/darling/tests/eunion/contract/forbidden.txt"]
         )
     except SystemExit as exc:
         assert "forbidden E-UNION template path was created" in str(exc), exc

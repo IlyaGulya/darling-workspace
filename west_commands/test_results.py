@@ -1,4 +1,4 @@
-"""Result values shared by ``west test`` execution and RED proof layers."""
+"""Captured results shared by structured ``west test`` execution."""
 
 from __future__ import annotations
 
@@ -12,14 +12,3 @@ class InvocationResult:
         self.failure_phase = failure_phase
 
 
-class RuntimeBuildFailure(RuntimeError):
-    """A declared RED runtime build failed at one observable build phase."""
-
-    def __init__(self, phase: str, result):
-        super().__init__(f"runtime {phase} failed with rc {result.returncode}")
-        self.phase = phase
-        self.result = result
-
-
-class RuntimeRedProven(Exception):
-    """Internal signal that a declared RED failure was verified successfully."""

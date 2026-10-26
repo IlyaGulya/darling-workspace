@@ -3,17 +3,16 @@
 Private West manifest and portable coordination state for development on
 Darling without adding personal metadata to Darling or its upstream submodules.
 
-This repository is the source of truth for the development workspace. A
-checkout under `~/work/darling-dev/darling` is a working copy, not the durable
-record of tasks, unpublished branches, or prepared changes.
+The canonical West workspace is `/home/ilyagulya/work/wr-fresh`; this manifest
+owns coordination, not product source. See [environment](docs/environment.md)
+before selecting source, build, installation or guest-state paths.
 
 ## Ownership boundaries
 
 - `west.yml`: active multi-repository workspace manifest.
-- `west.lock.yml`: frozen upstream workspace revisions.
-- `handoff/`: Git bundles containing every local non-default branch.
+- `west.lock.yml`: derived frozen revision evidence, not a second source authority.
+- `handoff/`: optional archives of selected committed refs, not dirty-file backups.
 - `.beads/issues.jsonl`: shared task graph for humans and agents.
-- `state/repos.tsv`: reproducible snapshot of checked-out commits and branches.
 - `bin/dw`: workspace command implementation; invoke through `mise run dw`.
 
 Darling's `.gitmodules` defines the upstream build contract. West provides the
@@ -23,8 +22,8 @@ repository are migration evidence; use West for workspace setup.
 ## Setup on another machine
 
 ```bash
-git clone git@github.com:IlyaGulya/darling-workspace.git ~/work/darling-dev/darling-workspace
-cd ~/work/darling-dev
+git clone git@github.com:IlyaGulya/darling-workspace.git /home/ilyagulya/work/wr-fresh/darling-workspace
+cd /home/ilyagulya/work/wr-fresh
 # Review darling-workspace/mise.toml before trusting its tools and tasks.
 mise -C darling-workspace trust
 mise -C darling-workspace install
@@ -55,30 +54,28 @@ mise run west darling-doctor --scope workspace
 mise run west dw handoff
 ```
 
-`west darling-doctor --scope workspace` checks project worktrees against the
-**West manifest**
-(intentional drift is declared in `doctor-allow-drift.txt`) without requiring an
-already deployed runtime. `--scope runtime` checks build/deploy alignment and
-prefix prerequisites; the default `all` runs both scopes. Bootstrap runs the
-workspace scope before prefix mutation/build/deploy, then runtime scope after
-guest readiness. Runtime doctor failures retain raw stdout/stderr and structured
-problem rows in the runtime evidence archive's `diagnostics/` directory before
-rollback; follow the artifact path reported by the failure handler.
+`west darling-doctor --scope workspace` checks worktrees against the West
+manifest; intentional drift is declared in `doctor-allow-drift.txt`.
+`--scope runtime --runtime-root R --prefix P --build-dir B` checks selected
+build configuration, installation integrity and guest-state prerequisites.
+The default `all` combines scopes. Doctor does not boot unless `--boot-smoke`
+is explicitly requested; a scoped pass is not guest acceptance.
 
-For the four supported scenarios, use `mise run dw dev run` below.
-`mise run west darling-bootstrap --prefix P --build-dir B` fills a prefix from an
-explicitly configured build directory and reads no runtime profile: the source
-state is the West manifest's pins, the build variant is the one `B` was
-configured with, and the plan it reads (`testkit/darling-bootstrap.yml`) selects
-no revision. See `docs/test-infra.md`, "Direct bootstrap from an explicit build
-directory".
-Advanced `mise run west darling-build` is a
-doctor-gated operator build interface, with `--deploy` for its supported install
-path. Do not bypass a failing gate to make a run proceed or refresh
-`deploy-baseline.md5` merely to silence drift. Preserve the reviewed deployment
-identity and use the owning West deployment transaction. Never copy over or
-delete binaries while the selected prefix is running: request owner cleanup,
-establish that its processes have stopped, then deploy. Retain failure evidence.
+Installation `R` and writable guest state `P` are disjoint. Configure an absolute
+`CMAKE_INSTALL_PREFIX=R`, use default `COMPONENTS=stock`, build ALL and perform
+the full normal install:
+
+```sh
+mise run west darling-build --build-dir "$B" --runtime-root "$R" --install
+mise run west darling-bootstrap --runtime-root "$R" --prefix "$P" --no-build \
+  --guest-toolchain darling-command-line-tools
+```
+
+Omit the toolchain option for runtime-only smoke. Alternatively bootstrap accepts
+`--build-dir B` to build/install first. `--with-test-data` adds installed test
+assets, not a partial runtime. The launcher is `R/bin/darling`; never discover
+it in `P/bin` or copy system libraries into `P`. Publish a new root for new code;
+never rewrite a published image. See [bootstrap](docs/test-infra.md#bootstrap-a-fresh-prefix-before-a-prefix-backed-run).
 
 Doctor output has three explicit modes. The default is a bounded summary with
 at most eight problem/warning rows and an exact, shell-quoted command for the
@@ -99,11 +96,12 @@ Portable agent procedures live canonically in `.agents/skills/`.
 The manifest's `.claude/skills -> ../.agents/skills` relative symlink exposes
 the same procedures to Claude Code without maintaining duplicate copies.
 
-- `hooks/pretooluse-build-gate.sh` — a `PreToolUse` (Bash) hook. Before any
-  command that looks like a Darling build/deploy/boot (`ninja`, `west
-  darling-build`, a copy into `libexec/darling`, `darling shell`, `shellspawn`,
-  …) it runs `west darling-doctor` and **blocks** on failure. It checks build
-  directory and manifest/worktree alignment. Resolve failures before proceeding.
+- `hooks/pretooluse-build-gate.sh` — an optional `PreToolUse` (Bash) hook.
+  It recognizes selected build/install/boot command patterns and blocks when
+  its `west darling-doctor` invocation fails. Matching is not complete runtime
+  or prefix discovery, and the hook fails open when mise or the workspace is
+  unavailable. Resolve the explicit source/build/runtime configuration through
+  managed entrypoints; the hook is not a lifecycle lock or acceptance gate.
 - `hooks/stop-durability-reminder.sh` — a `Stop` hook. On session end it warns
   if the manifest repo is uncommitted, the independent runner is dirty, or a
   tracked source worktree is dirty, and blocks the stop once so the
@@ -166,19 +164,18 @@ From the manifest directory, `mise run dw dev ...` selects the pinned
 environment through the dw proxy task. For runtime diagnostics:
 
 ```sh
-mise run dw dev context homebrew --prefix /absolute/path/to/new-prefix
+mise run dw dev context homebrew --runtime-root /absolute/path/to/runtime \
+  --prefix /absolute/path/to/new-prefix
 mise run dw dev run homebrew-prepare
 mise run dw dev run homebrew-preflight
 mise run dw dev run exact-capture
 mise run dw dev run homebrew-source
 ```
 
-Configure a context once with an absent or empty new prefix. Contexts are local
-West settings; `dev context NAME` selects the active context, while
-`dev run --context NAME` and explicit path options override it for one run.
-The default runtime is `homebrew-lz4-source`, the checked-out diagnostic runner
-is incrementally built in release mode unless `--executor` is supplied, and
-archives default to the workspace parent's `darling-debug` directory.
+Contexts are local West settings; `dev context NAME` selects the active context,
+while `dev run --context NAME` and explicit paths override it for one run.
+Select an ordinary immutable installation and a separately owned guest prefix.
+Without `--executor`, the diagnostic runner may be built before execution.
 
 Runs own a recorded job and attach live observation automatically. `--dry-run`
 shows the underlying command without building, creating a prefix/job, or booting;
@@ -204,9 +201,7 @@ Advanced West commands are available (use `mise run dw dev` for these dev
 commands, or `mise run west ...` for the underlying interfaces):
 
 ```bash
-mise run west dev profiles
-mise run west dev profiles --kind runtime --json
-source <(mise run west dev profiles --completion bash)
+mise run west dev --help
 mise run west dev status
 mise run west dev start --source /path/to/source --destination /path/to/authoring \
   --base <commit-or-ref> --branch fix/<topic> --bead <id> --module <name> \
@@ -215,8 +210,10 @@ mise run west dev check quick \
   --evidence /path/outside/active/repos/quick.json
 mise run west dev check canonical \
   --evidence /path/outside/active/repos/canonical.json
-mise run west dev check acceptance --prefix /path/to/prefix \
-  --build-dir /path/to/build --evidence /path/outside/active/repos/acceptance.json
+mise run west dev check acceptance --workload WORKLOAD_ID \
+  --runtime-root /path/to/runtime --prefix /path/to/prefix \
+  --source-root /path/to/source --build-dir /path/to/build \
+  --evidence /path/outside/active/repos/acceptance.json
 mise run west dev package --receipt /path/to/acceptance.json \
   --output /path/to/review-package --evidence /path/to/package.json
 mise run west dev verify-package /path/to/review-package
@@ -225,68 +222,29 @@ mise run west dev verify-package /path/to/review-package
 `start` creates an independent exact-base clone without alternates, hardlinks,
 or mutations to active West repositories. Its `--dry-run --json` form emits
 the complete plan. `west dev recover-start --evidence <start.json>` recovers
-an interrupted transaction. `acceptance` is an unnarrowed Homebrew runtime
-tier and requires explicit `--prefix` and `--build-dir`. `package` requires a
-committed, current-workspace acceptance receipt and its embedded acceptance
-artifacts; `verify-package` revalidates a published package's complete closure
-without changing it.
+an interrupted transaction. Acceptance requires explicit named `--workload`
+values, `--runtime-root` and `--prefix`; repeat `--workload` for the complete
+intended selection. Workloads come from flat `testkit/workloads.yml`, not source
+profiles. Preserve their full oracles and report setup, runtime and native
+reference evidence separately.
 
-Human-mode checks report each step start/finish with elapsed time. Acceptance
-creates the independent control and candidate manifest clones concurrently,
-then bootstraps the candidate from the active West forest as a Git path cache
-with eight bounded update workers. The frozen manifest selects every
-checkout by exact revision; active worktrees and refs are not reused.
-Acceptance then copies only manifest-declared source refs into the candidate
-and runs the verification gates, the host materialized test, and the immutable
-oracle concurrently across isolated candidate, active, and control repository
-sets.
+Source review is tracked-only: tracked unstaged and staged diffs are included;
+untracked files are neither collected nor inventoried. Stage explicit new owned
+files before review. There are no `--tracked-only` or `--stage-new-files` flags.
 
-Successful results for those three steps are checkpointed under the manifest
-repository's Git common directory. The key binds the workspace commit and
-tree, the composed verification inputs, the frozen manifest, executable and
-installed West package content, the host compiler/build-tool content, and the
-exact non-secret environment inherited by the parallel gate. After the first
-verified replay,
-acceptance also publishes an immutable candidate cache containing only the
-verification-object deltas and evidence. A valid
-hit hydrates those objects into the fresh exact-base candidate instead of
-replaying the stack. The guest tier then receives a shared-object clone with
-independent refs, index, and worktree.
+`package` requires an acceptance receipt. The package contains that receipt,
+`source-review.json` and its snapshot, exact `manifest/west.yml`, per-owner
+tracked working/staged diffs, `package-index.json` and `SHA256SUMS`. It does not
+contain untracked bytes, recovery mboxes, portable Git object closure or the
+runtime image; it is not an independently rebuildable source distribution.
+`verify-package` checks the package without changing it. A receipt is not a
+signature: verify again after transfer.
 
-The candidate host tier and guest smoke run concurrently. Guest smoke selects
-the initialization and prebuilt-Mach-O cases in one `west test` invocation so
-prefix setup, locking, and shutdown happen once. Bootstrap runtime builds share
-a private persistent ccache directory; the cache identity binds the resolved
-Clang binaries, their content hashes, and version output, while debug/file
-prefix maps keep disposable build paths out of object identity. Rollback
-checks use an owned temporary root, so they cannot confuse another
-tier's live worktree with a leak. Guest-wide GC is deferred until both tiers
-finish, when a final sequential cleanup gate collects global garbage and
-verifies no live West test jobs remain. Corrupt reusable content and symlinked
-or otherwise unsafe cache paths fail closed.
-
-`profiles` discovers the CTest-owned `testkit/runtime-profiles.yml` catalog at
-invocation time. Its default summary is bounded to eight rows and names the
-exact `--json` command for the complete result; `--names --kind runtime` is the
-stable newline-delimited candidate protocol. Repeatable `--purpose` filters
-narrow runtime discovery; bootstrap completion uses the two bootstrap-capable
-purposes automatically and never advertises an ordinary runtime-only provider.
-Because discovery is dynamic, adding a valid manifest needs no completion
-regeneration. The sourced Bash helper
-completes only values for `--profile`, `--with-runtime-profile`, and
-`--bootstrap-runtime-profile`, including `--option=value`; it deliberately
-does not provide general West command/option completion and does not complete
-the unrelated `--prefix-profile` shortcut.
-
-The review package contains the accepted receipt, the exact manifest bytes,
-acceptance artifacts, recovery mboxes, Git object
-bundles, `package-index.json`, and `SHA256SUMS`. Offline verification derives
-the locked commit order and resulting trees from
-those contents. The candidate commit is explicitly acceptance-attested; its
-tree is independently replayed. A local package directory is mutable by
-its owner—the receipt is not a signature—so run `verify-package` immediately
-before use and again after copying or transfer. Any missing, extra, changed, or
-internally inconsistent payload is rejected.
+Installation identity in command results is a concise summary: receipt path and
+SHA, artifact count, source revision/dirty state and provenance. The full schema-2
+installation receipt inventories the complete actual image, including normal
+install-hook files and actual CMake manifest hashes; verification rejects extra
+files. A published image remains verifiable when its original build tree changes.
 
 Default `west dev` output is bounded: dirty repositories, active operations,
 and planned mutations each show at most eight entries and report the omitted
@@ -297,12 +255,8 @@ option values. A completed `check` or `package` instead places an exact
 `cat --` command for its durable evidence JSON there, so inspecting detail never
 reruns a mutation. Add `--json` when another tool consumes an operation.
 These results use `schema_version: 1` with an `operation` discriminator
-(`profiles`, `status`, `start`, `check`, `package`, or `package-verify`) and an
-operation-specific `state` such as `valid`, `healthy`, `degraded`,
-`in_progress`, `planned`, `committed`, `failed`, `invalid`, or
-`operational_error`. A successful `profiles` result has `state: "valid"`,
-records the selected runtime kind in `inputs.kind`, includes the full
-ordered `profiles` array, and returns 0. A caught validation or operational
+(`status`, `start`, `check`, `package`, or `package-verify`) and an
+operation-specific `state`. A caught validation or operational
 failure in JSON mode returns one action-specific error envelope and exits 1
 without appending human diagnostics. Successful operations exit 0, recorded
 command failures propagate their nonzero status, and invalid command-line

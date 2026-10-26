@@ -3,16 +3,15 @@
 The acceptance tests are re-run from scratch whenever they are selected, even
 when nothing that decides their verdict changed: the same test asset bytes, the
 same declaration, the same runtime identity and the same guest stack. A verdict
-is a function of an enumerable identity, so it can be reused the way the source
-forest, the build tree and the stock stack already are - provided the identity is
-conservative and a reused verdict is never presented as a fresh execution.
+is a function of an enumerable identity, so it can be reused like an immutable
+installed artifact or stock stack - provided the identity is conservative and
+a reused verdict is never presented as a fresh execution.
 
 The identity is derived from what already exists instead of inventing a second
 notion of freshness: the test asset bytes as the framework resolves them, a
 normalised digest of the test declaration, the runner identity including args,
-timeout and expected markers, the runtime identity (profile definition, patchset
-digests and source revisions, the same inputs ``runtime_identity`` feeds the
-runtime reuse cache), the stock stack request when the test consumes that
+timeout and expected markers, the selected installation's recorded runtime
+identity, the stock stack request when the test consumes that
 resource, the workload parameters that decide how much work the test does and
 the class those parameters put the run in, the guest toolchain identity and the
 host architecture.
@@ -52,6 +51,11 @@ import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
+
+if __package__:
+    from .evidence_storage import EvidenceError, open_payload
+else:
+    from evidence_storage import EvidenceError, open_payload
 
 from stock_replay_program import ENVIRONMENT_VARIABLE as WGET_ITERATIONS_VARIABLE
 from stock_replay_program import resolve_wget_iterations
@@ -303,11 +307,16 @@ def verdict_identity(
     ``None`` means the identity cannot be computed, and the caller must execute
     the test for real: an input that is unknown is never silently treated as
     unchanged. ``runtime``, ``stack`` and ``toolchain`` are the identities the
-    caller resolved - the runtime of the profile the test deploys, the stock
-    stack request the resource consumes and the guest toolchain the framework
-    verified - and are ``None`` only for a test that cannot consume them.
+    caller resolved - the selected installed runtime, the stock stack request
+    the resource consumes and the guest toolchain the framework verified.
+    An installation without recorded identity cannot reuse a verdict.
     """
 
+    if runtime is None and (
+        test.get("env") == "darling" or test.get("runs") == "guest"
+        or {"darling-prefix", "darling-eunion-prefix"} & set(invocation.get("requires_resources", ()))
+    ):
+        return None
     asset = asset_records(invocation)
     if asset is None:
         return None
@@ -521,8 +530,15 @@ def timestamp(now: float | None = None) -> str:
 
 
 def bundle_stdout_digest(bundle: Path | None) -> str | None:
-    """Return the guest stdout digest of one debug bundle, if it has one."""
+    """Hash verified logical guest stdout, or return None when unavailable."""
 
     if bundle is None:
         return None
-    return digest_file(Path(bundle) / "stdout.log")
+    try:
+        digest = hashlib.sha256()
+        with open_payload(Path(bundle) / "stdout.log") as payload:
+            for block in iter(lambda: payload.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+    except (EvidenceError, OSError, ValueError):
+        return None

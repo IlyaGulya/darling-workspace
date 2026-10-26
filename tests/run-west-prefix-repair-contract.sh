@@ -37,11 +37,10 @@ from west_commands.prefix_repair import (
 
 
 def prepare_versioned_clt(prefix: Path):
-    for root in (prefix, prefix / "libexec/darling"):
-        clt = root / "Library/Developer/CommandLineTools.apple-clt-15.3"
-        (clt / "usr/bin").mkdir(parents=True)
-        (clt / "SDKs/MacOSX.sdk").mkdir(parents=True)
-        (clt / "usr/bin/clang").write_text("#!/bin/sh\n")
+    clt = prefix / "Library/Developer/CommandLineTools.apple-clt-15.3"
+    (clt / "usr/bin").mkdir(parents=True)
+    (clt / "SDKs/MacOSX.sdk").mkdir(parents=True)
+    (clt / "usr/bin/clang").write_text("#!/bin/sh\n")
 
 
 def prepare_root_versioned_clt(prefix: Path):
@@ -106,14 +105,14 @@ with tempfile.TemporaryDirectory() as temp:
         "-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
     ) == []
 
-    for root in (prefix, prefix / "libexec/darling"):
-        clt = root / "Library/Developer/CommandLineTools"
-        clang = root / "Library/Developer/DarlingCLT/usr/bin/clang"
-        assert clt.is_symlink(), clt
-        assert clt.resolve().name == "CommandLineTools.apple-clt-15.3", clt.resolve()
-        assert (clt / "usr/bin/clang").exists(), clt
-        assert clang.is_symlink(), clang
-        assert clang.exists(), clang
+    clt = prefix / "Library/Developer/CommandLineTools"
+    clang = prefix / "Library/Developer/DarlingCLT/usr/bin/clang"
+    assert clt.is_symlink(), clt
+    assert clt.resolve().name == "CommandLineTools.apple-clt-15.3", clt.resolve()
+    assert (clt / "usr/bin/clang").exists(), clt
+    assert clang.is_symlink(), clang
+    assert clang.exists(), clang
+    assert not (prefix / "libexec/darling/Library/Developer/CommandLineTools").exists()
 
     second = repair_prefix_prerequisites(prefix)
     assert second.success, second
@@ -146,9 +145,9 @@ with tempfile.TemporaryDirectory() as temp:
     prepare_root_versioned_clt(prefix)
     repaired = repair_prefix_prerequisites(prefix)
     assert repaired.success, repaired
-    base_candidate = prefix / "libexec/darling/Library/Developer/CommandLineTools.apple-clt-15.3"
-    assert base_candidate.is_symlink(), base_candidate
-    assert (base_candidate / "usr/bin/clang").exists(), base_candidate
+    canonical = prefix / "Library/Developer/CommandLineTools"
+    assert canonical.is_symlink(), canonical
+    assert canonical.resolve().name == "CommandLineTools.apple-clt-15.3", canonical.resolve()
     assert guest_c_fixture_prerequisite_problems(
         prefix,
         "/Library/Developer/CommandLineTools/usr/bin/clang",
@@ -160,13 +159,10 @@ with tempfile.TemporaryDirectory() as temp:
     prepare_root_canonical_clt(prefix)
     repaired = repair_prefix_prerequisites(prefix)
     assert repaired.success, repaired
-    base_clt = prefix / "libexec/darling/Library/Developer/CommandLineTools"
-    assert base_clt.is_symlink(), base_clt
-    assert base_clt.resolve() == prefix / "Library/Developer/CommandLineTools"
-    for root in (prefix, prefix / "libexec/darling"):
-        clang = root / "Library/Developer/DarlingCLT/usr/bin/clang"
-        assert clang.is_symlink(), clang
-        assert clang.exists(), clang
+    clang = prefix / "Library/Developer/DarlingCLT/usr/bin/clang"
+    assert clang.is_symlink(), clang
+    assert clang.exists(), clang
+    assert not (prefix / "libexec/darling/Library/Developer/CommandLineTools").exists()
     assert guest_c_fixture_prerequisite_problems(
         prefix,
         "/Library/Developer/CommandLineTools/usr/bin/clang",

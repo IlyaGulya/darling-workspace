@@ -368,6 +368,7 @@ diagnose_if_failed() {
 	local rc="${1:-}"
 	[ -n "$rc" ] || return 0
 	[ "$rc" = "0" ] && return 0
+	[ "${WEST_JOB_NO_AUTODIAG:-0}" = "1" ] && return 0
 	# The diagnosis is a subcommand of the shared tool, not a script beside this one: one place to
 	# learn it from (`dwdiag diag --help`), one implementation, one JSON mode. If the tool is missing
 	# that is said here, because a failure with no diagnosis must not look like a failure with none.

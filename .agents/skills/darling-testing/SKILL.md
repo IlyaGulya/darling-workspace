@@ -22,10 +22,11 @@ below are policy, not a promise that every runner enforces them.
    `--bead`, `--submodule`, `--env`, `--diag` and `--label` selectors as applicable.
    `--changed` is a local hint, not complete coverage. Resolve scoped cases and
    actual environment variants, not incidental argv spellings or temporary CTest
-   indices. `--list` is discovery, not execution: it may configure CMake and
-   create temporary source worktrees. Declare runtime prerequisites separately;
-   adding a runtime provider does not select tests. Empty/inapplicable selections
-   and formal skips establish no coverage; never narrow away a failure.
+   indices. `--list` is discovery, not execution and may configure CMake.
+   Select flat `testkit/workloads.yml` contracts with `--workload ID`,
+   `--source-root S`, `--runtime-root R` and `--prefix P`; source selection and
+   installed runtime are independent. Empty/inapplicable selections and formal
+   skips establish no coverage; never narrow away a failure.
    See [selection authority](../../../docs/test-infra.md#authority-identity-and-selection)
    and [CTest selection](../../../docs/test-infra.md#ctest-selection-bridge).
 2. **Choose evidence honestly.** Classify actual execution as `host`, `compile`,
@@ -56,38 +57,47 @@ below are policy, not a promise that every runner enforces them.
    [Xcode setup](../../../docs/test-infra.md#xcode-build-workload-license-setup).
 4. **Make RED truthful.** Current-source regression runs must be GREEN.
    RED/GREEN needs the same behavioral oracle against known-bad and fixed
-   implementations, failing for the intended reason. Source-base proof redirects
-   a structured runner to bad/fixed source; it does not change a deployed runtime,
-   and guest-C source-base proof is explicitly rejected. Runtime proof needs an
-   actual bad/fixed build/deploy transaction, declared artifacts/dependencies and
-   rollback/cleanup, not a checkout swap. Preserve boot/lifecycle compatibility
-   and record nondefault build defines and paired source modules.
-   Existing `--prove-red` support is metadata-bound, not a general comparison
-   command for arbitrary source-owned CTest cases; do not recreate retired
-   authoring workflows to obtain it. Use a direct behavioral harness or report
-   the exact unsupported proof/blocker. Match the failure phase and domain
+   implementations, failing for the intended reason. The flat catalog accepts
+   only self-contained `red-proof.mode: self` declarations; the current
+   `west test` parser has no `--prove-red` option or source-base/runtime replay
+   workflow. A self/model oracle remains model evidence, not installed-runtime
+   proof. For real comparison, prepare bad/fixed source independently and select
+   it with `--source-root`; this alone changes no installed runtime bytes.
+   Runtime proof needs actual bad/fixed normal builds and separate complete
+   immutable installations, declared dependencies and lifecycle cleanup, not a
+   checkout swap or in-place image rewrite. Return explicitly to the fixed
+   image; preserve boot/lifecycle compatibility and record nondefault build
+   defines and paired source modules. Use an existing direct behavioral harness
+   or report the exact unsupported comparison/blocker; do not recreate retired
+   authoring or source-replay workflows. Match the failure phase and domain
    symptom, never shellspawn/protocol/setup failure before fixture `main`.
-   Provider-build regressions require an explicit provider-under-test oracle;
-   download/cache/setup failures are not provider RED. A self-contained model
-   remains model evidence, not deployed-runtime proof.
+   Build/install regressions require an explicit oracle for the operation under
+   test; download/cache/setup failures are not behavioral RED. A self-contained
+   model remains model evidence, not installed-runtime proof.
    See [evidence and ownership](../../../docs/test-infra.md#behavioral-evidence-and-proof-ownership)
    and [proof modes](../../../docs/test-infra.md#test-metadata-and-runners).
 5. **Own runtime execution.** Before guest launch read `skill://darling-boot`;
    before deployment identity/tracing read `skill://darling-diagnostics`.
    Bootstrap absent/empty prefixes separately: path selection is not provisioning.
    Guest C compiles/runs in Darling, not as a Linux binary through a launcher.
+   Flat guest-C workloads derive compiler prerequisites, but selection does not
+   provision them. For an installed image, explicitly run
+   `west darling-bootstrap --runtime-root R --prefix P --no-build` with
+   `--guest-toolchain darling-command-line-tools`; do not declare a workload
+   `guest-toolchain` metadata field.
    Verify the runtime that served the run, including dyld for real-prefix
    libsystem_kernel validation. Run long commands through `scripts/west-job.sh
-   start` with attached `follow`; use a named dev scenario only when its dry-run
-   resolves to the intended manifest-native route, not legacy authoring metadata.
-   Keep one lifecycle owner/run per prefix through final rc AND cleanup; observer
-   timeout is not cancellation. Use the owner's cancel path and separate lanes
-   for concurrent experiments.
+   start` with attached `follow`; named dev scenarios select supported workloads.
+   Keep one lifecycle owner/run per prefix through final rc AND cleanup, using
+   the persistent external per-prefix lease described by `darling-boot`, distinct
+   from the product lifecycle lock. Observer timeout is not cancellation; use
+   the owner's cancel path and separate lanes for concurrent experiments.
    Require the actual diagnostic tier: metadata guarded/forensic execution fails
    without a debug runner, but `add_compat_test()` currently warns and relabels
    such cases `bare` when no executor is configured. Check resolved labels and
    execution evidence; a requested tier is not guaranteed protection. Leftover
-   owned processes/mounts prevent a clean PASS.
+   owned processes/mounts prevent a clean PASS. Rescue cleanup cannot convert a
+   failure into clean PASS; acceptance requires ordinary product shutdown.
    See [operator entrypoints](../../../docs/test-infra.md#local-operator-entrypoints),
    [bootstrap](../../../docs/test-infra.md#bootstrap-a-fresh-prefix-before-a-prefix-backed-run)
    and [diagnostic tiers](../../../docs/test-infra.md#diagnostic-execution-tiers).

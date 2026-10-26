@@ -1,21 +1,15 @@
 """Contract for the CTest selection/argv logic that moved out of ``test.py``.
 
-``CtestSelectionMixin`` owns the composition of CTest argument vectors, the
-discovery rules that decide whether a selection is real, and the launcher
-environment a selected runtime profile contributes.  Every assertion here is
-about that observable behaviour, so a change to the moved logic fails this
-contract.
+``CtestSelectionMixin`` owns CTest argument vectors and exact discovery, with
+host and guest groups separated only for prefix lifecycle ownership.
 """
 
 from __future__ import annotations
 
 import json
 import sys
-import tempfile
 import types
-from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -35,17 +29,6 @@ sys.modules.setdefault("west.commands", west_commands_module)
 from west_commands.test import DarlingTest  # noqa: E402
 from west_commands.test_execution import ProcessResult  # noqa: E402
 
-PROFILE_DEFINITION = {
-    "source-profile": "homebrew",
-    "source-module": "darling/src/external/xnu",
-    "source-modules": ["darling"],
-    "runtime-artifacts": [
-        {
-            "build-targets": ["system_kernel"],
-            "deploy": ["usr/lib/system/libsystem_kernel.dylib"],
-        }
-    ],
-}
 
 
 def new_test(**attributes) -> DarlingTest:
@@ -198,9 +181,8 @@ expect_die(
     "CTest registration changed after discovery",
 )
 
-# --- _selected_ctest_runtime_groups ---------------------------------------
+# --- _selected_ctest_groups -----------------------------------------------
 test = new_test(
-    _ctest_runtime_profile_definitions=lambda: {"extra": dict(PROFILE_DEFINITION)},
     _ctest_catalogue=lambda _build: [],
     _resolved_diag=lambda variant: variant.get("diag") or "bare",
 )
@@ -212,7 +194,7 @@ def selection(stdout: str, returncode: int = 0):
 
 test._run_bounded = selection(json.dumps({"tests": []}))
 expect_die(
-    lambda: test._selected_ctest_runtime_groups(build_dir, ["-L", "x"], [], []),
+    lambda: test._selected_ctest_groups(build_dir, ["-L", "x"], []),
     "refusing an empty selection",
 )
 
@@ -221,13 +203,13 @@ registration = {
     "properties": [
         {
             "name": "LABELS",
-            "value": ["env:darling", "runtime-profile:extra"],
+            "value": ["env:darling"],
         }
     ],
 }
 test._run_bounded = selection(json.dumps({"tests": [registration]}))
-groups = test._selected_ctest_runtime_groups(build_dir, [], [], [])
-assert [group["profiles"] for group in groups] == [["extra"]], groups
+groups = test._selected_ctest_groups(build_dir, [], [])
+assert [group["darling"] for group in groups] == [True], groups
 assert [group["tests"] for group in groups] == [["darling/extra"]], groups
 assert [
     group["indices"] for group in groups
@@ -235,98 +217,116 @@ assert [
 
 test._run_bounded = selection(json.dumps({"tests": [registration]}))
 expect_die(
-    lambda: test._selected_ctest_runtime_groups(build_dir, [], [], [], env="host"),
+    lambda: test._selected_ctest_groups(build_dir, [], [], env="host"),
     "matched no applicable registrations",
 )
 
 test = new_test(
-    _ctest_runtime_profile_definitions=lambda: {"extra": dict(PROFILE_DEFINITION)},
     _ctest_catalogue=lambda _build: [],
     _resolved_diag=lambda variant: "bare",
     _run_bounded=selection(json.dumps({"tests": [registration]}), returncode=1),
 )
 expect_die(
-    lambda: test._selected_ctest_runtime_groups(build_dir, [], [], []),
-    "could not discover CTest runtime profiles",
+    lambda: test._selected_ctest_groups(build_dir, [], []),
+    "could not discover CTest selection",
 )
 
-# --- _metadata_ctest_selection --------------------------------------------
-# A selected runtime profile contributes its launcher environment for exactly
-# the window the selection is used, and the previous environment is restored.
-test = new_test(
-    _ctest_runtime_profile_definitions=lambda: {
-        "extra": {**PROFILE_DEFINITION, "launcher-env": {"DARLING_NOOVERLAYFS": "1"}}
-    },
-    _prefix_env={"EXISTING": "yes"},
-)
-with test._metadata_ctest_selection(
-    [({"path": "p.patch"}, {"name": "t", "runtime-profile": "extra"})],
-    env=None,
-    diag=None,
-    label=None,
-    additional_profiles=[],
-) as resolved:
-    assert resolved == [({"path": "p.patch"}, {"name": "t", "runtime-profile": "extra"})]
-    assert test._prefix_env == {"EXISTING": "yes", "DARLING_NOOVERLAYFS": "1"}, test._prefix_env
-assert test._prefix_env == {"EXISTING": "yes"}, "the previous launcher environment must return"
+# Host and guest registrations share one installation; only lifecycle differs.
+host = {"name": "host/extra", "properties": [{"name": "LABELS", "value": ["env:host"]}]}
+guest = {"name": "darling/other", "properties": [{"name": "LABELS", "value": ["env:darling"]}]}
+test._run_bounded = selection(json.dumps({"tests": [registration, host, guest]}))
+assert test._selected_ctest_groups(build_dir, [], []) == [
+    {"darling": False, "tests": ["host/extra"], "indices": [2]},
+    {"darling": True, "tests": ["darling/extra", "darling/other"], "indices": [1, 3]},
+]
 
-test = new_test(
-    _ctest_runtime_profile_definitions=lambda: {"extra": dict(PROFILE_DEFINITION)},
-)
-expect_die(
-    lambda: test._metadata_ctest_selection(
-        [({"path": "p.patch"}, {"name": "t", "runtime-profile": "missing"})],
-        env=None,
-        diag=None,
-        label=None,
-        additional_profiles=[],
-    ).__enter__(),
-    "unknown runtime profile: missing",
-)
+# Non-CTest workload bindings are passed through without mutating runtime env.
+test = new_test(_prefix_env={"EXISTING": "yes"})
+binding = ({"path": "workload"}, {"name": "t", "runner": "script"})
+with test._metadata_ctest_selection([binding], env=None, diag=None, label=None) as resolved:
+    assert resolved == [binding]
+    assert test._prefix_env == {"EXISTING": "yes"}
 
-test = new_test(
-    _ctest_runtime_profile_definitions=lambda: {
-        "one": {**PROFILE_DEFINITION, "launcher-env": {"A": "1"}},
-        "two": {**PROFILE_DEFINITION, "launcher-env": {"A": "2"}},
-    },
-)
-expect_die(
-    lambda: test._metadata_ctest_selection(
-        [
-            (
-                {"path": "p.patch"},
-                {"name": "t", "runtime-profile": "one", "_ctest": {"profiles": ["two"]}},
-            )
-        ],
-        env=None,
-        diag=None,
-        label=None,
-        additional_profiles=[],
-    ).__enter__(),
-    "conflict on launcher environment A",
-)
+# Flat structured runners join CTest without recursively registering references.
+import runpy
+import tempfile
+import yaml
 
-# --- _ctest_runtime_profile_context ---------------------------------------
-test = new_test(_darling_prefix_env=lambda prefix: {"DPREFIX": str(prefix), **test._prefix_env})
-test._prefix = tempfile.mkdtemp(prefix="west-ctest-profile-")
-test._resolve_darling_launcher = lambda prefix: f"{prefix}/bin/darling"
-with test._ctest_runtime_profile_context([]) as runtime_env:
-    assert runtime_env["DPREFIX"] == test._prefix
-    assert runtime_env["DARLING"] == f"{test._prefix}/bin/darling"
-    assert runtime_env["DARLING_LAUNCHER"] == f"{test._prefix}/bin/darling"
+bridge = runpy.run_path(str(ROOT / "testkit/scripts/run-workload.py"))
+with tempfile.TemporaryDirectory() as temporary:
+    catalog = Path(temporary) / "workloads.yml"
+    catalog.write_text(yaml.safe_dump({"version": 1, "workloads": [
+        {"id": "host-model", "module": "darling/src/external/xnu",
+         "bead": "dar-contract", "runner": "python", "script": "model.py",
+         "timeout-seconds": 19, "env": "host", "diag": "bare"},
+        {"id": "guest-oracle", "module": "darling", "env": "darling",
+         "runner": "guest-c-fixture", "script": "oracle.c", "diag": "guarded",
+         "timeout-seconds": 37},
+        {"id": "capture", "module": "darling-workspace", "env": "darling",
+         "runner": "diagnostic", "diagnostic": "exact-capture", "diag": "forensic",
+         "timeout-seconds": 15},
+        {"id": "native-oracle", "module": "darling", "env": "macos",
+         "runner": "python", "script": "native.py"},
+        {"id": "reference", "module": "darling", "ctest-name": "existing"},
+    ]}))
+    generated = "\n".join(bridge["registration_lines"](catalog, "/executor", "/bundles"))
+    assert "host/workload/host-model" in generated
+    assert "darling/workload/guest-oracle" in generated
+    assert "reference" not in generated and "existing" not in generated
+    for expected in ("env:host", "diag:bare", "bead:dar-contract", "submod:xnu",
+                     "name:host-model", "TIMEOUT [=[19]=]",
+                     "RESOURCE_LOCK [=[darling-prefix]=]", "RUN_SERIAL [=[TRUE]=]",
+                     "--executor", "/executor", "--bundle-root", "/bundles"):
+        assert expected in generated, (expected, generated)
+    declarations = bridge["load_workloads"](catalog)["workloads"]
+    guest = next(test for test in declarations if test["id"] == "guest-oracle")
+    capture = next(test for test in declarations if test["id"] == "capture")
+    assert guest["timeout-seconds"] == 37 and capture["timeout-seconds"] == 15
+    assert bridge["ctest_timeout"](guest) >= 3 * 37 + 15 + 60
+    assert bridge["ctest_timeout"](capture) >= 15 + 300 + 60
+    assert f'TIMEOUT [=[{bridge["ctest_timeout"](capture)}]=]' in generated
+    assert 'APPEND PROPERTY ENVIRONMENT "DARLING_SOURCE_ROOT=${DARLING_SRC}"' in generated
+    if sys.platform != "darwin":
+        assert "SKIP_RETURN_CODE [=[77]=]" in generated
+        args = types.SimpleNamespace(catalog=catalog, workload="native-oracle")
+        assert bridge["run_workload"](args) == 77
+    quoted = bridge["cmake_argument"]("path ]=] ${not_a_variable}")
+    assert quoted == "[==[path ]=] ${not_a_variable}]==]"
 
-deployments: list[tuple[list[str], bool]] = []
-
-
-@contextmanager
-def deployment_context(profiles, *, label_prefix, retain_deployment):
-    deployments.append((list(profiles), retain_deployment))
-    yield SimpleNamespace(env={"DEPLOYED": "1"})
-
-
-test = new_test(_runtime_profile_deployment_context=deployment_context)
-with test._ctest_runtime_profile_context(["extra"]) as runtime_env:
-    assert runtime_env == {"DEPLOYED": "1"}
-assert deployments == [(["extra"], False)], deployments
+# Applicability comes only from installed artifact facts, never a mutable cache.
+requirements = bridge["installed_requirement_problems"]
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary)
+    installed = root / "installation"
+    (installed / "libexec").mkdir(parents=True)
+    (installed / "libexec/oracle").write_text("fixture artifact")
+    build = root / "mutable-build"
+    build.mkdir()
+    (build / "CMakeCache.txt").write_text("RING:BOOL=OFF\n")
+    runtime = types.SimpleNamespace(root=installed, identity={"build": {
+        "directory": str(build), "configuration": {"RING": "YES", "FLAVOR": "release"}}})
+    declaration = {"id": "artifact-oracle", "requires-build-features": {
+        "RING": "ON", "FLAVOR": "release"}, "requires-installed-paths": ["libexec/oracle"]}
+    assert requirements(declaration, runtime) == []
+    runtime.identity["build"]["configuration"]["RING"] = "OFF"
+    problems = requirements(declaration, runtime)
+    assert len(problems) == 1 and "requires installed CMake RING=ON" in problems[0]
+    assert "selected RING=OFF" in problems[0]
+    runtime.identity["build"]["configuration"]["RING"] = True
+    assert requirements(declaration, runtime) == []
+    runtime.identity["build"]["configuration"].pop("RING")
+    assert "selected RING=unknown" in requirements(declaration, runtime)[0]
+    runtime.identity = None
+    unknown = requirements(declaration, runtime)
+    assert len(unknown) == 2 and all("=unknown" in problem for problem in unknown)
+    runtime.identity = {"build": {"configuration": {"RING": "ON", "FLAVOR": "debug"}}}
+    assert "selected FLAVOR=debug" in requirements(declaration, runtime)[0]
+    runtime.identity["build"]["configuration"]["FLAVOR"] = "release"
+    (installed / "libexec/oracle").unlink()
+    missing = requirements(declaration, runtime)
+    assert len(missing) == 1 and "requires installed path libexec/oracle" in missing[0]
+    assert "is missing libexec/oracle" in missing[0]
+    (installed / "libexec/oracle").symlink_to("intentionally-missing-oracle-target")
+    assert requirements(declaration, runtime) == []
 
 print("PASS ctest-selection-argv-contract")

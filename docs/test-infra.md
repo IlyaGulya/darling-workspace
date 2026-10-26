@@ -22,7 +22,7 @@ its observer:
 
 ```sh
 scripts/west-job.sh start --state-dir /absolute/path/to/new-job -- \
-  mise run west test --env darling \
+  mise run west test --env darling --runtime-root /absolute/path/to/runtime \
   --prefix /absolute/path/to/prepared-prefix
 scripts/west-job.sh follow --state-dir /absolute/path/to/new-job
 # Reconnect with follow; request owner cleanup when cancellation is needed:
@@ -31,8 +31,8 @@ scripts/west-job.sh cancel --state-dir /absolute/path/to/new-job
 
 Use a new job state directory for each run. Do not use log silence as proof of a
 hang or kill launchd/server processes by guessed PID or broad name patterns.
-Do not overwrite or delete runtime binaries while the prefix is live; use
-West's owning shutdown/deployment transaction and retain its failure evidence.
+Never rewrite a published installation. New code gets a new complete runtime
+root; retain image identity and the lifecycle owner's failure evidence.
 
 Noisy/long RED proofs, full guest CTest selections and contracts that invoke
 `west test` internally use the same supervisor. In particular,
@@ -52,11 +52,12 @@ such overlap requires sequential
 execution before a leak claim.
 
 Two or more agents that need their own prefix at the same time use an isolation
-lane instead of sharing one: `west dev lane create NAME --base <bootstrapped
-prefix>`, then `west test --lane NAME ...` for the run. The lane gives the run
-its own copy-on-write prefix, state root, `TMPDIR`/`XDG_RUNTIME_DIR`, build
-directory and `systemd --user` cgroup, so two lane runs do not serialize on a
-prefix lock and stopping one lane cannot reach another. The mechanism, its
+lane instead of sharing one: `west dev lane create NAME --base P --runtime-root R`,
+then `west test --lane NAME --runtime-root R ...` for the run. The lane gives
+the run its own copy-on-write guest state, state root,
+`TMPDIR`/`XDG_RUNTIME_DIR` and process scope. Runtime publication remains
+separate; concurrent runs may share a verified immutable image, never writable
+guest state. The mechanism, its
 measurements, its cleanup contract and its own tests are in
 [lane-isolation.md](lane-isolation.md); it is optional and no existing command
 changes behaviour without `--lane`.
@@ -76,10 +77,10 @@ is no host acceptance cache, fabricated plist or synthetic receipt: a fresh pref
 or a changed Xcode is checked by the real executable again. A failed accept or
 verification prevents the project build from starting.
 
-The prepared runtime must contain Darling's Mach-O `sudo` from `src/tools/sudo.c`,
-built and provisioned with the source-owned rootless toolchain payload. This tool
+The prepared installation must contain Darling's Mach-O `sudo` from
+`src/tools/sudo.c`, supplied by the complete normal product install. This tool
 changes emulated guest credentials, not Linux host credentials, and preserves
-`DEVELOPER_DIR`. The runner validates and names the prefix's image explicitly
+`DEVELOPER_DIR`. The runner validates and names the installation's image explicitly
 through `/Volumes/SystemRoot`; it never invokes the Linux host's `sudo` or asks
 for host administrative rights. Missing guest `sudo` stops before boot rather
 than falling back to a host command.
@@ -88,12 +89,16 @@ before workloads run. Xcode's license writer uses an atomic Foundation file writ
 and does not create its parent directory. Keep this prerequisite in launchd's
 shared runtime initialization, not a per-test `mkdir` or fabricated license file.
 
+The runner holds the shared external prefix lease before staging the project
+and through guest execution, shutdown and evidence retention. An inherited
+lease is validated before any prefix writes.
+
 Use an already prepared, idle prefix and one managed job:
 
 ```sh
 scripts/west-job.sh start --state-dir "$DW_STATE_ROOT/jobs/xcode-build" -- \
   mise exec -- bash scripts/xcodebuild-workload-run.sh \
-  --prefix "$PREFIX" --xcode-app "$XCODE_APP" --workload both
+  --runtime-root "$R" --prefix "$PREFIX" --xcode-app "$XCODE_APP" --workload both
 scripts/west-job.sh follow --state-dir "$DW_STATE_ROOT/jobs/xcode-build"
 ```
 
@@ -110,114 +115,46 @@ would falsely look like the build's terminal stop. Read compressed phase logs wi
 
 ### Bootstrap a fresh prefix before a prefix-backed run
 
-`--prefix PATH` only resolves a path; it does not create, boot or provision a
-prefix. A selection that needs a prefix therefore runs against a directory that
-is not usable until the bootstrap-only provider has run, and `west test`
-names the required command instead of leaving the operator to find it from a
-downstream failure. For CTest selections that compile inside Darling, provision
-the guest toolchain first, then run the selection as a separate invocation:
+`--runtime-root R` selects an ordinary product installation;
+`--prefix P` selects disjoint writable guest state, not an installation.
+Use an absent/empty owned prefix and bootstrap separately from test selection:
 
 ```sh
-mise run west test --prefix /absolute/path/to/owned-prefix \
-  --bootstrap-runtime-profile manifest-ring-on
-mise run west test --prefix /absolute/path/to/owned-prefix --env darling
+mise run west darling-bootstrap --runtime-root "$R" --prefix "$P" \
+  --build-dir "$B" --guest-toolchain darling-command-line-tools
+mise run west test --workload WORKLOAD_ID --source-root "$S" \
+  --runtime-root "$R" --prefix "$P" --env darling
 ```
 
-The diagnostic prints the same command in bare West form (`west test --prefix
-... --bootstrap-runtime-profile ...`); the `mise run west ...` proxy forwards its
-arguments unchanged.
-
-`--bootstrap-runtime-profile` is prefix provisioning, not a test selection. It
-is refused together with the CTest selectors
-(`--bead`, `--label`, `--submodule`, `--changed`, `--fuzz`, `--stress`), and with
-`--list`, `--with-runtime-profile`, `--reuse-prefix-runtime` and raw CTest
-passthrough arguments. It runs `darling-doctor --scope workspace`, builds and
-deploys the declared provider, proves it with a bounded guest smoke and the
-runtime doctor scope, and only then retains it. Both recommended providers use
-sources from the current West manifest (`source-mode: manifest`):
-
-| provider | provisions |
-| --- | --- |
-| `manifest-ring-baseline` | the rootless E-UNION Ring baseline, including the launcher at `<prefix>/bin/darling`, and no guest CommandLineTools |
-| `manifest-ring-on` | the same baseline plus the reviewed guest CommandLineTools package set, installed through the guest `installer` |
-
-For runtime-only workloads that do not compile inside the guest, choose
-`manifest-ring-baseline` instead. Run only one bootstrap for an absent/empty
-prefix; these are alternatives, not sequential setup steps.
-
-Both write the retained provider marker `<prefix>/.west-runtime-profile.json`
-(provider identity, guest toolchain and launcher/build fingerprint),
-which `--reuse-prefix-runtime`, the retained-prefix identity checks and the
-stock-stack and verdict caches verify. A bootstrapped prefix is distinguishable
-from a fresh one without running anything:
-
-- `<prefix>/bin/darling` exists; a fresh prefix has no launcher, and an explicit
-  `--prefix` never falls back to another prefix's launcher.
-- `<prefix>/.west-runtime-profile.json` names the provider that provisioned the
-  prefix. A missing marker means "never bootstrapped"; a marker for a different
-  profile or fingerprint means the prefix was provisioned for other work.
-- only the provisioning profile leaves `<prefix>/.west-command-line-tools.json`
-  and the canonical `Library/Developer/CommandLineTools/usr/bin/clang`. A guest C
-  fixture on a baseline-only prefix fails its guest-compiler prerequisite check
-  and is told to bootstrap with the provisioning profile.
-
-Use a short, owned prefix that is absent or empty. Bootstrap creates a missing
-prefix root under its lifecycle lock, but it does not relax the admission checks
-for a populated or mode-mismatched prefix, and a provider that stages a stock
-Homebrew installation refuses a prefix that already holds one.
-`--prefix-profile homebrew` is a shortcut to one prepared prefix, not a
-bootstrap.
+Omit the toolchain option for runtime-only smoke. Guest C requires the real
+reviewed CLT and SDK, installed through the guest installer and verified by the
+provisioner. No host compiler substitution, invented SDK metadata or system-file
+injection. CLT package/cache integrity and publisher authentication are distinct.
 
 ### Direct bootstrap from an explicit build directory
 
-`west darling-bootstrap` is the West-native path: the source state is whatever
-West has checked out, the build variant is whatever `--build-dir` was configured
-with, and the command turns that build into a working prefix without looking up
-a runtime profile, a source profile, a patch, a lock or a materialized forest.
+Configure `B` with absolute `CMAKE_INSTALL_PREFIX=R`, default
+`COMPONENTS=stock`, then build ALL and perform the complete normal install.
+`west darling-build --build-dir B --runtime-root R --install` publishes a new
+absent/empty root; `--with-test-data` additionally installs test assets.
+Bootstrap can build/install from `--build-dir B`. On a fresh image,
+`--no-build` with `--build-dir B` installs already-built files; it does not skip
+installation. To reuse a verified published image without rewriting it, omit
+`--build-dir` and pass `--no-build`. `--smoke-timeout-seconds N` bounds smoke.
 
-```sh
-mise run west darling-bootstrap --prefix /absolute/path/to/owned-prefix \
-  --build-dir /absolute/path/to/build-dir
-```
+Installation layout is `R/bin/darling`, `R/bin/darlingserver`,
+`R/libexec/darling`. The product launcher owns first-use guest-state initialization.
+No `P/bin` discovery, runtime providers/plans, partial deploys or duplicate
+system-library copies. Published roots are immutable: new code gets a new root.
+The full schema-2 receipt inventories actual image files, normal install-hook
+output and actual CMake manifest hashes; verification rejects extras and does
+not depend on later contents of the original build directory.
 
-It asserts that the build directory's own `CMakeCache.txt` carries the plan's
-configured defines and refuses a build directory for a different variant,
-naming the entry and printing the `cmake -S ... -B ...` line that would produce
-this one. It then builds the plan's targets, deploys through the same
-`RuntimeDeploymentService` transaction the profile bootstrap uses (typed mode
-marker, CMake component manifests, Mach-O closure resolution, the same
-deployment receipt), and runs one guest smoke inside that deployment, so the
-deployment and its receipt are retained only if the smoke passes. The doctor
-split is the usual one: `--scope workspace` before build/deploy, `--scope
-runtime` after the guest smoke, followed by an explicit receipt check.
+Bootstrap smoke is not the workload oracle and does not imply doctor or native
+acceptance. Run scoped doctor explicitly when needed. Rootless execution requires
+host unprivileged user/mount/PID namespace support; host denial is a prerequisite
+failure, not proof of guest-state corruption. Read [boot guidance](../.agents/skills/darling-boot/SKILL.md).
 
-The plan is `testkit/darling-bootstrap.yml`, and it is not a runtime profile: it
-declares the build targets, the expected cmake defines, the typed runtime mode,
-the launcher environment and one component per closure resource, and it selects
-no source revision. A plan that names `source-mode`, `source-profile`,
-`source-modules`, `patch`, `lock`, `revision` or `materialize` is refused by
-name, and `tests/run-darling-bootstrap-contract.sh` pins that refusal, the
-malformed-plan refusals, the define gate and the fact that the plan's Ring
-defines are exactly the values the manifest-native Ring provider declares.
-
-`west darling-bootstrap` supersedes `manifest-ring-*` for prefix bootstrap: those profiles are now the
-transitional path and are no longer the product authority for a West-native run. Parity is measured, not
-assumed: built from the West manifest pins (`darling` `9f6fd337…`, `darlingserver` `be0d647…`, whose tree is
-identical to the revision the accepted prefix recorded), the command deploys the full rootless closure, the
-runtime doctor passes with 7941 deployed files, the deployment receipt verifies with 0 problems, and the guest
-smoke prints `WEST_PREFIX_BOOTSTRAP_OK`. `--bootstrap-runtime-profile` remains for the flows that still need a
-runtime provider -- notably the reviewed guest CommandLineTools provisioning, which is an environment
-dependency the Ring runtime itself does not need -- until those are cut over too.
-
-The host must be able to create unprivileged user namespaces: Darling's rootless
-runtime creates mount and PID namespaces, and on a host that refuses them no
-prefix can boot at all. Measured: with
-`kernel.apparmor_restrict_unprivileged_userns=1` (the stock Ubuntu 24.04 value),
-every bootstrap — including a prefix that had booted earlier the same day —
-ended as `Rootless shellspawn did not become ready` with an AppArmor
-`userns_create` denial visible only in the kernel log. `west darling-bootstrap`
-checks this before it deploys and names the setting instead of timing out;
-`docs/suid-investigation.md` records the mechanism in full.
 
 ## CI execution contract
 
@@ -230,6 +167,24 @@ checks this before it deploys and names the setting instead of timing out;
 - the manual `macos` tier builds an installed bundle on `macos-14`, then
   configures consumption of that artifact on `macos-14`, `macos-15`, and
   `macos-26`. This configuration is not proof of a successful hosted run.
+
+Linux guest tiers select separate `DARLING_RUNTIME_ROOT` and writable prefixes.
+They prepare a normal stock ALL build and full install, then consume that image
+for smoke/full/toolchain selections; no CI-only system-library injection.
+The separate `guest-toolchain` and `clt-integrity` tiers retain real CLT
+provisioning/integrity gates. Workflow configuration establishes no guest PASS.
+
+For maintenance, inspect the same explicitly scoped GC request before removal:
+
+```sh
+mise run west test --gc --dry-run \
+  --proof-scratch-root "$DW_STATE_ROOT/proof-scratch" \
+  --runtime-evidence-root "$DW_STATE_ROOT/runtime-evidence"
+```
+
+Ordinary GC preserves failed runtime evidence. `--gc-runtime-evidence` explicitly
+opts into collecting it; preserve required acceptance bytes outside these roots
+with SHA-256 hashes first. Never run GC unattended or delete prefix lease files.
 
 `ci/run-test-tier.sh` is the sole tier entrypoint. `ci/bootstrap-west.sh`
 materializes a clean checkout before Linux tiers. Hosted Linux jobs set
@@ -266,11 +221,11 @@ Local Linux RED/GREEN evidence is not a native macOS or hosted-matrix PASS.
 
 ### Inventory boundary and evidence
 
-The collector normalizes the concrete test declarations in the workspace with
-the production `test_manifest.load_test_profile`, resolving repository names
-through West. It counts each declaration's entries independently, not
-inherited/composed runtime stacks. A binding is a test-to-case entry, not a
-unique executable or a PASS.
+The collector normalizes flat `testkit/workloads.yml` through production
+`test_manifest.load_workloads`, resolving repository names through West. Each
+declaration binding is counted independently, not deduplicated by coincidental
+test names. A binding is not an executable count or a PASS. Applicability review
+is source-only inventory, not native execution.
 
 
 The collector `scripts/audit-test-registration.py` and reviewed applicability
@@ -280,7 +235,7 @@ Reproduce from a configured West checkout with the pinned tool environment:
 
 ```sh
 mise exec -- uv run --no-project --with west==1.5.0 python -B \
-  scripts/audit-test-registration.py /tmp/darling-native-inventory
+  scripts/audit-test-registration.py "$DW_STATE_ROOT/native-inventory"
 ```
 
 The collector configures testkit for discovery only, does not build product
@@ -341,9 +296,8 @@ the versioned file:
 tests/run-native-applicability-review-contract.sh
 ```
 
-The versioned focused host contract exercises inherited-profile census,
-independent patch bindings, West alias resolution, rejection of an unknown
-compile binding and a reused name, declaration-change rejection, and discovery
+The focused host contract exercises independent workload bindings, West alias
+resolution, unknown bindings, reused names, declaration drift and discovery
 without product builds or test execution:
 
 ```sh
@@ -366,9 +320,9 @@ Inventory discovery does not execute guest or native test cases.
 - Keep fixture sources and source-owned CMake/CTest registrations colocated
   with their owning project. Do not move all suites into workspace testkit.
 - CTest/source registration defines the scenario, arguments, environment,
-  resources, working directory, deadline and verdict. Test metadata binds
-  that case to runtime prerequisites, diagnostics and RED proof.
-  Preserve legitimate direct host/model/source/build runners.
+  resources, working directory, deadline and verdict. Workload metadata binds
+  that case to installed prerequisites and diagnostics; self-contained negative
+  oracles remain fixture-owned. Preserve legitimate direct host/model/source/build runners.
 - Identify a case by project, source-suite scope and existing declared case
   name; retain exact discovered CTest names as execution instances. For example,
   workspace `testkit` case `getattrlist_name_objtype_guest` has the existing
@@ -380,14 +334,14 @@ Inventory discovery does not execute guest or native test cases.
 - Resolve existing scoped selectors to exact CTest instances before applying
   target-environment selection. `--list` and execution must agree. An explicit
   request with no applicable case must say why; it cannot establish coverage.
-  Merely changing `runs: guest` to `runs: macos` does not change a guest runner.
+  Merely changing `env: darling` to `env: macos` does not change a guest runner.
 - Local macOS and SSH are transports for the same native execution contract.
   Use isolated owned work directories and bounded cleanup. A Linux-built binary
   or successful shell transport is never a native Darwin reference.
 
 ### CTest selection bridge
 
-Test metadata can bind existing CTest registrations with `ctest: <label-regex>`,
+Workload metadata can bind existing CTest registrations with `ctest-label: <label-regex>`,
 `ctest-name: <exact-existing-name>`, or both for a scoped exact-name selection.
 These references do not copy fixture commands or require new `name:` labels.
 A reference cannot override `command`; explicit fixture runners are separate.
@@ -396,13 +350,18 @@ West configures the selected source scope and discovers CTest JSON before
 filtering environment and diagnostics. `env:*` labels define the actual
 variants; an unlabelled upstream registration belongs to the configured host
 (`macos` on Darwin, otherwise `host`) in both metadata and direct CTest selection.
-A binding's explicit `runs`/`env` restricts its variants; it never relabels a
-guest runner. Darling runtime and RED ownership must use a Darling-scoped
+A binding's explicit `env` restricts its variants; it never relabels a
+guest runner. Darling runtime ownership must use a Darling-scoped
 binding, separate from a native reference to the same scenario.
 
+The West entrypoint configures the workload bridge with its own Python
+interpreter, preserving the pinned West dependency environment through CTest.
+Plain CMake users must select an interpreter containing West when executing
+structured workloads; unrelated native CTest cases do not import West.
+
 `--list` configures discovery without building product targets, executing tests,
-or acquiring a prefix. A source-bound selection may need temporary worktrees.
-Both listing and execution replay the exact discovered registrations. CTest
+or acquiring a prefix. `--source-root S` selects prepared source inputs, not a
+source-replay recipe. Both listing and execution preserve the discovered registrations. CTest
 indices are local to that configured build, not persistent case IDs: existing
 names and suite directories retain identity, including equal names in different
 source suites. Installed transports must derive their contract from the source
@@ -410,8 +369,8 @@ registration, not persist these temporary build paths or indices.
 
 Missing references, missing requested variants, ambiguous registrations and
 unintended empty selections fail closed. Bead/submodule selectors match complete
-labels, while `--label` is a user-supplied regex. Runtime-profile prerequisites
-are shown during discovery and deployed only for execution.
+labels, while `--label` is a user-supplied regex. Runtime and guest-toolchain
+prerequisites are separate from selection; discovery does not provision them.
 
 The behavioral CLI contract runs disposable CMake/CTest suites through the real
 West loader, exercises metadata and direct selectors, executes the selected host
@@ -478,14 +437,11 @@ execution identity records bundle digest, OS build, architecture and Rosetta.
 CTest runs through a results-owned facade so nested discovery does not write
 `Testing/` into the bundle.
 
-Real-Mac acceptance on `example`, macOS 26.5.1 (25F80), arm64, CTest
-3.31.6 exercised relocation after deleting the source/build trees, arguments,
-environment, resources, exact success and negative markers, normal exit 137,
-signal rejection, timeout, formal skip and late CTest property changes.
-Local and SSH runs agreed on all nine representative verdicts. Separate SSH
-selections returned pass, skip and infrastructure-error outcomes. Evidence is
-under `~/work/darling-debug/dar-759a.4-8XFgdS/`. This is transport acceptance,
-not a hosted matrix or product compatibility result.
+Transport evidence must exercise relocation independently of the original
+source/build trees, preserve arguments/environment/resources and late CTest
+properties, and distinguish success, expected failure, ordinary exit, signal,
+timeout, formal skip and infrastructure failure. Retain local and SSH results
+separately; neither establishes a hosted matrix or product compatibility result.
 
 Focused regressions are `native_bundle_contract.py` (real Mac),
 `native_transport_contract.py`, and `native_artifact_contract.py` under
@@ -531,23 +487,15 @@ ci/run-test-tier.sh macos-installed /absolute/path/to/bundle \
   -R '^macos/posix_spawn_failure_ownership$'
 ci/run-test-tier.sh macos-ssh HOST /absolute/path/to/bundle \
   -R '^macos/posix_spawn_failure_ownership$'
-mise run west test --env darling \
-  --prefix /absolute/path/to/prefix --prove-red
+mise run west test --env darling --runtime-root "$R" \
+  --prefix /absolute/path/to/prefix --source-root "$S"
 ```
 
-Run the prefix-backed command through `scripts/west-job.sh` in agent transport.
-The selected runtime provider declares its launcher environment; metadata
-selection binds it before the initial prefix shutdown as well as during the
-provider's deployment/execution. Conflicting launcher environments for one
-selection are rejected before acquiring the prefix.
-
-Runtime-source admission uses the registered typed mapping, not a hardcoded
-list of profile names.
-
-Applicability preflight has a 300-second per-profile default.
-`--runtime-build-timeout-seconds` overrides both source preflight and build
-phase deadlines. A verifier timeout leaves source validity undetermined; it
-does not establish a patch conflict or a runtime regression.
+Run prefix-backed commands through `scripts/west-job.sh` in agent transport.
+The selected ordinary installation supplies the launcher, and the owner binds
+`DPREFIX` before launch and shutdown. Source selection does not change installed
+runtime bytes. A timeout before fixture execution is infrastructure failure,
+not semantic RED.
 
 The CTest bridge propagates guest upload, compile, run and timeout phases.
 Require the failure oracle in the guest execution phase for runtime RED;
@@ -555,16 +503,10 @@ compiler diagnostics containing the marker do not satisfy that oracle.
 
 ### Reproducible Homebrew build prerequisites
 
-The opt-in `homebrew-lz4-source` runtime profile uses
-the source-owned `rootless_toolchain` component. It includes native `cut`,
-system `openssl` with its configuration/certificate data, and Perl 5.18/5.28
-standard libraries and XS bundles. Perl uses its normal CMake install rules,
-staged through `DESTDIR`; absolute dSYM destinations must not populate the
-live prefix before West deployment. Explicit component providers take
-precedence over duplicate build/staging copies during Mach-O closure discovery.
-
-Deployment checkpoints the complete atomic transaction manifest after each
-file. Preserve rollback, restart recovery, ownership and symlink checks.
+Homebrew workloads consume the complete ordinary stock installation, including
+native `cut`, system OpenSSL configuration/certificates and Perl standard
+libraries/XS bundles through normal product install rules. Never restore these
+through per-workload component staging or guest shadow copies.
 
 From the manifest directory, select the supported native CLT 13.2 package and
 configure a named context. `DARLING_CLT_PACKAGE` selects the existing provisioner:
@@ -582,7 +524,7 @@ relax admission checks for populated or mode-mismatched prefixes.
 
 ```sh
 export DARLING_CLT_PACKAGE=/absolute/path/Command_Line_Tools_for_Xcode_13.2.pkg
-mise run dw dev context homebrew --prefix /home/ilyagulya/work/wr-fresh/.west-state/prefixes/hb
+mise run dw dev context homebrew --runtime-root "$R" --prefix "$P"
 mise run dw dev run homebrew-prepare
 mise run dw dev run homebrew-preflight
 mise run dw dev run exact-capture
@@ -592,20 +534,16 @@ mise run dw dev run homebrew-source
 `mise run dw` selects the pinned mise environment. Contexts live in local West
 configuration (`dev-<name>.*`), not checked-in host-specific paths. `dev context`
 selects the active context; `dev run --context NAME` and explicit path flags
-override it without rewriting configuration. The default runtime is
-`homebrew-lz4-source`; bundle storage defaults to the workspace parent's
-`darling-debug` directory. Without an explicit executor, the checked-out
-runner is incrementally built in release mode before execution.
+override it without rewriting configuration. Select the runtime explicitly;
+without an explicit executor the checked-out runner may be built before execution.
 
 ### Guest runtime invocation and container constraints
 
-Rootless prefixes are launched with the global `--rootless` flag and the
-profile's launcher environment; a bare `<prefix>/bin/darling shell ...` fails
-with "is not setuid root, which is mandatory" and must not be used as a probe:
+The product launcher selects production rootless defaults. A necessary direct
+invocation uses the installation launcher and explicit writable state:
 
 ```sh
-env DPREFIX="$P" DARLING_PREFIX="$P" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 \
-    DARLING_EUNION=1 "$P/bin/darling" --rootless shell /bin/bash --login -c '<command>'
+DPREFIX="$P" "$R/bin/darling" shell /bin/bash --login -c '<command>'
 ```
 
 Guest C sources compile inside the guest with the provisioned CommandLineTools
@@ -622,8 +560,8 @@ Container runs need a glibc base image. The host-side launcher and
 `darlingserver` are dynamically linked and require `GLIBC_2.38`; a musl image
 such as the pinned Alpine cannot execute them at all, so use a digest-pinned
 glibc image whose libc is at least that new, run as the ordinary user with
-`--cap-drop=ALL --network=none`, and mount the bootstrapped prefix read-write at
-its baked absolute path so the launcher's recorded prefix still resolves.
+`--cap-drop=ALL --network=none`, with host namespace prerequisites satisfied.
+Mount `R` read-only at its installed path and the separate `P` read-write.
 
 `dev run` starts a recorded West job and immediately attaches its observer.
 It prints the job identity plus exact reconnect/cancel commands. `--detach`
@@ -631,13 +569,9 @@ starts without observing; `mise run dw dev follow JOB` reconnects and
 `mise run dw dev cancel JOB` requests owner cleanup. `--dry-run` displays the
 underlying command without building, booting, or creating a job.
 
-Retained runtime reuse checks the selected runtime profile, runtime
-definitions, source module revisions from the West root, and the deployed
-launcher. A changed input or an older fingerprint schema requires a new
-`homebrew-prepare` run; do not rewrite a retained marker to bypass this check.
-
-The exact-capture diagnostic uses initialized West command state, validates
-the retained provider fingerprint, and owns the normal prefix lock/cleanup.
+Retained evidence must bind the selected installation receipt/digests, source,
+guest toolchain and workload inputs; never rewrite identity markers to force reuse.
+The exact-capture diagnostic owns the normal prefix lease and cleanup.
 Its payload intentionally times out; diagnostic success requires the guest
 readiness marker, identity-hashed Mach-O image, structurally complete ELF core
 for the same guest process, registers, and successful prefix cleanup.
@@ -650,8 +584,6 @@ and XS loading, and system OpenSSL X509 fingerprinting. The host requires the
 guest verdict as well as successful transport. The `homebrew-lz4` resource runs
 this preflight before downloading/staging stock brew inputs. No formula changes,
 insecure TLS options, or binary-only Perl installation are involved.
-The separate host `homebrew_component_staging_isolation` contract exercises real
-CMake relative/absolute installs and symlinks, including prefix paths with spaces.
 
 Validate SDK identity against its authoritative package metadata and retain
 provenance evidence. The SDK must satisfy the selected runtime and Homebrew's
@@ -737,25 +669,23 @@ exact source/build composition conflicts as blockers.
 An empty `west test` selection is fatal. Never narrow a selection to hide a
 failure. Declare deployment dependencies separately from CTest selection.
 
-For real-prefix `libsystem_kernel` validation, deploy dyld with
-`libsystem_kernel.dylib`: dyld's static emulation path otherwise serves stale
-syscall behavior. A focused `darlingserver` build uses
-`mise run west darling-build --targets darlingserver --deploy --deploy-darlingserver`;
-this also deploys dyld/closure, which must be recorded in experiment scope.
-Use a verified server-only path if isolation is required. Confirm deployed
-artifact identity through [diagnostic tooling](tooling.md), not just build success.
+For real-prefix `libsystem_kernel` validation, the complete installed image must
+include matching dyld: its static emulation path otherwise serves stale syscall
+behavior. Build ALL, install into a new root and record the entire image's scope.
+Confirm the run's installation and process identity through [diagnostic tooling](tooling.md),
+not merely build success.
 
 E-UNION host behavior has its own CTest path. `testkit/CMakeLists.txt` builds
 the production XNU sources and the workspace harness as a CTest target, while
 the fixture setup is a CTest fixture prepared by
-`experiments/e-union/run.sh --prepare-fixture DIR`. Both normal GREEN runs and
-source-base RED runs select
-the `eunion-host` label; only `DARLING_XNU_SRC` changes between them. The
+`experiments/e-union/run.sh --prepare-fixture DIR`. The `eunion-host` label
+selects the host suite against the prepared source chosen by `--source-root`.
+Independent bad/fixed source runs must retain the same fixture and oracle.
+Changing a host source input does not change an installed guest runtime. The
 source-bound host suite is opt-in through
 `-DDARLING_ENABLE_EUNION_HOST_SUITE=ON`; West supplies that flag only for the
-separate source build. The default testkit build keeps it off, so
-guest CTest selection cannot compile an E-UNION harness against the unpatched
-checkout before runtime-profile deployment.
+separate source build. The default testkit build keeps it off; guest selection
+consumes the explicit installed runtime rather than rebuilding it per test.
 
 ### What the contract census credits
 
@@ -766,12 +696,11 @@ unaccounted contracts. Transitive credit requires a reachable invocation **by
 path**: variable assignments, probe-only calls, comments, and synthesized
 declarations alone do not execute a contract.
 
-Register contracts a chain actually drives. The metadata chain requires the
-immutable mirror, so its eleven Python contracts are registered individually
-and the chain is excluded with that reason; mirror failures must be bounded,
-non-interactive and explicit, not silently treated as a pass.
+Register the contracts that a chain actually drives. A chain that depends on
+unavailable inputs does not execute its leaf contracts: register reachable
+contracts independently or record the explicit exclusion and blocker.
 
-A resolved metadata `ctest:` label may be pinned to an exact CTest index.
+A resolved metadata `ctest-label:` binding may select an exact CTest index.
 Compare the selected cases, not a literal `-L` spelling in a command listing.
 Never pin derived trees, generated-file digests or replay boundaries to literal
 values: bind assertions to their authoritative inputs and use the deriving
@@ -797,7 +726,7 @@ tier. `tests/run-ci-test-tiers-contract.sh` implements that pattern.
 Guest
 E-UNION cases use `guest-c-fixture` metadata because their lower and
 upper trees must be staged inside an isolated Darling prefix by the typed
-`darling-eunion-prefix` provider. The `eunion-overlay` fixture profile keeps
+`darling-eunion-prefix` resource. Flat workload fixture fields keep
 that setup declarative:
 
 - `template-files`, `template-symlinks`, and `upper-files` describe the lower
@@ -817,33 +746,9 @@ template symlink target containing `..` is rejected by default; use the
 explicit `allow-parent-target: true` only for a test whose purpose is to check
 symlink containment or rejected escape behavior.
 
-```yaml
-test-profiles:
-  guest-c-runtime-red:
-    kind: guest
-    coverage-tier: runtime
-    runs: guest
-    diag: bare
-    runner: guest-c-fixture
-    repo: darling-workspace
-    compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
-    red: true
-    red-proof: runtime
-
-artifact-profiles:
-  xnu-kernel:
-    module: darling/src/external/xnu
-    build-targets: [system_kernel]
-    deploy: [usr/lib/system/libsystem_kernel.dylib]
-```
-
-Explicit metadata and compact profiles are supported. Prefer compact profiles
-for repetitive guest/runtime metadata so the manifest describes each test's
-unique requirements. For example, in the `perf` profile:
-`mldr_compact_fd_band_guest` uses the compact guest-C runtime RED profile plus
-an `mldr-runtime` artifact profile, and `dcc2_valid_cache_guest` composes the
-guest-command runtime RED profile with a DCC cache profile and `dyld-runtime`
-artifact profile.
+Declarations live in flat `testkit/workloads.yml`. Preserve stable workload IDs,
+runner arguments, environment, resources, fixtures, timeouts and exact oracles.
+Source revisions are selected explicitly, not composed by workload metadata.
 
 `coverage-tier` classifies the strength of evidence independently from `kind`:
 
@@ -859,130 +764,75 @@ artifact profile.
   but it is weaker than runtime/compile evidence and should be visible as such.
 - `source`: source/text audit only. It is not behavioral coverage and must use
   `kind: source-contract`.
+Set `coverage-tier` explicitly when a conservative classification would obscure
+an intentional distinction, especially for `model`.
 
-If compact metadata omits `coverage-tier`, manifest normalization materializes
-one conservative value from `kind`, `env`, and `runner` before any checker or
-runner sees it. Set the field explicitly whenever the default would obscure an
-intentional distinction, especially for `model`.
+`red: true` does **not** mean a regression should fail on the selected fixed
+checkout. A negative oracle must be explicit and fail for the intended domain
+symptom; retain its output alongside the fixed-path result.
 
-`red: true` does **not** mean the test should fail on the latest checkout.
-Normal `west test` runs are regression runs and must pass on the
-current/fixed tree. It means the test is intended to prove a RED->GREEN
-regression. That proof is exercised explicitly with `west test --prove-red`.
+The flat catalog accepts only `red-proof: {mode: self, why-self: ...}`:
+the fixture itself exercises a known-bad/model arm and requires its rejection
+before exercising the fixed arm. Metadata does not create that oracle.
+The current `west test` parser has no `--prove-red` command-line option and
+the catalog rejects source-base/runtime proof recipes. Do not revive profiles,
+current-minus reconstruction, per-test artifact swaps or source replay.
 
-RED proof modes:
+For real bad/fixed comparison, prepare the source inputs independently and run
+the same current fixture against each explicitly selected source or installation.
+Runtime RED requires genuinely known-bad and fixed complete immutable images,
+with isolated owned prefix lifecycles. Source-root selection alone changes no
+installed bytes. Report an unsupported comparison as a limitation rather than
+silently replacing it with source matching.
 
-- Every test with `red: true` must have `red-proof`. If a test is only a
-  current-tree regression/acceptance gate, leave `red` unset instead of
-  implying that `west test --prove-red` can prove the old tree fails.
-- `red-proof: {mode: self, why-self: ...}`: the test contains its own
-  bad-path oracle, such as running an old algorithm/model and requiring that it
-  fails before running the fixed path. This is weaker than source-base proof;
-  use it only when the negative case is explicit and self-contained.
-- `red-proof: {mode: source-base, source-env: DSERVER_SRC_ROOT}`: `west test`
-  takes the test from the current checkout, creates a temporary worktree at the
-  patch's `source-base` (or `source-commit^` when no explicit base is recorded),
-  points the named environment variable at that bad source tree, and expects the
-  test to fail there before passing on the current tree. Use this only for
-  source-root-aware scripts; do not rely on implicit checkout mutation.
-- `red-proof: {mode: guest-runtime-deploy, runtime-artifacts: [...]}`: the
-  intended model for guest/runtime tests whose RED proof requires building and
-  deploying bad runtime artifacts into the selected Darling prefix, then running
-  the same guest fixture against bad and fixed runtimes. Metadata validation
-  accepts `runner: guest-c-fixture`, `guest-command-fixture`, or the explicitly
-  lifecycle-oriented `guest-runtime-script`, and requires declared runtime
-  artifacts. Each artifact must declare `module`, Ninja `build-targets`, and
-  `deploy` paths so the runner knows which source tree to materialize, what to
-  build, and which prefix files to swap. `--prove-red --list` prints the deploy
-  plan. Before allocating a runtime source forest, west validates every layer
-  of the selected runtime profile; an invalid
-  layer is a profile applicability error, never a runtime RED result. Execution
-  then creates a temporary bad source forest and CMake/Ninja build
-  dir, shuts down the selected prefix, backs up the declared deploy paths,
-  copies bad artifacts, requires the guest fixture to fail, restores the
-  original artifacts, then runs GREEN on the current prefix. Do not substitute
-  `source-base` for this mode. A valid runtime RED proof fails for the intended
-  behavior, not just for any nonzero exit status. Prefer
-  `expect-output-contains`/`expect-output-lacks` or a structured oracle that
-  matches the bad behavior's diagnostic, timeout, errno, trace marker, or other
-  stable symptom. A missing fixture source file, upload failure, compile setup
-  failure, or unexpectedly passing bad runtime is an infrastructure failure to
-  fix or track as a blocker, not a RED proof. Fixtures used to drive runtime
-  RED/GREEN should be stable inputs owned by the workspace testkit/tests area
-  unless a source patch deliberately injects diagnostics into the bad runtime.
-  `prepare-fixture-before-deploy: true` is available for `guest-c-fixture`
-  runtime proofs where the old runtime cannot be trusted to upload or compile
-  the fixture. In that mode west uploads and compiles the guest C fixture on the
-  current runtime, deploys the bad artifacts, then reuses the same guest binary
-  id in run-only mode for RED. This is not a substitute for the bad-runtime
-  oracle: if the run-only phase still fails during `darling shell` startup,
-  namespace setup, RPC protocol bootstrap, or shellspawn readiness before the
-  fixture reaches its own `main`, the proof remains blocked and needs a
-  launch-free/direct harness instead of a broader matcher.
-  For that split shape, use `red-proof.red-runner`: RED builds and deploys the
-  bad runtime artifacts, runs the explicit RED runner under that deployment,
-  checks the declared RED reason, restores artifacts, and then runs the
-  original test as the GREEN runtime gate. The RED runner is for a real
-  behavioral oracle such as a direct server protocol fixture; it is not an
-  escape hatch for source matching or accepting unrelated startup failures.
-  Runtime proofs may declare `red-proof.cmake-defines` for explicit CMake cache
-  overrides needed by the proof, for example enabling a test/debug tool target.
-  These defines are applied to both RED and GREEN runtime source builds, after
-  the normal inherited/default feature flags, so the manifest remains the source
-  of truth for non-default build shape.
-  XNU `system_kernel` runtime proofs should also declare
-  `red-proof.source-modules: [darling/src/external/darlingserver]` unless the
-  proof has a specific reason not to. The libsystem_kernel build consumes
-  RPC-generated headers/hooks from darlingserver; letting the source forest
-  symlink the developer's live darlingserver checkout can mix profiles and make
-  RED fail at build/link time for an unrelated branch state. Do not add broad
-  runtime artifacts such as dyld just because the selected prefix can run it:
-  each artifact must be part of the behavior under proof, or unrelated build
-  failures can masquerade as RED.
+RED must fail for the intended errno, trace marker, output or other behavioral
+symptom after fixture execution. Missing source, upload/compile failure,
+namespace/RPC/shellspawn failure before `main`, and an unexpectedly passing
+bad runtime are not RED. Preserve the current fixture independently of old source.
+Record explicit nondefault build defines and paired source modules. In
+particular, libsystem_kernel consumes darlingserver-generated RPC inputs and
+dyld embeds emulation; unrelated build failures must not masquerade as RED.
 
 Source/text checks are allowed only as auxiliary drift guards:
 
 ```yaml
-  - name: example_source_contract
+  - id: vchroot_fdless_rpc_invariant_contract
+    module: darling/src/external/darlingserver
     kind: source-contract
     coverage-tier: source
-    runs: host
+    env: host
     diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
     runner: python
-    script: tests/west_source_contracts.py
+    repo: darling-workspace
+    source-env: DSERVER_SRC_ROOT
+    script: tests/vchroot_fdless_rpc_invariant_contract.py
 ```
 
 `kind: source-contract` can prove that a hunk/symbol/comment is present or absent
 on a source tree, but it does not prove runtime behavior, so it does **not**
-count as behavioral coverage. A declaration with
-only source-contracts is reported as `SOURCE ... missing behavioral test` until
-it also has a behavioral host/guest/build/package/fuzz/stress/gate test or a
-real `test-exception`.
+count as behavioral coverage. Report a source-only audit separately and identify
+the missing behavioral host/guest/build/package/fuzz/stress gate and its owner.
 
 Use structured runners for common cases:
 
 ```yaml
-  - name: dserver_stack_pool_tests_run
+  - id: stack_pool_tests_run
+    module: darling/src/external/darlingserver
     kind: contract
-    runs: host
+    env: host
     diag: bare
-    red: true
     runner: west-build
-    build-target: dserver_stack_pool_tests_run
+    target: dserver_stack_pool_tests_run
 ```
 
 Script tests may declare arguments and environment without dropping to a shell:
 
 ```yaml
-  - name: a0_gate_full_strict
+  - id: a0_gate_full_strict
+    module: darling/src/external/darlingserver
     kind: guest
-    runs: guest
+    env: darling
     diag: guarded
-    red: true
     runner: script
     script: tests/a0-repro/a0-gate.sh
     args: [full]
@@ -995,11 +845,15 @@ Use `runner: python` for Python files that should be invoked through `python3`
 rather than marked executable:
 
 ```yaml
-  - name: progress_classifier
+  - id: progress_classifier
+    module: darling/src/external/darlingserver
     kind: contract
-    runs: host
+    env: host
     diag: bare
     red: true
+    red-proof:
+      mode: self
+      why-self: The fixture owns explicit negative classifier cases.
     runner: python
     script: tests/progress_classifier_test.py
 ```
@@ -1008,41 +862,38 @@ DCC cache guest tests should use the structured `dcc-cache` resource instead of
 building cache files in ad hoc shell. The resource compiles the declared cache
 builder, creates the cache under `/private/var/tmp`, exports the configured
 guest environment variables, and removes the host cache directory after the
-test. If the cache tools are test assets from a different module than the
-runtime under test, set `source-ref` so west materializes only the declared
-tools directory from that module instead of pulling the module into the runtime
-source forest. Its default `install-root: guest-visible` selects the host root
-that matches dyld's guest filesystem view: `DPREFIX` when
-`DARLING_NOOVERLAYFS=1`, otherwise `DPREFIX/libexec/darling`. Use explicit
-`install-root: base` or `install-root: prefix` only for tests that intentionally
-validate one of those views.
+test. Tool assets are selected independently from runtime identity; do not
+inject system libraries into guest state or mutate the immutable installation.
+Prefix-relative writable cache files belong to `P`, not `R/libexec/darling`.
 
 `west test` provisions structured resources through typed providers, not
 runner-local ad hoc setup. The current provider stack is ordered as:
 
-1. `host-trace-files`: prepares prefix-relative host trace paths and exports
+1. `host-temp-files`: prepares declared prefix-relative host files and exports
+   their paths to host-launched fixtures.
+2. `host-trace-files`: prepares prefix-relative host trace paths and exports
    their environment variables for host-launched fixtures.
-2. `host-stat-deltas`: binds and preflights the host `darling-stat` tool used
+3. `host-stat-deltas`: binds and preflights the host `darling-stat` tool used
    by guest runtime fixtures that assert before/after counter deltas.
-3. `descriptor-trace`: allocates the workspace-scoped host capture directory for
+4. `descriptor-trace`: allocates the workspace-scoped host capture directory for
    a guest fixture's RPC descriptor-transport observation and validates its
    declared windows.
-4. `dcc-cache`: materializes/builds the declared cache tooling and injects the
+5. `dcc-cache`: materializes/builds the declared cache tooling and injects the
    guest DCC environment.
-5. `darling-eunion-prefix`: boots/verifies the E-UNION prefix and stages
+6. `darling-eunion-prefix`: boots/verifies the E-UNION prefix and stages
    upper/lower fixture files.
+7. `homebrew-lz4`: restores a verified stock-stack snapshot or stages pinned
+   source-build inputs, then captures a completed stack when enabled.
 
 Provider order is part of the contract: host observation paths, stat tools and
-descriptor captures are prepared before cache and prefix setup, and cache
-resources are prepared before prefix fixtures that may boot or probe the
-runtime. New shared runtime setup should become a provider with a focused
-contract instead of growing individual runner bodies.
+descriptor captures are prepared before cache and prefix fixture setup.
+Keep shared fixture setup with its typed provider and focused contract, not
+duplicated in individual runner bodies. These are fixture-resource providers,
+not retired runtime-image providers; compiler provisioning is explicit bootstrap.
 
-Runtime RED artifact planning lives in a separate helper layer. The pure
-planning code owns build-target de-duplication, deploy-plan display, and mapping
-guest-visible deploy paths to the prefix files that must be swapped. The
-side-effecting build/deploy/restore sequence stays in `west test` until the
-runtime lifecycle can be split further without changing behavior.
+Typed resources own fixture data and cleanup, not runtime publication.
+Bad/fixed runtime comparison consumes complete separately published images;
+source-root redirection alone cannot establish a runtime change.
 
 ### Cache identity and fresh acceptance
 
@@ -1135,10 +986,9 @@ proves the observation sees descriptor transfers at all.
 Captures and their per-process trace files are kept in the manifest repository
 under `.west-test/descriptor-trace/<test name>/`, and the runner prints the exact
 `strace` command it used. `strace` must be installed on the host; a missing
-`strace` fails the run instead of skipping the observation. The split
-`prepare-fixture-before-deploy`/run-only phases cannot be captured, because the
-server started by the prepare phase already owns the guest tree, so the runner
-rejects that combination.
+`strace` fails the run instead of skipping the observation. The capture must
+start with the owned workload; attaching after an earlier prepare phase cannot
+establish a complete descriptor-transfer window.
 
 Darling prefix lifecycle helpers are also split from the runner where they are
 pure enough to test directly. `west_commands/test_prefix.py` owns process-tree
@@ -1166,72 +1016,35 @@ Use `runner: c-fixture` for small host C fixtures that should be compiled and
 executed directly by `west test`:
 
 ```yaml
-  - name: select_fdset_conversion
+  - id: select_fdset_conversion
+    module: darling/src/external/xnu
     kind: unit
-    runs: host
+    env: host
     diag: bare
-    red: true
-    red-proof:
-      mode: source-base
-      source-env: XNU_SRC_ROOT
     runner: c-fixture
+    source-env: XNU_SRC_ROOT
     script: tests/select_fdset_contract.c
     include-dirs:
     - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/select
     compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror]
 ```
 
-`c-fixture` compiles the fixture from the current test-asset checkout, but
-resolves relative `include-dirs` against the source tree named by
-`red-proof.source-env` during source-base RED proof. This lets the same fixture
-compile against the bad tree for RED and the current materialized profile for
-GREEN. `stub-headers` may list empty generated headers for isolated production
+`c-fixture` compiles the fixture from the declared asset checkout. A
+`source-env` binds its source input to the selected module under
+`--source-root S`; it is not an instruction to reconstruct another revision.
+`stub-headers` may list empty generated headers for isolated production
 `.c` unit tests that include project-local headers not needed by the fixture.
 
-Use `runner: source-contract-script` for workspace-hosted shell contracts that
-execute current test assets against a source tree selected by `source-env`.
-`west test` sets that environment variable to the selected source tree
-for normal GREEN runs, and overrides it with
-the temporary bad/source-base worktree for `--prove-red`. This keeps
-workspace-hosted suites honest: the test asset can live in the workspace while
-the source under test still comes from the current profile tree.
-
-Use `runner: source-profile-script` when the shell contract is added by the
-patch/profile itself. In RED proof, `west test` materializes the fixed GREEN
-profile source tree first, runs the script from that tree, and points
-`red-proof.source-env` at the temporary bad/source-base worktree. The same
-profile-owned script is then run against the GREEN source tree. This proves the
-old behavior fails for the intended reason without mistaking "the new test file
-does not exist yet" for a regression.
-When the fixture also needs a paired module, give it a distinct test-level
-`source-env` for the selected profile's module root and derive the peer from
-that profile layout. Keep `red-proof.source-env` separate for the source under
-test. The relocated script's directory is not the complete profile forest.
-
-Use `runner: source-script-fixture` only when the script itself belongs to the
-source tree under test and already exists in both the RED source base and the
-GREEN profile tree. Do not use it for shell scripts newly added by the patch:
-the RED result would prove only that the script file is missing.
-Executable source scripts run directly through their shebang; non-executable
-source scripts fall back to `sh`.
-
-Plain `runner: script` is an escape hatch for tests with special process,
-trace, or runtime orchestration. New source-base shell contracts should use
-`source-contract-script` or `source-profile-script` instead of generic `script`.
-
-When the patch parent in `source-base` cannot build the fixture because the
-patch introduces the API under test, a source-base proof may set
-`red-proof.source-revision` to an immutable earlier implementation commit in
-the same source repository. `west test --prove-red` uses that revision only for
-the RED arm; `source-base` remains the patch's real parent for patch ordering
-and integration. This lets RED exercise the old behavior instead of merely
-proving that a new symbol is absent. The same field is allowed for a
-`guest-runtime-deploy` proof with `bad-profile: current-minus-patch`, where it
-selects the known-buildable old runtime baseline. If that baseline predates
-dependent profile patches, list those patches in
-`red-proof.current-minus-skip-patches`; the skip is an explicit dependency
-boundary, not an ignored application failure. The revision must be reviewable
-and local to the module; do not use a floating branch name.
+Use `runner: source-contract-script` for workspace-hosted shell audits against
+the selected source. `west test` sets the declared `source-env` to that module
+under the prepared `--source-root S`. `source-script-fixture` instead executes
+the source-owned `source-script` with its explicit `cases`, against that same
+selected source. These runners are source-audit evidence by default, not an
+automatic bad/fixed replay or runtime proof. When comparing independent trees,
+keep current fixture inputs and paired modules available in both; a missing new
+fixture in old source is not RED.
+Plain `runner: script` remains an escape hatch for special process/trace
+orchestration; prefer structured runners and typed resources.
 
 Use `runner: self-contract-script` for host scripts whose RED proof is fully
 self-contained in the test itself: the script runs an explicit bad/model arm and
@@ -1241,113 +1054,102 @@ These tests must declare `red: true` and `red-proof: {mode: self, why-self: ...}
 Use `runner: guest-runtime-script` only for guest/runtime orchestration that the
 structured guest fixture cannot express yet: multi-process gates, dserverdbg
 oracles, prefix trace-file checks, or process-lifetime probes. It must declare
-`runs: guest`; West owns declared prefix resources, trace/temp files, and
-runtime RED deployment.
+`env: darling`; West owns declared prefix resources and trace/temp cleanup.
 
-Use `runs: guest` for tests that execute inside Darling. The compact form
-expands to the low-level `requires: [darling-prefix]` envelope, and `west test`
-then supplies `DPREFIX` from `--prefix`, `--prefix existing:/path`,
-`--prefix-profile homebrew`, or an already exported `DPREFIX`. Use explicit
-`resources`/`fixtures` for additional provisioned state, and keep `requires-env`
-only for low-level prerequisites that west cannot provision yet. `west
-test --list` never requires those resources; real execution fails before launch
-if a requirement is missing.
+`env: darling` selects guest-runtime execution and requires an installed runtime
+and owned prefix. Declare `requires: [darling-prefix]` for host controllers
+that need prefix state. Select `--runtime-root R` and `--prefix P`; use explicit
+typed fixture fields for additional writable state. Discovery does not
+provision resources. Preserve every runner's args, environment and phase oracle.
 
-If a real run reports missing prefix boot or guest compiler prerequisites, fix
-the prefix through the framework instead of hand-editing it:
+If a run reports missing boot or compiler prerequisites, distinguish initial
+provisioning from repair. Bootstrap an absent/empty owned `P` against the
+selected installation, using `--guest-toolchain darling-command-line-tools`
+when guest compilation is needed. This is a bootstrap CLI option, not a workload
+metadata field; flat guest-C workloads derive compiler requirements but do not
+install CLT automatically.
+
+For an existing idle prefix, inspect before repairing:
 
 ```sh
-mise run west darling-prefix-repair --prefix "$HOME/work/darling-prefix"
-mise run west darling-prefix-repair --prefix "$HOME/work/darling-prefix" --check
-mise run west darling-prefix-repair --prefix "$HOME/work/darling-prefix" --cleanup-mounts
+mise run west darling-prefix-repair --prefix "$P" --check
+mise run west darling-prefix-repair --prefix "$P"
 ```
 
-The repair command creates the required rootless runtime directories
-(`private/var/db`, `private/var/db/launchd.db`,
-`private/var/db/launchd.db/com.apple.launchd`, `var`, `var/run`, and `var/tmp`) plus the
-`private/var/tmp` directories. The latter keep mode `1777`; the runtime
-parents are created with mode `755` and are then owned by Darling's normal
-launchd bootstrap. `private/var/db` is required because launchd and launchctl
-create their overrides database below
-`private/var/db/launchd.db/com.apple.launchd` during the first system bootstrap.
-The nested database directories are provisioned explicitly because launchctl's
-one-level metadata repair cannot create missing parents in a clean rootless
-prefix. It also restores canonical
-`CommandLineTools`/`DarlingCLT` clang links from the versioned CLT already
-installed in the prefix. Runtime profiles that run source-driven guest CTest
-cases additionally declare `guest-toolchain: darling-command-line-tools`.
-The typed West provider checks the default compiler and SDK, downloads the
-official package set from Darling's existing CommandLineTools distribution
-endpoint only when they are absent, installs each package through the guest
-`/usr/bin/installer`, verifies the official HTTPS host, package size, XAR
-envelope, the API SHA-1 of the **compressed XAR table of contents**, and the
-reviewed SHA-256 of the **entire package** before installation. Neither digest
-alone establishes publisher authentication; signed-publisher review is recorded
-separately in `clt-provenance-041-90419.txt`.
-Package bytes stay in the external West cache; prefix-owned staging files are
+Repair creates required runtime/tmp parents and restores canonical
+`CommandLineTools`/`DarlingCLT` clang links from versioned CLT already installed
+in the prefix. Guest tmp directories retain mode `1777`; runtime database
+parents use `0755` and remain owned by normal launchd bootstrap. Repair cannot
+install a missing CLT package or manufacture SDK identity.
+
+The explicit bootstrap provisioner checks compiler/SDK prerequisites and stages
+reviewed package inputs for the guest `/usr/bin/installer`. Catalog input
+verification includes the official HTTPS host, package size, XAR boundaries,
+the API SHA-1 of the **compressed XAR table of contents**, and the reviewed
+whole-package SHA-256. `DARLING_CLT_PACKAGE` selects the one pinned local
+CLT 13.2 package; its whole-file SHA-256 is checked before and after staging.
+Neither digest establishes publisher authentication. Preserve provenance review
+separately; package bytes remain in the external cache and prefix staging is
 removed after installation.
 `west test` and
 `west darling-doctor` share the same prerequisite checks, so a repaired prefix
-is checked against the same contract that guest metadata tests require. The
-`--cleanup-mounts` mode unmounts stale filesystems left under an otherwise idle
-prefix; `west test` runs the same cleanup after `darling shutdown` and fails the
-test run if mounts remain.
+is checked against the same contract that guest metadata tests require.
+`--cleanup-mounts` can unmount stale filesystems and terminate identified mount
+holders. Stop the previous lifecycle owner first and inspect
+`--check --cleanup-mounts` before mutation. A remaining process or mount keeps
+cleanup incomplete; a cleanup rescue cannot make the earlier run PASS.
 
-`west darling-doctor --scope workspace` checks manifest drift without inspecting
-runtime state; `--scope runtime` checks build/deploy and prefix postconditions.
-The default `all` preserves both sets. Bootstrap runs the workspace scope before
-prefix mutation/build/deploy and the runtime scope after guest readiness.
-On runtime doctor failure or timeout, full raw stdout/stderr and structured
-problem rows are saved under the existing runtime evidence `diagnostics`
-directory before rollback. The fatal message names the relative artifact;
-the surrounding failure handler reports its final retained archive directory.
+`west darling-doctor --scope workspace` checks manifest drift;
+`--scope runtime --runtime-root R --prefix P --build-dir B` checks selected
+configuration, image receipt/integrity and guest-state prerequisites. Default
+`all` combines scopes; `--boot-smoke` explicitly launches a guest and requires
+ownership. A doctor pass is not a workload verdict.
 
-A failed bootstrap also hands back the runtime's own records, and it does so
-without being asked for a trace: before the prefix is torn down,
-`_capture_bootstrap_server_trace` copies `private/var/log/dserver.log`
-(doorbell, lane, refused/armed plane calls), `dserver-rpc-trace.log`, the
-launcher and guest boot logs, the guest fd log and every file under
-`var/log/com.apple.launchd`. They land in the opt-in trace directory when
-`--bootstrap-syscall-trace`/`--bootstrap-stack-sample` named one, and otherwise
-in the owned runtime evidence unit's `diagnostics/` directory. Every miss is
-printed as `<name>: missing (<source>: <reason>)`, so a retained unit is never
-mistaken for one that holds a record it does not have. Taking these records is
-a post-mortem read: no guest is wrapped, the guest's stdout/stderr is
-unchanged, and the successful path pays nothing. The heavy `strace`/`perf`
-captures stay opt-in, and they are not equivalent instruments: on the iOS
-workload `strace` changed the cold guest smoke into a SIGILL before its
-verdict, so a traced arm's failure is not evidence about an untraced one.
+Preserve runtime failure records, including server/RPC/launchd/guest fd logs
+and explicit missing-item reasons. Heavy syscall/stack captures remain opt-in;
+instrumented execution can perturb behavior and is not interchangeable with
+the untraced arm. Never upgrade an incomplete archive to complete evidence.
 
-Historical rootless debug prefixes are separate from test scratch and must not
-be removed with a broad `/tmp/darling-rootless-*` glob because that namespace
-also contains source worktrees. Use `west darling-rootless-debug-cleanup --path
-/tmp/darling-rootless-*-debug-* --dry-run` for one completed debug tree. It
-refuses non-debug paths, mounted filesystems, and live processes whose
-`DARLING_PREFIX` is inside the target. If ordinary removal reports an ownership
-failure, rerun the same explicit command with `--sudo`; it uses
-`rm --one-file-system` only after the same checks pass.
+The legacy `darling-rootless-debug-cleanup` helper recognizes only disposable
+debug trees directly under `/tmp`, not canonical durable-state prefixes or
+general source worktrees. It is not a reason to create new prefixes there.
+For one existing owned legacy tree, use `west darling-rootless-debug-cleanup
+--path ABS --dry-run`; never pass a glob. It refuses detected live processes
+and mounts. `--sudo` is only for the same explicit path after a reported
+ownership failure; never broadly delete prefixes or worktrees.
 
-For metadata tests that use `runs: guest`, `west test` also owns the resource
-lock and shutdown path. A real run flocks the prefix's open parent-directory
-descriptor before launching the test and holds it through cleanup, without
-creating a lock file inside the prefix. It calls `darling shutdown` for the
+For guest-runtime execution, West owns an external persistent per-prefix sibling lease
+through shutdown and cleanup, distinct from the product's `P/.lifecycle.lock`.
+Never delete that lease file or normalize raw prefix spelling before product
+safety checks. The owner calls `darling shutdown` for the
 selected prefix, then stops matching leftover server and rootless guest
-processes. Rootless guest discovery also handles scrubbed `DARLING_*` variables:
-an `mldr` process's `__mldr_sockpath` identifies an inherited directory fd,
-whose device/inode must match the selected prefix. The original socket owner
-may already have exited; the guest's own retained fd remains the ownership
-evidence. A shared loader installation or guest argv alone is not sufficient.
+processes. Ownership requires runtime identity tied to the selected prefix:
+the process's retained directory descriptor must match its device/inode, or
+its actual runtime mappings must identify that prefix. Shared executable paths,
+argv and environment strings alone are insufficient. Observer ancestors and
+the FUSE daemon serving a lane are not guest processes to terminate.
 Leftover processes make the run fail even if the payload passed. Pass
 `--keep-prefix-running` only when intentionally keeping the prefix warm for a
 manual debug loop.
+
+Nested lifecycle controllers borrow an actual inherited, exclusively locked
+descriptor; `WEST_TEST_PREFIX_LEASE` by itself grants no ownership. The shared
+owner validates the raw prefix, lease-file inode and current-user exclusive
+`flock`. CTest forwards the descriptor explicitly; actual runtime children do
+not inherit it. Never synthesize lease markers to bypass acquisition.
+
+Cleanup rescue can make a failed run safe, but never converts it into a clean
+PASS. Acceptance requires normal product shutdown plus zero owned processes
+and mounts.
 
 For test metadata, `diag: guarded` and `diag: forensic` are enforced by
 `west test`, not by each script. `guarded` wraps the structured invocation in
 `darling-debug-runner run --timeout-seconds ...`, writes a small debug bundle,
 and uses prefix-owned shutdown for guest commands (process-group termination for
-generic commands). `forensic` adds `--capture-exact --capture-tree`, plus exact
-prefix ownership selection for detached guests, before shutdown or artifact
-restoration. The runner is resolved from `--executor`, `PATH`, or the checked-out
+generic commands). `forensic` adds `--capture-exact --capture-tree` before the
+West owner shuts down the selected guest prefix. Generic runner `run` does not
+own guest lifecycle; the managed inner command or prefix-aware mode must do so.
+The runner is resolved from `--executor`, `PATH`, or the checked-out
 `darling-debug-runner` west project (`target/release` preferred, then
 `target/debug`). If a non-bare test is executed without a runner, `west test`
 fails before launching the test. `--list` is offline and shows the wrapper
@@ -1414,7 +1216,7 @@ implementation of helper logic:
 | Owner | Contract |
 | --- | --- |
 | `west_commands/test_guest_c.py` | Metadata guest-C generation/execution; `DarlingTest._run_guest_c_fixture()` stays a thin facade |
-| `west_commands/test_runtime.py` | Pure runtime RED artifact plan/display/target mapping |
+| `west_commands/runtime_install.py` | Normal complete immutable build/install, runtime resolution and image identity |
 | `west_commands/test_prefix.py` | Pure process-tree matching and stale init-pid decisions; orchestration owns shutdown, mounts, locks and signals |
 | `west_commands/test_ctest.py` | CTest label/list/passthrough construction and submodule normalization |
 | `west_commands/test_cmake.py` | Source CMake superproject shims, fallback registration, compiler logs and required options |
@@ -1430,7 +1232,7 @@ entrypoints below are under `tests/`):
 | `DARLING_TEST_EXECUTOR`, bundle roots, timeout wrapping | `run-west-test-guarded-timeout-contract.sh` |
 | Guest-command environment, timeout, result matching | `run-west-test-guest-command-contract.sh` |
 | Guest-C source transport, compile/run/verdict | `run-darling-c-test-contract.sh` |
-| Runtime source/build deadline forwarding | `run-west-test-runtime-build-contract.sh` |
+| Complete runtime installation / bootstrap | `west_test_contracts/runtime_install_contract.py`, `west_test_contracts/darling_bootstrap_contract.py` |
 | GC, proof scratch naming, dry-run pruning | `run-west-test-gc-contract.sh` |
 
 Both metadata and CTest guest-C paths route low-level `launcher shell` through
@@ -1438,42 +1240,38 @@ Both metadata and CTest guest-C paths route low-level `launcher shell` through
 watchdog. Metadata owns namespace retry, trace/stat resources and diagnostic
 dumps around that shared transport.
 
+The testkit and guest-C shell contracts print the failing command and preserve
+their failure artifacts instead of deleting the only diagnostic capture.
+
 For a requested working-tree Python syntax check, use
 `python3 -B scripts/check_python_syntax.py <paths...>`, not `python -m py_compile`,
 which leaves ignored `__pycache__` artifacts.
 
-Use `ctest` once the test is discoverable through the CTest registry. This is a
-runnable selector: `west test` configures/builds the local compatibility suite
-or source fixture and executes `ctest -L <label>`.
+Use CTest bindings once the test is discoverable through the source-owned
+registry. For example, this flat workload entry selects the existing host
+E-UNION suite without copying its fixture command:
 
 ```yaml
-  - name: wait4_guest_contract
-    kind: guest
-    runs: guest
-    diag: guarded
-    red-proof: runtime
-    ctest: bead:dar-example
-    artifacts: [xnu-kernel]
+  - id: eunion_hardening_host_suite
+    module: darling/src/external/xnu
+    kind: unit
+    coverage-tier: host
+    env: host
+    diag: bare
+    ctest-label: eunion-host
+    ctest-name: host/eunion_hardening_host_suite
 ```
 
-For a test registered by the patched source repository itself, keep the source
-CMake path explicit. `runner: darling-cmake-target-fixture` builds the patched
-source target in an isolated superproject, then runs `ctest -L <label>` from
-that build directory. Source-base RED proof still uses the current test asset
-against the bad source tree; the fixture provides fallback target/test
-registration when the old source did not yet have the CTest entry.
-
-```yaml
-  - name: libressl_nist_darling_cmake_target_regress
-    use: darling-cmake-target-source-red
-    build-target: darling_ec_tls_regress
-    source-dir: libressl
-    ctest: bead:dar-q95.6
-```
+For source-owned target builds, `runner: darling-cmake-target-fixture` keeps
+`source-dir`, `target`, `ctest-label` and required build options explicit in the
+flat declaration. It builds the selected source in an isolated superproject.
+Current fixture files and fallback target registration can keep an independent
+bad/fixed comparison meaningful when old source lacked the registration; they
+do not authorize source reconstruction or insert the fix into the bad build.
 
 The CTest backend command construction is deliberately small and separate from
-patch/resource orchestration. `west_commands/test_ctest.py` owns `ctest`
-argument building for label-backed patch tests and top-level selectors
+fixture-resource orchestration. `west_commands/test_ctest.py` owns `ctest`
+argument building for workload bindings and top-level selectors
 (`--bead`, `--submodule`, `--env`, `--diag`, `--label`, `--changed`, list mode,
 and passthrough args). `--submodule` accepts either a West project path
 (`darling/src/external/xnu`) or the CTest label basename (`xnu`) and maps it to
@@ -1485,29 +1283,19 @@ registration, compiler launcher logs, and required compile-option checks belong
 there rather than in the orchestrator.
 
 `command:` is intentionally an override for corner cases only. Prefer
-`runner/script`, `build-target`, or `ctest` so `west test` owns how tests
+`runner/script`, `target`, or `ctest-label` so `west test` owns how tests
 are launched, filtered, deduplicated, and eventually wrapped by diagnostics.
 `west test` validates the script path against the actual
 checkout immediately before running.
 
-If a non-documentation change truly cannot carry a committed red test, record an
-explicit exception:
+If a non-documentation change cannot carry a behavioral regression, record the
+specific limitation and deferred gate in the owning Bead. A source audit or a
+metadata annotation does not waive the missing execution.
 
-```yaml
-  test-exception:
-    reason: doc-only
-    scope: Comment-only warning; owning component compile contract covers executable changes.
-    note: Comment-only warning for code compiled out in all configurations.
-```
-
-For a bounded diagnostic A/B of a declared runtime provider, use
-`--runtime-cmake-define NAME=VALUE`. The override is applied only to the
-disposable runtime source/build/deploy transaction and is shown in its CMake
-configuration; the profile remains the owner of required artifacts, source
-modules, launcher environment, and cleanup. The option is for feature flags
-such as `DARLING_GUEST_RECVSPIN=0`, not for changing framework-owned build
-identity (install prefix or build type). It must not
-be committed into a profile merely to make a diagnosis pass.
+For bounded diagnostic A/B, configure separate explicit builds and publish
+separate complete images. Record nondefault CMake defines and source identities;
+never change install identity or inject flags into workload declarations merely
+to make a diagnosis pass.
 
 ## Compatibility test registration
 
@@ -1553,29 +1341,11 @@ compile line after the source, so an unresolved symbol fails at the compile stag
 rather than at run time. `env=macos`
 is the native differential oracle.
 
-Every `env=darling` registration receives the framework-owned
-`runtime-profile:homebrew` label by default. Product tests therefore do not
-name libraries, deploy paths, or an ordinary provider: west resolves that
-provider's source profile, build targets, Mach-O closure, deployment and
-restore transaction. `RUNTIME_PROFILE` is an override only when the test's
-subject is a different product runtime, such as the rootless E-UNION variant
-or a perf-only `darlingserver` build. It is not a general dependency list.
-
-The rootless provider also declares the guest shell it needs to execute a
-guest test: `darling/src/external/bash` builds and deploys `/bin/bash`. The
-prefix-baseline provider uses the same declaration, so a clean hosted runner
-does not depend on an accidentally pre-populated prefix. This belongs in the
-runtime profile because `shellspawn` executes `/bin/bash` inside the guest;
-installing a host binary or adding an ad-hoc CI copy would hide a broken
-runtime deployment.
-
-Runtime deployment also applies the guest-safe permission policy at the
-transaction boundary: deployed files lose group/world write bits and all
-parents used by the deployment lose group/world write bits. This is required
-for launchctl's plist validation when a build runs with a cooperative host
-umask. The transaction records every changed directory mode and restores it
-alongside file contents, so a failed or temporary runtime proof leaves
-the prefix unchanged.
+Guest registrations consume the explicit installed runtime; they do not select
+source profiles, component copy lists or temporary library swaps. The normal
+stock image supplies its guest `/bin/bash` and system dependencies. Preserve
+normal install permissions and launchctl's plist safety requirements; do not
+hide an incomplete image with a host binary or ad-hoc CI copy.
 
 The optional bootstrap syscall trace uses `strace -D`: tracing runs detached
 from the launcher wait path, so long-lived launchd/shellspawn daemons cannot
@@ -1590,13 +1360,17 @@ Select diagnosis per test with `DIAG`:
 | --- | --- | --- | --- | --- |
 | `bare` | plain CTest execution | no executor bundle | no executor bundle | host, macos |
 | `guarded` | watchdog with hard timeout and owner cleanup | command/stdout/stderr/result bundle | diagnostic bundle | darling |
-| `forensic` | guarded plus `--capture-exact --capture-tree` and prefix ownership selection | guarded bundle | timeout/stall exact archive, default 512 MiB cap | opt-in per case |
+| `forensic` | guarded plus `--capture-exact --capture-tree` | guarded bundle | timeout/stall exact archive, default 512 MiB cap | opt-in per case |
 
-Guest cleanup uses the prefix owner; generic commands use process-group
-termination. Guarded/forensic execution requires a diagnostic runner and fails
-before launch when one is unavailable. Text log size depends on the payload.
-Exact archive limits do not bound ordinary stdout/stderr or owner shutdown.
-Enable expensive tracing explicitly; do not classify silence as a hang.
+Guest cleanup belongs to the managed prefix owner; generic runner `run`
+supervises the host command/process group without adopting ambient guest state.
+Metadata guarded/forensic execution requires a diagnostic runner and fails
+before launch when one is unavailable. `add_compat_test()` differs: without a
+configured executor it warns and relabels the registration `bare`. Inspect
+resolved labels and actual execution before claiming diagnostic protection.
+Text log size depends on the payload; exact archive limits do not bound ordinary
+stdout/stderr or owner shutdown. Enable expensive tracing explicitly; do not
+classify silence as a hang.
 
 Storage is bounded by GC: `west test --gc` keeps the newest `--keep-last N`
 bundles and drops any over `--max-bundle-mb` (catches stray forensic
@@ -1657,23 +1431,15 @@ Use one declared `DW_STATE_ROOT` per lane/task; maintenance must refuse root
 overrides outside it. Durable prefixes, lanes, jobs and evidence do not belong
 under host `/tmp`; see [state ownership](environment.md).
 
-Long configure/build commands use the same bounded process runner, forwarding
-configure output and throttled Ninja progress milestones live while retaining
-the complete output for failure diagnostics. A heartbeat is emitted only every
-30 seconds when no output arrives. This keeps large targets such as
-`rootless_bootstrap` visibly alive without turning compiler output into an
-unreviewable stream. The rootless prefix bootstrap smoke uses the same live
-guest executor: guest stdout/stderr is forwarded as it arrives, and every
-heartbeat includes the pre-cleanup process, socket, resource-limit, and runtime
-path snapshot. If the caller is
-interrupted, the next `west test --gc --gc-runtime-evidence` pass removes an
-unlocked orphan `.inflight-*` unit and its recorded worktrees.
+Retain complete configure/build output and bounded phase deadlines without
+treating progress or heartbeat output as success. Bootstrap smoke is setup,
+not the workload oracle. Interrupted evidence units remain lifecycle-owned:
+an explicit `west test --gc --gc-runtime-evidence` pass may remove an unlocked
+orphan `.inflight-*` unit and its recorded worktrees under the same ownership
+and preservation rules.
 
-Failure diagnostics that rebuild a runtime can pass
-`--runtime-build-timeout-seconds` to override the profile deadline for each
-configure/build phase. CI combines that framework-level limit with an outer
-five-minute command deadline, so a diagnostic retry cannot consume the whole
-job after the original test has already failed.
+Bound diagnostic configure/build phases explicitly and retain timeout evidence.
+A diagnostic retry is not fresh acceptance and cannot erase the original failure.
 
 ### Orchestrator — `west test` (`west_commands/test.py`)
 
@@ -1685,7 +1451,8 @@ mise run west test --changed             # diff submodules vs manifest-rev -> -L
 mise run west test --bead dar-e1j         # -L bead:dar-e1j
 mise run west test --submodule xnu       # -L submod:xnu
 mise run west test --env host            # restrict environment
-mise run west test --env darling --prefix-profile homebrew
+mise run west test --env darling --runtime-root "$R" --prefix "$P"
+mise run west test --workload WORKLOAD_ID --source-root "$S" --runtime-root "$R" --prefix "$P"
 mise run west test --diag guarded        # restrict diagnosis tier
 mise run west test --fuzz                # restrict to fuzz:* labelled jobs
 mise run west test --stress              # restrict to stress:* labelled jobs
@@ -1695,7 +1462,7 @@ mise run west test ... -j8 --output-junit r.xml   # passthrough to ctest
 ```
 
 `--changed` is a local selection hint, not evidence of complete coverage.
-Publication requires the owning patch's declared proof and review gates.
+Publication requires the owning change's complete behavioral proof and review gates.
 
 ## Running across macOS versions
 

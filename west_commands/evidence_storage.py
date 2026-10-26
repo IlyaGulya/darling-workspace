@@ -37,10 +37,20 @@ _BLOCKED_DIRS = {".git", ".darling", "build", "source", "src", "prefix", "cache"
 _PAYLOAD_SUFFIXES = {".log", ".stdout", ".stderr", ".trace", ".strace", ".core", ".dmp", ".dump", ".perf", ".data", ".pcap", ".pcapng", ".out", ".err", ".txt"}
 _BINARY_MAGIC = {b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xce", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca", b"!<ar"}
 _METADATA_SUFFIXES = {".md", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".sha256", ".sha256sum", ".sha1", ".sum", ".c", ".h", ".cc", ".cpp", ".py", ".rs", ".sh", ".patch", ".diff", ".bundle", ".zst"}
+# Native run/capture control records are metadata despite their text suffixes.
+_METADATA_NAMES = {
+    "command.txt", "env.txt", "pid.txt", "target-pid.txt", "exit-status.txt",
+    "cleanup-status.txt", "prefix-cleanup-status.txt", "attach-strace.txt",
+    "fatal-targets.txt", "evidence-manifest",
+}
 
 
 class EvidenceError(RuntimeError):
     """Evidence could not safely be published or captured."""
+
+
+class PayloadNotFoundError(EvidenceError):
+    """No raw, stored or indexed payload exists for a logical reference."""
 
 
 def _absolute(path: Path) -> Path:
@@ -71,6 +81,8 @@ def _blocked(path: Path, *, directory: bool = False) -> bool:
 
 def _eligible(path: Path, *, explicit: bool) -> bool:
     name = path.name.lower()
+    if name in _METADATA_NAMES:
+        return False
     if name.startswith(".") or name.startswith(("readme", "manifest", "checksum", "sha256", "cmakelists", "summary", "verdict", "counters", "census", "index", "rescue")):
         return False
     if path.suffix.lower() in _METADATA_SUFFIXES:
@@ -598,6 +610,8 @@ def compress_paths(paths: list[Path], *, recursive: bool = False, dry_run: bool 
 def resolve_payload(path: Path) -> Path:
     path = _absolute(path)
     _no_symlinks(path)
+    if os.path.lexists(path) and not path.is_file():
+        raise EvidenceError(f"evidence payload is not a regular file: {path}")
     index = load_index(path.parent)
     logical = path.name[:-4] if path.name.endswith(".zst") else path.name
     record = index["files"].get(logical)
@@ -615,7 +629,9 @@ def resolve_payload(path: Path) -> Path:
     stored = path.with_name(path.name + ".zst")
     _no_symlinks(stored)
     if not stored.is_file():
-        raise EvidenceError(f"missing evidence payload: {path}")
+        if os.path.lexists(stored):
+            raise EvidenceError(f"evidence payload is not a regular file: {stored}")
+        raise PayloadNotFoundError(f"missing evidence payload: {path}")
     return stored
 
 

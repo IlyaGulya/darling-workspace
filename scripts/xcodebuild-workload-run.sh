@@ -43,17 +43,12 @@
 # there and runs it as /private/var/tmp/xcodebuild-<name>. The build products are written back under
 # that directory, which is host-visible, so the artifact check below needs no guest round trip.
 #
-# WHAT STILL DEPENDS ON THE /Volumes/SystemRoot HOST-ROOT MOUNT (stated, not hidden):
-#   * the Xcode tree, and therefore the real clang/ld/xcodebuild and the iPhoneOS SDK;
-#   * the guest's own /usr, which is the host's /usr through that same mount.
-# A truly isolated CI checkout would have to bake the Xcode tree into a guest-visible volume of the
-# CI image (not a host-root mount) and provision the prefix's runtime additions
-# (scripts/ios-toolchain-runtime-additions.sh). The PROJECTS are already repo-local; nothing about
-# them is read through the mount any more. Xcode and the selected prefix's guest
-# sudo are named through /Volumes/SystemRoot; their guest paths are printed below.
+# The external Xcode tree remains visible through /Volumes/SystemRoot. Runtime
+# libraries and bundled guest sudo come from the selected ordinary installation;
+# no system files are copied into the writable guest prefix.
 #
 # Usage:
-#   xcodebuild-workload-run.sh --prefix PREFIX [--workload minproj|iosapp|both]
+#   xcodebuild-workload-run.sh --runtime-root ROOT --prefix PREFIX [--workload minproj|iosapp|both]
 #                              [--plug-ins ci|diagnostic|none]
 #                              [--xcode-app PATH] [--wait SECONDS] [--log-dir DIR]
 # --plug-ins defaults to `ci`, which enables the build-system plug-in; `diagnostic` restores the
@@ -78,6 +73,9 @@ BOOT_RUN="$SCRIPT_DIR/darling-boot-run.sh"
 LICENSE_SETUP="$REPO_ROOT/testkit/scripts/xcode-license.sh"
 
 PREFIX=""
+RUNTIME_ROOT=""
+DARLING_WORKSPACE_ROOT="$REPO_ROOT"
+. "$SCRIPT_DIR/darling-runtime.sh"
 XCODE_APP="/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app"
 WORKLOADS="both"
 WAIT="300"
@@ -121,6 +119,7 @@ usage() {
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--prefix) PREFIX="$2"; shift 2 ;;
+		--runtime-root) RUNTIME_ROOT="$2"; shift 2 ;;
 		--xcode-app) XCODE_APP="$2"; shift 2 ;;
 		--workload) WORKLOADS="$2"; shift 2 ;;
 		--plug-ins) PLUG_INS="$2"; shift 2 ;;
@@ -132,17 +131,25 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$PREFIX" ] || usage
-[ -x "$PREFIX/bin/darling" ] || { echo "xcodebuild-workloads: --prefix must name a booted Darling prefix (no $PREFIX/bin/darling)" >&2; exit 2; }
+# Own staging and retained evidence too, not just the nested guest invocation.
+# Re-entry uses the parsed options; no prefix bytes are touched before validation.
+if [ -z "${WEST_TEST_PREFIX_LEASE:-}" ] || [ "${WEST_TEST_PREFIX_LEASE_FD:-8}" != 8 ]; then
+	exec python3 -B "$REPO_ROOT/west_commands/test_prefix.py" --prefix "$PREFIX" -- \
+		"$0" --runtime-root "$RUNTIME_ROOT" --prefix "$PREFIX" \
+		--xcode-app "$XCODE_APP" --workload "$WORKLOADS" --plug-ins "$PLUG_INS" \
+		--wait "$WAIT" --log-dir "$LOG_DIR"
+fi
+python3 -B "$REPO_ROOT/west_commands/test_prefix.py" \
+	--prefix "$PREFIX" --validate-lease || exit $?
+darling_resolve_runtime "$RUNTIME_ROOT" || exit $?
 [ -x "$XCODE_APP/$XB_REL" ] || { echo "xcodebuild-workloads: no xcodebuild under $XCODE_APP ($XB_REL)" >&2; exit 2; }
 [ -r "$LICENSE_SETUP" ] || { echo "xcodebuild-workloads: missing shared license setup $LICENSE_SETUP" >&2; exit 2; }
-# Name the prefix's Mach-O explicitly: guest /usr/bin may resolve through the
-# host-root mount, and host sudo must never receive the acceptance command.
-PREFIX=$(cd "$PREFIX" && pwd -P) || exit 2
-sudo_image="$PREFIX/libexec/darling/usr/bin/sudo"
-[ -x "$sudo_image" ] || sudo_image="$PREFIX/usr/bin/sudo"
+# Name the installation's Mach-O explicitly; never substitute host sudo.
+mkdir -p "$PREFIX" || exit 2
+sudo_image="$DARLING_SYSTEM_ROOT/usr/bin/sudo"
 case "$(file -Lb "$sudo_image" 2>/dev/null)" in
 	*Mach-O*) ;;
-	*) echo "xcodebuild-workloads: missing Darling guest sudo (Mach-O) in $PREFIX; provision the updated rootless bootstrap runtime before this scenario; host sudo will not be used" >&2; exit 2 ;;
+	*) echo "xcodebuild-workloads: missing installed Darling guest sudo (Mach-O): $sudo_image; host sudo will not be used" >&2; exit 2 ;;
 esac
 case "$WORKLOADS" in minproj|iosapp|both) ;; *) echo "xcodebuild-workloads: --workload takes minproj, iosapp or both" >&2; exit 2 ;; esac
 CONFIG_SKIP=$(plug_in_skip "$PLUG_INS") || { echo "xcodebuild-workloads: --plug-ins takes ci, diagnostic or none (got '$PLUG_INS')" >&2; exit 2; }
@@ -181,6 +188,7 @@ esac
 mkdir -p "$LOG_DIR" || { echo "xcodebuild-workloads: cannot create log dir $LOG_DIR" >&2; exit 2; }
 
 echo "prefix:      $PREFIX"
+echo "runtime:     $DARLING_RUNTIME_ROOT"
 echo "xcode:       $XCODE_APP  (guest: $guest_xcode)"
 echo "guest sudo:  $sudo_image  (guest: $guest_sudo)"
 echo "assets:      $REPO_ROOT/tests/xcodebuild_fixture"
@@ -276,7 +284,7 @@ PROBE
 
 	# --marker replaces the harness's legacy default marker pair (HELLO=1/FINAL=1, meant for the
 	# original fixture); without it a passing build would still be reported FAIL.
-	harness_out=$(bash "$BOOT_RUN" --prefix "$PREFIX" --wait "$WAIT" \
+	harness_out=$(bash "$BOOT_RUN" --runtime-root "$DARLING_RUNTIME_ROOT" --prefix "$PREFIX" --wait "$WAIT" \
 		--poll 'XCB_SCENARIO_RC=' --status-marker 'XCB_SCENARIO_RC=' --marker 'XCB_PROBE_DONE=1' --log "$log" \
 		--cmd "/bin/bash /private/var/tmp/$(basename "$probe_host")" 2>&1)
 	harness_rc=$?

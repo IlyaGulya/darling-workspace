@@ -21,6 +21,7 @@ from guest_macho_batch_specs import FIXTURE_SPECS
 from guest_macho_validation import VALIDATION_GROUP_FIXTURES
 from guest_toolchain import REVIEWED_COMMAND_LINE_TOOLS_SHA256
 from test_execution import ProcessResult
+from runtime_install import InstalledRuntime
 
 
 PRODUCTION_CORPUS = ROOT / "testkit/fixtures/guest-macho/v1/corpus.yml"
@@ -126,9 +127,6 @@ for name in EXPECTED_NAMES:
     assert entry["source-revision"] == ACCEPTED_SOURCE_REVISION
     assert entry["source-sha256"] == spec.source_sha256
     assert module._sha256(ROOT / spec.source_path) == spec.source_sha256
-    assert entry["patch"]["path"] == spec.patch_path
-    assert entry["patch"]["sha256"] == spec.patch_sha256
-    assert module._sha256(ROOT / spec.patch_path) == spec.patch_sha256
     assert entry["build"]["flags"] == list(spec.compile_flags)
     assert entry["build"]["link-flags"] == list(spec.link_flags)
     assert entry["expected"]["returncode"] == 0
@@ -195,13 +193,12 @@ assert {
     for entry in document["fixtures"].values()
 } == {spec.expected_marker for spec in FIXTURE_SPECS}
 
-homebrew = yaml.safe_load((ROOT / "patches/homebrew/patches.yml").read_text())["patches"]
-patches_by_path = {item["path"]: item for item in homebrew}
+from test_manifest import load_workloads
+
+catalog = load_workloads(ROOT / "testkit/workloads.yml")
 typed_tests = [
-    (patch, test)
-    for patch in homebrew
-    for test in patch.get("tests", [])
-    if test.get("runner") == "guest-macho-fixture"
+    ({"path": test["id"], "module": test["module"]}, test)
+    for test in catalog["workloads"] if test.get("runner") == "guest-macho-fixture"
 ]
 assert len(typed_tests) == len(VALIDATION_GROUP_FIXTURES["homebrew"])
 assert [test["name"] for _, test in typed_tests] == [
@@ -210,18 +207,14 @@ assert [test["name"] for _, test in typed_tests] == [
 assert {test["fixture"] for _, test in typed_tests} == VALIDATION_GROUP_FIXTURES["homebrew"]
 assert {test["validation-group"] for _, test in typed_tests} == {"homebrew"}
 required_env = {
-    "DARLING_ROOTLESS": "1",
-    "DARLING_NOOVERLAYFS": "1",
-    "DARLING_EUNION": "1",
     "WEST_TEST_FORBID_GUEST_TOOLCHAIN": "1",
 }
 for patch, test in typed_tests:
     fixture = test["fixture"]
     spec = specs[fixture]
-    assert patch["path"] == spec.patch_path.removeprefix("patches/homebrew/")
+    assert patch["path"] == test["id"]
     assert test["name"] == f"{fixture}_prebuilt"
     assert test["corpus"] == "testkit/fixtures/guest-macho/v1/corpus.yml"
-    assert test["source-profile"] == EXPECTED_GROUPS[fixture]
     assert test["validation-group"] == EXPECTED_GROUPS[fixture]
     assert test["timeout-seconds"] == EXPECTED_TIMEOUTS[fixture]
     assert test["requires"] == ["darling-prefix"]
@@ -232,12 +225,8 @@ for patch, test in typed_tests:
         assert any(
             item.get("name") in {fixture, f"{fixture}_guest"}
             and item.get("runner") == "guest-c-fixture"
-            for item in patch.get("tests", [])
+            for item in catalog["workloads"]
         ), fixture
-profiles = yaml.safe_load((ROOT / "testkit/runtime-profiles.yml").read_text())["runtime-profiles"]
-assert profiles["homebrew-rootless-bootstrap-minimal"]["source-profile"] == "homebrew"
-assert "guest-toolchain" not in profiles["homebrew-rootless-bootstrap-minimal"]
-assert "perf-rootless-bootstrap-minimal" not in profiles
 
 
 def make_macho(path: Path) -> None:
@@ -267,9 +256,10 @@ def make_macho(path: Path) -> None:
 
 with tempfile.TemporaryDirectory(prefix="west-guest-macho-contract-") as raw:
     root = Path(raw)
-    trusted_root = root / "runner-temp"
-    trusted_root.mkdir()
-    os.environ["RUNNER_TEMP"] = str(trusted_root)
+    state_root = root / "state"
+    trusted_root = state_root / "p"
+    trusted_root.mkdir(parents=True)
+    os.environ["DW_STATE_ROOT"] = str(state_root)
     os.environ["ROOTLESS_TIER_REPO"] = str(ROOT)
     source = root / "source.c"
     source.write_text("int main(void) { return 0; }\n")
@@ -402,26 +392,26 @@ with tempfile.TemporaryDirectory(prefix="west-guest-macho-contract-") as raw:
         raise AssertionError("corpus accepted a mismatched artifact SHA-256")
     corpus.write_text(bad.replace("f" * 64, artifact_sha256, 1))
 
-    prefix = trusted_root / "darling-rootless-smoke.contract"
+    prefix = trusted_root / "dw-s.contract"
     (prefix / "private/var/tmp").mkdir(parents=True)
     (prefix / "bin").mkdir()
-    outside = root / "outside" / "darling-rootless-smoke.contract"
+    outside = root / "outside" / "dw-s.contract"
     (outside / "private/var/tmp").mkdir(parents=True)
     try:
         module._require_tier_owned_fresh_prefix(outside, env={})
     except module.GuestMachoFixtureError as error:
         assert "trusted root" in str(error), error
     else:
-        raise AssertionError("runner accepted a prefix outside RUNNER_TEMP")
+        raise AssertionError("runner accepted a prefix outside the owned state root")
     ordinary_owner = prefix / ".west-tier-owner"
     ordinary_owner.write_text("schema=1\nkind=smoke\npid=1\n")
-    launcher = prefix / "bin/darling"
+    runtime_root = root / "installed-runtime"
+    (runtime_root / "bin").mkdir(parents=True)
+    launcher = runtime_root / "bin/darling"
     launcher.write_text("launcher\n")
+    runtime = InstalledRuntime(runtime_root, launcher, runtime_root / "libexec/darling", None)
     env = {
         "DPREFIX": str(prefix),
-        "DARLING_ROOTLESS": "1",
-        "DARLING_NOOVERLAYFS": "1",
-        "DARLING_EUNION": "1",
         "WEST_TEST_FORBID_GUEST_TOOLCHAIN": "1",
     }
     calls = []
@@ -433,8 +423,8 @@ with tempfile.TemporaryDirectory(prefix="west-guest-macho-contract-") as raw:
         def _execution_env(self, _invocation):
             return dict(env)
 
-        def _resolve_darling_launcher(self, _prefix):
-            return str(launcher)
+        def _installed_runtime(self):
+            return runtime
 
         def _record_failure_phase(self, _invocation, phase):
             raise AssertionError(f"unexpected failure phase: {phase}")
@@ -451,8 +441,6 @@ with tempfile.TemporaryDirectory(prefix="west-guest-macho-contract-") as raw:
         "fixture": "select_fdset_guest",
         "repo_root": str(root),
         "requires_resources": ["darling-prefix"],
-        "requires_profile": None,
-        "runtime_profile": None,
         "timeout_seconds": 30,
     }
 

@@ -25,6 +25,115 @@ from guest_toolchain import (
 )
 from test_execution import ProcessResult
 from prefix_repair import guest_c_fixture_prerequisite_problems, repair_prefix_prerequisites
+from runtime_install import RuntimeInstallationError, resolve_runtime
+
+
+def prepare_runtime(root: Path):
+    (root / "bin").mkdir(parents=True)
+    (root / "bin/darling").write_text("#!/bin/sh\nexit 0\n")
+    (root / "bin/darling").chmod(0o755)
+    (root / "bin/darlingserver").write_text("server")
+    (root / "libexec/darling").mkdir(parents=True)
+    return resolve_runtime(root)
+
+
+def snapshot(root: Path):
+    return {
+        str(path.relative_to(root)): (
+            path.lstat().st_mode,
+            str(path.readlink()) if path.is_symlink() else path.read_bytes() if path.is_file() else None,
+        )
+        for path in root.rglob("*")
+    }
+
+
+def installed_lower_contract(root: Path) -> None:
+    runtime = prepare_runtime(root / "lower-runtime")
+    prefix = root / "lower-prefix"
+    prefix.mkdir()
+    clt = runtime.system_root / "Library/Developer/CommandLineTools"
+    (clt / "usr/bin").mkdir(parents=True)
+    (clt / "usr/bin/clang").write_bytes(b"installed clang")
+    (clt / "SDKs/MacOSX12.1.sdk").mkdir(parents=True)
+    (clt / "SDKs/MacOSX.sdk").mkdir(parents=True)
+    before = snapshot(runtime.root)
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("installed prerequisites attempted download or guest installation")
+
+    def provision(selected_prefix):
+        return ensure_command_line_tools(
+            prefix=selected_prefix, launcher=str(runtime.launcher), cwd=root,
+            env=runtime.environment(prefix), opener=unexpected, guest_runner=unexpected,
+        )
+
+    assert provision(prefix) == ["guest CommandLineTools already provisioned"]
+    assert not repair_prefix_prerequisites(prefix, system_root=runtime.system_root).problems
+    assert list(prefix.iterdir()) == []
+    # Local-selected reuse still authenticates bytes and executes the selected
+    # guest compiler version oracle, even when all prerequisites live in R.
+    package = root / "lower-selected.pkg"
+    package.write_bytes(b"selected fixture bytes")
+    receipt = prefix / guest_toolchain_module.COMMAND_LINE_TOOLS_RECEIPT
+    receipt.write_text(json.dumps({
+        "package": guest_toolchain_module.SELECTED_COMMAND_LINE_TOOLS_ID,
+        "sha256": guest_toolchain_module.SELECTED_COMMAND_LINE_TOOLS_SHA256,
+    }))
+    calls = []
+
+    def selected_runner(launcher, runner_prefix, argv, **kwargs):
+        assert launcher == str(runtime.launcher) and runner_prefix == prefix
+        assert kwargs["env"]["DPREFIX"] == str(prefix)
+        assert tuple(argv) == (guest_toolchain_module.DEFAULT_GUEST_CC, "--version")
+        calls.append(tuple(argv))
+        return ProcessResult(0, stdout=guest_toolchain_module.SELECTED_COMMAND_LINE_TOOLS_CLANG)
+
+    def authenticate(path):
+        assert path.read_bytes() == b"selected fixture bytes"
+
+    with patch.object(guest_toolchain_module, "_verify_selected_package", authenticate):
+        assert ensure_command_line_tools(
+            prefix=prefix, launcher=str(runtime.launcher), cwd=root,
+            env={**runtime.environment(prefix), "DARLING_CLT_PACKAGE": str(package)},
+            opener=unexpected, guest_runner=selected_runner,
+        ) == ["guest CommandLineTools already provisioned"]
+    assert len(calls) == 1
+    receipt.unlink()
+    assert snapshot(runtime.root) == before
+    # Missing lower files cannot be supplied by a legacy P/libexec/darling tree.
+    (clt / "usr/bin/clang").unlink()
+    legacy_prefix = root / "unselected-legacy-prefix"
+    legacy = legacy_prefix / "libexec/darling/Library/Developer/CommandLineTools/usr/bin"
+    legacy.mkdir(parents=True)
+    (legacy / "clang").write_bytes(b"not selected")
+    assert guest_c_fixture_prerequisite_problems(
+        legacy_prefix, guest_toolchain_module.DEFAULT_GUEST_CC, "",
+        system_root=runtime.system_root,
+    )
+    (clt / "usr/bin/clang").write_bytes(b"installed clang")
+    # An upper guest compiler overrides the immutable lower without requiring
+    # a duplicate SDK or any write to the lower.
+    upper = prefix / "Library/Developer/CommandLineTools/usr/bin"
+    upper.mkdir(parents=True)
+    (upper / "clang").write_bytes(b"guest override")
+    assert not guest_c_fixture_prerequisite_problems(
+        prefix, guest_toolchain_module.DEFAULT_GUEST_CC,
+        guest_toolchain_module.DEFAULT_GUEST_CFLAGS, system_root=runtime.system_root,
+    )
+    (upper / "clang").unlink()
+    (upper / "clang").symlink_to("missing")
+    assert guest_c_fixture_prerequisite_problems(
+        prefix, guest_toolchain_module.DEFAULT_GUEST_CC, "",
+        system_root=runtime.system_root,
+    ), "dangling upper compiler must not fall through to the lower"
+    for unsafe in (str(prefix) + "/../victim", str(runtime.root), str(runtime.root / "guest")):
+        try:
+            provision(unsafe)
+        except RuntimeInstallationError:
+            pass
+        else:
+            raise AssertionError(f"unsafe guest prefix accepted: {unsafe}")
+    assert snapshot(runtime.root) == before
 
 
 assert not guest_toolchain_provisioning_forbidden({}), "CLT provisioning was unexpectedly forbidden"
@@ -66,6 +175,7 @@ class Response:
 
 def selected_package_contract(root: Path) -> None:
     prefix = root / "selected-prefix"
+    runtime = prepare_runtime(root / "selected-runtime")
     clt = prefix / "Library/Developer/CommandLineTools"
     (clt / "usr/bin").mkdir(parents=True)
     (clt / "SDKs/MacOSX.sdk").mkdir(parents=True)
@@ -118,8 +228,8 @@ def selected_package_contract(root: Path) -> None:
 
     def provision(**env_overrides):
         return ensure_command_line_tools(
-            prefix=prefix, launcher="launcher", cwd=root,
-            env={"DARLING_CLT_PACKAGE": str(package), **env_overrides},
+            prefix=prefix, launcher=str(runtime.launcher), cwd=root,
+            env={**runtime.environment(prefix), "DARLING_CLT_PACKAGE": str(package), **env_overrides},
             opener=no_network, guest_runner=guest_runner, log=lambda _: None,
         )
 
@@ -206,6 +316,7 @@ def main() -> None:
     ) as raw:
         root = Path(raw)
         prefix = root / "prefix"
+        runtime = prepare_runtime(root / "runtime")
         cache = root / "cache"
         (prefix / "private/var/tmp").mkdir(parents=True)
         foreign_package = prefix / "private/var/tmp/west-com.apple.pkg.foreign.pkg"
@@ -263,7 +374,7 @@ def main() -> None:
 
         changed = ensure_command_line_tools(
             prefix=prefix,
-            launcher=str(prefix / "bin/darling"),
+            launcher=str(runtime.launcher),
             cwd=root,
             env={"DPREFIX": str(prefix)},
             cache_dir=cache,
@@ -287,7 +398,7 @@ def main() -> None:
 
         assert ensure_command_line_tools(
             prefix=prefix,
-            launcher=str(prefix / "bin/darling"),
+            launcher=str(runtime.launcher),
             cwd=root,
             env={"DPREFIX": str(prefix)},
             cache_dir=cache,
@@ -301,7 +412,7 @@ def main() -> None:
         try:
             ensure_command_line_tools(
                 prefix=root / "missing-prefix",
-                launcher="launcher",
+                launcher=str(runtime.launcher),
                 cwd=root,
                 env={},
                 cache_dir=cache,
@@ -333,6 +444,7 @@ def main() -> None:
         guest_toolchain_module.REVIEWED_COMMAND_LINE_TOOLS_SHA256.update(reviewed_digests)
 
         selected_package_contract(root)
+        installed_lower_contract(root)
 
     print("PASS guest-toolchain-contract")
 

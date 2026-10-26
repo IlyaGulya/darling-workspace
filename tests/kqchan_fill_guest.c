@@ -21,7 +21,7 @@
  * carries a MACH_MSG_TYPE_MOVE_RECEIVE descriptor, which additionally reaches ipc_object_copyout/
  * ipc_right_copyout, and must land a live receive right in the guest's namespace.
  *
- * Host-built as a guest Mach-O and executed by the prefix; nothing is compiled in the guest.
+ * Compiled inside Darling with the reviewed guest CommandLineTools.
  */
 #include <sys/event.h>
 #include <sys/time.h>
@@ -451,5 +451,11 @@ int main(void) {
 	if (desc_rc != 0) {
 		return desc_rc;
 	}
-	return receive_right_case();
+	int rcv_rc = receive_right_case();
+	if (rcv_rc != 0) {
+		return rcv_rc;
+	}
+	printf("KQCHAN_FILL_ALL_OK=1\n");
+	fflush(stdout);
+	return 0;
 }

@@ -23,7 +23,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DARLING = ROOT.parent / "darling"
+DARLING = Path(os.environ.get("DARLING_SOURCE_ROOT") or ROOT.parent / "darling").expanduser().resolve()
 REGISTRY_PATH = ROOT / "lifecycle" / "namespace-writer-inventory-v1.json"
 AUDIT_CLASSIFICATIONS = {
     "build-or-generator-output",
@@ -447,7 +447,7 @@ def _validate_lock_contract(writer_id: str, compatibility: str, lock: dict) -> N
 
 
 def _runtime_scan_paths() -> list[tuple[str, str]]:
-    """Return the finite production source roots covered by this inventory."""
+    """Return required shared-prefix owner anchors, not image-publication helpers."""
 
     return [
         ("darling", "src/startup/darling.c"),
@@ -457,18 +457,22 @@ def _runtime_scan_paths() -> list[tuple[str, str]]:
         ("darling", "src/launchd/support/launchctl.c"),
         ("darling", "src/external/darlingserver/src/darlingserver.cpp"),
         ("darling", "src/external/darlingserver/src/server.cpp"),
+        ("darling", "src/external/darlingserver/src/call.cpp"),
+        ("darling", "src/external/darlingserver/src/kqchan.cpp"),
         (
             "darling",
             "src/external/xnu/darling/src/libsystem_kernel/emulation/src/linux_premigration/vchroot_userspace.c",
         ),
+        # The complete workspace universe is scanned separately. Installation
+        # publication and receipt helpers target immutable R, not writable P;
+        # their mutations require reviewed candidate entries, not prefix owners.
         ("darling-workspace", "west_commands/test_prefix.py"),
         ("darling-workspace", "west_commands/prefix_repair.py"),
-        ("darling-workspace", "west_commands/deploy_transaction.py"),
-        ("darling-workspace", "west_commands/test_runtime_deploy.py"),
-        ("darling-workspace", "west_commands/test_bootstrap.py"),
         ("darling-workspace", "west_commands/fresh_prefix.py"),
-        ("darling-workspace", "west_commands/darling_build.py"),
         ("darling-workspace", "west_commands/guest_toolchain.py"),
+        ("darling-workspace", "west_commands/xcode_system_resources.py"),
+        ("darling-workspace", "west_commands/test_homebrew.py"),
+        ("darling-workspace", "west_commands/test_stock_stack_cache.py"),
         ("darling-workspace", "west_commands/darling_prefix_repair.py"),
     ]
 
@@ -1151,7 +1155,6 @@ def _mig_full_configure_arguments() -> list[str]:
         "-DCMAKE_C_COMPILER=/usr/bin/clang",
         "-DCMAKE_CXX_COMPILER=/usr/bin/clang++",
         "-DDARLING_NO_CCACHE=ON",
-        "-DDARLING_SKIP_DRIFT_GATE=ON",
         "-DDARLING_EUNION=ON",
         "-DDARLING_RING_TRANSPORT=ON",
     ]

@@ -1,4 +1,4 @@
-"""Pure patch-metadata selection for ``west test``."""
+"""Pure source-independent workload selection for ``west test``."""
 
 from __future__ import annotations
 
@@ -10,87 +10,138 @@ from test_ctest import is_ctest_binding
 
 
 class MetadataSelection:
-    """Selected tests plus patches that need a test/exception decision."""
+    """Selected and explicitly blocked workload invocations."""
 
-    def __init__(self, selected: list[tuple[dict, dict]], missing: list[dict], found_patch: bool, blocked: list[tuple[dict, dict]]):
+    def __init__(self, selected: list[tuple[dict, dict]], blocked: list[tuple[dict, dict]]):
         self.selected = selected
-        self.missing = missing
-        self.found_patch = found_patch
         self.blocked = blocked
 
 
-def select_metadata_tests(
-    profile: dict,
+def _resolved_diag(test: dict) -> str:
+    return str(test.get("diag", "bare"))
+
+
+def workload_owner(test: dict) -> dict:
+    """Adapt a flat declaration to the structured runners' owner/test API.
+
+    ``path`` is an invocation label, not a patch or source path.
+    """
+
+    owner = {"id": test["id"], "path": test["id"], "module": test["module"]}
+    if test.get("bead"):
+        owner["bead"] = test["bead"]
+    return owner
+
+
+def select_workload_tests(
+    data: dict,
     *,
-    patch_path: str | None,
-    bead: str | None,
-    env: str | None,
-    diag: str | None,
-    label: str | None,
-    red_only: bool,
-    resolved_diag: Callable[[dict], str],
+    workload: str | Sequence[str] | None = None,
+    bead: str | None = None,
+    submodule: str | None = None,
+    env: str | None = None,
+    diag: str | None = None,
+    label: str | None = None,
     validation_group: str | None = None,
+    resolved_diag: Callable[[dict], str] = _resolved_diag,
     defer_ctest: bool = False,
 ) -> MetadataSelection:
-    """Select normalized metadata without depending on a West command object."""
+    """Select stable ids or named groups in their declared execution order.
+
+    Alias overlap selects each declaration once. Distinct declarations remain
+    distinct even when they have the same display name or command.
+    """
 
     if validation_group is not None and validation_group not in {"homebrew"}:
         raise ValueError(f"unknown guest Mach-O validation group: {validation_group}")
-
+    by_id = {test["id"]: test for test in data["workloads"]}
+    requested = [workload] if isinstance(workload, str) else workload
+    entries = data["workloads"]
+    if requested is not None:
+        wanted = []
+        for name in requested:
+            if name in by_id:
+                members = [name]
+            elif name in data.get("aliases", {}):
+                members = data["aliases"][name]
+            else:
+                raise ValueError(f"unknown workload: {name}")
+            for member in members:
+                if member not in wanted:
+                    wanted.append(member)
+        entries = [by_id[identifier] for identifier in wanted]
     selected = []
-    missing = []
     blocked = []
-    found_patch = False
-    for patch in profile.get("patches", []):
-        if patch_path and patch["path"] != patch_path:
+    for test in entries:
+        choice = select_metadata_tests(
+            workload_owner(test), [test], bead=bead, submodule=submodule,
+            env=env, diag=diag, label=label, validation_group=validation_group,
+            resolved_diag=resolved_diag, defer_ctest=defer_ctest,
+        )
+        selected.extend(choice.selected)
+        blocked.extend(choice.blocked)
+    return MetadataSelection(selected, blocked)
+
+
+def select_metadata_tests(
+    owner: dict,
+    tests: Sequence[dict],
+    *,
+    bead: str | None = None,
+    submodule: str | None = None,
+    env: str | None = None,
+    diag: str | None = None,
+    label: str | None = None,
+    validation_group: str | None = None,
+    resolved_diag: Callable[[dict], str] = _resolved_diag,
+    defer_ctest: bool = False,
+) -> MetadataSelection:
+    """Apply selectors to declarations or resolved CTest registration variants."""
+
+    if validation_group is not None and validation_group not in {"homebrew"}:
+        raise ValueError(f"unknown guest Mach-O validation group: {validation_group}")
+    matcher = re.compile(label) if label else None
+    selected = []
+    blocked = []
+    for test in tests:
+        if bead and test.get("bead", owner.get("bead")) != bead:
             continue
-        found_patch = True
-        if bead and patch.get("bead") != bead:
+        labels = metadata_test_labels(owner, test, resolved_diag)
+        if submodule and f"submod:{submodule}" not in labels:
             continue
-        all_tests = [test for test in (patch.get("tests") or []) if not test.get("blocked")]
-        tests = patch.get("tests") or []
-        if red_only:
-            tests = [test for test in tests if test.get("red")]
-        if env:
-            tests = [test for test in tests if (defer_ctest and is_ctest_binding(test)) or test.get("env") == env]
-        if validation_group:
-            tests = [
-                test
-                for test in tests
-                if test.get("runner") == "guest-macho-fixture"
-                and test.get("validation-group") == validation_group
-            ]
-        if diag:
-            tests = [test for test in tests if (defer_ctest and is_ctest_binding(test)) or resolved_diag(test) == diag]
-        if label:
-            matcher = re.compile(label)
-            tests = [
-                test
-                for test in tests
-                if (defer_ctest and is_ctest_binding(test))
-                or any(matcher.search(item) for item in metadata_test_labels(patch, test, resolved_diag))
-            ]
-        blocked.extend((patch, test) for test in tests if test.get("blocked"))
-        selected.extend((patch, test) for test in tests if not test.get("blocked"))
-        if not all_tests and not patch.get("test-exception"):
-            missing.append(patch)
-    return MetadataSelection(selected, missing, found_patch, blocked)
+        deferred = defer_ctest and is_ctest_binding(test)
+        if env and not deferred and test.get("env") != env:
+            continue
+        if diag and not deferred and resolved_diag(test) != diag:
+            continue
+        if matcher and not deferred and not any(matcher.search(item) for item in labels):
+            continue
+        if validation_group and (
+            test.get("runner") != "guest-macho-fixture"
+            or test.get("validation-group") != validation_group
+        ):
+            continue
+        (blocked if test.get("blocked") else selected).append((owner, test))
+    return MetadataSelection(selected, blocked)
 
 
 def metadata_test_labels(
-    patch: dict, test: dict, resolved_diag: Callable[[dict], str]
+    owner: dict, test: dict, resolved_diag: Callable[[dict], str]
 ) -> set[str]:
     labels = {
         f"env:{test.get('env', 'host')}",
         f"diag:{resolved_diag(test)}",
     }
+    if test.get("id"):
+        labels.add(f"workload:{test['id']}")
     if test.get("name"):
         labels.add(f"name:{test['name']}")
     if test.get("validation-group"):
         labels.add(f"guest-macho-group:{test['validation-group']}")
-    if patch.get("bead"):
-        labels.add(f"bead:{patch['bead']}")
-    modules = test.get("submodules") or [patch.get("module")]
+    bead = test.get("bead", owner.get("bead"))
+    if bead:
+        labels.add(f"bead:{bead}")
+    modules = test.get("submodules") or [test.get("module", owner.get("module"))]
     if isinstance(modules, str):
         modules = [modules]
     for module in modules:
@@ -111,60 +162,14 @@ def metadata_test_labels(
 def metadata_invocation_identity(
     invocation: Mapping[str, Any], test: Mapping[str, Any]
 ) -> tuple[Any, ...]:
-    """Return the identity that decides whether two metadata tests are one run.
+    """Keep distinct declarations even when their commands coincide."""
 
-    Two tests that share a command but differ in runtime profile are different
-    experiments: the same fixture runs against a different runtime transport.
-    Deduplicating them silently drops one arm of every paired comparison - ten
-    tests were skipped this way in the 2026-09-14 acceptance run, which made the
-    "matched ON/OFF" claim partly vacuous - so the runtime profile, the
-    environment and the diagnostic mode are part of the identity, not only the
-    command.
-    """
-
-    profiles = test.get("runtime-profile") or test.get("runtime-profiles") or ()
-    if isinstance(profiles, str):
-        profiles = (profiles,)
     return (
+        test.get("id"),
         invocation.get("key"),
-        tuple(str(profile) for profile in profiles),
         str(test.get("env", "host")),
         str(invocation.get("diag") or ""),
     )
-
-
-def select_metadata_tests_for_command(
-    command,
-    profile: str,
-    patch_path: str | None,
-    bead: str | None,
-    env: str | None,
-    diag: str | None,
-    label: str | None,
-    red_only: bool,
-    validation_group: str | None = None,
-):
-    selection = select_metadata_tests(
-        command._load_profile(profile),
-        patch_path=patch_path,
-        bead=bead,
-        env=env,
-        diag=diag,
-        label=label,
-        validation_group=validation_group,
-        red_only=red_only,
-        resolved_diag=command._resolved_diag,
-        defer_ctest=True,
-    )
-    if patch_path and not selection.found_patch:
-        command.die(f"{profile}: patch not found or has no selected tests: {patch_path}")
-    for patch, test in selection.blocked:
-        if env and test.get("env") and test["env"] != env:
-            continue
-        identity = test.get("ctest-name") or test.get("name") or test.get("ctest-label")
-        reason = test.get("note") or patch.get("publication-blocker") or "explicitly blocked in metadata"
-        command.inf(f"{patch['path']}: {identity} BLOCKED: {reason}")
-    return selection.selected, selection.missing
 
 
 def metadata_selection_plan(

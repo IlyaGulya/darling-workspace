@@ -13,8 +13,8 @@ Canonical source: `.agents/skills/darling-diagnostics/SKILL.md` in the manifest;
 `.claude/skills` is its compatibility alias. Read the relevant sections of
 [tooling](../../../docs/tooling.md), then verify current help, implementation and
 returned evidence. A listed option or zero exit status is not proof of capture,
-deployment or coverage. Linked references include historical recipes; resolve
-paths and source authority through `darling-boot`, not copied examples.
+deployment or coverage. Resolve installation and guest-state paths through
+`darling-boot`; historical evidence is not an operating recipe.
 The [generated command reference](../../../docs/tooling.md#the-diagnostics-are-one-tool-dwdiag)
 indexes commands; inspect the selected command's actual contract before use.
 Historical reasoning belongs in diagnostic evidence/Beads and
@@ -26,11 +26,11 @@ not new incident narratives in this skill.
 | Question | Supported route |
 |---|---|
 | Where did this run stop, and what evidence belongs to it? | `scripts/dwdiag job`, `progress`, `evidence`, `witness` |
-| Which build, prefix and deployed copies served it? | `dwdiag env`, component deploy verification, artifact manifest and guest tracing |
+| Which build, installed image and guest prefix served it? | `dwdiag env`, install receipt, artifact manifest and guest tracing |
 | What faulted, or what is blocked? | `dwdiag core`, `trap`, `unwind`, `waits`; choose from the generated reference |
-| One build/deploy/run iteration or a workload set? | `dwdiag build` + `cycle`; `verdict` / `suite` for workload-owned acceptance |
+| One build/install/run iteration or a workload set? | `dwdiag build` + `cycle`; `verdict` / `suite` for workload-owned acceptance |
 | A loader image/symbol gap? | `closure_analyze.py --sweep` / `--cover` / `--order`; `rung-driver.py stop` / `verify` |
-| Live server belief about one thread? | `darling-debug` or LLDB glue; requires a compatible server launched with `DSERVER_DEBUG_ABI=1`; [debugger guide](../../../docs/darling-debugger.md) |
+| Live server belief about one thread? | The C++ ABI exists, but no shipped Rust client/LLDB glue. See [availability and current capture routes](../../../docs/darling-debugger.md); `dwdiag processes` / `unwind` / `run` provide host evidence, not server-state snapshots. |
 | Why was a syscall, RPC or Mach call refused? | `scripts/dwdiag denials --log GUEST_CAPTURE --kernel MATCHING_IMAGE`; caller resolution needs that image; `UNRESOLVED` is not absence of a denial |
 | Which transport carried a message, and did the descriptor courier lose it? | `scripts/dwdiag courier` (packets per transport, endpoint purity) |
 | Is the prefix or its process set stale, and what owns it? | `scripts/dwdiag processes`, `prefix`; `west dev status --json` for jobs/worktrees |
@@ -42,35 +42,40 @@ Use `--json` where supported. Pass this run's paths explicitly; default/latest
 log discovery can select another run. The `dwdiag` shim can rebuild the host
 runner even for `--help`; retain its printed tool/binary provenance.
 
-For an iteration, resolve `DWDIAG_BUILD` and `DWDIAG_PREFIX` from the owned
-configuration. `dwdiag build --expect STRING` defaults to the kernel/dyld build
-targets and checks each requested tag in both configured artifacts. `cycle`
-builds those targets, deploys kernel, dyld **and mldr** by default, refreshes the
-ring fixture and runs its workload/census. Ensure every edited deployed
-component was built; the default targets do not explicitly rebuild mldr.
-These diagnostics consume a configured build/prefix; they do not establish the
-manifest-source bootstrap contract. See the
+For an iteration, resolve `DWDIAG_BUILD`, `DWDIAG_PREFIX` (guest state only)
+and the runner's global `--runtime-root R` explicitly. `dwdiag deploy --build B`
+invokes the complete normal `west darling-build --install --with-test-data`
+publication; it accepts no guest `--prefix` or component `--artifact` selection.
+`cycle --target` adds build-only targets before that complete install.
+`cycle --skip-build` reuses an existing verified image without building or
+installing and rejects `--target`; `--repeat` runs workloads against the same
+image rather than redeploying. New code needs a fresh configured absolute
+install root, a stock ALL build and full install, never an in-place rewrite.
+Keep diagnostics default-off. See the
 [iteration contract](../../../docs/tooling.md#dwdiag-build-and-dwdiag-cycle----the-iteration-loop-with-the-paths-out-of-the-command).
 
 ## 2. Establish artifact and process identity
 
-- For a libsystem_kernel change, build/deploy dyld together with the dylib: dyld
-  contains a static emulation path. Never claim a closure-only deploy exercised it.
-- Resolve explicit `--build-dir` and `--prefix` for `mise run west darling-build`;
-  its defaults are not canonical-workspace discovery. `--deploy-only
-  --deploy-component NAME` and `scripts/darling-deploy-verify.sh --build BUILD
-  --prefix PREFIX --component NAME` copy/hash existing component destinations.
-  They do not build, establish source provenance, lock/shut down the runtime or
-  provide rollback. Stop it through its owner first. Components accumulate;
-  inspect every expected destination: a missing parent is skipped, not repaired,
-  and an all-skipped component can still return zero.
-- A normal `--deploy --deploy-darlingserver` build also deploys dyld/closure.
-  Record that scope; use explicit component-only deployment for a server-only
-  experiment only after verifying its build and lifecycle prerequisites.
+- For a libsystem_kernel change, build dyld together with the dylib: dyld
+  contains a static emulation path. Consume both from the same complete image.
+- Use `mise run west darling-build --build-dir B --runtime-root R --install`
+  with absolute `CMAKE_INSTALL_PREFIX=R` and default `COMPONENTS=stock`.
+  `R/bin/darling`, `R/bin/darlingserver` and `R/libexec/darling` are installed
+  image paths; disjoint `P` is writable guest state, never a runtime provider.
+  No partial deployment, `P/bin` discovery or duplicate system libraries in `P`.
+- The CLI `installation_identity` summarizes receipt/path/SHA, artifact count,
+  source revision/dirty state and provenance, not the full inventory.
+  The schema2 receipt inventories the complete actual image, including normal
+  install-hook files and actual CMake manifest hashes; verification rejects
+  extras. A published image remains verifiable when its build tree changes.
 - Artifact-manifest covers its fixed boot-component inventory, not every dylib.
   Its `--probe` is a report, not a missing-tag failure gate; inspect presence
   yourself. Describe-artifact requires `FILE` even in tag mode; its optional
   symbol disassembly can be unbounded. Use `dwdiag symbolize` for symbol lookup.
+  Pass `--runtime-root R` to image-aware tools and `--prefix P` for guest state.
+  `rung-driver.py --fail-on-installed-miss` gates installed closure misses.
+  `suite --record-evidence PATH` writes standalone evidence, never mutates the
+  immutable installation receipt.
 - An already-running server still serves its old bytes. Shut down via its owner
   or prove running identity before interpreting a deployment. A different
   prefix's live runtime can serve a plausible-looking run; assert prefix maps
@@ -87,6 +92,12 @@ manifest-source bootstrap contract. See the
   emulated Darwin pid and heuristic shell/loader matches are not substitutes.
   The managed ring fixture is `/private/var/tmp/ring_mach_msg_test`, not host
   `/usr/bin`; confirm the installed asset is the one being invoked.
+- Generic `dwdiag run` wraps a host command; it neither selects a guest prefix
+  nor owns guest shutdown. The inner managed command must own the lifecycle,
+  or use the prefix-aware Darling mode. Prefix staging consumes only installed
+  `R/libexec/darling/usr/bin/<fixture>` or an explicit `--asset`, digest-checks
+  the staged copy under `P/private/var/tmp`, and fails on missing input. It is
+  not a runtime-library deployment or a fallback to an old prefix copy.
 
 ## 3. Instrument with bounded perturbation
 

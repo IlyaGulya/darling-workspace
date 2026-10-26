@@ -1,448 +1,283 @@
-# The Darling debugger (`darling-debug`)
+# Darling server debug ABI and current capture routes
 
-The supported developer view into a **running** Darling runtime. It answers the
-questions a host-side tool cannot: which guest thread a Linux thread is, what
-the server believes that thread is doing, which Call it is in, what it is
-waiting for, and who is expected to wake it.
+The product contains a C++ read-only server debug ABI. It does **not** currently
+ship the `darling-debug` Rust client or the LLDB Python command glue described
+by the original debugger architecture. The vendored host runner builds
+`darling-debug-runner`, not that client; the separate West runner does not
+supply the missing client/glue either.
 
-It is a read-only observer of the server's own state. It is not a control plane
-and it never mutates the guest, the server, or a transport.
+Use the current `dwdiag processes`, `unwind` and `run` routes for operational
+process/stack capture. They are not clients of the server debug ABI and cannot
+be presented as its server-state or expected-waker view.
 
 Related documents:
 
 | document | what it is |
 | --- | --- |
-| `docs/debug-abi.md` in `darling/src/external/darlingserver` | the wire specification: schema, framing, bounds, endpoint identity |
-| `docs/tooling.md` | the diagnostic tool index this document is listed in |
-| `darling/src/external/darlingserver/tools/darling-lldb/darling.py` | the LLDB command glue |
+| [tooling](tooling.md) | current diagnostic command index and ownership rules |
+| `darling/src/external/darlingserver/internal-include/darlingserver/debug-abi.hpp` | implemented C++ snapshot schema and availability fields |
+| `darling/src/external/darlingserver/internal-include/darlingserver/debug-{introspection,connection,serialize}.hpp` | protocol, connection bounds and serialization interfaces |
+| `darling/src/external/darlingserver/src/debug-{collect,introspection,connection,serialize}.cpp` | actual collection, parsing, I/O and serialization |
+| `darling/src/external/darlingserver/src/server.cpp` | opt-in listener integration |
 
 ## Purpose
 
-Darling's failures are usually timing-sensitive: a reply that never arrives, a
-wakeup that goes to the wrong thread, a thread parked in the wrong state. A log
-tells you what a thread *printed*; this tool tells you what the **server
-believes** about that thread at the moment you ask, correlated with the host
-Linux thread and the guest identity.
+Separate three kinds of evidence: host process/register/stack captures from
+available tools, state that the C++ server exporter can represent, and facts
+independently witnessed by a workload. A schema field is not a live observation;
+an available host stack is not a server Call/waker snapshot.
 
-Use it to form a hypothesis about causal state, then convert the hypothesis into
-a product fix, and prove the fix with a `dwdiag` regression (see
-[Relationship to dwdiag](#relationship-to-dwdiag)).
+Keep this file as the ABI reference and availability boundary. Do not repair a
+missing client by inventing a protocol script, advertising an absent Cargo
+target or importing a nonexistent LLDB module.
 
 ## Architecture
 
+The implemented path is:
+
 ```text
-DarlingServer
-    thin C++ read-only exporter
-        |
-        | versioned, bounded debug protocol (one request, one response, close)
-        v
-darling-debug
-    Rust core: protocol client, identity reasoning, interpretation, rendering
-        |
-        v
-LLDB
-    upstream LLDB + a thin Python command glue
+DarlingServer Process/Thread registries and public accessors
+    -> C++ DebugCollector
+    -> bounded versioned JSON serialization
+    -> opt-in nonblocking abstract AF_UNIX listener
 ```
 
-Ownership is deliberate and narrow.
+The C++ layer owns collection, schema, serialization, peer authorization and
+connection lifetime. It does not provide an interactive CLI or LLDB commands.
+`darling-debug` is also the ABI name/request signature; that string does not
+establish the existence of a host executable.
 
-**C++ (`darlingserver`) owns** bounded state collection, serialization into the
-versioned schema, and the read-only endpoint. It does not interpret, rank,
-correlate or render anything.
+| layer | current availability |
+| --- | --- |
+| C++ server exporter and listener | present and wired into the server; opt-in |
+| Rust protocol client, identity interpretation and rendering | not shipped by the current runner sources |
+| LLDB Python delegation glue | not present in the product's `tools` directory |
+| `dwdiag` process/stack/bundle capture | available host diagnostics, separate from the server ABI |
 
-**Rust (`darling-debug`) owns** the protocol client, the identity graph,
-interpretation, presentation, the CLI, and future snapshot/offline logic. All
-reasoning about what a value *means* lives here.
-
-**Python (`darling.py`) owns** LLDB command delegation only: it supplies the
-facts only LLDB knows (the selected thread's OS tid, the frame PC, how that tid
-was determined) and calls the core. It does not parse responses, hold ABI
-grammar, or render.
-
-**Native LLDB owns nothing Darling-specific.** There is no Darling C++ plugin,
-no downstream LLVM patch, and no forked LLDB.
+The original multi-layer client architecture is not a description of a
+currently implemented end-to-end tool.
 
 ## Build / prerequisites
 
-Three artifacts, three locations.
+There is no supported client build recipe in these checkouts. Building the
+runner or installing LLDB does not supply the absent Rust client or command
+glue. The C++ headers/sources above, not an absent Rust `Snapshot` type or
+`docs/debug-abi.md`, are the current ABI reference.
 
-| artifact | repository | where the code lives |
-| --- | --- | --- |
-| debugger-enabled server | `darling/src/external/darlingserver` | the canonical debugger branch (see *Canonical revisions*) |
-| `darling-debug` client | the `darling-debug-runner` sibling repository | the canonical debugger branch |
-| LLDB glue | `darling/src/external/darlingserver/tools/darling-lldb/darling.py` | same as the server |
+For operational capture:
 
-Build the client:
-
-```sh
-cargo build --bin darling-debug        # target/debug/darling-debug
-cargo build --release --bin darling-debug   # target/release/darling-debug
-```
-
-Prerequisites:
-
-- A Darling prefix that was bootstrapped normally (`<prefix>/bin/darling`
-  exists). Nothing else about the prefix changes.
-- A `darlingserver` in that prefix built from the debugger branch. Build and
-  deploy it as a focused artifact, for example
-  `west darling-build --targets darlingserver --deploy --deploy-darlingserver`;
-  this replaces `<prefix>/bin/darlingserver` and leaves dyld and the closure
-  alone.
-- Upstream LLDB (18 is what the integration is validated against) and its
-  Python support. Only the LLDB leg needs it.
-
-The host tests for each layer run without a Darling runtime at all:
-
-```sh
-# from darling/src/external/darlingserver
-cargo test                                    # Rust core (in the runner repo)
-g++ -std=c++17 -O1 -Wall -Wextra -Werror -Iinternal-include \
-    src/debug-serialize.cpp tests/debug_serialize_test.cpp -o /tmp/ser && /tmp/ser
-g++ -std=c++17 -O1 -Wall -Wextra -Werror -Iinternal-include \
-    src/debug-introspection.cpp src/debug-serialize.cpp \
-    tests/debug_introspection_test.cpp -o /tmp/proto && /tmp/proto
-bash tools/darling-lldb/t/run-darling-lldb-contract.sh
-```
+- Select an immutable normal installation `R` and disjoint writable guest state
+  `P`. Installed launchers are under `R/bin`, never `P/bin`.
+- Build/publish changed product code through the normal stock ALL/full-install
+  workflow in [tooling](tooling.md#installation-guest-state-and-diagnostic-inputs).
+  Never copy a focused server artifact into `P` or rewrite a published image.
+- Retain one lifecycle owner for `P`, with the persistent external per-prefix
+  lease distinct from `P/.lifecycle.lock`. Read `darling-boot` before launch.
+  An observer does not acquire the right to start another guest or clean up
+  someone else's run.
+- Use the actual workload's host PID, matching installation and owned durable
+  evidence paths. `unwind` needs GDB and permission to inspect the selected
+  process; failure to read registers/memory is unavailable evidence, not an
+  empty successful stack.
 
 ## Enable the debug ABI
 
-The debug endpoint is **opt-in and absent by default**. A normally started
-`darlingserver` creates no listener at all.
+The implemented listener is **opt-in and absent by default**. Only the exact
+launch-time value `DSERVER_DEBUG_ABI=1` enables it; unset, empty, `0`, `off`,
+`no` and other values leave it disabled. This must reach the launcher before a
+cold server start. Changing an observer's environment cannot alter an already
+running server.
 
-```sh
-export DSERVER_DEBUG_ABI=1
-```
+The server logs the abstract endpoint when listener setup succeeds, or a reason
+when identity, socket, bind/listen or epoll setup fails. It has no fallback
+transport. Enabling the endpoint does not install a consumer.
 
-Exactly the string `1` enables it. Unset, empty, `0`, `off`, `no`, or any other
-value leaves it disabled.
-
-The variable must be in the *launcher's* environment. `bin/darling` execs
-`darlingserver` without resetting the environment, so exporting it before
-starting the workload is enough:
-
-```sh
-export DSERVER_DEBUG_ABI=1
-DPREFIX=<prefix> DARLING_PREFIX=<prefix> DARLING_ROOTLESS=1 \
-  <prefix>/bin/darling --rootless shell /bin/bash -c 'echo ready; sleep 600'
-```
-
-`darling-boot-run.sh --env DSERVER_DEBUG_ABI=1` does the same thing inside the
-measured-run harness.
-
-When enabled, the server logs one line and publishes the abstract socket. When
-it cannot be enabled, the reason is logged and the debug ABI stays disabled —
-there is no fallback transport.
+The current `dwdiag processes`, `unwind` and `run` commands do not need this
+switch. Leave it disabled for ordinary capture unless the task specifically
+requires investigating the server ABI. Any requested cold start still belongs
+to the existing prefix lifecycle owner and normal product shutdown/cleanup.
 
 ## CLI quick start
 
+These are commands of the **existing runner**, not a `darling-debug` client.
+`R`, `P`, `DW_STATE_ROOT` and `HOST_PID` denote explicit paths/identity from the
+owned run; do not copy a PID from another run. Use an existing owned `TMPDIR`
+beneath `DW_STATE_ROOT`.
+
+First inspect the prefix process census:
+
 ```sh
-# build, then point the client at the prefix
-cargo build --bin darling-debug
-DD=./target/debug/darling-debug
-PREFIX=/tmp/dar-dbg-prefix-20261001
-
-# 1. is the endpoint there, and what does this server implement?
-"$DD" --prefix "$PREFIX" hello
-
-# 2. which guest threads does the server know, with every identity at once?
-"$DD" --prefix "$PREFIX" list
-
-# 3. inspect one thread by the host Linux tid
-"$DD" --prefix "$PREFIX" thread --host-tid 265780
-
-# 4. what is it waiting for, and who is expected to wake it?
-"$DD" --prefix "$PREFIX" wait --host-tid 265780
-
-# 5. which transport does the server record for it
-"$DD" --prefix "$PREFIX" transport --host-tid 265780
-
-# 6. the machine interface, and the byte-exact protocol view
-"$DD" --prefix "$PREFIX" --json thread --host-tid 265780
-"$DD" --prefix "$PREFIX" --raw  thread --host-tid 265780
+scripts/dwdiag --runtime-root "$R" processes --prefix "$P" --list --json
 ```
 
-If the endpoint cannot be reached the client exits `4` and prints one line to
-stderr. If the endpoint answers with an error document the client exits `3` and
-still prints the server's own document on stdout, so a caller can read the
-server's words rather than a paraphrase.
+Resolve the guest process from that run's identity evidence. For a bounded
+bundle of the current unwind observer:
 
-| exit code | meaning |
+```sh
+scripts/dwdiag --runtime-root "$R" run \
+  --name guest-unwind --bundle-root "$DW_STATE_ROOT/bundles" \
+  --timeout-seconds 120 -- \
+  scripts/dwdiag --runtime-root "$R" unwind --pid "$HOST_PID" --max 12 --json
+```
+
+`unwind` observes an attachable live guest PID through GDB registers and host
+mappings/memory. Attachment can stop/perturb the process. A validated
+frame-pointer walk can be partial in optimized production code; explicit
+`--scan` selects candidate stack words, not a backtrace or a causal wait proof.
+
+The outer `run` records observer output and status. It is a generic host-command
+runner: it does not infer `DPREFIX`, own the guest lifecycle or guarantee guest
+shutdown. This example observes an existing owned run; it does not launch a
+second guest. Retain the printed bundle, errors, actual PID/image identity and
+the lifecycle owner's final result. Neither a zero process count nor a capture
+timeout proves clean product shutdown or workload PASS.
+
+The shim may build the host runner even for help. Read the
+[runner reference](../tools/darling-debug-runner/README.md) for its capture and
+ownership contracts; no command above consumes the C++ ABI.
+
+## LLDB integration availability
+
+No Darling LLDB command glue is present in the selected product source, and
+there is no shipped `darling-debug` client for it to delegate to. There is
+therefore no current Darling-specific LLDB quick start, module-import path or
+client environment variable to configure.
+
+Upstream LLDB can be used independently for native debugging, but that does not
+provide the missing server ABI integration. Use the available host capture
+routes above rather than treating a missing module as a path setup problem.
+
+## Server protocol operations
+
+These are operation names exposed by `DebugCollector::operations()`, **not**
+runner subcommands or a supplied CLI:
+
+| wire operation | C++ exporter purpose |
 | --- | --- |
-| `0` | the server answered with a snapshot |
-| `1` | the request could not be made: the prefix cannot be stat'd, or the core rejected the request |
-| `2` | command-line usage error (an unknown subcommand, or `--json` with `--raw`) |
-| `3` | the server returned an error document, or its answer was not a valid document |
-| `4` | the endpoint could not be reached (connect failed) |
+| `hello` | ABI/version and supported-operation response |
+| `identity_map` | available target identity fields |
+| `list_processes` | process/thread registry discovery rows |
+| `list_threads` | process/thread registry discovery rows |
+| `process_info` | available process state, paths and memory summary |
+| `thread_info` | public thread state and active/pending Call slots |
+| `thread_current` | thread-shaped lookup; no automatic LLDB selection is supplied |
+| `wait` | partial wait state from public server fields |
+| `transport_current` | explicit transport availability/detail |
+| `artifacts` | executable paths, not installed-byte hashes |
 
-## LLDB quick start
+The parser accepts selectors named `host_pid`, `host_tid`, `server_pid`,
+`server_tid`, `nsid` and `eternal_id`. Parsing a selector does not guarantee that
+the collector resolves it: current thread lookup uses host/server TID, NSID or
+eternal ID; process lookup uses the resolved thread, server PID or NSID.
+`host_pid` is parsed but is not itself a process lookup in the current collector.
 
-Upstream LLDB, with the glue loaded:
-
-```sh
-export DARLING_DEBUG=/absolute/path/to/darling-debug
-export LD_LIBRARY_PATH=<lldb lib dir>:<lldb python/lib dir>   # only for a relocated LLDB build
-
-lldb
-(lldb) command script import /absolute/path/to/darling/tools/darling-lldb/darling.py
-(lldb) darling --prefix /tmp/dar-dbg-prefix-20261001 hello
-(lldb) darling --prefix /tmp/dar-dbg-prefix-20261001 list
-(lldb) darling --prefix /tmp/dar-dbg-prefix-20261001 thread 265780
-(lldb) darling --prefix /tmp/dar-dbg-prefix-20261001 wait
-(lldb) darling --prefix /tmp/dar-dbg-prefix-20261001 -j list
-```
-
-`$DARLING_DEBUG` is how the glue finds the core; otherwise it looks for
-`darling-debug` on `PATH`.
-
-With a process attached, `darling thread current` uses the thread LLDB is
-stopped on: the glue passes that thread's OS tid, the selected frame's PC, and
-the source of that tid. With no process attached it says so and the answer is
-the server's own default.
-
-For a scripted session:
-
-```sh
-lldb -b -s session.lldb
-```
-
-## Commands
-
-Every command takes the same global options and the same identity selectors.
-
-Global options:
-
-| option | meaning |
-| --- | --- |
-| `--prefix <PATH>` | derive the abstract socket name from this prefix directory |
-| `--socket <NAME>` | use this abstract socket name directly, skipping derivation |
-| `--json` | one-line compact JSON: the machine interface |
-| `--raw` | the server's exact response bytes, for protocol diagnosis |
-| `--pc <PC>` | the debugger's selected frame PC, for the `Host:` line (decimal or `0x` hex) |
-| `--tid-source <TEXT>` | how the host tid was determined, e.g. `LLDB thread` |
-
-`--json` and `--raw` are mutually exclusive. `--pc` and `--tid-source` are
-supplied by the LLDB layer, because only LLDB knows them; the core never invents
-them.
-
-Identity selectors (all optional; the server applies its own default when none
-is given):
-
-```text
---host-pid <PID>        --host-tid <TID>
---server-pid <PID>      --server-tid <TID>
---nsid <ID>
-```
-
-| command | purpose | input | important output |
-| --- | --- | --- | --- |
-| `hello` | ABI banner and the operations this server implements | none | ABI version, operation inventory |
-| `identity-map` | resolve every identity space for one target | one selector | host, guest, server and dtape identity in one answer |
-| `list` | every process and thread with full identity correlation | none | one row per registered thread |
-| `ps` | processes only | none | the same rows, process columns |
-| `threads` | threads only | none | the same rows, thread columns |
-| `process` | one process | a process selector | executable, vchroot path, sizes, thread count |
-| `thread` | one thread's server state and Call slots | a thread selector | active/pending Call, suspend state, wait state |
-| `thread-current` | the thread the debugger is stopped on | `--host-tid` (from LLDB) | the same view, anchored to a known tid |
-| `wait` | wait state and expected waker | a thread selector | run state, whether it waits for a reply, expected waker |
-| `transport` | transport class and state | a thread selector | class, lane, sequence, or a reason it is unavailable |
-| `artifacts` | artifact identity anchors | none | guest executable and server executable paths |
-
-Reading an `unavailable` value: it is a statement about **this build**, not an
-error. The schema separates `unavailable` (the build does not carry the state)
-from a real value, and the renderer prints the reason the server gave. A tool
-that guessed, or that rendered a zero as if it were a value, would be worse than
-useless for this work.
-
-Schemas for every command are emitted by the core
-(`br schema`-style envelopes are not used here); the authoritative field list is
-the Rust `Snapshot` type in the runner repository and the C++ schema in
-`docs/debug-abi.md`.
-
-### Raw JSON
-
-`--raw` prints the server's bytes unchanged; `--json` prints the same document
-re-encoded compactly on one line. Both are meant to be parsed.
-
-**Contract lesson (measured live).** `--raw` must be validated as *one complete
-JSON document*, never with the rendered-text rule that the human answer starts
-with the ABI banner. Applying the banner rule to the raw document rejected every
-passthrough answer, and because the JSON then only appeared inside the tool's
-own error line, a check that merely grepped for `{"abi":` still passed. The LLDB
-contract now pins both passthrough checks against the delegate error line.
+The schema distinguishes `complete`, `partial` and `unavailable`, with detail
+text. Missing state must not be interpreted as zero/false. Responses and error
+documents are JSON; consuming raw bytes requires validating one complete
+document, not matching a banner or grepping for an ABI key inside an error.
 
 ## Identity model
 
-Four identity spaces are correlated:
+The schema distinguishes Linux host, guest, server process/thread and dtape
+identity/state. The current collector exposes only what its registry and public
+accessors supply; it does not implement a complete cross-namespace identity
+graph. Preserve `known`, availability and detail fields, and independently bind
+any observation to the actual workload and prefix.
 
-```text
-Linux host pid/tid
-    <-> Darling guest pid/tid/nsid
-    <-> DarlingServer Process/Thread
-    <-> dtape task/thread
-```
+Available source paths collect process/thread IDs and NSIDs, eternal IDs,
+executable/vchroot paths, thread count, available memory information, run state,
+suspend/reply/signal state and public active/pending Call number/name.
 
-Status of each edge **today**, which is not the same as the design:
+Important limits in the current collector:
 
-*Live-verified:*
+- Call header PID/TID/architecture are not exposed.
+- `expected_waker` is deliberately empty: the exporter does not infer a waker
+  from wait facts.
+- Per-thread transport class/lane/sequence is unavailable.
+- Full XNU/dtape wait-channel/continuation detail and a pidfd identity anchor are
+  not established by the populated snapshot fields.
+- Artifact paths are not hashes or evidence that those bytes served a run.
 
-```text
-host pid/tid            -> DarlingServer Process/Thread
-guest pid/tid           -> DarlingServer Process/Thread
-image path (guest and server)
-process thread count, virtual size, resident size
-```
-
-*Exported by the ABI but not yet independently witnessed:*
-
-```text
-active Call
-pending Call
-expected waker
-```
-
-*Not available on the current build:*
-
-```text
-transport class / lane / sequence
-dtape task/thread addresses and wait channel
-XNU wait channel
-dyld info address
-pidfd anchor
-```
-
-Two consequences worth stating plainly:
-
-- A guest process that is a plain Linux binary (for example a host binary
-  reached through `/Volumes/SystemRoot`) is **not** in the server's process
-  registry. The debugger then answers "not a Darling thread" — that is the
-  correct answer, not a failure to resolve.
-- An identity that resolves in one space but not another is reported as
-  unresolved, with the space that failed named.
+A plain Linux executable reached through `/Volumes/SystemRoot` need not have
+a Darling server registry entry. Its host exit status is not proof of guest
+execution or a successfully resolved Darling thread.
 
 ## Read-only debug ABI
 
-The endpoint speaks one small grammar over an abstract `AF_UNIX SOCK_STREAM`.
+The listener uses an abstract `AF_UNIX SOCK_STREAM`. The source contract is one
+bounded newline-terminated request, one JSON response, then close:
 
-```text
-request:   one newline-terminated line, at most 512 bytes
-response:  one JSON document, at most 64 KiB
-then:      the connection is closed
-```
+| item | implemented bound/identity |
+| --- | --- |
+| ABI | `darling-debug`, version `1` |
+| request | at most 512 bytes |
+| response | default hard budget 64 KiB |
+| abstract socket name | `darlingserver-debug:<effective-uid>:<st_dev>:<st_ino>` |
+| identity source | `stat` of the guest prefix directory |
 
-The serializer never exceeds its budget: when a document would not fit it drops
-whole sections and marks what it dropped, and the client reports truncation
-rather than presenting a partial answer as a complete one.
+The serializer reports truncation and dropped sections rather than silently
+exceeding its budget. The endpoint name is bounded independently of pathname
+length. Identity/setup failure disables the listener; there is no truncated-name
+or pathname fallback.
 
-The endpoint identity is derived from the prefix itself:
-
-```text
-darlingserver-debug:<effective-uid>:<st_dev>:<st_ino>
-```
-
-where the device and inode are those of the **prefix directory** (stat follows
-symlinks, so a symlink alias identifies the same endpoint). Both sides derive it
-the same way, so the endpoint is:
-
-- bounded — it never approaches the `sun_path` limit regardless of prefix length;
-- stable for one prefix;
-- different for different prefixes.
-
-If the prefix cannot be stat'd, is not a directory, or the name would not fit,
-the listener is disabled with a precise reason. There is **no** truncation and
-**no** path-name fallback.
+The identity helper follows `stat` aliases. This is endpoint naming, **not**
+permission to normalize a caller's prefix spelling or bypass the launcher's
+retained-FD/no-follow/`..` validation.
 
 ## Security / isolation
 
-| property | value |
+| property | implemented policy |
 | --- | --- |
-| default | debug ABI disabled; no listener exists |
-| enable | `DSERVER_DEBUG_ABI=1`, and only that exact value |
-| peer authentication | `SO_PEERCRED`; the peer's effective UID must equal the server's |
-| transport | abstract `AF_UNIX` `SOCK_STREAM`, deterministic bounded name |
-| semantics | read-only |
-| product semantic RPC | none — separate listener, separate grammar, never dispatches a `dserver_callnum` |
-| `SCM_RIGHTS` | never sent, never accepted |
-| memory mutation | no write path exists at all |
-| guest dependency | serving never waits on a guest and never services S2C work |
-| fallback transport | none — if the listener cannot be created, the ABI is simply disabled |
+| default | listener disabled |
+| enable | exact `DSERVER_DEBUG_ABI=1` before server startup |
+| authorization | every accepted peer checked with `SO_PEERCRED`; UID must equal server effective UID |
+| transport | separate abstract `AF_UNIX SOCK_STREAM` listener |
+| control operations | no guest/server/transport mutation command |
+| product semantic RPC | separate grammar; no `dserver_callnum` dispatch |
+| descriptor transfer | no `SCM_RIGHTS` protocol |
+| guest dependency | collection does not dispatch guest/S2C work |
+| active connections | maximum 16 |
+| lifetime | absolute 30 seconds from acceptance |
+| session | one request, one response, close |
 
-Bounds and lifetime:
-
-| bound | value |
-| --- | --- |
-| maximum active debug connections | 16 |
-| accept work per event callback | capped at the connection limit |
-| connection lifetime | 30 s absolute from acceptance (monotonic) |
-| request | 512 bytes, one newline-terminated frame |
-| response | 64 KiB, whole sections dropped rather than exceeded |
-| sessions | one request, one response, close |
-
-The abstract namespace has no mode bits, which is exactly why the peer
-credential check is mandatory and why a different UID is refused outright with
-no privileged override.
+Abstract sockets have no filesystem mode bits, so peer authorization is not
+optional. There is no privileged UID override or alternative transport.
+Read-only semantics are not a promise of zero CPU cost or timing perturbation.
 
 ## Non-perturbation guarantees
 
-This matters more than anything else here: the tool exists to diagnose
-timing-sensitive IPC, wakeup and race defects, so it must not perturb the
-scheduler it is measuring.
+The implemented I/O path is nonblocking and owned by the server epoll context.
+`EAGAIN` retains request/response progress and returns to the event loop;
+trickled input or stalled output does not extend the absolute connection
+deadline. Accept work is capped per callback and the existing epoll timeout is
+bounded by the earliest connection expiry.
 
-> Debug client progress never causes DarlingServer's main event loop to wait for
-> debugger I/O.
-
-Implemented shape:
-
-```text
-accepted client fd          -> epoll-managed connection state
-EPOLLIN                     -> consume immediately available bytes, then return
-                               (EAGAIN returns immediately; the partial frame stays buffered)
-EPOLLOUT                    -> write immediately available capacity, retain the
-                               response offset on EAGAIN, then return
-```
-
-There is no `poll`-for-client, no sleep, no blocking read, no blocking write and
-no wait-until-progress loop anywhere in debug socket handling. A client that
-connects and sends nothing, sends half a request, or stops reading a response
-cannot delay the event loop by even one callback: it holds bounded state and is
-closed when its lifetime expires.
-
-Companion bounds: at most 16 clients, and an absolute 30 s lifetime that neither
-trickled input nor stalled output extends. Expiry is driven by the existing
-`epoll_wait` timeout — bounded by the earliest deadline — not by a periodic
-timer thread and not by polling.
-
-Structural coverage lives in the shared C++ connection regression, which
-interposes the syscalls and rejects any waiting primitive, any blocking
-descriptor, and any retry after `EAGAIN` inside a debug callback.
-
-**Not claimed:** snapshot collection itself is not free. It stays bounded,
-synchronous collection on the server's owning context — it never moves to a
-worker thread that would traverse `Process`/`Thread`/`dtape` concurrently. If
-live measurement ever shows collection materially perturbing the runtime, that
-is the piece to revisit; the socket path already does not.
+This bounds client I/O state; it does **not** prove zero runtime perturbation.
+Collection and serialization consume CPU synchronously on the owning context.
+Do not describe source inspection of these mechanisms as measured latency,
+live correctness or regression coverage. The separate GDB-based unwind route
+can stop a target and has a different perturbation model.
 
 ## Relationship to dwdiag
 
-Two tools, two jobs, and neither replaces the other:
+`dwdiag` supplies current process, register/stack, log and bundle diagnostics,
+plus workload-specific regression/evidence tooling. It does not currently
+consume this C++ server ABI or supply the absent client identity graph.
 
-| | `darling-debug` / LLDB | `dwdiag` |
-| --- | --- | --- |
-| role | interactive investigation, state inspection, hypothesis formation | deterministic regression evidence, acceptance gates, repeatable CI measurements |
-| lifetime | the session you are in | committed, repeatable, comparable |
-| question | "what is true right now?" | "did it stay fixed?" |
-
-The intended workflow:
-
-```text
-darling-debug discovers the causal state
-    -> product fix
-    -> dwdiag regression proves it stays fixed
-```
-
-Use the debugger to *find* the cause; do not use it as an acceptance gate, and
-do not expect `dwdiag` to explain a live thread's identity graph.
+Use host captures to form a hypothesis, then exercise the actual product
+regression and workload oracle. Neither an observer snapshot nor a plausible
+stack establishes the expected waker, a fixed race or acceptance by itself.
+Keep source-only ABI evidence, diagnostic capture and behavioral verdicts
+separate.
 
 ## Live validation
+
+> **Historical measured report — non-operational.** This section records the
+> original integration observation only. It is not current installed-image
+> acceptance or a claim that a new guest/native run has passed.
+> The client/glue in this retained report are not supplied by the current
+> checkouts. This report is not a build recipe or a current availability claim.
+
 
 The first end-to-end milestone ran a real stack, not a fixture:
 
@@ -480,60 +315,42 @@ stable in-repo path.
 
 ## Known limitations
 
-- Transport lane/sequence and dtape addresses are not exported by the current
-  build; they render as `unavailable` or `partial` with the server's reason.
-- `active_call`, `pending_call` and `expected_waker` are exported but have no
-  independent witness yet, so they are not yet load-bearing for a diagnosis.
-- A guest process with no server registry entry (a plain Linux binary) cannot be
-  described.
-- Snapshot collection is synchronous on the server's event context. It is
-  bounded, but it is not free.
-- The client is a point-in-time view. There is no history, no replay and no
-  watch mode.
+- There is no shipped Rust ABI client or LLDB glue in the current checkouts.
+- The exporter is partial: field presence alone is not a live identity or wait
+  witness, and the expected-waker field is deliberately empty.
+- No server registry entry means there is no corresponding target snapshot;
+  a host process can legitimately be outside that registry.
+- Snapshot collection is synchronous and bounded, not free.
+- Current `dwdiag` host captures do not fill the missing server-side view.
 
-None of these is silently papered over: the ABI reports what it does not have.
+Retain unavailable/partial/truncated state and collection errors explicitly;
+do not replace them with guessed values or a successful verdict.
 
 ## Troubleshooting
 
-| symptom | cause | what to do |
-| --- | --- | --- |
-| client exits `4`, `no debug endpoint` | the listener was not created | confirm `DSERVER_DEBUG_ABI=1` was in the **launcher's** environment; check the server log for the reason it refused |
-| connection accepted then closed immediately | peer UID differs from the server's effective UID | run the client as the same user that owns the prefix; there is no override |
-| "not a Darling thread" / unresolved identity | the tid is not registered in that runtime | check you are asking the right prefix; a plain Linux guest process is legitimately unknown |
-| endpoint identity mismatch | the client derived a name for a different prefix directory | pass the same `--prefix`; use `--socket` only to bypass derivation deliberately |
-| a field renders `unavailable` | this build genuinely does not export that state | read the reason; it is not an error and there is no client-side workaround |
-| `--raw` output rejected by a wrapper | the wrapper validated it with the rendered-text rule | validate raw output as one complete JSON document |
-| LLDB: `no LLDB thread is selected` | no process is attached, so no host tid exists | expected; attach a process or pass a tid selector explicitly |
-| LLDB: `darling-debug not found` | the core is not on `PATH` | set `$DARLING_DEBUG` to the built binary |
-| LLDB fails to load its own libraries | relocated LLDB build | set `LD_LIBRARY_PATH` to that build's library directories |
+| symptom | meaning / supported response |
+| --- | --- |
+| no `darling-debug` executable or Darling LLDB commands | those components are not shipped here; use current capture routes, not nonexistent build/import recipes |
+| no debug listener on an ordinary server | expected default; current host capture does not require enabling it |
+| requested ABI listener setup fails | inspect the server's identity/socket/epoll error; do not substitute a fallback transport |
+| ABI peer is immediately rejected | same-UID authentication is mandatory; no privileged override |
+| unresolved identity or unavailable field | check the actual registry/availability limits; no client-side guess can supply absent state |
+| GDB/register/memory capture denied or partial | retain the exact host error and PID/image identity; missing capture is not an empty successful result |
 
-Do not disable a safety check to make any of these go away. The same-UID rule
-and the opt-in gate are the security model.
+Do not disable product prefix guards, same-UID authorization or the opt-in gate
+to make an observation appear successful.
 
-## Future work / fork gate
+## Extension / fork gate
 
-Deferred until a real debugging need demands it:
+The absent client/glue are not installed features hidden behind configuration.
+Do not advertise an end-to-end debugger until the actual components and their
+contracts exist and have their own evidence.
 
-```text
-complete dtape identity and state
-real transport lane/sequence introspection
-independently witnessing active_call / expected_waker
-crash bundle
-synthetic OS-thread presentation
-DAP / IDE integration
-```
+An ABI extension requires a measured debugging need and the smallest matching
+change, not an inferred capability from an unpopulated schema field.
 
-The gate for anything that touches the ABI is the same as it has been: only a
-*measured* live need may add to it, and only the smallest change that satisfies
-that need. None of the items above is a reason to add a field today.
+No LLDB fork is justified by the current source reference. Reopen that question
+only for a concrete requirement demonstrated on a real workload that upstream
+extension mechanisms cannot express; absence of the command glue is not such
+evidence.
 
-**LLDB fork gate:**
-
-> No LLDB fork is currently justified.
-
-This is not a claim that LLDB will never need one. The fork gate reopens only if
-a real debugger requirement cannot be expressed through upstream LLDB's current
-extension mechanisms (Python commands, `OperatingSystem` and Scripted
-extensions) **and** that limitation is demonstrated on a live Darling workload.
-A downstream or native plugin must start from a concrete missing capability
-demonstrated live — never from preference.

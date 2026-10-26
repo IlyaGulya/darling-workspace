@@ -1,10 +1,10 @@
 # Rootless namespace-writer inventory v1
 
-This document is a source inventory and routing gate, not a product change.
-The machine-readable source of truth is
-`lifecycle/namespace-writer-inventory-v1.json`; the contract prints
-`coverage-tier: source` and binds every listed owner to an existing source
-file and symbol anchor.
+This document separates the immutable v1 source audit from current operational
+ownership. The machine-readable v1 snapshot is
+`lifecycle/namespace-writer-inventory-v1.json`; its SHA-bound counts and
+classifications below describe that snapshot, not today's source closure.
+Registry generation/replay is source evidence, never behavioral coverage.
 
 ## Authority and threat model
 
@@ -23,7 +23,16 @@ required rather than another pathname check.
 
 ## Current writers
 
-The registry covers 139 finite production source paths (78 typed writer
+The product owns prefix lifecycle identity, including checked `bind-clone`.
+Workspace lifecycle owners use a persistent external per-prefix sibling lease
+(`<P.parent>/.west-prefix-lease-<sha256(P.name)>`), never deleted, distinct from
+`P/.lifecycle.lock`. Holding that lease does not establish v1 product-lock
+compatibility. Runtime image `R` and writable guest state `P` are disjoint;
+normal installation publishes a fresh complete image, not runtime copies in `P`.
+
+The table retains the v1 product-writer families and their **v1 lock evidence**;
+workspace rows describe current owners, not regenerated compatibility findings.
+The v1 registry covers 139 finite production source paths (78 typed writer
 records). The complete production-forest scan (anchored by the build/runtime
 closure) discovers 1,757 namespace-mutation candidates: 108 hit typed owner
 paths, 37 hit exact SHA-bound exclusions, and 1,612 have individual records in
@@ -42,7 +51,7 @@ are all currently `incompatible` because none of the product
 paths acquires the exact retained `.lifecycle.lock` required by the routing
 contract.
 
-| Owner | Namespace responsibility | Phase | Current lock evidence |
+| Owner | Namespace responsibility | Phase | V1 lock evidence / current workspace ownership |
 | --- | --- | --- | --- |
 | `darling/src/startup/darling.c` | Prefix provisioning, `.init.pid` publication/repair, stale shellspawn endpoint | create, boot, shutdown | no `.lifecycle.lock` acquisition |
 | `darling/src/shellspawn/shellspawn.c` | `/var/run/shellspawn.sock` unlink/bind/chmod | runtime start/stop | no `.lifecycle.lock` acquisition |
@@ -76,14 +85,12 @@ contract.
 | `darling/src/external/{libdispatch,libpthread,libc}/...` | optional `/var/tmp` diagnostic files | guest diagnostics | no `.lifecycle.lock` acquisition |
 | XNU `vchroot_userspace.c` | E-UNION copy-up, whiteouts, opaque markers, xattrs, metadata and rename/remove helpers | guest filesystem mutation | no `.lifecycle.lock` acquisition |
 | XNU syscall wrappers | create/remove/rename/link/symlink/open/bind/metadata forwarding into E-UNION | guest filesystem mutation | no `.lifecycle.lock` acquisition |
-| `west_commands/test_prefix.py` | Host stale-entry and runtime socket cleanup | host shutdown | flock is on prefix parent directory, not `.lifecycle.lock` |
-| `west_commands/prefix_repair.py` | Prefix repair, stale PID/socket removal, tmp modes, symlink repair | preflight/repair | no `.lifecycle.lock` acquisition |
-| `west_commands/deploy_transaction.py` and `test_runtime_deploy.py` | Runtime file replacement, rollback, directories and modes | deploy/restore | no `.lifecycle.lock` acquisition |
-| `west_commands/test_bootstrap.py` | Runtime marker and bootstrap logs | post-deploy bootstrap | no `.lifecycle.lock` acquisition |
-| `west_commands/fresh_prefix.py` | New-prefix tree and copy/reflink provisioning | prefix create | no `.lifecycle.lock` acquisition |
-| `west_commands/darling_build.py` | Operator backup and deployment into closure trees and binaries | operator deploy | no `.lifecycle.lock` acquisition |
-| `west_commands/guest_toolchain.py` | Package staging and guest installer writes | toolchain provisioning | no `.lifecycle.lock` acquisition |
-| `west_commands/darling_prefix_repair.py` | CLI entry point for mutating repair/cleanup | operator preflight | no `.lifecycle.lock` acquisition |
+| `west_commands/test_prefix.py` | Prefix lifecycle lease and scoped shutdown/stale-entry cleanup | host lifecycle | persistent external per-prefix lease, not product `.lifecycle.lock` |
+| `west_commands/prefix_repair.py`, `darling_prefix_repair.py` | Owned prefix repair and stale mount/PID/socket cleanup | preflight/repair | workspace orchestration; not v1 product-lock compatibility |
+| `west_commands/runtime_install.py`, `darling_build.py` | Complete normal installation and immutable-image publication at `R` | build/install | install/build ownership, not guest-prefix deployment |
+| `west_commands/darling_bootstrap.py`, `test_bootstrap.py` | Selected image smoke and guest prerequisites | bootstrap | prefix lifecycle owner; no partial deploy/restore |
+| `west_commands/fresh_prefix.py`, `lane.py` | Writable-state copy/layer; invokes product `bind-clone` for clone identity | prefix create | product publishes lifecycle identity; Python never rewrites the record |
+| `west_commands/guest_toolchain.py` | Package staging and real guest installer writes | toolchain provisioning | workspace lifecycle ownership, not v1 product-lock compatibility |
 
 The XNU list is intentionally split into a policy helper and syscall wrapper
 family. The helper is the only place that decides copy-up/whiteout behavior;
@@ -92,6 +99,12 @@ writer added anywhere in the complete production forest must add an owner path
 and anchor to the registry before it can be considered by routing.
 
 ## Source scan and exclusions
+
+The scan, migration criteria and local-contract description below are retained
+**historical v1 audit methodology**, not current operational setup instructions.
+Source changes require reviewed registry regeneration by its owner; this prose
+does not update generated JSON or certify that its digests match current code.
+
 
 The contract scans the complete Darling production forest rooted at `src` and
 the complete workspace `west_commands` runtime root. Recursive
@@ -207,8 +220,8 @@ service-target membership makes it part of the typed syslogd runtime writer.
 4. Define an explicit E-UNION writer sublease for guest syscalls. The wrapper
    family must not infer compatibility from a pathname or from a caller that
    merely happens to hold a different lock.
-5. Keep Python repair/deploy/bootstrap as incompatible orchestration until
-   their filesystem authority is removed or delegated to the Rust controller.
+5. Keep Python repair/install/bootstrap as orchestration; an external lease
+   does not confer the retained product-lock capability required by this model.
 6. Re-run the source inventory after every writer migration. Only when all
    production records are compatible may the separate `.7` routing goal start.
 

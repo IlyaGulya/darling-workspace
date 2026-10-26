@@ -11,9 +11,9 @@ forgetting it is silent until a clean `west update` produces a different tree.
 of the gitlink) unless `--allow-downgrade` says so out loud, because a lowered pin silently
 un-supplies a payload that the workspace is already running.
 
-Reads the gitlinks with `git ls-tree` of the superproject, the manifest as text (comments and
-formatting are preserved -- only the revision value of a named project is ever replaced), and never
-writes anything but the manifest.
+Reads the gitlinks with `git ls-tree` of the superproject (including a linked Git worktree), the
+manifest as text (comments and formatting are preserved -- only the revision value of a named project
+is ever replaced), and never writes anything but the manifest. The root darling pin is left alone.
 
 Usage:
   west-pin-sync.py check [--manifest west.yml] [--darling DIR] [--ref REF | --from-index]
@@ -339,7 +339,9 @@ def main():
     if not os.path.isfile(manifest_path):
         print(f"west-pin-sync.py: no manifest at {manifest_path}", file=sys.stderr)
         return 2
-    if not os.path.isdir(os.path.join(darling, ".git")):
+    code, inside_worktree, _err = run(
+        ["git", "-C", darling, "rev-parse", "--is-inside-work-tree"])
+    if code != 0 or inside_worktree.strip() != "true":
         print(f"west-pin-sync.py: no git superproject at {darling}", file=sys.stderr)
         return 2
 

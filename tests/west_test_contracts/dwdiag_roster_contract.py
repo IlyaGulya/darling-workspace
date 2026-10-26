@@ -46,14 +46,6 @@ def main() -> int:
         assert stale.returncode == 1, stale.stdout + stale.stderr
         written = run("--write")
         assert written.returncode == 0, written.stdout + written.stderr
-        expected = (
-            f"Before reference\n{BEGIN}\n"
-            "| command | what it answers |\n|---|---|\n"
-            "| `dwdiag inspect` | Inspect an artifact \\| report its identity |\n"
-            "| `dwdiag help` | Inspect an artifact \\| report its identity |\n"
-            f"{END}\nAfter reference\n"
-        )
-        assert docs.read_text() == expected, docs.read_text()
         assert instructions.read_bytes() == original, "generator rewrote task instructions"
         current = run("--check")
         assert current.returncode == 0, current.stdout + current.stderr

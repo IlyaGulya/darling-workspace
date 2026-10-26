@@ -23,9 +23,9 @@ expect_kind(const char* path, mode_t kind)
 int
 main(void)
 {
-	const char* link = "/private/var/tmp/west-eunion-special/link_parent/new-link";
-	const char* fifo = "/private/var/tmp/west-eunion-special/link_parent/new-fifo";
-	const char* node = "/private/var/tmp/west-eunion-special/link_parent/new-node";
+	const char* link = "/usr/share/darling/tests/eunion/special-create/link_parent/new-link";
+	const char* fifo = "/usr/share/darling/tests/eunion/special-create/link_parent/new-fifo";
+	const char* node = "/usr/share/darling/tests/eunion/special-create/link_parent/new-node";
 	char target[64] = {0};
 
 	if (symlinkat("target", AT_FDCWD, link) != 0) {

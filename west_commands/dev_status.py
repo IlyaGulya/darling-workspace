@@ -926,6 +926,7 @@ def collect_status(
     prefix: Path | None,
     build_dir: Path | None,
     west_argv: list[str],
+    runtime_root: Path | None = None,
 ) -> dict[str, Any]:
     """Collect a deterministic, JSON-serializable, read-only workspace snapshot."""
 
@@ -933,6 +934,7 @@ def collect_status(
     manifest_repo = _absolute(Path(manifest_repo))
     prefix = _absolute(Path(prefix)) if prefix is not None else None
     build_dir = _absolute(Path(build_dir)) if build_dir is not None else None
+    runtime_root = _absolute(Path(runtime_root)) if runtime_root is not None else None
     if not topdir.is_dir():
         raise StatusError(f"invalid West topdir: {topdir}")
     if not manifest_repo.is_dir():
@@ -962,6 +964,8 @@ def collect_status(
         ),
     )
     doctor_argv = [*west_argv, "darling-doctor"]
+    if runtime_root is not None:
+        doctor_argv.append(f"--runtime-root={runtime_root}")
     if prefix is not None:
         doctor_argv.append(f"--prefix={prefix}")
     if build_dir is not None:
@@ -1018,6 +1022,7 @@ def collect_status(
             "manifest_repo": str(manifest_repo),
             "bead": bead,
             "prefix": str(prefix) if prefix is not None else None,
+            "runtime_root": str(runtime_root) if runtime_root is not None else None,
             "build_dir": str(build_dir) if build_dir is not None else None,
             "west_argv": list(west_argv),
         },

@@ -35,18 +35,13 @@ All classes have evidence_tier=static and runtime_status=unverified. Zero return
 data symbols and empty classes are observations, not proven bugs or truthful absence providers.
 Source attribution is a name-match heuristic, not proof of implementation provenance.
 
-WHERE THE DEPLOYMENT DECLARATIONS COME FROM (no hand-written list anywhere in this file):
-  * the generated manifest (<build>/darling-rootless-toolchain.json) is the DECLARATION SOURCE
-    (dar-a0ty) as well as the artifact source: it is the resolved deployment declaration a prefix
-    is actually filled from, and a component whose declaration only exists as a generated resource
-    -- the globbed Swift payload (`swift_libswiftX_dylib`) or a globbed payload framework
-    (`swift_framework_X`) -- is named by it and nowhere in the CMake text.  A payload-declared
-    target therefore needs no hand entry to be analyzed;
-  * the CMake text's own JSON snippets (appended to DARLING_ROOTLESS_TOOLCHAIN_TARGETS' component in
-    <darling>/CMakeLists.txt) are read as a SECOND source, and the two are reconciled rather than
-    either being trusted silently: a target the text declares but the manifest does not carry is a
-    deployment gap (the prefix will not receive it), and a target only the manifest carries is a
-    generated/payload declaration.  `--declarations` prints both directions;
+WHERE THE INSTALLATION DECLARATIONS COME FROM (no hand-written deployment list):
+  * <build>/install_manifest.txt, emitted by ordinary `cmake --install`, records the actual expanded
+    installation, including Swift payload files, frameworks and generated resources;
+  * CMakeCache.txt identifies its configured CMAKE_INSTALL_PREFIX. The installed guest lower is
+    <runtime-root>/libexec/darling, separate from the writable --prefix upper. Source CMake target
+    discovery remains a name-match heuristic, not proof that a missing file was installed;
+  * --declarations reports missing recorded files and a missing normal-install prerequisite honestly.
   * LOCK_TARGETS is RUNG ORDER ONLY -- the order the ladder measured -- never a declaration list;
   * provenance: git, over the ladder's own commit range (default: everything after the parent of
     the oldest reachable commit whose subject starts with "rootless toolchain").
@@ -86,7 +81,8 @@ import sys
 DEFAULTS = {
     "darling": "/home/ilyagulya/work/wr-fresh/darling",
     "build": "/home/ilyagulya/work/wr-fresh/build/verify14",
-    "prefix": "/home/ilyagulya/work/wr-fresh/prefix-verify14",
+    "prefix": os.environ.get("DPREFIX"),
+    "runtime_root": os.environ.get("DARLING_RUNTIME_ROOT"),
     "xcode": "/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents",
     "swift_bin": "/home/ilyagulya/work/downloads/swift-linux/swift-6.3.1-RELEASE-ubuntu24.04/usr/bin",
 }
@@ -104,10 +100,8 @@ XCODE_SCAN_ROOTS = [
 
 # RUNG ORDER ONLY (dar-a0ty).  This is the sequence the ladder actually measured, kept so
 # `closure_analyze.py` with no --components analyzes the same components in the same order.  It is
-# NOT a declaration list: every component below is resolved to its declaration through the manifest
-# and the CMake text (see `declaration_sources`), so a component only the manifest declares -- a
-# globbed Swift-payload dylib, for instance -- needs no entry of its own here to be analyzable, and
-# an entry here declares nothing.
+# NOT a declaration list: each name resolves through the ordinary CMake installation manifest.
+# Payload libraries need no hand-written deployment descriptors.
 LOCK_TARGETS = [
     "UniformTypeIdentifiers", "Rosetta", "MobileAsset", "CoreData", "ImageIO", "CoreAnalytics",
     "AssertionServices", "CoreGraphics", "DiskArbitration", "DiskManagement", "AppleSystemInfo",
@@ -118,32 +112,11 @@ LOCK_TARGETS = [
     # rung's measurement showed the placeholder was shadowing the real Metal this configuration
     # builds and that QuartzCore links. See the MetalNoGPU/Metal selection in the tree's CMakeLists.
     "LoggingSupport", "QuartzCore", "CoreLocation",
-    # The rung after CoreLocation: DVTInstrumentsFoundation's load command for
-    # /usr/lib/swift/libswiftAppleArchive.dylib (image not found, XCB_RC=132).  Its declaration is a
-    # Swift-payload RESOURCE rather than a $<TARGET_FILE:...> target, because the whole libswift*.dylib
-    # payload is globbed and staged by configure_file in the tree's own CMakeLists; the manifest
-    # therefore carries this component's target/guest_path/host_path and the analysis takes the
-    # declaration from there (see main: manifest declarations).
-    "swift_libswiftAppleArchive_dylib",
-    # The rung after libswiftAppleArchive: DVTInstrumentsFoundation's load command for
-    # /usr/lib/swift/libswiftSystem.dylib (image not found, XCB_RC=132).  Same payload-resource shape
-    # as the entry above, and for the same reason: the libswift*.dylib payload is globbed and staged
-    # by configure_file, so the CMake text declares no $<TARGET_FILE:...> for it and the analysis
-    # takes this component's declaration from the generated manifest (see main).
-    "swift_libswiftSystem_dylib",
-    # The rung after libswiftSystem: XCTHarness's load command for
-    # /usr/lib/swift/libswiftDemangle.dylib (image not found, XCB_RC=132).  XCTHarness is the only
-    # referrer inside libxcodebuildLoader's load closure and it links the image NON-weakly, binding
-    # three C entry points eagerly (__DATA_CONST,__got).  Same payload-resource shape as the two
-    # entries above, and for the same reason (see main: manifest declarations).
-    "swift_libswiftDemangle_dylib",
-    # The rung after libswiftDemangle: XCTHarness's load command for
-    # /usr/lib/swift/libswiftUniformTypeIdentifiers.dylib (image not found, XCB_RC=132).  XCTHarness is
-    # the only referrer inside libxcodebuildLoader's load closure that is still missing a STRONG
-    # dependency there -- CoreImage, IOKit, Metal, OSLog, QuartzCore and simd are LC_LOAD_WEAK_DYLIB --
-    # and it binds TEN names from the dependency field, nine strong.  Same payload-resource shape as the
-    # three entries above, and for the same reason (see main: manifest declarations).
-    "swift_libswiftUniformTypeIdentifiers_dylib",
+    # The subsequent measured stops were DVTInstrumentsFoundation's AppleArchive/System imports
+    # and XCTHarness's non-weak Demangle/UniformTypeIdentifiers imports. Ordinary member install
+    # rules now ship these payload dylibs; use their actual install-name stems, not descriptors.
+    "libswiftAppleArchive", "libswiftSystem", "libswiftDemangle",
+    "libswiftUniformTypeIdentifiers",
 ]
 
 GUEST_XCODE_MOUNT_MARK = "Xcode.app/Contents"
@@ -180,79 +153,70 @@ def run(args, timeout=300):
 
 # --------------------------------------------------------------------------- declarations
 
-DECL_RE = re.compile(
-    r'"target":\s*"([^"]+)"\s*,\s*"guest_path":\s*"([^"]+)"\s*,\s*"host_path":\s*"([^"]+)"'
-)
-GENERATOR_FILE_RE = re.compile(r"^\$<TARGET_FILE:([^>]+)>$")
-# The same declaration in the pair spelling a foreach expands: "target|/guest/path".
-PAIR_DECL_RE = re.compile(r'"([^"|${}]+)\|(/[^"|${}]+)"')
-TARGETS_RE = re.compile(r"set\(DARLING_ROOTLESS_TOOLCHAIN_TARGETS(.*?)\n\)", re.S)
+class GuestRoots:
+    """The writable guest upper and the independently installed, read-only lower."""
+
+    def __init__(self, prefix, runtime_root):
+        self.prefix = os.path.abspath(prefix) if prefix else None
+        self.runtime_root = os.path.abspath(runtime_root)
+        self.lower = os.path.join(self.runtime_root, "libexec/darling")
+
+    def bases(self):
+        return (self.prefix, self.lower) if self.prefix else (self.lower,)
+
+    def __str__(self):
+        return f"{self.prefix or '(no upper)'}; installed lower: {self.lower}"
 
 
-def read_declarations(darling):
-    """(declared targets, {declared target: declaration}, files read) from the tree's CMake text.
+def read_install_manifest(darling, build):
+    """Index the guest files recorded by an ordinary, completed CMake installation.
 
-    Two spellings the tree uses for a deployment declaration are read, because reading only one of
-    them made the reconciliation report lie: the literal JSON snippets (`"target": ..., "guest_path":
-    ..., "host_path": "$<TARGET_FILE:...>"`), and the `<target>|<guest_path>` pair lists a foreach
-    expands into exactly those snippets (`cmake/RootlessHomebrew.cmake`'s userland and resource
-    lists).  Templates that carry `${...}` in the target position (the locale resources) declare
-    nothing literal and are deliberately not guessed at.
+    The standard install manifest records expanded directory installs, generated data, resources
+    and framework links without a second deployment list.  It describes the installed image, not
+    speculative source declarations or an independently reconstructed build-artifact plan.
     """
-    path = os.path.join(darling, "CMakeLists.txt")
-    paths = [path]
-    cmake_dir = os.path.join(darling, "cmake")
-    if os.path.isdir(cmake_dir):
-        paths += [os.path.join(cmake_dir, f) for f in sorted(os.listdir(cmake_dir))
-                  if f.endswith(".cmake")]
-    targets = []
-    decls = {}
-    for p in paths:
-        try:
-            text = open(p, encoding="utf-8", errors="replace").read()
-        except OSError:
-            continue
-        # The declarations live inside CMake string literals, so their quotes are escaped.
-        text = text.replace('\\"', '"')
-        m = TARGETS_RE.search(text)
-        if m:
-            for line in m.group(1).splitlines():
-                line = line.split("#")[0].strip()
-                if line:
-                    targets.append(line)
-        for tgt, guest, host in DECL_RE.findall(text):
-            # A template that carries ${...} declares nothing literal; skip it rather than report
-            # `${_homebrew_target}` as a declaration the manifest is missing.
-            if "${" in tgt or "${" in guest or "${" in host:
-                continue
-            gen = GENERATOR_FILE_RE.match(host)
-            decls.setdefault(tgt, {"target": tgt, "install_name": guest,
-                                   "cmake_target": gen.group(1) if gen else tgt,
-                                   "where": os.path.relpath(p, darling)})
-        for tgt, guest in PAIR_DECL_RE.findall(text):
-            decls.setdefault(tgt, {"target": tgt, "install_name": guest, "cmake_target": tgt,
-                                   "where": os.path.relpath(p, darling)})
-    return targets, decls, path
-
-
-def read_manifest(build):
-    path = os.path.join(build, "darling-rootless-toolchain.json")
+    cache_path = os.path.join(build, "CMakeCache.txt")
+    runtime_root = None
+    if os.path.isfile(cache_path):
+        with open(cache_path, encoding="utf-8") as cache:
+            for line in cache:
+                if re.match(r"^CMAKE_INSTALL_PREFIX:[^=]+=", line):
+                    runtime_root = os.path.abspath(line.rstrip("\n").split("=", 1)[1])
+                    break
+    path = os.path.join(build, "install_manifest.txt")
     if not os.path.isfile(path):
-        return None, None
-    data = json.load(open(path))
-    by_target = {}
-    by_install = {}
-    for entry in data.get("entrypoints", []) + data.get("resources", []):
-        by_target.setdefault(entry["target"], entry)
-        by_install.setdefault(entry["guest_path"], entry)
-    return (by_target, by_install), path
+        return None, path, runtime_root
+    if not runtime_root:
+        raise ValueError(f"{cache_path} does not declare CMAKE_INSTALL_PREFIX")
+    guest_root = os.path.join(runtime_root, "libexec/darling") + os.sep
+    build_targets = read_cmake_build_targets(darling)
+    by_target, by_install = {}, {}
+    with open(path, encoding="utf-8") as manifest:
+        for line in manifest:
+            host_path = line.rstrip("\n")
+            if not host_path.startswith(guest_root):
+                continue
+            guest_path = "/" + host_path[len(guest_root):]
+            leaf = os.path.basename(guest_path)
+            # Headers/data can share an image's stem. Never let Foundation.h or libFoo.tbd
+            # become that component's reference merely because CMake installed it first.
+            if "." in leaf and not leaf.endswith(".dylib"):
+                target = guest_path
+            else:
+                candidates = target_name_candidates(guest_path)
+                target = next((name for name in candidates if name in build_targets),
+                              leaf.split(".")[0])
+            entry = {"target": target, "guest_path": guest_path, "host_path": host_path}
+            by_target.setdefault(target, entry)
+            by_install[guest_path] = entry
+    return (by_target, by_install), path, runtime_root
 
 
 def deployed_path(prefix, install_name):
-    """The prefix's own copy of an install name, or None: both roots the deploy fills are searched."""
+    """Resolve the writable upper first, then the separately installed guest lower."""
     if not prefix or not install_name:
         return None
-    for base in (prefix, os.path.join(prefix, "libexec/darling")):
+    for base in prefix.bases():
         p = os.path.join(base, install_name.lstrip("/"))
         if os.path.isfile(p):
             return p
@@ -275,12 +239,7 @@ def deployed_state(prefix, install_name, artifact):
 
 
 def resolve_decl(name, decls):
-    """Find the declaration a requested component name refers to.
-
-    The tree keys some declarations by a descriptor rather than the CMake target
-    (`framework_UniformTypeIdentifiers` for target `UniformTypeIdentifiers`), so resolve by declared
-    name, then CMake target, then install-name stem.
-    """
+    """Resolve a normal installed component by CMake target or install-name stem."""
     if name in decls:
         return name, decls[name]
     for key, decl in decls.items():
@@ -289,8 +248,6 @@ def resolve_decl(name, decls):
     for key, decl in decls.items():
         if os.path.basename(decl["install_name"]).split(".")[0] == name:
             return key, decl
-        if key.endswith("_" + name):
-            return key, decl
     return None, None
 
 
@@ -298,8 +255,8 @@ def resolve_artifact(manifest, decl):
     if not manifest:
         return None
     by_target, by_install = manifest
-    entry = by_target.get(decl["cmake_target"]) or by_target.get(decl["target"]) \
-        or by_install.get(decl["install_name"])
+    entry = by_install.get(decl["install_name"]) or by_target.get(decl["cmake_target"]) \
+        or by_target.get(decl["target"])
     if entry and os.path.isfile(entry["host_path"]):
         return entry["host_path"]
     return None
@@ -348,114 +305,41 @@ def read_cmake_build_targets(darling, max_depth=6):
     return targets
 
 
-def other_component_declarations(build):
-    """target -> guest_path for the OTHER rootless components' manifests in this build.
-
-    A CMake declaration of another component (the bootstrap manifest: darling, mldr, launchd, ...)
-    is not this component's gap, so it is subtracted from the "text only" direction instead of being
-    reported as one.
-    """
-    out = {}
-    path = os.path.join(build, "darling-rootless-bootstrap.json")
-    if os.path.isfile(path):
-        try:
-            data = json.load(open(path))
-        except (OSError, ValueError):
-            return out
-        for entry in data.get("entrypoints", []) + data.get("resources", []):
-            out[entry["target"]] = entry["guest_path"]
-    return out
-
-
 def declaration_sources(darling, build):
-    """The reconciled declaration set, and both directions of the disagreement.
-
-    The MANIFEST is the declaration source (dar-a0ty): it is the resolved declaration a prefix is
-    filled from, and the only place a generated/payload declaration exists (the globbed Swift
-    payload `swift_libswiftX_dylib`, a globbed payload framework `swift_framework_X`).  The CMake
-    text is read as well, and the two are compared instead of either being trusted silently:
-    a text declaration the manifest does not carry is a DEPLOYMENT GAP, and a manifest declaration
-    the text does not carry is a GENERATED/PAYLOAD declaration.
-    """
-    targets, text_decls, cmake_path = read_declarations(darling)
-    manifest, manifest_path = read_manifest(build)
+    """The guest namespace actually recorded by the normal CMake installation."""
+    manifest, manifest_path, runtime_root = read_install_manifest(darling, build)
     declared = {}
     if manifest:
-        by_target, _by_install = manifest
-        for tgt, entry in by_target.items():
-            declared[tgt] = {"target": tgt, "install_name": entry["guest_path"], "cmake_target": tgt,
-                             "source": "manifest", "host_path": entry["host_path"]}
-    manifest_only = sorted(t for t in declared if t not in text_decls)
-    # A manifest-only declaration is not automatically suspicious: the manifest is composed AFTER
-    # the CMake text from two generators the text cannot express, so those two are counted and not
-    # listed, and anything else is listed as unexplained (that is the set worth reading).
-    manifest_only_kind = {"payload": [], "staged": [], "unexplained": []}
-    for tgt in manifest_only:
-        if tgt.startswith("swift_"):
-            manifest_only_kind["payload"].append(tgt)
-        elif tgt.startswith("homebrew-perl:"):
-            manifest_only_kind["staged"].append(tgt)
-        else:
-            manifest_only_kind["unexplained"].append(tgt)
-    text_only_all = sorted((t, d) for t, d in text_decls.items() if t not in declared)
-    other = other_component_declarations(build)
-    text_elsewhere = [(t, d) for t, d in text_only_all if t in other]
-    text_only = [(t, d) for t, d in text_only_all if t not in other]
-    for tgt, decl in text_decls.items():
-        # The CMake text names the real CMake target in its $<TARGET_FILE:...>, which the manifest
-        # may not carry under that name (its entry is keyed by the declaration's descriptor).
-        merged = dict(decl, source="cmake-text")
-        declared.setdefault(tgt, merged)
-    return {"decls": declared, "declaration_targets": targets, "cmake_path": cmake_path,
-            "declared_by_text": sorted(text_decls), "manifest": manifest,
-            "manifest_path": manifest_path, "manifest_only": manifest_only,
-            "manifest_only_kind": manifest_only_kind, "text_only": text_only,
-            "text_elsewhere": text_elsewhere}
+        for target, entry in manifest[0].items():
+            declared[target] = {"target": target, "install_name": entry["guest_path"],
+                                "cmake_target": target, "source": "install-manifest",
+                                "host_path": entry["host_path"]}
+    return {"decls": declared, "declaration_targets": sorted(declared),
+            "cmake_path": os.path.join(darling, "CMakeLists.txt"), "manifest": manifest,
+            "manifest_path": manifest_path, "runtime_root": runtime_root}
 
 
 def report_declarations(sources, darling):
-    """The declaration reconciliation, in both directions (dar-a0ty)."""
-    cmake_targets = read_cmake_build_targets(darling)
-    kinds = sources["manifest_only_kind"]
-    print("closure_analyze.py --declarations -- where a component's deployment declaration comes from")
-    print(f"  manifest (declaration source) : {sources['manifest_path']} "
-          f"({len(sources['decls'])} declarations)")
-    print(f"  CMake text ({len(sources['declared_by_text'])} declarations) : "
-          f"{sources['cmake_path']} and cmake/*.cmake "
-          f"({len(sources['declaration_targets'])} targets in DARLING_ROOTLESS_TOOLCHAIN_TARGETS)")
-    print(f"  CMake build targets           : {len(cmake_targets)} add_library/add_executable names "
-          f"under {darling}")
-    print()
-    by_both = len(sources["decls"]) - len(sources["manifest_only"])
-    print(f"declared by BOTH the manifest and the CMake text : {by_both}")
-    print(f"declared ONLY by the manifest ({len(sources['manifest_only'])}) -- generated/payload "
-          "declarations; no hand entry is needed for these:")
-    print(f"  {len(kinds['payload']):>5} glob-generated payload declaration(s) "
-          "(CONFIGURE_DEPENDS over src/external/swift), the dar-a0ty case:")
-    for tgt in kinds["payload"]:
-        print(f"        {tgt:<52} {sources['decls'][tgt]['install_name']}")
-    print(f"  {len(kinds['staged']):>5} staged by cmake/stage-homebrew-perl.py (composed into the "
-          "manifest after the CMake text)")
-    print(f"  {len(kinds['unexplained']):>5} unexplained -- in the manifest, in no CMake text, and "
-          "not one of the two known generators:")
-    for tgt in kinds["unexplained"]:
-        print(f"        {tgt:<52} {sources['decls'][tgt]['install_name']}")
-    print()
-    print(f"declared ONLY by the CMake text ({len(sources['text_only'])}) -- the manifest does not "
-          "carry them, so a prefix filled from it would NOT receive them (a deployment gap, or a "
-          "manifest older than the text):")
-    for tgt, decl in sources["text_only"]:
-        print(f"  {tgt:<52} {decl['install_name']}  ({(decl.get('where') or '')})")
-    print(f"declared by the CMake text for ANOTHER rootless component "
-          f"({len(sources['text_elsewhere'])}): "
-          + ", ".join(t for t, _ in sources["text_elsewhere"]) + " -- not this component's gap")
-    print()
-    print("LOCK_TARGETS is rung order only and declares nothing here; each name in it resolves "
-          "through the declarations above.")
-    missing = [t for t in LOCK_TARGETS if resolve_decl(t, sources["decls"])[1] is None]
-    if missing:
-        print(f"NEXT: these LOCK_TARGETS entries resolve to NO declaration: {', '.join(missing)}")
-    return 0
+    """Report the normal installation's declared guest files and missing image files."""
+    print("closure_analyze.py --declarations -- ordinary CMake installation")
+    print(f"  install manifest : {sources['manifest_path']}")
+    print(f"  runtime root     : {sources['runtime_root'] or '(not configured)'}")
+    if sources["manifest"] is None:
+        print("  unavailable: configure, build and cmake --install this product first",
+              file=sys.stderr)
+        return 2
+    by_target, by_install = sources["manifest"]
+    print(f"  installed names  : {len(by_install)} guest paths, {len(by_target)} component names")
+    missing = sorted(path for path, entry in by_install.items()
+                     if not os.path.lexists(entry["host_path"]))
+    for path in missing:
+        print(f"  MISSING: {path}")
+    print("LOCK_TARGETS is historical rung order only, not an installation list.")
+    unresolved = [target for target in LOCK_TARGETS
+                  if resolve_decl(target, sources["decls"])[1] is None]
+    if unresolved:
+        print(f"  no installed component for: {', '.join(unresolved)}")
+    return 1 if missing else 0
 
 
 def name_candidates(install_name):
@@ -622,7 +506,7 @@ def xcode_provides(install_name, xcode, cache=None):
         @rpath dylib (Xcode's XCTest support libraries, the loader itself) needs a bounded basename
         search, cached for the whole sweep.
     An ABSOLUTE guest path (/System/..., /usr/...) is NOT satisfiable by Xcode's tree: the guest's
-    /System and /usr come from the prefix (libexec/darling), which is why the ladder exists.  Xcode
+    /System and /usr come from the selected guest upper/installed lower, not Xcode. Xcode
     does ship images with colliding basenames -- its own libswiftIOKit.dylib lives under
     Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/macosx -- and reporting the guest's
     /usr/lib/swift/libswiftIOKit.dylib as supplied by that copy would be exactly the false negative
@@ -712,10 +596,11 @@ def classify_route(install_name, refs, ctx, demanded=None):
     by_install = man[1] if man else {}
     if install_name in by_install:
         entry = by_install[install_name]
-        return ROUTE_DECL, (f"[manifest] target={entry['target']} host_path={entry['host_path']}")
+        return ROUTE_DECL, (f"[install-manifest] guest_path={install_name} "
+                            f"component_hint={entry['target']} host_path={entry['host_path']}")
     for stem, entry in sorted(by_install.items()):
         if os.path.basename(stem).split(".")[0] in target_name_candidates(install_name):
-            return ROUTE_DECL, (f"[heuristic: install-name stem] manifest guest_path={stem} "
+            return ROUTE_DECL, (f"[heuristic: install-name stem] installed guest_path={stem} "
                                 f"target={entry['target']}")
     target, where = build_target_for(install_name, ctx.get("cmake_targets", {}))
     if target:
@@ -2030,7 +1915,7 @@ def analyze_component(target, decl, manifest, darling, base, referrers):
                                     len(demanded_by_referrer[ref["image"]])})
 
     if not artifact:
-        result["class_notes"].append("no built artifact resolved from the manifest")
+        result["class_notes"].append("no installed reference resolved from the normal install manifest")
         result["klass"] = "STUB"
         return result
 
@@ -2318,8 +2203,8 @@ def guest_resolver(prefix, xcode=None):
     """resolve(install_name, referrer=None, rpath_from=()) -> path|None, the way the guest's dyld
     resolves a name.
 
-    Order: the deployed prefix (BOTH roots of the union -- forgetting libexec/darling reports phantom
-    misses), then the @rpath entries of the referrer AND OF ITS LOADER CHAIN expanded against
+    Order: the writable guest upper and independent installed lower, then the @rpath entries of
+    the referrer AND OF ITS LOADER CHAIN expanded against
     @loader_path, then Xcode's tree for the names the guest reaches through the host-root mount.
     None means "nowhere", which is what makes a missing dependency IMAGE a predicted stop rather
     than a silently skipped edge.
@@ -2375,7 +2260,7 @@ def cover_closure(entries, prefix, xcode=None, without_images=(), without_symbol
     """The guest's load closure at SYMBOL granularity, image by image.
 
     Breadth-first from `entries` over LC_LOAD_DYLIB/LC_LOAD_WEAK_DYLIB/LC_REEXPORT_DYLIB, each
-    install name resolved with `guest_resolver` (prefix both roots, then Xcode), and each image's
+    install name resolved with `guest_resolver` (guest upper/installed lower, then Xcode), and each image's
     imports read with `image_imports` (chained fixups or dyld-info; one code path).  Every import is
     then resolved against the deployed closure and labelled (COVER_*): its field image's own trie,
     the field's nested re-export graph, dyld's flat lookup for the special ordinals, an absent weak
@@ -2555,7 +2440,7 @@ def _looks_like_run_log(path):
 
 def _guest_path(path, prefix, xcode):
     """The path the GUEST would print for a host file, so a report line reads like the run's own."""
-    for base in (os.path.join(prefix, "libexec/darling"), prefix):
+    for base in reversed(prefix.bases()):
         if path.startswith(base + os.sep):
             return path[len(base):]
     if xcode and path.startswith(xcode + os.sep):
@@ -2824,7 +2709,10 @@ def main():
                     help="bounded target C-string preview, 1..4096 bytes (default: 256)")
     ap.add_argument("--darling", default=DEFAULTS["darling"])
     ap.add_argument("--build", default=DEFAULTS["build"])
-    ap.add_argument("--prefix", default=DEFAULTS["prefix"])
+    ap.add_argument("--prefix", default=DEFAULTS["prefix"],
+                    help="writable DPREFIX upper from the observed run, if any")
+    ap.add_argument("--runtime-root", default=DEFAULTS["runtime_root"],
+                    help="installed runtime root (default: DARLING_RUNTIME_ROOT or CMake cache)")
     ap.add_argument("--xcode", default=DEFAULTS["xcode"],
                     help="selected Xcode.app bundle or its Contents directory")
     ap.add_argument("--swift-bin", default=DEFAULTS["swift_bin"])
@@ -2835,8 +2723,8 @@ def main():
                     help="closure (default): only images the guest's load graph reaches; "
                          "tree: every reference in the Xcode subtrees")
     ap.add_argument("--declarations", action="store_true",
-                    help="report the declaration source and reconcile it against the CMake text "
-                         "(no artifacts, no Mach-O: works with only --darling and --build)")
+                    help="report the ordinary installation's guest files and missing-file drift "
+                         "(no Mach-O tools required)")
     ap.add_argument("--sweep", action="store_true",
                     help="group every missing install name of the load closure by the route that "
                          "supplies it (the wave, instead of one rung at a time); exits 1 while the "
@@ -2888,7 +2776,11 @@ def main():
     SWIFT_BIN = args.swift_bin
     BUILD_DIR = args.build
 
-    sources = declaration_sources(args.darling, args.build)
+    try:
+        sources = declaration_sources(args.darling, args.build)
+    except (OSError, ValueError) as error:
+        print(f"closure_analyze.py: {error}", file=sys.stderr)
+        return 2
     decls = sources["decls"]
     manifest = sources["manifest"]
     cmake_path = sources["cmake_path"]
@@ -2897,6 +2789,10 @@ def main():
 
     if args.declarations:
         return report_declarations(sources, args.darling)
+    args.runtime_root = args.runtime_root or sources["runtime_root"]
+    if not args.runtime_root:
+        ap.error("pass --runtime-root or use a normally configured CMake build")
+    args.guest_roots = GuestRoots(args.prefix, args.runtime_root)
 
     for tool in ("llvm-objdump", "llvm-nm"):
         if not os.path.isfile(swift(tool)):
@@ -2925,7 +2821,7 @@ def main():
             return 2
 
     if args.cover or args.order:
-        graph = cover_closure(entries, args.prefix, args.xcode, without_images=args.without,
+        graph = cover_closure(entries, args.guest_roots, args.xcode, without_images=args.without,
                               without_symbols=args.without_symbol)
         if args.json:
             counts = _cover_counts(graph)
@@ -2936,14 +2832,14 @@ def main():
                 overlay=args.overlay)
             print("closure_analyze.py --cover")
             print(f"  darling      : {args.darling}")
-            print(f"  prefix       : {args.prefix} (both roots: the root and libexec/darling)")
+            print(f"  guest roots  : {args.guest_roots}")
             print(f"  xcode        : {args.xcode}")
             if args.without:
                 print(f"  withheld     : {', '.join(sorted(args.without))} (treated as NOT deployed)")
             if args.without_symbol:
                 print(f"  withheld sym : {', '.join(sorted(args.without_symbol))}")
             print()
-            counts = print_cover(graph, args.prefix, ctx, args.xcode)
+            counts = print_cover(graph, args.guest_roots, ctx, args.xcode)
         if graph.get("empty_reason"):
             if args.json:
                 print(json.dumps({"entries": graph["entries"], "observed": graph.get("observed"),
@@ -2963,7 +2859,8 @@ def main():
         if args.json:
             enc = {name: {k: (v if not isinstance(v, set) else sorted(v))
                           for k, v in record.items()} for name, record in graph["images"].items()}
-            payload = {"darling": args.darling, "prefix": args.prefix, "xcode": args.xcode,
+            payload = {"darling": args.darling, "prefix": args.prefix,
+                       "runtime_root": args.runtime_root, "xcode": args.xcode,
                        "entries": graph["entries"], "observed": graph.get("observed"),
                        "image_count": len(graph["images"]), "reached": graph.get("reached"),
                        "rest": graph.get("rest"), "order": graph.get("order"),
@@ -2985,12 +2882,12 @@ def main():
         ctx = classify_context(args.darling, manifest, args.xcode, payload=payload,
                                overlay=args.overlay)
         # The referrer set must be the closure the ENTRY reaches, resolved the way dyld resolves it:
-        # against the prefix's both roots, then the referrer's own rpath chain.  load_closure above
+        # against the upper/installed lower, then the referrer's own rpath chain. load_closure above
         # resolves a dependency by NAME alone (xcode_file), which reaches 2 of the 108 images the
         # SWBBuildService.bundle entry loads and therefore reported a wave of 9 rows for a closure
         # of 40 -- so the sweep takes its edges from the same walk --cover uses (dar-nowc, measured
         # 2026-10-15).  `dylibs` is already [(install_name, weak, reexport)] per image.
-        graph = cover_closure(entries, args.prefix, args.xcode)
+        graph = cover_closure(entries, args.guest_roots, args.xcode)
         edges = {rec["path"]: [tuple(d) for d in rec["dylibs"]]
                  for rec in graph["images"].values()}
         print("closure_analyze.py --sweep")
@@ -2998,7 +2895,7 @@ def main():
         print(f"  manifest     : {manifest_path}")
         print(f"  payload      : {payload}")
         print(f"  overlay      : {ctx['overlay_dir']}")
-        print(f"  prefix       : {args.prefix}")
+        print(f"  guest roots  : {args.guest_roots}")
         print(f"  xcode        : {args.xcode}")
         print(f"  closure      : {len(graph['images'])} images reached from "
               + " + ".join(entries))
@@ -3006,8 +2903,8 @@ def main():
         if graph.get("empty_reason"):
             print(f"  EMPTY        : {graph['empty_reason']}")
         print()
-        rows = sweep_missing(edges, args.prefix, ctx)
-        counts = print_sweep(rows, args.prefix)
+        rows = sweep_missing(edges, args.guest_roots, ctx)
+        counts = print_sweep(rows, args.guest_roots)
         if args.json:
             print(json.dumps([{k: (sorted(v) if isinstance(v, set) else v)
                                for k, v in row.items()} for row in rows], indent=2, sort_keys=True))
@@ -3038,7 +2935,7 @@ def main():
             refs = tree_referrers_for(decl["install_name"], args.xcode)
         results.append(analyze_component(t, decl, manifest, args.darling, base, refs))
     for r in results:
-        dep, path = deployed_state(args.prefix, r.get("install_name"), r.get("artifact"))
+        dep, path = deployed_state(args.guest_roots, r.get("install_name"), r.get("artifact"))
         r["deployed"] = dep
         r["deployed_path"] = path
 
@@ -3051,6 +2948,7 @@ def main():
             return o
         payload = {
             "darling": args.darling, "build": args.build, "prefix": args.prefix,
+            "runtime_root": args.runtime_root,
             "xcode": args.xcode, "declarations": cmake_path, "manifest": manifest_path,
             "ladder_base": base,
             "referrer_mode": args.referrers, "closure_entry": entry,
@@ -3063,15 +2961,11 @@ def main():
         return 0
 
     print("closure_analyze.py -- per-dependency implementation status after the load-time ladder")
-    print(f"  declarations : {manifest_path} is the DECLARATION SOURCE; reconciled against "
-          f"{cmake_path}")
-    print(f"                 ({len(targets)} targets in DARLING_ROOTLESS_TOOLCHAIN_TARGETS, "
-          f"{len(sources['decls'])} declarations: {len(sources['manifest_only'])} manifest-only, "
-          f"{len(sources['text_only'])} CMake-text-only -- see --declarations)")
-    print(f"  manifest     : {manifest_path}")
+    print(f"  declarations : {manifest_path} (ordinary CMake installation; "
+          f"{len(targets)} component names)")
     print(f"  darling      : {args.darling}")
     print(f"  build        : {args.build}")
-    print(f"  prefix       : {args.prefix} (deployment check only; artifacts come from the build)")
+    print(f"  guest roots  : {args.guest_roots} (installed artifacts, not rebuilt staging)")
     print(f"  xcode        : {args.xcode}")
     print(f"  referrers    : {args.referrers} "
           f"({len(edges)} images in the load-command closure of {entry})")

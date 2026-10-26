@@ -12,10 +12,12 @@ from pathlib import Path
 from shlex import quote
 
 try:
+    from .evidence_storage import EvidenceError, PayloadNotFoundError, open_payload
     from .test_descriptor_transport import analyze_trace, capture_command, summary_text
     from .test_execution import run_bounded
     from .test_guest_execution import failure_phase_from_output, resolve_guest_execution
 except ImportError:  # Loaded as a West extension module, not a package.
+    from evidence_storage import EvidenceError, PayloadNotFoundError, open_payload
     from test_descriptor_transport import analyze_trace, capture_command, summary_text
     from test_execution import run_bounded
     from test_guest_execution import failure_phase_from_output, resolve_guest_execution
@@ -29,9 +31,13 @@ def failure_phase_from_debug_bundle(output: str) -> str | None:
     parts = []
     for name in ("stdout.log", "stderr.log"):
         try:
-            parts.append((Path(match.group(1)) / name).read_text(errors="replace"))
-        except OSError:
+            with open_payload(Path(match.group(1)) / name) as payload:
+                content = payload.read().decode("utf-8", errors="replace")
+        except PayloadNotFoundError:
             continue
+        except (EvidenceError, OSError, ValueError):
+            return None
+        parts.append(content)
     content = "\n".join(parts)
     phase = failure_phase_from_output(content)
     if phase is not None:
@@ -46,7 +52,6 @@ def failure_phase_from_debug_bundle(output: str) -> str | None:
         "run": "run",
         "upload": "setup",
         "cleanup": "setup",
-        "namespace-retry": "setup",
     }.get(stages[-1])
 
 
@@ -90,7 +95,13 @@ def run_guest_c_fixture(command, invocation, env=None) -> int:
             f"WEST_DESCRIPTOR_TRACE_CAPTURE {' '.join(quote(arg) for arg in capture_prefix)}\n"
         )
 
-    with tempfile.TemporaryDirectory(prefix=f"west-guest-c-fixture-{invocation['name']}-") as temp:
+    host_scratch = Path(
+        run_env.get("DW_STATE_ROOT") or Path(__file__).resolve().parents[2] / ".west-state"
+    ) / "guest-c-fixtures"
+    host_scratch.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        dir=host_scratch, prefix=f"west-guest-c-fixture-{invocation['name']}-",
+    ) as temp:
         tempdir = Path(temp)
         host_runner = tempdir / "run.sh"
         verdict = tempdir / "verdict.txt"
@@ -168,10 +179,9 @@ def run_guest_c_fixture(command, invocation, env=None) -> int:
                 command.die(f"{invocation['name']}: host-trace-files entries must be mappings")
             env_name = str(trace.get("env", ""))
             rel_path = str(trace.get("prefix-relative-path", ""))
-            if not env_name or not rel_path:
+            if not rel_path:
                 command.die(
-                    f"{invocation['name']}: host-trace-files[{index}] needs env "
-                    "and prefix-relative-path"
+                    f"{invocation['name']}: host-trace-files[{index}] needs prefix-relative-path"
                 )
             if rel_path.startswith("/") or ".." in Path(rel_path).parts:
                 command.die(
@@ -185,9 +195,10 @@ def run_guest_c_fixture(command, invocation, env=None) -> int:
                     f"{trace_var}=\"$DPREFIX/{rel_path}\"",
                     f"rm -f \"${trace_var}\"",
                     f"mkdir -p \"$(dirname \"${trace_var}\")\"",
-                    f"export {env_name}=\"${trace_var}\"",
                 ]
             )
+            if env_name:
+                trace_setup_lines.append(f"export {env_name}=\"${trace_var}\"")
             trace_dump_lines.extend(
                 [
                     f"if [ -f \"${trace_var}\" ]; then",
@@ -292,7 +303,7 @@ PY"""
             or host_stat_deltas
         )
         server_env_restart = (
-            "\"$launch\" shutdown >/dev/null 2>&1 || true"
+            "\"$launch\" shutdown"
             if needs_server_env_restart
             else ":"
         )
@@ -300,7 +311,10 @@ PY"""
 {guest_prelude}
 {guest_env_setup}
 guest_cc={quote(invocation["guest_cc"])}
-if [ ! -x "$guest_cc" ]; then guest_cc=clang; fi
+if ! command -v "$guest_cc" >/dev/null 2>&1; then
+\tprintf 'required guest compiler is unavailable: %s\\n' "$guest_cc" >&2
+\texit 127
+fi
 {' '.join(compile_parts)}
 compile_rc=$?
 if [ "$compile_rc" -ne 0 ]; then
@@ -353,13 +367,14 @@ rc=$?
 set -e
 """
         capture_shutdown = (
-            '"$launch" shutdown >/dev/null 2>&1 || true' if capture_prefix else ":"
+            '"$launch" shutdown' if capture_prefix else ":"
         )
         script = f"""#!/usr/bin/env bash
 set -euo pipefail
 : "${{DPREFIX:?set DPREFIX}}"
 launch={quote(str(launcher))}
 guest_shell_helper={quote(str(guest_shell_helper))}
+prefix_ownership_tool={quote(str(Path(__file__).with_name("test_prefix.py")))}
 host_src={quote(str(invocation["script_path"]))}
 verdict={quote(str(verdict))}
 guest_src={quote(guest_src)}
@@ -411,138 +426,64 @@ dump_runtime_file_state() {{
 \tinstall_root="$(cd "$launcher_dir/.." && pwd -P)"
 \tdump_file_sha launcher "$launch"
 \tdump_file_sha launcher_server "$launcher_dir/darlingserver"
-\tdump_file_sha prefix_server "$DPREFIX/bin/darlingserver"
-\tdump_file_sha install_mldr "$install_root/usr/libexec/darling/mldr"
-\tdump_file_sha install_nested_mldr "$install_root/libexec/darling/usr/libexec/darling/mldr"
-\tdump_file_sha prefix_mldr "$DPREFIX/usr/libexec/darling/mldr"
-\tdump_file_sha prefix_nested_mldr "$DPREFIX/libexec/darling/usr/libexec/darling/mldr"
-\tdump_file_sha install_dyld "$install_root/usr/lib/dyld"
-\tdump_file_sha install_nested_dyld "$install_root/libexec/darling/usr/lib/dyld"
-\tdump_file_sha install_libsystem_kernel "$install_root/usr/lib/system/libsystem_kernel.dylib"
-\tdump_file_sha install_nested_libsystem_kernel "$install_root/libexec/darling/usr/lib/system/libsystem_kernel.dylib"
-\tdump_file_sha prefix_libsystem_kernel "$DPREFIX/usr/lib/system/libsystem_kernel.dylib"
-\tdump_file_sha prefix_nested_libsystem_kernel "$DPREFIX/libexec/darling/usr/lib/system/libsystem_kernel.dylib"
-\tdump_file_sha prefix_dyld "$DPREFIX/usr/lib/dyld"
-\tdump_file_sha prefix_nested_dyld "$DPREFIX/libexec/darling/usr/lib/dyld"
+\tdump_file_sha install_mldr "$install_root/libexec/darling/usr/libexec/darling/mldr"
+\tdump_file_sha install_dyld "$install_root/libexec/darling/usr/lib/dyld"
+\tdump_file_sha install_libsystem_kernel "$install_root/libexec/darling/usr/lib/system/libsystem_kernel.dylib"
 }}
 
-dump_rpc_client_log() {{
-\tlocal log=/tmp/dserver-client-rpc.log
-\tif [ -s "$log" ]; then
-\t\tprintf 'WEST_GUEST_RPC_CLIENT_LOG_BEGIN\\n' >&2
-\t\ttail -80 "$log" >&2 || true
-\t\tprintf 'WEST_GUEST_RPC_CLIENT_LOG_END\\n' >&2
-\tfi
-}}
 
 dump_runtime_process_state() {{
-\tlocal snapshot pid comm args exe found=0
-\tsnapshot="$(mktemp /tmp/west-dserver-ps.XXXXXX)"
-\tps -eo pid=,comm=,args= > "$snapshot" 2>/dev/null || true
-\twhile read -r pid comm args; do
-\t\tif [ "$comm" != "darlingserver" ]; then
-\t\t\tcontinue
-\t\tfi
-\t\tcase "$args" in
-\t\t\t*"$DPREFIX"*)
-\t\t\t\tfound=1
-\t\t\t\tprintf 'WEST_GUEST_DSERVER_PID=%s\\n' "$pid" >&2
-\t\t\t\tprintf 'WEST_GUEST_DSERVER_ARGS=%s\\n' "$args" >&2
-\t\t\t\texe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-\t\t\t\tprintf 'WEST_GUEST_DSERVER_EXE=%s\\n' "${{exe:-<unreadable>}}" >&2
-\t\t\t\tsha256sum "/proc/$pid/exe" 2>/dev/null | sed 's/^/WEST_GUEST_DSERVER_EXE_SHA256=/' >&2 || true
-\t\t\t\t;;
-\t\tesac
-\tdone < "$snapshot"
-\tif [ "$found" -eq 0 ]; then
-\t\twhile read -r pid comm args; do
-\t\t\tif [ "$comm" != "darlingserver" ]; then
-\t\t\t\tcontinue
-\t\t\tfi
-\t\t\tprintf 'WEST_GUEST_DSERVER_OTHER_PID=%s\\n' "$pid" >&2
-\t\t\tprintf 'WEST_GUEST_DSERVER_OTHER_ARGS=%s\\n' "$args" >&2
-\t\t\texe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-\t\t\tprintf 'WEST_GUEST_DSERVER_OTHER_EXE=%s\\n' "${{exe:-<unreadable>}}" >&2
-\t\t\tsha256sum "/proc/$pid/exe" 2>/dev/null | sed 's/^/WEST_GUEST_DSERVER_OTHER_EXE_SHA256=/' >&2 || true
-\t\tdone < "$snapshot"
+\tlocal snapshot pid exe
+\tif ! snapshot="$(python3 -B "$prefix_ownership_tool" --prefix "$DPREFIX" --list-owned)"; then
+\t\tprintf 'WEST_GUEST_RUNTIME_OWNERSHIP=unavailable\\n' >&2
+\t\treturn 1
 \tfi
-\trm -f "$snapshot"
+\tfor pid in $snapshot; do
+\t\tprintf 'WEST_GUEST_RUNTIME_PID=%s\\n' "$pid" >&2
+\t\texe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+\t\tprintf 'WEST_GUEST_RUNTIME_EXE=%s\\n' "${{exe:-<unreadable>}}" >&2
+\t\tsha256sum "/proc/$pid/exe" 2>/dev/null | sed 's/^/WEST_GUEST_RUNTIME_EXE_SHA256=/' >&2 || true
+\tdone
 }}
 
-clear_stale_init_pid() {{
-\tlocal init_pid_file="$DPREFIX/.init.pid"
-\tlocal init_pid=""
-\tif [ ! -r "$init_pid_file" ]; then
-\t\treturn 0
-\tfi
-\tinit_pid="$(tr -d '[:space:]' < "$init_pid_file" || true)"
-\tif [ -z "$init_pid" ] || [ ! -e "/proc/$init_pid/ns/mnt" ]; then
-\t\trm -f "$init_pid_file"
-\tfi
-}}
 
 guest_shell() {{
 \tlocal seconds="$1"
 \tshift
-\tlocal ns_log
 \tlocal restore_errexit=0
-\tcase "$-" in
-\t\t*e*)
-\t\t\trestore_errexit=1
-\t\t\tset +e
-\t\t\t;;
-\tesac
-\tclear_stale_init_pid
-\tns_log="$(mktemp /tmp/west-guest-shell-stderr.XXXXXX)"
-\tdarling_guest_shell "$launch" "$DPREFIX" "$seconds" "$@" 2> "$ns_log"
+\tcase "$-" in *e*) restore_errexit=1; set +e ;; esac
+\tdarling_guest_shell "$launch" "$DPREFIX" "$seconds" "$@"
 \tlocal rc=$?
-\tcat "$ns_log" >&2 || true
-\tif [ "$rc" -ne 0 ] && grep -q 'Cannot open mnt namespace file' "$ns_log"; then
-\t\tdump_namespace_state
-\t\tprintf 'WEST_GUEST_STAGE=namespace-retry\\n' >&2
-\t\t"$launch" shutdown >/dev/null 2>&1 || true
-\t\tclear_stale_init_pid
-\t\tdarling_guest_shell "$launch" "$DPREFIX" "$seconds" "$@" 2> "$ns_log"
-\t\trc=$?
-\t\tcat "$ns_log" >&2 || true
-\t\tif [ "$rc" -ne 0 ] && grep -q 'Cannot open mnt namespace file' "$ns_log"; then
-\t\t\tdump_namespace_state
-\t\tfi
-\tfi
 \tif [ "$rc" -ne 0 ]; then
+\t\tdump_namespace_state
 \t\tdump_runtime_file_state
 \t\tdump_runtime_process_state
-\t\tdump_rpc_client_log
 \t\tprintf 'WEST_GUEST_SHELL_RC=%s\\n' "$rc" >&2
 \tfi
-\trm -f "$ns_log"
-\tif [ "$restore_errexit" -eq 1 ]; then
-\t\tset -e
-\tfi
+\tif [ "$restore_errexit" -eq 1 ]; then set -e; fi
 \treturn "$rc"
 }}
 
 cleanup_guest_artifacts() {{
-\t# A prepare-only RED phase deliberately leaves the compiled fixture for the
-\t# following bad-runtime run. Every other path must leave the guest /tmp clean.
-\tif [ "$prepare_only" = 1 ]; then
-\t\treturn
+\tlocal exit_rc=$?
+\ttrap - EXIT
+\t# A split preparation phase deliberately retains its compiled fixture.
+\tif [ "$prepare_only" = 1 ]; then return "$exit_rc"; fi
+\tset +e
+\tguest_shell 10 "rm -f '$guest_src' '$guest_bin'"
+\tlocal artifact_rc=$?
+\t{capture_shutdown}
+\tlocal shutdown_rc=$?
+\tif [ "$exit_rc" -eq 0 ] && {{ [ "$artifact_rc" -ne 0 ] || [ "$shutdown_rc" -ne 0 ]; }}; then
+\t\texit_rc=1
 \tfi
-	guest_shell 10 "rm -f '$guest_src' '$guest_bin'" >/dev/null 2>&1 || true
-	# A descriptor capture traces the whole launcher tree, so the prefix server it
-	# started has to be gone before this script exits: a surviving traced process
-	# keeps strace (and therefore the enclosing runner) open until its timeout.
-	{capture_shutdown}
+\texit "$exit_rc"
 }}
 trap cleanup_guest_artifacts EXIT
 
-: > /tmp/dserver-client-rpc.log 2>/dev/null || true
-dump_runtime_file_state
 if [ "$run_only" != 1 ]; then
 \tprintf 'WEST_GUEST_STAGE=cleanup\\n' >&2
-\tguest_shell 10 "rm -f '$guest_src' '$guest_bin'" >/dev/null 2>&1 || true
-\t"$launch" shutdown >/dev/null 2>&1 || true
-\tclear_stale_init_pid
+\tguest_shell 10 "rm -f '$guest_src' '$guest_bin'"
 \tprintf 'WEST_GUEST_STAGE=upload\\n' >&2
 \tguest_shell 10 "cat > '$guest_src'" < "$host_src"
 fi

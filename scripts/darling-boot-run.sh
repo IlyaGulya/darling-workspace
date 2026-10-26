@@ -43,12 +43,16 @@
 # fixture's HELLO/FINAL defaults; explicit --marker declarations remain additional required checks.
 #
 # Usage:
-#   darling-boot-run.sh --prefix PATH --wait SECONDS [--marker NAME]... [--status-marker FIELD=] [--poll REGEX] [--hatch] [--cmd 'shell command'] [--bundle DIR|--no-bundle]
+#   darling-boot-run.sh --runtime-root ROOT --prefix PATH --wait SECONDS [--marker NAME]... [--status-marker FIELD=] [--poll REGEX] [--hatch] [--cmd 'shell command'] [--bundle DIR|--no-bundle]
 # Exit: 0 only if every declared status field was the integer 0 and every presence marker appeared, 1 otherwise (or if cleanup failed).
 
 set -u
 
 PREFIX=""
+RUNTIME_ROOT=""
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+DARLING_WORKSPACE_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+. "$SCRIPT_DIR/darling-runtime.sh"
 WAIT=""
 CMD="echo HELLO=1; echo FINAL=1"
 MARKERS=""
@@ -93,9 +97,11 @@ CLEANUP_MOUNTS=null
 CLEANUP_LAYER_MOUNTS=null
 CLEANUP_SHUTDOWN_RC=null
 
+parse_args() {
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--prefix) PREFIX="$2"; shift 2 ;;
+		--runtime-root) RUNTIME_ROOT="$2"; shift 2 ;;
 		--wait) WAIT="$2"; shift 2 ;;
 		# A marker declaration. One whose text ends with `=` names a VALUE and is therefore a STATUS field:
 		# the workload asserts success only by printing an integer 0 after it (verdict block). Every other
@@ -133,6 +139,8 @@ $2"; shift 2 ;;
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac
 done
+}
+parse_args "$@"
 
 [ -n "$PREFIX" ] || { echo "usage: $0 --prefix PATH --wait SECONDS [--marker NAME]..." >&2; exit 2; }
 [ -n "$WAIT" ] || [ "$LIST_OWNED" = 1 ] || { echo "usage: $0 --prefix PATH --wait SECONDS [--marker NAME]..." >&2; exit 2; }
@@ -181,10 +189,22 @@ if [ "$ASSERT_MAPS" = 1 ]; then
 	fi
 fi
 [ -n "$MARKERS$STATUS_MARKERS" ] || MARKERS="|HELLO=1|FINAL=1"
-[ -x "$PREFIX/bin/darling" ] || { echo "no launcher at $PREFIX/bin/darling" >&2; exit 2; }
-
-[ -n "$LOG" ] || LOG="/tmp/darling-boot-$(date +%H%M%S)-$$.log"
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ "$LIST_OWNED" != 1 ]; then
+	if [ -z "${WEST_TEST_PREFIX_LEASE:-}" ]; then
+		exec python3 -B "$DARLING_WORKSPACE_ROOT/west_commands/test_prefix.py" \
+			--prefix "$PREFIX" -- "$0" "$@"
+	fi
+	[ "$WEST_TEST_PREFIX_LEASE" = "$PREFIX" ] || {
+		echo "borrowed prefix lease does not match --prefix" >&2
+		exit 2
+	}
+	python3 -B "$DARLING_WORKSPACE_ROOT/west_commands/test_prefix.py" \
+		--prefix "$PREFIX" --validate-lease || exit $?
+	darling_resolve_runtime "$RUNTIME_ROOT" "$PREFIX" || exit $?
+fi
+export DPREFIX="$PREFIX" DARLING_PREFIX="$PREFIX"
+[ -n "$LOG" ] || LOG="${DW_STATE_ROOT:-$DARLING_WORKSPACE_ROOT/../.west-state}/boot-runs/darling-boot-$(date +%Y%m%d-%H%M%S)-$$.log"
+[ "$LIST_OWNED" = 1 ] || mkdir -p "$(dirname "$LOG")" || exit 2
 
 # Enumerate prefix-owned processes. Two traps, both measured: a guest process's cmdline is the IN-GUEST path
 # and contains no prefix (so exe is the arm that finds it), and THIS SCRIPT's own cmdline contains the prefix when
@@ -223,96 +243,18 @@ caller_id() { # pid ppid pgid sid cmd
 }
 
 owned_pids() {
-	self=$$
-	# space-separated: the membership test is `case " $ancestors " in *" $pid "*`, and a NEWLINE-separated list
-	# never matches it -- MEASURED: with `$(own_ancestors)` the guard silently did nothing and the wrapper was killed
-	# anyway (rc=137) three seconds in, which is exactly the kind of "instrument that cannot answer" this file keeps
-	# recording. The separator is part of the test, not a cosmetic detail.
+	pids=$(darling_prefix_owned_pids "$PREFIX") || return $?
 	ancestors=$(own_ancestors | tr '\n' ' ')
-	# The prefix's OWN record of its current init/server. Two measured traps make this a required arm:
-	# a killed run leaves the file behind, and the daemonized server it names re-parents to init with an argv of
-	# bare numbers ("darlingserver 4 3 <prefix-basename> 6 1000 1000 8 0"), so neither the ancestor arm, nor the
-	# exe arm (the loader's exe is under the prefix only for guest processes), nor the cmdline arm (which needs the
-	# PREFIX PATH) can see it. MEASURED: exactly that left a prefix wedged and this check still printed
-	# "clean: 0 prefix-owned processes", after which the next boot talked into the stale server's socket and never
-	# reached shellspawn readiness.
-	init_pid_value=""
-	[ -r "$PREFIX/.init.pid" ] && init_pid_value=$(tr -dc '0-9' < "$PREFIX/.init.pid" 2>/dev/null)
-	# A directory capability is identity, not a pathname: compare the open descriptor's device:inode with the
-	# prefix's. This is the framework's own ownership rule
-	# (west_commands/test_prefix.py::_runtime_retains_prefix), and the reason it exists is that a rootless guest or
-	# server may scrub every DARLING_* variable and carry no prefix path anywhere.
-	prefix_id=$(stat -Lc '%d:%i' "$PREFIX" 2>/dev/null)
-	for d in /proc/[0-9]*; do
-		pid=${d#/proc/}
-		[ "$pid" = "$self" ] && continue
-		case " $ancestors " in *" $pid "*) witness "OWNED pid=$pid arm=none ancestor=yes ppid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $2}') pgid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $3}') sid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $4}') cmd=$(tr "\0" " " < "$d/cmdline" 2>/dev/null | cut -c1-120)"; continue ;; esac
-		if [ -n "$init_pid_value" ] && [ "$pid" = "$init_pid_value" ]; then
-			witness "OWNED pid=$pid arm=initpid ancestor=no ppid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $2}') cmd=$(tr "\0" " " < "$d/cmdline" 2>/dev/null | cut -c1-120)"
-			echo "$pid"
-			continue
-		fi
-		# arm=capability. The gate is a PREREQUISITE, never ownership, and it must not be the truncated comm: a
-		# /proc/<pid>/comm longer than 15 characters is cut ("darlingserver-stub-long" reads "darlingserver-st"),
-		# so an exact comm match silently skips the very processes this arm exists for. The gate is therefore a
-		# PREFIX of the truncation-free exe basename, with comm only as the fallback for an unreadable exe link.
-		exe=$(readlink "$d/exe" 2>/dev/null)
-		exe_base=${exe##*/}
-		comm=$(cat "$d/comm" 2>/dev/null)
-		cap=0
-		case "$exe_base" in
-		mldr*|launchd*|vchroot*|shellspawn*|darlingserver*) cap=1 ;;
-		*) case "$comm" in mldr*|launchd*|vchroot*|shellspawn*|darlingserver*) cap=1 ;; esac ;;
-		esac
-		cap_hit=0
-		if [ "$cap" = 1 ] && [ -n "$prefix_id" ]; then
-			for fd in "$d"/fd/*; do
-				[ -e "$fd" ] || continue
-				if [ "$(stat -Lc '%d:%i' "$fd" 2>/dev/null)" = "$prefix_id" ]; then
-					witness "OWNED pid=$pid arm=capability ancestor=no exe_base=$exe_base cmd=$(tr "\0" " " < "$d/cmdline" 2>/dev/null | cut -c1-120)"
-					echo "$pid"
-					cap_hit=1
-					break
-				fi
-			done
-		fi
-		# A capability match already reported this pid; falling through would report it twice and inflate every
-		# process count the verdict is drawn from.
-		[ "$cap_hit" = 1 ] && continue
-		case "$exe" in "$PREFIX"|"$PREFIX"/*) witness "OWNED pid=$pid arm=exe ancestor=no ppid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $2}') pgid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $3}') sid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $4}') exe=$exe"; echo "$pid"; continue ;; esac
-		cmd=$(tr "\0" " " < "$d/cmdline" 2>/dev/null)
-		# The cmdline arm must NOT match this script or its pipeline subshells: they are invoked WITH --prefix,
-		# so their own cmdline contains the prefix, and a `kill` loop then kills the very loop doing the killing
-		# ("Killed" printed by the script itself). A subshell has a different PID but the same cmdline, so the
-		# guard is on the script name, not on the PID.
-		case "$cmd" in *"$SELF_NAME"*) continue ;; esac
-		# The process that SERVES the prefix's own layer is not a prefix-owned runtime process. When the prefix
-		# is itself a mount (an isolation lane's fuse-overlayfs view), that daemon names the prefix in its
-		# -o upperdir=/workdir= and in its mountpoint argument, so the cmdline arm below killed it -- which
-		# unmounted the prefix and made every later command fail with ENOTCONN. MEASURED 2026-10-18: that is
-		# how the first isolation-lane boot died. Identity is the program AND the prefix's own device:inode,
-		# not the program name, so a fixture that merely runs fuse-overlayfs under the prefix is still swept.
-		case "$exe_base" in
-		fuse-overlayfs)
-			layer=0
-			if [ -n "$prefix_id" ]; then
-				for a in $cmd; do
-					case "$a" in /*) ;; *) continue ;; esac
-					if [ "$(stat -Lc '%d:%i' "$a" 2>/dev/null)" = "$prefix_id" ]; then layer=1; break; fi
-				done
-			fi
-			if [ "$layer" = 1 ]; then
-				witness "SKIP pid=$pid arm=layer reason=serves-the-prefix-mountpoint"
-				continue
-			fi
-			;;
-		esac
-		case "$cmd" in
-			*"$PREFIX"*) witness "OWNED pid=$pid arm=cmdline ancestor=no ppid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $2}') pgid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $3}') sid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | awk '{print $4}') cmd=$(echo "$cmd" | cut -c1-120)"; echo "$pid" ;;
-		esac
+	for pid in $pids; do
+		case " $ancestors " in *" $pid "*) continue ;; esac
+		witness "OWNED pid=$pid arm=runtime-identity ancestor=no"
+		printf '%s\n' "$pid"
 	done
 }
-count_owned() { owned_pids | wc -l; }
+count_owned() {
+	pids=$(owned_pids) || return $?
+	if [ -z "$pids" ]; then printf '0\n'; else printf '%s\n' "$pids" | wc -l; fi
+}
 
 # The prefix's own runtime files. A killed run leaves them naming a server that is gone, and they are never removed
 # while an owner is alive: both callers below only act with zero owners, which is the framework's own precondition
@@ -437,7 +379,7 @@ bundle_begin() {
 	# Workload-specific executables and libraries need their own identity measurement.
 	BUNDLE_RUN_ENV=""
 	if [ -x "$SCRIPT_DIR/dwdiag" ]; then
-		"$SCRIPT_DIR/dwdiag" env --prefix "$PREFIX" > "$BUNDLE_DIR/run-env.raw" 2>"$BUNDLE_DIR/run-env.err"
+		"$SCRIPT_DIR/dwdiag" env --runtime-root "$DARLING_RUNTIME_ROOT" --prefix "$PREFIX" > "$BUNDLE_DIR/run-env.raw" 2>"$BUNDLE_DIR/run-env.err"
 		env_rc=$?
 		if [ "$env_rc" -eq 0 ] && [ -s "$BUNDLE_DIR/run-env.raw" ]; then
 			BUNDLE_RUN_ENV=$(cat "$BUNDLE_DIR/run-env.raw")
@@ -811,18 +753,23 @@ bundle_report() {
 # rule is what decides whether the next boot starts clean, and a rule that can only be exercised by booting cannot be
 # tested; tests/run-darling-boot-harness-ownership-contract.sh drives this mode with synthetic processes.
 if [ "$LIST_OWNED" = 1 ]; then
-	[ -x "$PREFIX/bin/darling" ] || { echo "no launcher at $PREFIX/bin/darling (still listed below)" >&2; }
-	owned_pids | sort -n | uniq
+	owned_pids || exit $?
 	report_stale_runtime_files
 	exit 0
 fi
 
 STAGE=clean-start; echo "== clean start =="
 witness "TEARDOWN stage=shutdown-enter self=$$ parent=$PPID harness=$(caller_id $$)"
-DPREFIX="$PREFIX" DARLING_PREFIX="$PREFIX" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
-	"$PREFIX/bin/darling" --rootless shutdown >/dev/null 2>&1
-witness "TEARDOWN stage=shutdown-exit rc=$? self=$$"
+start_shutdown_rc=0
+start_processes=$(count_owned) || exit $?
+if [ "$start_processes" -ne 0 ]; then
+	"$DARLING_LAUNCHER" shutdown >/dev/null 2>&1 8<&-
+	start_shutdown_rc=$?
+fi
+witness "TEARDOWN stage=shutdown-exit rc=$start_shutdown_rc self=$$"
 sleep 3
+start_rescue=$(count_owned) || exit $?
+# Rescue only makes the lane safe; it cannot establish production shutdown.
 # Kill, then SETTLE: a process that has just been signalled is still enumerable for a moment (and a zombie whose
 # parent has not reaped it stays visible). Declaring failure on the first count produced a false failure the first
 # time this script was used -- so re-check in bounded rounds instead of racing the kernel.
@@ -835,7 +782,7 @@ left=1
 i=0
 while [ "$i" -lt 10 ]; do
 	sleep 2
-	left=$(count_owned)
+	left=$(count_owned) || exit $?
 	[ "$left" -eq 0 ] && break
 	owned_pids | while read -r pid; do
 	anc=$(own_ancestors | tr '\n' ' ')
@@ -844,6 +791,10 @@ while [ "$i" -lt 10 ]; do
 done
 	i=$((i + 1))
 done
+if [ "$start_shutdown_rc" -ne 0 ] || [ "$start_rescue" -ne 0 ]; then
+	echo "clean start FAILED: product shutdown rc=$start_shutdown_rc, rescue processes=$start_rescue; refusing acceptance after rescue" >&2
+	exit 1
+fi
 if [ "$left" -gt 0 ]; then
 	echo "clean start FAILED: $left prefix-owned processes remain after $i settle rounds" >&2
 	owned_pids | head -5 >&2
@@ -863,8 +814,8 @@ if [ -n "$VERIFY_PROBES" ]; then
 	missing=0
 	echo "$VERIFY_PROBES" | while IFS= read -r t; do
 		[ -n "$t" ] || continue
-		if "$SCRIPT_DIR/darling-artifact-manifest.sh" --prefix "$PREFIX" --probe "$t" | grep -q "PRESENT"; then
-			"$SCRIPT_DIR/darling-artifact-manifest.sh" --prefix "$PREFIX" --probe "$t" | sed 's/^/  /'
+		if "$SCRIPT_DIR/darling-artifact-manifest.sh" --runtime-root "$DARLING_RUNTIME_ROOT" --prefix "$PREFIX" --probe "$t" | grep -q "PRESENT"; then
+			"$SCRIPT_DIR/darling-artifact-manifest.sh" --runtime-root "$DARLING_RUNTIME_ROOT" --prefix "$PREFIX" --probe "$t" | sed 's/^/  /'
 		else
 			echo "  $t: ABSENT FROM EVERY DEPLOYED ARTIFACT"
 			exit 3
@@ -895,7 +846,7 @@ fi
 # server-side fact while the prefix was known. The shape below is the one the tools already parse
 # (`[dwdiag-env prefix=<path> ...]`), so ONE line makes the log self-describing for progress, verdict, crash and
 # scripts/darling-stop-reason.sh. It is the first line, because the guest's own output is appended after it.
-echo "[dwdiag-env prefix=$PREFIX log=$LOG bundle=$BUNDLE_DIR wait=$WAIT]" >> "$LOG"
+echo "[dwdiag-env prefix=$PREFIX runtime-root=$DARLING_RUNTIME_ROOT launcher=$DARLING_LAUNCHER log=$LOG bundle=$BUNDLE_DIR wait=$WAIT]" >> "$LOG"
 # shellcheck disable=SC2086
 # THE SHELL VERB, NOT exec. MEASURED: `--rootless shell /bin/sh -c ...` runs the command INSIDE the guest (a
 # run on /tmp/dr-on-matched produced mldr-seed attach/seeded, dring-adopt and the command's own output, 5803
@@ -911,10 +862,9 @@ echo "[dwdiag-env prefix=$PREFIX log=$LOG bundle=$BUNDLE_DIR wait=$WAIT]" >> "$L
 # Guest transport facts (measured): the verb must be `shell` (`exec` hands the command to the HOST shell reached as
 # /Volumes/SystemRoot/usr/bin/dash); the shell must be /bin/bash (a freshly bootstrapped guest has no /bin/sh and the
 # failure reads "/bin/bash: /bin/sh: No such file or directory").
-env DPREFIX="$PREFIX" DARLING_PREFIX="$PREFIX" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
-	$HATCH_ENV $EXTRA_ENV \
-	nohup timeout "$((WAIT + 60))" \
-	"$PREFIX/bin/darling" --rootless shell /bin/bash -c "$CMD" >> "$LOG" 2>&1 9<&- &
+env $HATCH_ENV $EXTRA_ENV \
+	timeout "$((WAIT + 60))" \
+	"$DARLING_LAUNCHER" shell /bin/bash -c "$CMD" >> "$LOG" 2>&1 8<&- 9<&- &
 
 # Wait for explicit --poll, or every explicit status field when no poll was supplied.
 # Ordinary presence markers are not completion: they may open an observation window before the result.
@@ -1086,7 +1036,7 @@ if [ "${FREEZE_ON_FAIL:-0}" -eq 1 ] && [ "$verdict" -ne 0 ]; then
 	STAGE=freeze; echo "== freeze-on-fail (diagnostic) =="
 	echo "FREEZE-ON-FAIL prefix=$PREFIX log=$LOG verdict=$verdict"
 	echo "FREEZE-ON-FAIL inspect now, then clean up with: west darling-prefix-repair --prefix $PREFIX --cleanup-mounts"
-	echo "FREEZE-ON-FAIL or: DPREFIX=$PREFIX DARLING_PREFIX=$PREFIX DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 $PREFIX/bin/darling --rootless shutdown"
+	echo "FREEZE-ON-FAIL or: DPREFIX=$PREFIX DARLING_RUNTIME_ROOT=$DARLING_RUNTIME_ROOT $DARLING_LAUNCHER shutdown"
 	CLEANUP_STATE=retained
 	bundle_finalize
 	exit 1
@@ -1094,11 +1044,15 @@ fi
 
 STAGE=cleanup; echo "== cleanup =="
 witness "TEARDOWN stage=shutdown-enter self=$$ parent=$PPID harness=$(caller_id $$)"
-DPREFIX="$PREFIX" DARLING_PREFIX="$PREFIX" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 \
-	"$PREFIX/bin/darling" --rootless shutdown >/dev/null 2>&1
+"$DARLING_LAUNCHER" shutdown >/dev/null 2>&1 8<&-
 CLEANUP_SHUTDOWN_RC=$?
 witness "TEARDOWN stage=shutdown-exit rc=$CLEANUP_SHUTDOWN_RC self=$$"
 sleep 3
+rescue_processes=$(count_owned) || exit $?
+if [ "$CLEANUP_SHUTDOWN_RC" -ne 0 ] || [ "$rescue_processes" -ne 0 ]; then
+	echo "cleanup FAILED: product shutdown rc=$CLEANUP_SHUTDOWN_RC, rescue processes=$rescue_processes" >&2
+	verdict=1
+fi
 owned_pids | while read -r pid; do
 	anc=$(own_ancestors | tr '\n' ' ')
 	case " $anc " in *" $pid "*) witness "SKIP-KILL pid=$pid reason=ancestor"; continue ;; esac
@@ -1108,7 +1062,7 @@ final=1
 i=0
 while [ "$i" -lt 10 ]; do
 	sleep 2
-	final=$(count_owned)
+	final=$(count_owned) || exit $?
 	[ "$final" -eq 0 ] && break
 	owned_pids | while read -r pid; do
 	anc=$(own_ancestors | tr '\n' ' ')
@@ -1117,6 +1071,12 @@ while [ "$i" -lt 10 ]; do
 done
 	i=$((i + 1))
 done
+# A runtime with only a matching environment marker cannot be signalled, but
+# it is still residue. Do not publish zero merely because kill authority is absent.
+residual=$(darling_prefix_residual_pids "$PREFIX") || exit $?
+if [ -n "$residual" ]; then
+	final=$(printf '%s\n' "$residual" | wc -l)
+fi
 # Count mounts whose MOUNTPOINT lies under the prefix. A substring match was MEASURED to fail here:
 # another lane's overlay instance names this prefix in its lowerdir
 # (.west-prefix-instances/probe1/merged lowerdir=<prefix>), which is not a mount under the prefix, yet
@@ -1129,9 +1089,14 @@ done
 mounts=$(mount 2>/dev/null | awk -v p="$PREFIX" 'index($3, p "/") == 1 || ($3 == p && $5 != "fuse.fuse-overlayfs")' | wc -l)
 layer_mounts=$(mount 2>/dev/null | awk -v p="$PREFIX" '$3 == p && $5 == "fuse.fuse-overlayfs"' | wc -l)
 # Same rule after the run: leave the prefix as a *bootable* clean state, not merely a process-free one.
-clear_stale_runtime_files
+if [ "$final" -eq 0 ] && [ "$mounts" -eq 0 ]; then
+	clear_stale_runtime_files
+fi
 echo "prefix processes after: $final, mounts: $mounts (plus $layer_mounts prefix layer mount(s))"
 CLEANUP_STATE=clean
+if [ "$CLEANUP_SHUTDOWN_RC" -ne 0 ] || [ "$rescue_processes" -ne 0 ]; then
+	CLEANUP_STATE=rescued
+fi
 CLEANUP_PROCESSES=$final
 CLEANUP_MOUNTS=$mounts
 CLEANUP_LAYER_MOUNTS=$layer_mounts

@@ -1,16 +1,67 @@
 #!/usr/bin/env bash
 
+export DW_STATE_ROOT="${DW_STATE_ROOT:-${ROOTLESS_TIER_REPO:?}/../.west-state/ci}"
+
+rootless_runtime_select() {
+	[[ "$DW_STATE_ROOT" == /* ]] || {
+		rootless_prefix_die "DW_STATE_ROOT must be absolute"
+		return 2
+	}
+	mkdir -p -- "$DW_STATE_ROOT/tmp" || return
+	: "${DARLING_RUNTIME_ROOT:?set DARLING_RUNTIME_ROOT to the normal product installation root}"
+	[[ "$DARLING_RUNTIME_ROOT" == /* ]] || {
+		rootless_prefix_die "DARLING_RUNTIME_ROOT must be absolute"
+		return 2
+	}
+	export DARLING_RUNTIME_ROOT
+	export DARLING_BUILD_DIR="${DARLING_BUILD_DIR:-$DW_STATE_ROOT/runtime-build}"
+	[[ "$DARLING_BUILD_DIR" == /* ]] || {
+		rootless_prefix_die "DARLING_BUILD_DIR must be absolute"
+		return 2
+	}
+	export DARLING_LAUNCHER="$DARLING_RUNTIME_ROOT/bin/darling"
+}
+
+rootless_runtime_bootstrap() {
+	local prefix="$1"
+	local toolchain="${2:-}"
+	local args=(--build-dir "$DARLING_BUILD_DIR" --runtime-root "$DARLING_RUNTIME_ROOT" --prefix "$prefix")
+	[[ "${DARLING_CI_TEST_DATA:-0}" != 1 ]] || args+=(--with-test-data)
+	if [[ -x "$DARLING_RUNTIME_ROOT/bin/darling" &&
+		-x "$DARLING_RUNTIME_ROOT/bin/darlingserver" &&
+		-d "$DARLING_RUNTIME_ROOT/libexec/darling" ]]; then
+		args+=(--no-build)
+	else
+		local source
+		source="$(west list darling -f '{abspath}')" || return
+		cmake -S "$source" -B "$DARLING_BUILD_DIR" -G Ninja \
+			-DCMAKE_BUILD_TYPE=Release -DCOMPONENTS=stock \
+			-DCMAKE_INSTALL_PREFIX="$DARLING_RUNTIME_ROOT" || return
+	fi
+	[[ -z "$toolchain" ]] || args+=(--guest-toolchain "$toolchain")
+	west darling-bootstrap "${args[@]}"
+}
+
 rootless_prefix_die() {
 	echo "rootless tier prefix: $*" >&2
 	return 2
 }
 
 rootless_prefix_trusted_root() {
-	local root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+	local root="${DW_STATE_ROOT}/p"
 	local repo="${ROOTLESS_TIER_REPO:?run-test-tier must set ROOTLESS_TIER_REPO}"
+	[[ "$DW_STATE_ROOT" == /* ]] || {
+		rootless_prefix_die "DW_STATE_ROOT must be absolute"
+		return 2
+	}
 	root="$(realpath -m -- "$root")" || return 2
 	repo="$(realpath -m -- "$repo")" || return 2
-	[[ -d "$root" ]] || mkdir -p -- "$root" || return 2
+	local state_root
+	state_root="$(realpath -m -- "$DW_STATE_ROOT")" || return 2
+	[[ "$state_root" != / && "$state_root" != "$HOME" && "$state_root" != "$repo" ]] || {
+		rootless_prefix_die "unsafe DW_STATE_ROOT: $state_root"
+		return 2
+	}
 	[[ "$root" != "/" ]] || {
 		rootless_prefix_die "trusted root must not be filesystem root"
 		return 2
@@ -21,14 +72,7 @@ rootless_prefix_trusted_root() {
 			return 2
 			;;
 	esac
-	if [[ -z "${RUNNER_TEMP:-}" ]]; then
-		case "$root" in
-			"$HOME"/*)
-				rootless_prefix_die "trusted root is unsafe without RUNNER_TEMP: $root" || return
-				return 2
-				;;
-		esac
-	fi
+	[[ -d "$root" ]] || mkdir -p -- "$root" || return 2
 	printf '%s\n' "$root"
 }
 
@@ -46,7 +90,7 @@ rootless_prefix_validate_path() {
 		rootless_prefix_die "prefix must be directly under $trusted_root: $prefix"
 		return 2
 	}
-	[[ "$base" =~ ^darling-rootless-${kind}([.-][A-Za-z0-9_]+)*$ ]] || {
+	[[ "$base" =~ ^dw-${kind:0:1}([.-][A-Za-z0-9_]+)*$ ]] || {
 		rootless_prefix_die "prefix has an unexpected basename: $base"
 		return 2
 	}
@@ -83,7 +127,7 @@ rootless_prefix_create() {
 		}
 		mkdir -- "$prefix" || return 2
 	else
-		prefix="$(mktemp -d -- "$trusted_root/darling-rootless-${kind}.XXXXXX")" || return 2
+		prefix="$(mktemp -d -- "$trusted_root/dw-${kind:0:1}.XXXXXX")" || return 2
 	fi
 	owner="${prefix}.west-tier-owner"
 	if ! {

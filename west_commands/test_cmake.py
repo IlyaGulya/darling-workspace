@@ -625,14 +625,19 @@ class CmakeFixtureMixin:
     ) -> Path:
         build = build_dir or testkit / "build"
         cfg = ["cmake", "-S", str(testkit), "-B", str(build), "-G", "Ninja"]
-        for name, value in sorted((cmake_defines or {}).items()):
+        defines = dict(cmake_defines or {})
+        # CTest's workload bridge imports West; keep the invoking environment's
+        # interpreter instead of discovering an unrelated host Python.
+        defines.setdefault("Python3_EXECUTABLE", sys.executable)
+        source_root = getattr(self, "_source_root", None)
+        if source_root:
+            defines.setdefault("DARLING_SRC", str(source_root))
+        for name, value in sorted(defines.items()):
             cfg.append(f"-D{name}={value}")
         if executor:
             cfg.append(f"-DDARLING_TEST_EXECUTOR={executor}")
         if prefix:
             cfg.append(f"-DDARLING_TEST_PREFIX={prefix}")
-        if getattr(self, "_prefix_env", {}).get("DARLING_NOOVERLAYFS") == "1":
-            cfg.append("-DDARLING_TEST_NO_OVERLAYFS=ON")
         if bundle_root:
             cfg.append(f"-DDARLING_TEST_BUNDLE_ROOT={bundle_root}")
         self.inf(f"configuring: {testkit}")

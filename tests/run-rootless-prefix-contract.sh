@@ -5,37 +5,36 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
 
-export RUNNER_TEMP="$tmp/runner"
+export DW_STATE_ROOT="$tmp/state"
 export ROOTLESS_TIER_REPO="$repo"
 export GITHUB_OUTPUT="$tmp/github-output"
 . "$repo/ci/rootless-prefix.sh"
 
 created="$(rootless_prefix_create smoke UNUSED_VARIABLE)"
 case "$created" in
-	"$RUNNER_TEMP"/darling-rootless-smoke.*) ;;
+	"$DW_STATE_ROOT"/p/dw-s.*) ;;
 	*) echo "unexpected generated prefix: $created" >&2; exit 1 ;;
 esac
 rootless_prefix_assert_owned smoke "$created"
 rootless_prefix_remove smoke "$created"
 [ ! -e "$created" ]
 
-requested="$RUNNER_TEMP/darling-rootless-regression-contract"
+requested="$DW_STATE_ROOT/p/dw-r-contract"
 DARLING_REGRESSION_PREFIX="$requested"
 created="$(rootless_prefix_create regression DARLING_REGRESSION_PREFIX)"
 [ "$created" = "$requested" ]
 rootless_prefix_remove regression "$created"
 
-if RUNNER_TEMP=/ rootless_prefix_trusted_root >/dev/null 2>&1; then
+if DW_STATE_ROOT=/ rootless_prefix_trusted_root >/dev/null 2>&1; then
 	echo 'filesystem root was accepted as trusted root' >&2
 	exit 1
 fi
 
-# GitHub-hosted Linux runners place RUNNER_TEMP below /home/runner. Accept that
-# explicit runner contract while retaining the direct-child/name/owner guards.
-mkdir -p "$tmp/home/work/_temp"
-created="$(HOME="$tmp/home" RUNNER_TEMP="$tmp/home/work/_temp" \
+# An explicitly owned durable state root may live below the runner's home.
+mkdir -p "$tmp/home/work/state"
+created="$(HOME="$tmp/home" DW_STATE_ROOT="$tmp/home/work/state" \
 	rootless_prefix_create smoke UNUSED_VARIABLE)"
-HOME="$tmp/home" RUNNER_TEMP="$tmp/home/work/_temp" \
+HOME="$tmp/home" DW_STATE_ROOT="$tmp/home/work/state" \
 	rootless_prefix_remove smoke "$created"
 
 if DARLING_SMOKE_PREFIX="$HOME" rootless_prefix_create smoke DARLING_SMOKE_PREFIX >/dev/null 2>&1; then
@@ -47,10 +46,10 @@ if DARLING_SMOKE_PREFIX="$repo" rootless_prefix_create smoke DARLING_SMOKE_PREFI
 	exit 1
 fi
 
-target="$RUNNER_TEMP/real-prefix"
+target="$DW_STATE_ROOT/p/real-prefix"
 mkdir -p "$target"
-ln -s "$target" "$RUNNER_TEMP/darling-rootless-smoke-symlink"
-if DARLING_SMOKE_PREFIX="$RUNNER_TEMP/darling-rootless-smoke-symlink" rootless_prefix_create smoke DARLING_SMOKE_PREFIX >/dev/null 2>&1; then
+ln -s "$target" "$DW_STATE_ROOT/p/dw-s-symlink"
+if DARLING_SMOKE_PREFIX="$DW_STATE_ROOT/p/dw-s-symlink" rootless_prefix_create smoke DARLING_SMOKE_PREFIX >/dev/null 2>&1; then
 	echo 'symlink prefix was accepted' >&2
 	exit 1
 fi

@@ -1,466 +1,191 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This contract drives a whole tier and shells out to dozens of commands, so an
-# unexpected failure used to be a bare exit status with no indication of where
-# it happened - the run that failed inside the host tier printed neither a
-# census message, nor an assertion, nor a stub complaint. Name the command and
-# the line instead. The trap does not fire for a status the script tests, so
-# the deliberate failure probes below stay quiet.
-trap 'rc=$?; printf "ci-test-tiers-contract: %s failed (rc=%s) at line %s\n" "$BASH_COMMAND" "$rc" "$LINENO" >&2' ERR
-
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/bin"
-
-for tool in west cmake ctest; do
-	cat >"$tmp/bin/$tool" <<'TOOL'
-#!/usr/bin/env bash
-printf '%s %s\n' "$(basename "$0")" "$*" >>"$CI_CONTRACT_LOG"
-if [ "$(basename "$0")" = west ] && [ -n "${ROOTLESS_TIER_REPO_CHILD_OUTPUT:-}" ]; then
-	printf '%s\n' "${ROOTLESS_TIER_REPO-}" >>"$ROOTLESS_TIER_REPO_CHILD_OUTPUT"
-fi
-if [ "$(basename "$0")" = west ] && [ "${1:-}" = topdir ]; then
-	exit "${CI_WEST_TOPDIR_RC:-0}"
-fi
-if [ "$(basename "$0")" = west ] && [ "${1:-}" = list ]; then
-	# ci/west-update-parallel.sh asks for the project list before it fans out.
-	# Without an answer the parallel path dies with 'west manifest has no active
-	# projects', so the stub answers it either way and the contract can assert
-	# both the single-job and the parallel command lines.
-	printf '%s\n' 'manifest|darling-workspace' 'darling|darling' \
-		'darlingserver|darling/src/external/darlingserver'
-	exit 0
-fi
-if [ "$(basename "$0")" = west ] && {
-	[[ "$*" == *"--bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal"* ]] ||
-	[[ "$*" == *"rootless_prefix_initialization_guest"* ]] ||
-	[[ "$*" == *"rootless_prebuilt_macho_regression"* ]] ||
-	[[ "$*" == *"name:select_fdset_guest_prebuilt"* ]] ||
-	[[ "$*" == *"--guest-macho-validation-group"* ]]
-}; then
-	[ "${WEST_TEST_FORBID_GUEST_TOOLCHAIN:-}" = 1 ] || {
-		echo 'no-CLT smoke command did not set WEST_TEST_FORBID_GUEST_TOOLCHAIN=1' >&2
-		exit 1
-	}
-fi
-if [ "$(basename "$0")" = west ] && [[ " $* " == *" --bootstrap-runtime-profile homebrew-guest-toolchain-provisioning "* ]]; then
-	prefix=""
-	while (($#)); do
-		if [ "$1" = --prefix ] && [ $# -ge 2 ]; then
-			prefix="$2"
-			break
-		fi
-		shift
-	done
-	if [ -n "$prefix" ]; then
-		mkdir -p "$prefix/Library/Developer/CommandLineTools/usr/bin" \
-			"$prefix/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
-		touch "$prefix/Library/Developer/CommandLineTools/usr/bin/clang"
-		chmod +x "$prefix/Library/Developer/CommandLineTools/usr/bin/clang"
-	fi
-fi
-if [ "$(basename "$0")" = west ] &&
-	[[ "$*" == *"--env darling"* && "$*" == *"--prefix"* && "$*" == *"--list"* ]]; then
-	cat <<'LIST'
-  Test  #1: darling/abort_with_payload_no_group_broadcast
-  Test  #2: darling/select_fdset_guest
-  Test  #3: darling/getattrlist_name_objtype_guest
-  Test  #4: darling/darwin_priority_guest
-  Test  #5: darling/socket_siocgifconf_guest
-  Test  #6: darling/bzero_return_register_guest
-  Test  #7: darling/sigexc_sa_restart_guest
-  Test  #8: darling/sigexc_default_resend_self_guest
-  Test  #9: darling/ulock_eintr_retry_guest
-  Test #10: darling/vchroot_pathnull_guard_guest
-  Test #11: darling/chown_ownership_guest
-  Test #12: darling/fd_guard_ebadf_guest
-  Test #13: darling/fork_checkin_signal_storm_guest
-  Test #14: darling/rootless_no_mount_guest
-LIST
-fi
-TOOL
-	chmod +x "$tmp/bin/$tool"
-done
-
-export PATH="$tmp/bin:$PATH"
-export CI_CONTRACT_LOG="$tmp/commands"
-export RUNNER_TEMP="$tmp/runner"
-export DARLING_SMOKE_PREFIX="$tmp/runner/darling-rootless-smoke"
-export DARLING_REGRESSION_PREFIX="$tmp/runner/darling-rootless-regression"
-export DARLING_CORPUS_PREFIX="$tmp/runner/darling-rootless-corpus"
-export ROOTLESS_TIER_REPO_CHILD_OUTPUT="$tmp/rootless-tier-repo-child"
-: >"$ROOTLESS_TIER_REPO_CHILD_OUTPUT"
-unset ROOTLESS_TIER_REPO
-
-# The host tier runs its whole contract registry, which costs minutes of wall
-# time and a verdict that moves with machine load. Drive the tier's own wiring
-# in a throwaway mirror instead: the mirror holds a copy of the tier and its
-# runner, and a stub for every contract the runner registers, so the tier's
-# command construction runs for real while the contracts it names do not.
-#
-# The tier refuses to run when a contract file exists that no entrypoint
-# accounts for. That census reads the live tree and runs no contract, so it
-# stays a real assertion even though the tier's commands are stubbed below.
-python3 - "$repo/ci/run-host-tier.py" "$repo/tests" <<'CENSUS'
-import importlib.util
+PYTHONDONTWRITEBYTECODE=1 python3 -B - "$repo" <<'PY'
+"""Drive real tier control flow with inert external-command boundaries."""
+import json
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-spec = importlib.util.spec_from_file_location("darling_host_tier_census", sys.argv[1])
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-unaccounted = module.unaccounted_contracts(Path(sys.argv[2]))
-if unaccounted:
-    print(
-        "host tier contract census failed: these contracts are in neither CONTRACTS "
-        "nor EXCLUDED_CONTRACTS, so nothing runs them:\n  " + "\n  ".join(unaccounted),
-        file=sys.stderr,
-    )
-    raise SystemExit(1)
-CENSUS
-host_repo="$tmp/host-tier-repo"
-host_stub_log="$tmp/host-tier-stub-commands"
-mkdir -p "$host_repo/ci"
-cp "$repo/ci/run-test-tier.sh" "$host_repo/ci/run-test-tier.sh"
-cp "$repo/ci/run-host-tier.py" "$host_repo/ci/run-host-tier.py"
-cp "$repo/ci/rootless-prefix.sh" "$host_repo/ci/rootless-prefix.sh"
-chmod +x "$host_repo/ci/run-test-tier.sh" "$host_repo/ci/run-host-tier.py"
-host_root="$(cd "$host_repo" && pwd -P)"
-export CI_CONTRACT_STUB_LOG="$host_stub_log"
-: >"$CI_CONTRACT_STUB_LOG"
-python3 - "$host_repo/ci/run-host-tier.py" >"$tmp/host-tier-registry" <<'REGISTRY'
-import importlib.util
-import sys
+source = Path(sys.argv[1])
+with tempfile.TemporaryDirectory(prefix="ci-tier-contract-") as raw:
+    state = Path(raw)
+    repo = state / "repo"
+    (repo / "ci").mkdir(parents=True)
+    (repo / "scripts").mkdir()
+    for name in ("run-test-tier.sh", "rootless-prefix.sh", "cleanup-rootless-prefixes.sh", "run-rootless-bootstrap-diagnostic.sh"):
+        shutil.copy2(source / "ci" / name, repo / "ci" / name)
+    bin_dir = state / "bin"
+    bin_dir.mkdir()
+    log = state / "commands.jsonl"
+    stub = '''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+name = Path(sys.argv[0]).name
+name = {"run-host-tier.py": "host-runner", "collect-rootless-diagnostics.sh": "collector", "west-job.sh": "job"}.get(name, name)
+args = sys.argv[1:]
+with open(os.environ["CI_CONTRACT_LOG"], "a") as out:
+    out.write(json.dumps({"name": name, "args": args, "no_clt": os.environ.get("WEST_TEST_FORBID_GUEST_TOOLCHAIN")}) + "\\n")
+def option(key):
+    return args[args.index(key) + 1] if key in args else None
+if name == "west":
+    if args[:2] == ["list", "darling"]:
+        print(os.environ["CI_SOURCE_ROOT"])
+    elif args[:1] == ["darling-bootstrap"]:
+        assert option("--runtime-root") == os.environ["DARLING_RUNTIME_ROOT"]
+        assert option("--build-dir") == os.environ["DARLING_BUILD_DIR"]
+        assert option("--prefix")
+        if os.environ.get("CI_BOOTSTRAP_RC"):
+            sys.exit(int(os.environ["CI_BOOTSTRAP_RC"]))
+        if "--guest-toolchain" in args:
+            assert os.environ.get("WEST_TEST_FORBID_GUEST_TOOLCHAIN") != "1"
+            clt = Path(option("--prefix")) / "Library/Developer/CommandLineTools"
+            (clt / "usr/bin").mkdir(parents=True)
+            (clt / "SDKs/MacOSX.sdk").mkdir(parents=True)
+            clang = clt / "usr/bin/clang"
+            clang.touch()
+            clang.chmod(0o755)
+    elif args[:1] == ["test"] and "--prefix" in args:
+        assert option("--runtime-root") == os.environ["DARLING_RUNTIME_ROOT"]
+        if "--cleanup-prefix" in args:
+            sys.exit(int(os.environ.get("CI_CLEANUP_RC", "0")))
+        assert "--workload" in args or "--guest-macho-validation-group" in args
+        if os.environ.get("CI_WORKLOAD_RC"):
+            sys.exit(int(os.environ["CI_WORKLOAD_RC"]))
+        if os.environ.get("WEST_TEST_FORBID_GUEST_TOOLCHAIN") == "1":
+            assert "--guest-toolchain" not in args
+elif name == "collector":
+    assert Path(args[1]).is_dir()
+    Path(args[0]).mkdir(parents=True, exist_ok=True)
+elif name == "strace":
+    # The observer must preserve the real bootstrap command and its status.
+    index = args.index("west")
+    sys.exit(__import__("subprocess").call(args[index:]))
+'''
+    for name in ("west", "cmake", "ctest", "strace", "host-runner", "collector", "job"):
+        path = bin_dir / name
+        path.write_text(stub)
+        path.chmod(0o755)
+    for target, tool in ((repo / "ci/run-host-tier.py", "host-runner"), (repo / "ci/collect-rootless-diagnostics.sh", "collector"), (repo / "scripts/west-job.sh", "job")):
+        target.symlink_to(bin_dir / tool)
+    runtime = state / "runtime"
+    (runtime / "bin").mkdir(parents=True)
+    (runtime / "libexec/darling").mkdir(parents=True)
+    for name in ("darling", "darlingserver"):
+        path = runtime / "bin" / name
+        path.touch()
+        path.chmod(0o755)
+    env = os.environ.copy()
+    for key in ("WEST_TEST_FORBID_GUEST_TOOLCHAIN", "DARLING_SMOKE_PREFIX", "DARLING_REGRESSION_PREFIX", "DARLING_CORPUS_PREFIX", "DARLING_TOOLCHAIN_PREFIX", "DARLING_DIAGNOSTIC_PREFIX", "GITHUB_OUTPUT"):
+        env.pop(key, None)
+    env.update(PATH=f"{bin_dir}{os.pathsep}{env['PATH']}", DW_STATE_ROOT=str(state / "owned"), DARLING_TIER_DEFER_GLOBAL_CLEANUP="0", DARLING_RUNTIME_ROOT=str(runtime), DARLING_BUILD_DIR=str(state / "build"), CI_SOURCE_ROOT=str(state / "product"), CI_CONTRACT_LOG=str(log))
 
-spec = importlib.util.spec_from_file_location("darling_host_tier_registry", sys.argv[1])
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-print("\n".join([*module.CONTRACTS, *(path for _, path, _ in module.EXPLICIT_CONTRACTS)]))
-REGISTRY
-while IFS= read -r contract; do
-	[ -n "$contract" ] || continue
-	[ -f "$repo/$contract" ] || {
-		echo "host tier registers a contract that does not exist: $contract" >&2
-		exit 1
-	}
-	mkdir -p "$host_repo/$(dirname "$contract")"
-	case "$contract" in
-		*.py)
-			cat >"$host_repo/$contract" <<'PY'
-"""Stubbed contract: record the invocation the host tier resolved, then pass."""
-import os
-import sys
+    def invoke(tier, *args, expected=0, **overrides):
+        log.write_text("")
+        child = env | overrides
+        result = subprocess.run([str(repo / "ci/run-test-tier.sh"), tier, *args], env=child, capture_output=True, text=True)
+        assert result.returncode == expected, (tier, result.returncode, result.stdout, result.stderr)
+        return [json.loads(line) for line in log.read_text().splitlines()]
 
-with open(os.environ["CI_CONTRACT_STUB_LOG"], "a", encoding="utf-8") as stream:
-    stream.write(" ".join(sys.argv) + "\n")
-raise SystemExit(0)
+    def west_calls(records, command):
+        return [row for row in records if row["name"] == "west" and row["args"][:1] == [command]]
+
+    def prefix_of(row):
+        args = row["args"]
+        return Path(args[args.index("--prefix") + 1])
+
+    def guest_calls(records):
+        return [row for row in west_calls(records, "test") if "--workload" in row["args"] or "--guest-macho-validation-group" in row["args"]]
+
+    # No installed-runtime requirement for host/native entrypoints.
+    rows = invoke("host", "--jobs", "2", DARLING_RUNTIME_ROOT="")
+    assert rows == [{"name": "host-runner", "args": ["--jobs", "2"], "no_clt": None}]
+    rows = invoke("guest-smoke")
+    boot = west_calls(rows, "darling-bootstrap")
+    assert len(boot) == 1 and "--no-build" in boot[0]["args"]
+    guests = guest_calls(rows)
+    assert [row["args"][row["args"].index("--workload") + 1] for row in guests] == ["rootless_prefix_initialization_guest", "rootless_prebuilt_macho_regression"]
+    assert all(row["no_clt"] == "1" for row in boot + guests)
+    assert len({str(prefix_of(row)) for row in boot + guests}) == 1
+    assert not prefix_of(boot[0]).exists()
+    assert not Path(str(prefix_of(boot[0])) + ".west-tier-owner").exists()
+
+    for tier in ("guest-full", "guest-macho-validation"):
+        rows = invoke(tier)
+        guests = guest_calls(rows)
+        assert len(guests) == 1
+        args = guests[0]["args"]
+        assert args[args.index("--guest-macho-validation-group") + 1] == "homebrew"
+        assert "--guest-macho-evidence-dir" in args and "--workload" not in args
+        assert all(row["no_clt"] == "1" for row in west_calls(rows, "darling-bootstrap") + guests)
+        assert not prefix_of(guests[0]).exists()
+        invoke(tier, "unexpected-selector", expected=2)
+
+    rows = invoke("guest-toolchain")
+    boot = west_calls(rows, "darling-bootstrap")[0]
+    assert boot["args"][boot["args"].index("--guest-toolchain") + 1] == "darling-command-line-tools"
+    guests = guest_calls(rows)
+    assert len(guests) == 1 and "rootless_guest_toolchain_compile_execute" in guests[0]["args"]
+    assert all(row["no_clt"] is None for row in [boot, *guests])
+    evidence_index = next(i for i, row in enumerate(rows) if row["name"] == "collector")
+    cleanup_index = next(i for i, row in enumerate(rows) if "--cleanup-prefix" in row["args"])
+    assert evidence_index < cleanup_index
+    assert not prefix_of(boot).exists()
+
+    # A fresh product install is configured stock and built/installed by bootstrap.
+    fresh = state / "new-runtime"
+    rows = invoke("guest-smoke", DARLING_RUNTIME_ROOT=str(fresh))
+    configure = next(row for row in rows if row["name"] == "cmake")
+    assert "-DCOMPONENTS=stock" in configure["args"]
+    assert f"-DCMAKE_INSTALL_PREFIX={fresh}" in configure["args"]
+    assert "--no-build" not in west_calls(rows, "darling-bootstrap")[0]["args"]
+    assert "-DCMAKE_BUILD_TYPE=Release" in configure["args"]
+    assert "-DENABLE_TESTS=ON" not in configure["args"]
+    rows = invoke("guest-full", DARLING_RUNTIME_ROOT=str(state / "regression-runtime"))
+    configure = next(row for row in rows if row["name"] == "cmake")
+    assert "-DENABLE_TESTS=ON" not in configure["args"]
+    assert "--with-test-data" in west_calls(rows, "darling-bootstrap")[0]["args"]
+
+    # Failures retain the owned prefix/evidence and preserve the original status.
+    rows = invoke("guest-smoke", expected=17, CI_WORKLOAD_RC="17")
+    failed_prefix = prefix_of(west_calls(rows, "darling-bootstrap")[0])
+    assert failed_prefix.is_dir()
+    assert any("--cleanup-prefix" in row["args"] for row in rows)
+    rows = invoke("guest-smoke", expected=1, CI_CLEANUP_RC="9")
+    assert prefix_of(west_calls(rows, "darling-bootstrap")[0]).is_dir()
+    rows = invoke("guest-smoke", expected=23, CI_BOOTSTRAP_RC="23")
+    assert not guest_calls(rows)
+    assert prefix_of(west_calls(rows, "darling-bootstrap")[0]).is_dir()
+
+    rows = invoke("guest-smoke", DARLING_TIER_DEFER_GLOBAL_CLEANUP="1")
+    assert not any("--gc" in row["args"] or row["name"] == "job" for row in rows)
+    rows = invoke("acceptance-cleanup")
+    assert any("--gc-runtime-evidence" in row["args"] for row in rows)
+    assert any(row["name"] == "job" for row in rows)
+    invoke("acceptance-cleanup", expected=2, DARLING_TIER_DEFER_GLOBAL_CLEANUP="invalid")
+    rows = invoke("guest-smoke", expected=1, DARLING_RUNTIME_ROOT="")
+    assert not rows
+    rows = invoke("guest-smoke", expected=2, DARLING_RUNTIME_ROOT="relative")
+    assert not rows
+
+    # Failure diagnostics observe the selected installation, never construct another.
+    log.write_text("")
+    result = subprocess.run([str(repo / "ci/run-rootless-bootstrap-diagnostic.sh"), str(state / "trace")], env=env | {"CI_BOOTSTRAP_RC": "27"}, capture_output=True, text=True)
+    assert result.returncode == 27, result.stderr
+    rows = [json.loads(line) for line in log.read_text().splitlines()]
+    assert any(row["name"] == "strace" for row in rows)
+    assert "--no-build" in west_calls(rows, "darling-bootstrap")[0]["args"]
+    assert any("--cleanup-prefix" in row["args"] for row in rows)
+
+    rows = invoke("macos", DARLING_TESTKIT_BUILD=str(state / "native-build"))
+    assert [row["name"] for row in rows] == ["cmake", "cmake", "ctest"]
+    assert rows[-1]["args"][-2:] == ["-L", "env:macos"]
+    rows = invoke("macos-package", str(state / "oracle"))
+    assert rows[-1]["name"] == "cmake" and rows[-1]["args"][:1] == ["--install"]
+print("PASS ci-test-tiers-contract")
 PY
-			;;
-		*)
-			cat >"$host_repo/$contract" <<'SH'
-#!/usr/bin/env bash
-# Stubbed contract: record the invocation the host tier resolved, then pass.
-printf '%s\n' "$0${1:+ $*}" >>"$CI_CONTRACT_STUB_LOG"
-exit 0
-SH
-			chmod +x "$host_repo/$contract"
-			;;
-	esac
-done <"$tmp/host-tier-registry"
-"$host_repo/ci/run-test-tier.sh" host
-while IFS= read -r contract; do
-	[ -n "$contract" ] || continue
-	grep -F -x -q "$host_root/$contract" "$host_stub_log" || {
-		echo "host tier did not run its registered contract: $contract" >&2
-		exit 1
-	}
-done <"$tmp/host-tier-registry"
-[ "$(wc -l <"$host_stub_log")" -eq "$(wc -l <"$tmp/host-tier-registry")" ] || {
-	echo 'host tier did not run each registered contract exactly once' >&2
-	exit 1
-}
-host_tier="$(sed -n '/^\thost)/,/^\tguest-smoke)/p' "$repo/ci/run-test-tier.sh")"
-printf '%s\n' "$host_tier" | grep -F -q 'exec "$root/ci/run-host-tier.py"'
-host_runner="$repo/ci/run-host-tier.py"
-for contract in \
-	run-west-patch-stack-materialize-contract.sh \
-	run-west-patch-stack-lock-first-contract.sh \
-	run-profile-composition-dependency-contract.sh \
-	run-west-patch-stack-default-cutover-contract.sh \
-	run-west-patch-stack-retirement-policy-contract.sh \
-	run-west-patch-stack-runtime-source-contract.sh \
-	run-patch-stack-immutable-oracle-contract.sh \
-	run-west-patch-stack-export-contract.sh \
-	run-patch-stack-lock-first-hosted-workflow-contract.sh \
-	run-patch-stack-migration-inventory-contract.sh
-do
-	grep -F -q "\"tests/$contract\"" "$host_runner"
-done
-grep -F -q 'default = min(8, max(1, os.cpu_count() or 1), command_count)' "$host_runner"
-grep -F -q 'return run_commands(' "$host_runner"
-grep -F -q 'else ["--materialize-profile"]' "$host_runner"
-"$repo/ci/run-test-tier.sh" guest-smoke
-deferred_log="$tmp/deferred-cleanup-commands"
-CI_CONTRACT_LOG="$deferred_log" \
-	DARLING_TIER_DEFER_GLOBAL_CLEANUP=1 \
-	"$repo/ci/run-test-tier.sh" guest-smoke
-if grep -F -q 'west test --gc --gc-runtime-evidence' "$deferred_log"; then
-	echo 'deferred guest cleanup ran global GC beside a parallel tier' >&2
-	exit 1
-fi
-CI_CONTRACT_LOG="$deferred_log" "$repo/ci/run-test-tier.sh" acceptance-cleanup
-grep -F -x -q 'west test --gc --gc-runtime-evidence' "$deferred_log"
-if DARLING_TIER_DEFER_GLOBAL_CLEANUP=invalid \
-	"$repo/ci/run-test-tier.sh" acceptance-cleanup; then
-	echo 'tier runner accepted invalid deferred-cleanup policy' >&2
-	exit 1
-fi
-"$repo/ci/run-test-tier.sh" guest-macho-validation
-if "$repo/ci/run-test-tier.sh" guest-macho-validation perf; then
-	echo 'guest Mach-O validation accepted the removed perf group' >&2
-	exit 1
-fi
-if "$repo/ci/run-test-tier.sh" guest-macho-validation invalid; then
-	echo 'guest Mach-O validation accepted an invalid group' >&2
-	exit 1
-fi
-[ -s "$ROOTLESS_TIER_REPO_CHILD_OUTPUT" ]
-grep -F -x -q "$repo" "$ROOTLESS_TIER_REPO_CHILD_OUTPUT"
-"$repo/ci/run-test-tier.sh" guest-full
-DARLING_TOOLCHAIN_PREFIX="$tmp/runner/darling-rootless-toolchain" \
-	"$repo/ci/run-test-tier.sh" guest-toolchain
-DARLING_TESTKIT_BUILD="$tmp/macos-build" "$repo/ci/run-test-tier.sh" macos
-DARLING_TESTKIT_BUILD="$tmp/package-build" \
-	"$repo/ci/run-test-tier.sh" macos-package "$tmp/oracle"
-
-grep -F -x -q 'west test --profile homebrew --env host --materialize-profile' "$tmp/commands"
-# The E-UNION host suites live in the wget-residual profile, whose chain provides
-# the behaviour they assert, so the host tier sweeps that profile too.
-grep -F -x -q 'west test --profile wget-residual --env host --materialize-profile' "$tmp/commands"
-grep -F -x -q "west test --profile homebrew --patch darling/rootless-prefix-initialization.patch --env darling --label name:(rootless_prefix_initialization_guest|rootless_prebuilt_macho_regression) --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-smoke" "$tmp/commands"
-grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-corpus --bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal --runtime-build-timeout-seconds 600" "$tmp/commands"
-grep -F -q "west test --profile homebrew --env darling --guest-macho-validation-group homebrew --guest-macho-evidence-dir $repo/.west-test/guest-macho-validation-diagnostics/homebrew/fixtures --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-corpus" "$tmp/commands"
-grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-regression --bootstrap-runtime-profile homebrew-rootless-bootstrap-minimal --runtime-build-timeout-seconds 600" "$tmp/commands"
-grep -F -q "west test --profile homebrew --env darling --guest-macho-validation-group homebrew --guest-macho-evidence-dir $repo/.west-test/guest-full-diagnostics/fixtures --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-regression" "$tmp/commands"
-full_commands="$(grep -F "$DARLING_REGRESSION_PREFIX" "$tmp/commands")"
-if printf '%s\n' "$full_commands" | grep -F -q -- '--patch'; then
-	echo 'guest-full unexpectedly selected a patch-owned source test' >&2
-	exit 1
-fi
-for forbidden in guest-c-fixture clang CommandLineTools rootless_prebuilt_macho_regression; do
-	if printf '%s\n' "$full_commands" | grep -F -q -- "$forbidden"; then
-		echo "guest-full unexpectedly referenced $forbidden" >&2
-		exit 1
-	fi
-done
-if [ -e "$DARLING_REGRESSION_PREFIX" ]; then
-	echo 'guest-full did not remove its successful fresh prefix' >&2
-	exit 1
-fi
-if grep -F -q 'perf-rootless-bootstrap-minimal' "$tmp/commands"; then
-	echo 'guest Mach-O validation unexpectedly used a perf bootstrap profile' >&2
-	exit 1
-fi
-grep -F -q 'rootless_prefix_assert_no_guest_toolchain "$tier_kind" "$prefix"' "$repo/ci/run-test-tier.sh"
-[[ "$(grep -F -c $'\t\trun_guest_macho_regression_tier' "$repo/ci/run-test-tier.sh")" -eq 2 ]]
-grep -F -q 'guest Mach-O fixture ran more than once' "$repo/west_commands/guest_macho_validation.py"
-grep -F -q 'prefix-processes.txt' "$repo/ci/collect-rootless-diagnostics.sh"
-grep -F -x -q "west test --prefix $tmp/runner/darling-rootless-toolchain --bootstrap-runtime-profile homebrew-guest-toolchain-provisioning --runtime-build-timeout-seconds 1800" "$tmp/commands"
-if grep -F -q "west test --prefix $tmp/runner/darling-rootless-toolchain --bootstrap-runtime-profile homebrew-guest-toolchain-provisioning --runtime-build-timeout-seconds 600" "$tmp/commands"; then
-	echo 'guest-toolchain unexpectedly used the smoke runtime build timeout' >&2
-	exit 1
-fi
-grep -F -x -q "west test --profile homebrew --patch darling/rootless-prefix-initialization.patch --env darling --label name:rootless_guest_toolchain_compile_execute --reuse-prefix-runtime --prefix $tmp/runner/darling-rootless-toolchain" "$tmp/commands"
-lifecycle_repo="$tmp/lifecycle-repo"
-lifecycle_bin="$tmp/lifecycle-bin"
-lifecycle_log="$tmp/lifecycle.log"
-lifecycle_prefix="$tmp/lifecycle-runner/darling-rootless-toolchain"
-mkdir -p "$lifecycle_repo/ci" "$lifecycle_repo/scripts" "$lifecycle_bin"
-cp "$repo/ci/run-test-tier.sh" "$lifecycle_repo/ci/run-test-tier.sh"
-cp "$repo/ci/rootless-prefix.sh" "$lifecycle_repo/ci/rootless-prefix.sh"
-cat >"$lifecycle_bin/west" <<'WEST'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$*" == *"--bootstrap-runtime-profile homebrew-guest-toolchain-provisioning"* ]]; then
-	prefix=""
-	while (($#)); do
-		if [[ "$1" == --prefix && $# -ge 2 ]]; then
-			prefix="$2"
-			break
-		fi
-		shift
-	done
-	mkdir -p \
-		"$prefix/Library/Developer/CommandLineTools/usr/bin" \
-		"$prefix/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
-	touch "$prefix/Library/Developer/CommandLineTools/usr/bin/clang"
-	chmod +x "$prefix/Library/Developer/CommandLineTools/usr/bin/clang"
-fi
-if [[ "$*" == *"--cleanup-prefix"* ]]; then
-	printf '%s\n' cleanup >>"$LIFECYCLE_LOG"
-fi
-WEST
-chmod +x "$lifecycle_bin/west"
-cat >"$lifecycle_repo/ci/collect-rootless-diagnostics.sh" <<'COLLECTOR'
-#!/usr/bin/env bash
-set -euo pipefail
-output="$1"
-prefix="$2"
-[[ -d "$prefix" ]] || exit 1
-mkdir -p "$output"
-printf '%s\n' evidence >>"$LIFECYCLE_LOG"
-printf 'guest evidence\n' >"$output/collector-ran"
-COLLECTOR
-chmod +x "$lifecycle_repo/ci/collect-rootless-diagnostics.sh"
-cat >"$lifecycle_repo/scripts/west-job.sh" <<'JOB'
-#!/usr/bin/env bash
-set -euo pipefail
-exit 0
-JOB
-chmod +x "$lifecycle_repo/scripts/west-job.sh"
-PATH="$lifecycle_bin:$PATH" \
-	RUNNER_TEMP="$tmp/lifecycle-runner" \
-	DARLING_TOOLCHAIN_PREFIX="$lifecycle_prefix" \
-	LIFECYCLE_LOG="$lifecycle_log" \
-	"$lifecycle_repo/ci/run-test-tier.sh" guest-toolchain
-evidence_line="$(grep -n -m 1 '^evidence$' "$lifecycle_log" | cut -d: -f1)"
-cleanup_line="$(grep -n -m 1 '^cleanup$' "$lifecycle_log" | cut -d: -f1)"
-[ -n "$evidence_line" ] && [ -n "$cleanup_line" ]
-[ "$evidence_line" -lt "$cleanup_line" ]
-[ -f "$lifecycle_repo/.west-test/rootless-toolchain-diagnostics/collector-ran" ]
-[ ! -e "$lifecycle_prefix" ]
-grep -F -x -q "cmake -S testkit -B $tmp/macos-build -DBUILD_TESTING=ON" "$tmp/commands"
-grep -F -x -q "ctest --test-dir $tmp/macos-build --output-on-failure -L env:macos" "$tmp/commands"
-grep -F -x -q "cmake --install $tmp/package-build" "$tmp/commands"
-
-arch_acceptance_workflow="$(sed -n '/^  arch-lock-first:/,/^  host:/p' "$repo/.github/workflows/test-infra.yml")"
-printf '%s\n' "$arch_acceptance_workflow" | grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'arch-lock-first'"
-if printf '%s\n' "$arch_acceptance_workflow" | grep -F -q "github.event_name == 'push'"; then
-	echo 'Arch lock-first acceptance unexpectedly has a push trigger' >&2
-	exit 1
-fi
-[ "$(printf '%s\n' "$arch_acceptance_workflow" | grep -F -c 'fetch-depth: 0')" -eq 1 ]
-printf '%s\n' "$arch_acceptance_workflow" | grep -F -q 'patch_stack_acceptance.py capture'
-
-deps_script='darling-dev/darling-workspace/ci/install-darling-build-deps.sh'
-[ "$(grep -F -c "run: $deps_script" "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
-[ "$(grep -F -c 'timeout-minutes: 30' "$repo/.github/workflows/test-infra.yml")" -ge 1 ]
-[ "$(grep -F -c 'actions/checkout@v7' "$repo/.github/workflows/test-infra.yml")" -ge 5 ]
-[ "$(grep -F -c 'actions/upload-artifact@v7' "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
-[ "$(grep -F -c 'actions/cache@v4' "$repo/.github/workflows/test-infra.yml")" -ge 1 ]
-[ "$(grep -F -c 'darling-command-line-tools-reviewed-v1-${{ runner.os }}' "$repo/.github/workflows/test-infra.yml")" -ge 1 ]
-[ "$(grep -F -c 'guest-macho-validation-diagnostics' "$repo/.github/workflows/test-infra.yml")" -ge 1 ]
-grep -F -q 'guest-clang-version.txt' "$repo/ci/collect-rootless-diagnostics.sh"
-grep -F -q 'guest-clang-origin.txt' "$repo/ci/collect-rootless-diagnostics.sh"
-[ "$(grep -F -c 'ci/run-rootless-bootstrap-diagnostic.sh' "$repo/.github/workflows/test-infra.yml")" -ge 1 ]
-[ "$(grep -F -c -- '--runtime-build-timeout-seconds 600' "$repo/ci/run-rootless-bootstrap-diagnostic.sh")" -ge 1 ]
-[ "$(grep -F -c 'ci/cleanup-rootless-prefixes.sh' "$repo/.github/workflows/test-infra.yml")" -ge 2 ]
-[ "$(grep -F -c 'cargo build --release --locked --manifest-path darling-dev/darling-debug-runner/Cargo.toml' "$repo/.github/workflows/test-infra.yml")" -eq 4 ]
-[ "$(grep -F -c 'ci/run-test-tier.sh guest-macho-validation' "$repo/.github/workflows/test-infra.yml")" -eq 1 ]
-[ "$(grep -F -c 'ci/run-test-tier.sh guest-full' "$repo/.github/workflows/test-infra.yml")" -eq 1 ]
-validation_workflow="$(sed -n '/^  macho-corpus-validation:/,/^  macho-corpus-batch-build:/p' "$repo/.github/workflows/test-infra.yml")"
-printf '%s\n' "$validation_workflow" | grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'macho-corpus-validation'"
-printf '%s\n' "$validation_workflow" | grep -F -q 'timeout-minutes: 45'
-if printf '%s\n' "$validation_workflow" | grep -F -q 'matrix:'; then
-	echo 'guest Mach-O validation unexpectedly uses a matrix' >&2
-	exit 1
-fi
-if printf '%s\n' "$validation_workflow" | grep -F -q 'matrix.group'; then
-	echo 'guest Mach-O validation unexpectedly references a matrix group' >&2
-	exit 1
-fi
-printf '%s\n' "$validation_workflow" | grep -F -q 'name: macho-corpus-validation'
-printf '%s\n' "$validation_workflow" | grep -F -q 'guest-macho-validation-runtime-evidence'
-if printf '%s\n' "$validation_workflow" | grep -F -q 'perf-rootless-bootstrap-minimal'; then
-	echo 'guest Mach-O validation workflow exposes a perf bootstrap profile' >&2
-	exit 1
-fi
-if printf '%s\n' "$validation_workflow" | grep -F -q 'homebrew-guest-toolchain-provisioning'; then
-	echo 'no-CLT validation workflow unexpectedly provisions guest toolchain' >&2
-	exit 1
-fi
-smoke_workflow="$(sed -n '/^  guest-smoke:/,/^  guest-toolchain-provisioning:/p' "$repo/.github/workflows/test-infra.yml")"
-printf '%s\n' "$smoke_workflow" | grep -F -q 'timeout-minutes: 30'
-[ "$(grep -F -c "github.event_name == 'pull_request'" "$repo/.github/workflows/test-infra.yml")" -ge 1 ]
-grep -F -q 'Scheduled run intentionally covers host only.' "$repo/.github/workflows/test-infra.yml"
-grep -F -q 'description: Run exactly one test tier' "$repo/.github/workflows/test-infra.yml"
-for tier in host guest-smoke guest-full guest-toolchain macho-corpus-validation clt-integrity macos; do
-	grep -F -q -- "- $tier" "$repo/.github/workflows/test-infra.yml" || {
-		echo "workflow_dispatch is missing tier option: $tier" >&2
-		exit 1
-	}
-done
-guest_full_workflow="$(sed -n '/^  guest-full:/,/^  guest-toolchain-provisioning:/p' "$repo/.github/workflows/test-infra.yml")"
-printf '%s\n' "$guest_full_workflow" | grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'guest-full'"
-printf '%s\n' "$guest_full_workflow" | grep -F -q 'timeout-minutes: 45'
-printf '%s\n' "$guest_full_workflow" | grep -F -q 'ci/run-test-tier.sh guest-full'
-printf '%s\n' "$guest_full_workflow" | grep -F -q 'guest-full-runtime-evidence'
-if printf '%s\n' "$guest_full_workflow" | grep -E -q 'guest-c-fixture|CommandLineTools|clang'; then
-	echo 'guest-full workflow exposes a source/toolchain test path' >&2
-	exit 1
-fi
-schedule_workflow="$(sed -n '/^  schedule:/,/^  workflow_dispatch:/p' "$repo/.github/workflows/test-infra.yml")"
-if printf '%s\n' "$schedule_workflow" | grep -F -q 'guest-full'; then
-	echo 'schedule unexpectedly includes guest-full' >&2
-	exit 1
-fi
-grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'guest-toolchain'" "$repo/.github/workflows/test-infra.yml"
-grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'macho-corpus-validation'" "$repo/.github/workflows/test-infra.yml"
-grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'clt-integrity'" "$repo/.github/workflows/test-infra.yml"
-grep -F -q "github.event_name == 'workflow_dispatch' && inputs.tier == 'macos'" "$repo/.github/workflows/test-infra.yml"
-grep -F -q 'ci/verify-clt-provenance.sh "$RUNNER_TEMP/clt-provenance"' "$repo/.github/workflows/test-infra.yml"
-grep -F -q 'ci/compare-clt-provenance.sh "$RUNNER_TEMP/clt-provenance-runs"' "$repo/.github/workflows/test-infra.yml"
-grep -F -q 'runner: [macos-14, macos-15]' "$repo/.github/workflows/test-infra.yml"
-grep -F -q 'pattern: clt-provenance-*' "$repo/.github/workflows/test-infra.yml"
-grep -F -q 'actions/upload-artifact@v7' "$repo/.github/workflows/test-infra.yml"
-clt_integrity_workflow="$(sed -n '/^  clt-integrity:/,/^  macos-package:/p' "$repo/.github/workflows/test-infra.yml")"
-if printf '%s\n' "$clt_integrity_workflow" | grep -F -q 'actions/cache@'; then
-	echo 'CLT integrity job unexpectedly restores a cache' >&2
-	exit 1
-fi
-for evidence_path in provenance.txt provenance.tsv darling-catalog-response.json darling-catalog-http-headers.txt http-headers signatures; do
-	printf '%s\n' "$clt_integrity_workflow" | grep -F -q "/clt-provenance/$evidence_path" || {
-		echo "CLT integrity artifact omits $evidence_path" >&2
-		exit 1
-	}
-done
-if printf '%s\n' "$clt_integrity_workflow" | grep -F -q '/clt-provenance/packages'; then
-	echo 'CLT integrity artifact must not contain downloaded packages' >&2
-	exit 1
-fi
-! grep -F -q 'status = "PASS"' "$repo/ci/verify_clt_provenance.py"
-! grep -F -q 'return "PASS"' "$repo/ci/verify_clt_provenance.py"
-! grep -F -q "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'" "$repo/.github/workflows/test-infra.yml"
-! grep -F -q 'actions/checkout@v4' "$repo/.github/workflows/test-infra.yml"
-! grep -F -q $'\t\texec west test --profile homebrew --patch' "$repo/ci/run-test-tier.sh"
-for package in libfuse-dev libx11-dev libcairo2-dev libxrandr-dev libfreetype6-dev strace; do
-	grep -F -q "$package" "$repo/ci/install-darling-build-deps.sh"
-done
-
-python3 -B "$repo/tests/west_test_contracts/native_artifact_contract.py"
-
-"$repo/tests/run-rootless-prefix-contract.sh"
-"$repo/tests/run-rootless-cleanup-contract.sh"
-"$repo/tests/run-clt-provenance-contract.sh"
-
-: >"$tmp/commands"
-# The bootstrap asserts on command lines, so the ambient DARLING_WEST_UPDATE_JOBS
-# must not decide whether this contract passes: CI exports a parallel value, and
-# with it ci/west-update-parallel.sh takes the fan-out path and never records a
-# bare 'west update'. Pin the single-job path here, then drive the parallel path
-# explicitly - it is the one the CI environment actually uses.
-CI_WEST_TOPDIR_RC=1 DARLING_WEST_UPDATE_JOBS=1 "$repo/ci/bootstrap-west.sh"
-grep -F -x -q "west init -l $repo" "$tmp/commands"
-grep -F -x -q 'west update' "$tmp/commands"
-
-: >"$tmp/commands"
-DARLING_WEST_UPDATE_JOBS=4 "$repo/ci/bootstrap-west.sh"
-grep -F -x -q 'west list -f {name}|{path}' "$tmp/commands"
-grep -F -x -q 'west update darling' "$tmp/commands"
-# The worker is handed the project name from `west list`, not its path, so this
-# is the line a fan-out of the nested project records.
-grep -F -x -q 'west update darlingserver' "$tmp/commands"
-
-printf 'PASS ci-test-tiers-contract\n'

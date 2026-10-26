@@ -5,8 +5,8 @@ data:
 
 * ``diag: guarded`` fixtures run without a bundle directory and print their
   verdict only in the job log, so an empty bundle listing read as "did not run".
-* A selected test missing from the log's deploy sequence read as "dropped"; it
-  was simply later in the profile's execution order, which nothing stated.
+* A selected test missing from the log's run sequence read as "dropped"; it
+  was simply later in the declaration order, which nothing stated.
 * The bundle root is ``<workspace-parent>/darling-debug``, and nothing printed
   it, so a rollup that scanned the manifest sibling reported tests as never run.
 
@@ -44,7 +44,7 @@ def run() -> None:
     assert len(plan) == 2, plan
     assert "3 test(s)" in plan[0], plan
     assert "first, second, third" in plan[0], (
-        "the plan must state the execution order, which is profile order"
+        "the plan must state the declared workload execution order"
     )
     assert "/evidence/root" in plan[1], (
         "the plan must name the resolved diagnostic bundle root"

@@ -58,8 +58,7 @@ def main() -> int:
         # bundle appears, and the message says what the flag actually means.
         refused = run([
             "--dry-run",
-            "--profile", "homebrew",
-            "--label", "name:progress_classifier$",
+            "--workload", "progress_classifier",
             "--bundle-root", str(bundles),
         ])
         assert refused.returncode != 0, refused.stdout + refused.stderr

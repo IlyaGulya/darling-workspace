@@ -39,15 +39,16 @@
  *                  call-deferred site=doWork-parked ... number=16 ...
  *                and must NOT show a `plane-deferred-completion` for it.
  *
- * Build: guest Mach-O with the Darling build's own cross-toolchain; see
- * tests/run-plane-deferred-arm-contract.sh (--build-dir extracts the compile
- * and link commands from the build's ninja graph; no product file changes).
+ * Build: guest Mach-O compiled inside the selected ordinary Darling runtime
+ * using explicitly provisioned CommandLineTools; see
+ * tests/run-plane-deferred-arm-contract.sh. No host cross-toolchain replay.
  */
 
 #include <errno.h>
 #include <fcntl.h>
 #include <mach/mach.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

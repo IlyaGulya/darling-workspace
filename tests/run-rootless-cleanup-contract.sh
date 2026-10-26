@@ -5,7 +5,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
 
-export RUNNER_TEMP="$tmp/runner"
+export DW_STATE_ROOT="$tmp/state"
 export ROOTLESS_TIER_REPO="$repo"
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/west" <<'WEST'

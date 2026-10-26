@@ -10,7 +10,7 @@ must force a real execution and say so.
 The last section runs the real metadata loop (``DarlingTest._run_metadata_tests``
 with the real ``_test_invocation``) against a host test, so the behaviour the
 acceptance run depends on - a second identical run reports cached and does not
-execute, a changed asset or a changed runtime profile executes again - is proved
+execute, a changed asset or a changed installed artifact executes again - is proved
 on the loop that dispatches tests, not on a copy of it. The fixture runner and
 the prefix machinery are stubbed, so no Darling prefix is needed or started.
 
@@ -63,6 +63,7 @@ import test_stock_stack_cache  # noqa: E402
 import test_verdict_cache as verdicts  # noqa: E402
 from test_store import canonical_digest  # noqa: E402
 from test import DarlingTest  # noqa: E402
+from runtime_install import InstalledRuntime
 
 ARM_ENV = "WEST_TEST_VERDICT_CONTRACT_ARM"
 DEFAULT = object()
@@ -83,7 +84,6 @@ GUEST_TEST = {
     "compile-flags": ["-std=gnu11", "-Wall", "-Werror"],
     "guest-env-vars": {"RING_FD_MODE": "inherit"},
     "requires": ["darling-prefix", "homebrew-lz4"],
-    "runtime-profile": "homebrew-ring-on",
     "timeout-seconds": 120,
 }
 
@@ -97,39 +97,17 @@ REUSABLE_GUEST_TEST = {
 }
 
 RUNTIME = {
-    "profile": "homebrew-ring-on",
-    "identity": {
-        "schema": 2,
-        "profile": "homebrew-ring-on",
-        "source-profile": "ring-comparison",
-        "source-lock-sha256": "a" * 64,
-        "source-commits": {"darling": "b" * 40, "darlingserver": "c" * 40},
-        "patchsets": [
-            {
-                "profile": "ring-comparison",
-                "sha256": "d" * 64,
-                "patches": [
-                    {
-                        "module": "darlingserver",
-                        "path": "ring-comparison/darlingserver/ring.patch",
-                        "source-base": "e" * 40,
-                        "source-commit": "f" * 40,
-                        "sha256sum": "0" * 64,
-                    }
-                ],
-            }
-        ],
-        "runtime-manifest-sha256": "1" * 64,
-        "runtime-profile-definition-sha256": "2" * 64,
-        "launcher-sha256": "3" * 64,
-    },
-    "proof": {
-        "source-modules": ["darling"],
-        "runtime-artifacts": [{"build-targets": ["darlingserver"]}],
-        "cmake-defines": {"DARLING_RING_TRANSPORT": "ON"},
-        "launcher-env": {"DARLING_RING_TRANSPORT": "1"},
-    },
+    "schema": 1,
+    "source": {"darling": "b" * 40},
+    "artifacts": [{"path": "bin/darling", "sha256": "3" * 64}],
+    "build": {"configuration": {"DARLING_RING_TRANSPORT": "ON"}, "cache_sha256": "4" * 64},
 }
+
+
+def installed_runtime(work: Path, identity=DEFAULT):
+    root = work / "installed-runtime"
+    return InstalledRuntime(root, root / "bin/darling", root / "libexec/darling",
+                            copy.deepcopy(RUNTIME) if identity is DEFAULT else identity)
 
 STACK = {
     "layout": 1,
@@ -328,24 +306,24 @@ def check_invalidation(work: Path) -> None:
             lambda: {"invocation": dict(inv, ok_marker="RING_FD_OTHER_OK")},
         ),
         (
-            "a source revision in the runtime identity",
+            "recorded source provenance in the installed receipt",
             lambda: {
                 "runtime": _mutated(
-                    RUNTIME, ["identity", "source-commits", "darlingserver"], "9" * 40
+                    RUNTIME, ["source", "darling"], "9" * 40
                 )
             },
         ),
         (
-            "a patchset digest in the runtime identity",
+            "an installed executable digest",
             lambda: {
-                "runtime": _mutated(RUNTIME, ["identity", "patchsets", 0, "sha256"], "8" * 64)
+                "runtime": _mutated(RUNTIME, ["artifacts", 0, "sha256"], "8" * 64)
             },
         ),
         (
-            "a runtime build define",
+            "recorded normal CMake configuration",
             lambda: {
                 "runtime": _mutated(
-                    RUNTIME, ["proof", "cmake-defines", "DARLING_RING_TRANSPORT"], "OFF"
+                    RUNTIME, ["build", "configuration", "DARLING_RING_TRANSPORT"], "OFF"
                 )
             },
         ),
@@ -416,6 +394,7 @@ def check_unkeyable(work: Path) -> None:
 
     scenario = build_scenario(work)
     assert scenario.identity() is not None
+    assert scenario.identity(runtime=None) is None, "unknown installed identity must not reuse a guest verdict"
     # A CTest binding resolves no test asset bytes on the host.
     assert (
         scenario.identity(
@@ -723,6 +702,7 @@ class Harness(DarlingTest):
         self.output: list[str] = []
         self.executions = 0
         self.result_rc = result_rc
+        self._runtime = installed_runtime(work)
 
     def inf(self, message):
         self.output.append(str(message))
@@ -768,268 +748,67 @@ def kill_switch(value: str = "off"):
     return with_environ({"WEST_TEST_VERDICT_CACHE": value})
 
 
-GUEST_PATCH = {"path": "darling/homebrew-prefix-tooling.patch", "module": "darling"}
-
-PROFILE_DEFINITION = """\
-runtime-profiles:
-  homebrew-ring-on:
-    source-profile: ring-comparison
-    source-module: darling
-    source-modules:
-    - darling
-    cmake-defines:
-      DARLING_RING_TRANSPORT: true
-    launcher-env:
-      DARLING_ROOTLESS: '1'
-    runtime-artifacts:
-    - module: darling
-      build-targets: [darlingserver]
-      deploy: [usr/libexec/darling/darlingserver]
-"""
-
-PATCHSET = """\
-version: 1
-description: fabricated profile for the verdict cache contract
-patches:
-  - path: darling/ring-fd-ownership.patch
-    module: darling
-    source-branch: fix/ring-fd-ownership
-    source-base: 9980737fcbfdd37f24118ae6b2ad26046f157f1a
-    source-commit: 9ef131b2de45be69cdac0fb8c491a73e670b2e9e
-    sha256sum: 64b3f523f70ca7427c3c961a5da72632685536345e9329307824720179ac4d45
-"""
-
-
-def _commit(repo: Path, message: str) -> str:
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.email=contract@example.invalid",
-            "-c",
-            "user.name=verdict-contract",
-            "commit",
-            "--allow-empty",
-            "-q",
-            "-m",
-            message,
-        ],
-        cwd=repo,
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+GUEST_PATCH = {"path": "guest-cache-contract", "module": "darling"}
 
 
 def prepare_guest_workspace(work: Path, harness=Harness) -> Harness:
-    """Create the project, prefix and metadata a guest runtime identity reads."""
+    """Create owned fixture assets and writable state, not a runtime provider."""
 
-    manifest = work / "manifest"
-    (manifest / "testkit").mkdir(parents=True)
-    (manifest / "testkit" / "runtime-profiles.yml").write_text(PROFILE_DEFINITION)
-    profile = manifest / "patches" / "ring-comparison"
-    profile.mkdir(parents=True)
-    (profile / "patches.yml").write_text(PATCHSET)
-    (manifest / "west.yml").write_text("manifest:\n  version: 0.13\n")
-
+    (work / "manifest").mkdir(parents=True)
     project = work / "darling-workspace"
     (project / "tests").mkdir(parents=True)
-    (project / "tests" / Path(ASSET).name).write_text("int main(void) { return 0; }\n")
-
-    dserver = work / "darling" / "src" / "external" / "darlingserver"
-    (dserver / "tools").mkdir(parents=True)
-    (dserver / "tools" / "darling-stat").write_text("#!/bin/sh\nexit 0\n")
-    subprocess.run(
-        ["git", "init", "-q"],
-        cwd=work / "darling",
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    _commit(work / "darling", "baseline")
-
+    (project / ASSET).write_text("int main(void) { return 0; }\n")
+    dserver = work / "darling/src/external/darlingserver/tools"
+    dserver.mkdir(parents=True)
+    (dserver / "darling-stat").write_text("#!/bin/sh\nexit 0\n")
     prefix = work / "prefix"
-    (prefix / "bin").mkdir(parents=True)
-    (prefix / "bin" / "darling").write_text("#!/bin/sh\nexit 0\n")
+    prefix.mkdir()
     return harness(work, prefix=prefix)
 
 
 def check_guest_runtime_identity(work: Path) -> None:
-    """A guest test is keyed on the runtime, the stock stack and the toolchain."""
+    """Guest reuse follows one immutable installed receipt, stack and toolchain."""
 
     harness = prepare_guest_workspace(work)
     test = dict(GUEST_TEST)
     invocation = harness._test_invocation(GUEST_PATCH, test)
     identity = harness._metadata_verdict_identity(GUEST_PATCH, test, invocation)
-    assert identity is not None, "a guest test with a declared provider must be keyable"
-    # A test that consumes the stock stack IS the from-source measurement: the
-    # receipt checks that prove the build cannot tell a freshly built keg from a
-    # skipped one, so its verdict may never stand in for the run.
-    assert not harness._metadata_verdict_cacheable(test, invocation), (
-        "a from-source replay must always execute; a reused verdict would make "
-        "the acceptance claim vacuous"
-    )
-    reusable_invocation = harness._test_invocation(GUEST_PATCH, REUSABLE_GUEST_TEST)
-    assert harness._metadata_verdict_cacheable(
-        dict(REUSABLE_GUEST_TEST), reusable_invocation
-    ), "a guest test that is not the from-source measurement stays reusable"
-    # A real prefix retains the profile that provisioned it, which is never the
-    # profile the test deploys; the identity has to survive that or every test
-    # that consumes the stock stack is uncacheable. This is the shape that broke
-    # reuse: the marker names the bootstrap provider, the test names the ring
-    # profile, and asking under the deployed name yields no identity at all.
-    retained = work / "retained-prefix"
-    (retained / "bin").mkdir(parents=True)
-    (retained / "bin" / "darling").write_text("#!/bin/sh\nexit 0\n")
-    fingerprint = {"launcher-sha256": "e" * 64, "patchsets": []}
-    (retained / ".west-runtime-profile.json").write_text(
-        json.dumps(
-            {
-                "schema": 2,
-                "profile": "homebrew-lz4-source",
-                "source-profile": "wget-residual",
-                "fingerprint": fingerprint,
-            }
-        )
-    )
-    retained_harness = Harness(work, prefix=retained)
-    retained_test = dict(GUEST_TEST)
-    retained_invocation = retained_harness._test_invocation(GUEST_PATCH, retained_test)
-    retained_identity = retained_harness._metadata_verdict_identity(
-        GUEST_PATCH, retained_test, retained_invocation
-    )
-    assert retained_identity is not None, (
-        "a prefix that retains its bootstrap provider must still key the stack"
-    )
-    assert retained_identity["stack"] is not None, retained_identity
-    assert retained_identity["stack"]["runtime"] == canonical_digest(fingerprint), (
-        "the stack identity must be the retained fingerprint"
-    )
-    assert (
-        test_stock_stack_cache.stack_request(
-            prefix=retained,
-            manifest_repo=work / "manifest",
-            topdir=work,
-            profile_name="homebrew-ring-on",
-            environ={},
-        )
-        is None
-    ), "naming the deployed profile must not resolve: that is the trap this covers"
-    runtime = identity["runtime"]
-    assert runtime["profile"] == "homebrew-ring-on", runtime
-    fingerprints = runtime["identity"]
-    patchset_file = work / "manifest" / "patches" / "ring-comparison" / "patches.yml"
-    assert fingerprints["patchsets"][0]["profile"] == "ring-comparison", fingerprints
-    assert fingerprints["patchsets"][0]["sha256"] == hashlib.sha256(
-        patchset_file.read_bytes()
-    ).hexdigest(), "the runtime identity must cover the patchset digest"
-    assert fingerprints["patchsets"][0]["patches"][0]["source-commit"] == (
-        "9ef131b2de45be69cdac0fb8c491a73e670b2e9e"
-    ), fingerprints
-    assert fingerprints["source-commits"] == {
-        "darling": subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=work / "darling",
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    }, "the runtime identity must cover the source revisions"
-    assert fingerprints["launcher-sha256"] == hashlib.sha256(
-        (work / "prefix" / "bin" / "darling").read_bytes()
-    ).hexdigest(), fingerprints
-    assert runtime.get("proof", {}).get("cmake-defines") == {
-        "DARLING_RING_TRANSPORT": True
-    }, ("the runtime identity must carry the deployment proof", runtime.get("proof"))
-
-    # The stack and toolchain components are the identities the stock stack
-    # cache already computes, not a second notion of the guest state.
+    assert identity is not None
+    assert not harness._metadata_verdict_cacheable(test, invocation), "source-build measurement must execute"
+    reusable = harness._test_invocation(GUEST_PATCH, REUSABLE_GUEST_TEST)
+    assert harness._metadata_verdict_cacheable(REUSABLE_GUEST_TEST, reusable)
+    assert identity["runtime"] == harness._runtime.identity
+    assert identity["runtime"]["artifacts"] == RUNTIME["artifacts"]
     assert identity["stack"] == test_stock_stack_cache.stack_request(
-        prefix=work / "prefix",
-        manifest_repo=work / "manifest",
-        topdir=work,
-        profile_name="homebrew-ring-on",
-        environ=os.environ,
-    ), identity["stack"]
-    assert identity["toolchain"] == test_stock_stack_cache.guest_toolchain_identity(
-        work / "prefix", os.environ
+        prefix=work / "prefix", runtime=harness._runtime, environ=os.environ,
     )
-
+    assert identity["toolchain"] == test_stock_stack_cache.guest_toolchain_identity(work / "prefix", os.environ)
     key = verdicts.identity_key(identity)
 
-    def rekey() -> str:
-        current = harness._metadata_verdict_identity(
-            GUEST_PATCH,
-            test,
-            harness._test_invocation(GUEST_PATCH, test),
+    def rekey():
+        result = harness._metadata_verdict_identity(
+            GUEST_PATCH, test, harness._test_invocation(GUEST_PATCH, test),
         )
-        assert current is not None
-        return verdicts.identity_key(current)
+        assert result is not None
+        return verdicts.identity_key(result)
 
-    # A changed patchset (a different patch revision in the runtime's source
-    # profile) must not reuse the verdict recorded against the old one.
-    patchset_file.write_text(PATCHSET.replace("9ef131b2", "11111111"))
-    assert rekey() != key, "a changed runtime patchset must invalidate the verdict"
-    patchset_file.write_text(PATCHSET)
-    assert rekey() == key, "restoring the patchset must restore the key"
-
-    # A changed provider definition (a different runtime) must not either.
-    definition_file = work / "manifest" / "testkit" / "runtime-profiles.yml"
-    definition_file.write_text(
-        PROFILE_DEFINITION.replace(
-            "DARLING_RING_TRANSPORT: true", "DARLING_RING_TRANSPORT: false"
-        )
-    )
-    assert rekey() != key, "a changed runtime profile must invalidate the verdict"
-    definition_file.write_text(PROFILE_DEFINITION)
-    assert rekey() == key, "restoring the definition must restore the key"
-
-    # A CLI CMake override builds a different runtime through the same profile,
-    # so it is part of the identity the deployment and the cache share.
-    harness._runtime_cmake_define_overrides = {"DARLING_EXTRA": "1"}
-    assert rekey() != key, "a runtime CMake override must invalidate the verdict"
-    harness._runtime_cmake_define_overrides = {}
+    harness._runtime.identity["artifacts"][0]["sha256"] = "8" * 64
+    assert rekey() != key, "changed installed bytes must invalidate reuse"
+    harness._runtime = installed_runtime(work)
     assert rekey() == key
+    harness._runtime.identity["build"]["configuration"]["DARLING_RING_TRANSPORT"] = "OFF"
+    assert rekey() != key, "recorded normal build options must invalidate reuse"
+    harness._runtime = installed_runtime(work, None)
+    assert harness._metadata_verdict_identity(GUEST_PATCH, test, invocation) is None
 
-    # A guest test whose prefix identifies no runtime cannot be keyed: two
-    # prefixes are then not known to be the same runtime.
-    plain = {name: value for name, value in test.items() if name != "runtime-profile"}
-    plain_invocation = harness._test_invocation(GUEST_PATCH, plain)
-    assert (
-        harness._metadata_verdict_identity(GUEST_PATCH, plain, plain_invocation) is None
-    ), "a guest test without an identified runtime must be unkeyable"
-
-    # A retained provider marker names that runtime, which is what makes the
-    # same test keyable on a prefix that boots one.
-    marker = work / "prefix" / ".west-runtime-profile.json"
-    marker.write_text(
-        json.dumps(
-            {
-                "schema": 2,
-                "profile": "homebrew-ring-on",
-                "source-profile": "ring-comparison",
-                "fingerprint": fingerprints,
-            }
-        )
-    )
-    retained = harness._metadata_verdict_identity(
-        GUEST_PATCH, plain, plain_invocation
-    )
-    assert retained is not None, "a retained provider must key the guest test"
-    assert retained["runtime"]["profile"] is None, retained["runtime"]
-    assert retained["runtime"]["identity-digest"] is not None
-    marker.unlink()
-
-    # Finally, an advancing source revision is a different runtime.
-    _commit(work / "darling", "advance")
-    assert rekey() != key, "a new source revision must invalidate the verdict"
+    # Another prefix consuming exactly the same installation identifies the same runtime.
+    other = work / "other-prefix"
+    other.mkdir()
+    peer = Harness(work, prefix=other)
+    peer_identity = peer._metadata_verdict_identity(GUEST_PATCH, test, peer._test_invocation(GUEST_PATCH, test))
+    assert peer_identity is not None
+    assert peer_identity["runtime"] == RUNTIME
+    assert peer_identity["stack"]["runtime"] == canonical_digest(RUNTIME)
 
 
 class GuestHarness(Harness):
@@ -1040,9 +819,6 @@ class GuestHarness(Harness):
     cache keys on and which the identity checks assert directly.
     """
 
-    @contextlib.contextmanager
-    def _metadata_runtime_profile_context(self, patch, test):
-        yield None
 
     @contextlib.contextmanager
     def _resource_context(self, invocation, env):
@@ -1137,7 +913,7 @@ def check_loop_guest(work: Path) -> None:
     assert identity.get("stack") is None, (
         "a test that does not consume the stock stack must not key on one"
     )
-    assert (identity.get("runtime") or {}).get("profile") == "homebrew-ring-on", identity
+    assert identity.get("runtime") == first._runtime.identity, identity
     assert (identity.get("workload") or {}).get("class") == (
         verdicts.ACCEPTANCE_WORKLOAD
     ), identity
@@ -1175,20 +951,14 @@ def check_loop_guest(work: Path) -> None:
         "the first verdict must survive a second identity"
     )
 
-    # A changed runtime profile is a different runtime.
-    definition_file = work / "manifest" / "testkit" / "runtime-profiles.yml"
-    definition_file.write_text(
-        PROFILE_DEFINITION.replace(
-            "DARLING_RING_TRANSPORT: true", "DARLING_RING_TRANSPORT: false"
-        )
-    )
-    reprofiled = GuestHarness(work, prefix=work / "prefix")
-    assert reprofiled.run(tests) == 0, reprofiled.output
-    assert reprofiled.executions == 1, "a changed runtime profile must execute again"
-    definition_file.write_text(PROFILE_DEFINITION)
+    # A different immutable installation requires a fresh verdict.
+    changed_runtime = GuestHarness(work, prefix=work / "prefix")
+    changed_runtime._runtime.identity["artifacts"][0]["sha256"] = "8" * 64
+    assert changed_runtime.run(tests) == 0, changed_runtime.output
+    assert changed_runtime.executions == 1
     restored = GuestHarness(work, prefix=work / "prefix")
     assert restored.run(tests) == 0, restored.output
-    assert restored.executions == 0, "restoring the profile must restore reuse"
+    assert restored.executions == 0, "the original installation retains its original verdict"
 
     # The workload is part of the identity in both directions: a shortened run
     # must not inherit the acceptance verdict, and the acceptance run must not
@@ -1422,7 +1192,7 @@ def _runtime_without_proof(self, test, patch):
     definition, runtime = _metadata_runtime_identity(self, test, patch)
     if runtime is None:
         return definition, runtime
-    return definition, {name: value for name, value in runtime.items() if name != "proof"}
+    return definition, {name: value for name, value in runtime.items() if name != "artifacts"}
 
 
 def _key_guest_without_runtime(self, patch, test, invocation):
@@ -1432,7 +1202,7 @@ def _key_guest_without_runtime(self, patch, test, invocation):
     return verdicts.verdict_identity(
         test=test,
         invocation=invocation,
-        runtime=None,
+        runtime={},
         stack=None,
         toolchain=None,
         environ=os.environ,

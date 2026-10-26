@@ -17,6 +17,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import NamedTuple
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACTS = (
@@ -27,30 +29,18 @@ CONTRACTS = (
     # core_pattern, so it cannot fight run-core-contract.sh for the global setting while both run in this tier.
     "tests/run-identity-contract.sh",
     "tests/run-process-control-slot-ownership-contract.sh",
-    "tests/run-truthful-nofile-contract.sh",
     # scripts/darling-stop-reason.sh + the missing-SYMBOL form of scripts/rung-driver.py stop. Pure text
     # fixtures over real stop shapes: no prefix, no boot, no runner driven (it calls one tool, and asserts on
     # what that tool prints), so it holds the default worker weight.
     "tests/run-darling-stop-reason-contract.sh",
     "tests/run-bnns-random-generator-contract.sh",
     "tests/run-dtape-kqchan-modify-context-contract.sh",
-    "tests/run-west-patch-stack-materialize-contract.sh",
-    "tests/run-west-patch-stack-lock-first-contract.sh",
-    "tests/run-profile-composition-dependency-contract.sh",
-    "tests/run-west-patch-stack-default-cutover-contract.sh",
-    "tests/run-west-patch-stack-retirement-policy-contract.sh",
-    "tests/run-west-patch-stack-runtime-source-contract.sh",
-    "tests/run-patch-stack-immutable-oracle-contract.sh",
-    "tests/run-west-patch-stack-export-contract.sh",
-    "tests/run-patch-stack-lock-first-hosted-workflow-contract.sh",
-    "tests/run-patch-stack-migration-inventory-contract.sh",
     "tests/run-west-test-ctest-backend-contract.sh",
     "tests/run-west-test-runtime-cache-contract.sh",
     "tests/run-west-test-stock-stack-cache-contract.sh",
     "tests/run-west-test-stock-replay-iterations-contract.sh",
     "tests/run-parallel-load-contract.sh",
     "tests/run-west-test-verdict-cache-contract.sh",
-    "tests/run-west-test-applicability-preflight-diagnosis-contract.sh",
     "tests/run-west-test-metadata-run-report-contract.sh",
     "tests/run-west-test-dry-run-contract.sh",
     "tests/run-rootless-debug-cleanup-contract.sh",
@@ -65,7 +55,6 @@ CONTRACTS = (
     # silent -- every item PRESENT <path> or MISSING <reason>. Offline, like the verdict contract above: it drives
     # the harness against a stub launcher, so it needs no prefix and no guest.
     "tests/run-run-bundle-contract.sh",
-    "tests/run-west-test-runtime-source-reuse-contract.sh",
     "tests/run-west-test-metadata-invocation-identity-contract.sh",
     # Recovered: these contracts existed and passed but were listed by no tier,
     # so nothing ran them. Registered after running each one on this checkout.
@@ -75,7 +64,6 @@ CONTRACTS = (
     "tests/run-rootless-shutdown-consumer-contract.sh",
     "tests/run-rtk-exit-status-contract.sh",
     "tests/run-west-darling-build-contract.sh",
-    "tests/run-west-deploy-transaction-contract.sh",
     "tests/run-west-dev-output-contract.sh",
     "tests/run-west-doctor-output-contract.sh",
     "tests/run-west-doctor-prefix-contract.sh",
@@ -83,11 +71,7 @@ CONTRACTS = (
     "tests/run-west-dw-beads-alias-contract.sh",
     "tests/run-west-extension-help-contract.sh",
     "tests/run-west-job-contract.sh",
-    "tests/run-west-patch-explain-contract.sh",
-    "tests/run-west-patch-export-preflight-contract.sh",
-    "tests/run-west-patch-stack-preflight-contract.sh",
     "tests/run-west-prefix-repair-contract.sh",
-    "tests/run-west-profile-discovery-contract.sh",
     "tests/run-west-source-worktree-contract.sh",
     "tests/run-west-test-ctest-lifecycle-contract.sh",
     "tests/run-west-test-descriptor-transport-contract.sh",
@@ -97,24 +81,16 @@ CONTRACTS = (
     "tests/run-west-test-manifest-contract.sh",
     "tests/run-west-test-resource-provider-contract.sh",
     "tests/run-west-test-results-contract.sh",
-    "tests/run-west-test-runtime-red-contract.sh",
-    "tests/run-west-test-stacked-omission-contract.sh",
     "tests/run-west-test-worktree-cleanup-contract.sh",
     "tests/run-west-update-parallel-contract.sh",
-    "tests/run-patch-stack-mutation-contract.sh",
     "tests/run-lifecycle-explorer-contract.sh",
     "tests/run-lifecycle-fuzz-contract.sh",
     "tests/run-lifecycle-operation-boundary-contract.sh",
     "tests/run-dwdiag-runner-tests-contract.sh",
-    "tests/run-manifest-source-mode-contract.sh",
     "tests/run-dw-setup-local-contract.sh",
     "tests/run-darling-bootstrap-contract.sh",
     "tests/run-lifecycle-trace-contract.sh",
-    # Documented in AGENTS.md as focused contracts but invoked by no entrypoint.
-    # run-west-test-testkit-contract.sh is the root of a family: the guest-macho,
-    # guest-toolchain, darling-c-test, runtime-build and macho-corpus contracts
-    # are only named by it, so registering it makes all of them reachable again.
-    "tests/run-west-patch-verify-contract.sh",
+    # This entrypoint executes the focused structured-runner contract family.
     "tests/run-west-test-testkit-contract.sh",
     "tests/run-west-test-add-compat-cmake-contract.sh",
     "tests/run-west-test-gc-contract.sh",
@@ -125,12 +101,8 @@ CONTRACTS = (
     "tests/run-clt-provenance-contract.sh",
     "tests/run-rootless-cleanup-contract.sh",
     "tests/run-rootless-prefix-contract.sh",
-    # Repaired after they were found failing: the two inventory registries were
-    # stale against the tree and the archive-forensic contract had frozen on a
-    # superseded lock. All three pass now, so they belong in the sweep.
-    "tests/run-legacy-runtime-inventory-contract.sh",
+    # The namespace inventory validates current source-owned writer behavior.
     "tests/run-namespace-writer-inventory-contract.sh",
-    "tests/run-perf-archive-forensic-contract.sh",
     # Proves every declared test is selectable by an invocation the census can
     # name. Host-only and read-only: it reads fixture metadata in a temp dir and
     # never starts a prefix.
@@ -138,17 +110,6 @@ CONTRACTS = (
     # Proves the checked-in registries derive from the tree, and that a drift in
     # any of them fails naming the disagreeing field.
     "tests/run-registry-derivation-contract.sh",
-    # Proves the profile-composition derivation reports a drift against the field
-    # that disagrees and refuses to rewrite a file whose values are current. A
-    # stale receipt is caught end to end by the profile materialization the tier
-    # already runs, which is how the drift this derivation fixes was found.
-    "tests/run-profile-composition-derivation-contract.sh",
-    # Proves apply and clean name every module that is out of state in one run,
-    # and that collecting them mutates nothing.
-    "tests/run-patch-apply-module-state-contract.sh",
-    # Proves the export says which immutable bindings a series change left
-    # behind, instead of leaving them to three gates that run much later.
-    "tests/run-patch-series-bindings-contract.sh",
     # Proves the tier's own wiring: which commands it builds, in which order,
     # and with which arguments. It stubs every registered contract in a mirror
     # repo instead of driving the real tier, so it is cheap enough to run inside
@@ -156,14 +117,12 @@ CONTRACTS = (
     # itself, so a contract added to the tier is stubbed rather than executed.
     "tests/run-ci-test-tiers-contract.sh",
     # The rung-loop tooling (scripts/closure_analyze.py --declarations/--sweep,
-    # scripts/rung-driver.py, scripts/west-pin-sync.py): the manifest as the
-    # declaration source with both directions reconciled, the wave sweep's route
-    # for every missing install name, the loader-stop parse, and pin sync's
-    # one-line rewrite. Every case is synthetic - a temporary tree, manifest,
-    # payload and superproject - so the host tier can run it: it needs no Xcode
-    # tree, no prefix, no build directory, no llvm tools and no network, which
-    # is exactly why the tooling's decisions are covered here and not only where
-    # the ladder runs.
+    # scripts/rung-driver.py, scripts/west-pin-sync.py): ordinary CMake install
+    # records including payload/data/aliases, installed-file drift, every sweep
+    # route, loader-stop parsing and pin sync's one-line rewrite. Fixtures use
+    # temporary independent upper/lower roots and a superproject, not a guest
+    # launch or network. Mach-O cover CLI cases additionally use installed LLVM
+    # tools when available; the remaining behavioral decisions require no LLVM.
     "tests/run-rung-tooling-contract.sh",
 )
 
@@ -174,7 +133,6 @@ CONTRACTS = (
 EXPLICIT_CONTRACTS = (
     # Uncached on purpose: cached host evidence must not bypass a current
     # metadata and applicability review.
-    ("runtime-artifacts", "tests/west_test_contracts/runtime_artifacts_contract.py", True),
     ("native-inventory", "tests/run-native-inventory-contract.sh", False),
     ("native-artifact", "tests/west_test_contracts/native_artifact_contract.py", True),
     ("native-transport", "tests/west_test_contracts/native_transport_contract.py", True),
@@ -192,36 +150,21 @@ EXPLICIT_CONTRACTS = (
     # bytes in both layers rather than modelling either.
     ("isolation-lane", "tests/west_test_contracts/lane_contract.py", True),
     ("host-tier", "tests/west_test_contracts/host_tier_contract.py", True),
-    ("patch-check-exit", "tests/west_test_contracts/patch_check_exit_contract.py", True),
-    (
-        "perf-profile-integration",
-        "tests/west_test_contracts/perf_profile_integration_contract.py",
-        True,
-    ),
     ("runtime-proof-state", "tests/west_test_contracts/runtime_proof_state_contract.py", True),
-    ("runtime-source-cache", "tests/west_test_contracts/runtime_source_cache_contract.py", True),
     ("evidence-storage", "tests/west_test_contracts/evidence_storage_contract.py", True),
     ("evidence-retention", "tests/west_test_contracts/evidence_retention_contract.py", True),
     ("source-search", "tests/west_test_contracts/source_search_contract.py", True),
     ("macho-inspection", "tests/west_test_contracts/macho_inspection_contract.py", True),
-    # The applicability review commands and the prefix bootstrap guidance are
-    # contracts added when those two defects were repaired; both run through
-    # this interpreter.
+    ("plane-deferred-arm-oracle", "tests/west_test_contracts/plane_deferred_arm_contract.py", True),
     (
         "native-applicability-review",
         "tests/run-native-applicability-review-contract.sh",
-        True,
-    ),
-    (
-        "prefix-bootstrap-guidance",
-        "tests/west_test_contracts/prefix_bootstrap_guidance_contract.py",
         True,
     ),
     # Extracted from west_commands/test.py when it came back inside its facade
     # budget; each covers the logic that moved, so nothing moved uncovered.
     ("ctest-selection-argv", "tests/run-west-test-ctest-selection-argv-contract.sh", True),
     ("prefix-lifecycle-helpers", "tests/run-west-test-prefix-lifecycle-helpers-contract.sh", True),
-    ("runtime-plan-helpers", "tests/run-west-test-runtime-plan-helpers-contract.sh", True),
     ("cmake-fixture-backend", "tests/run-west-test-cmake-fixture-backend-contract.sh", True),
     # The facade budget is met again, so this guard belongs in the sweep rather
     # than in the exclusion list.
@@ -230,36 +173,14 @@ EXPLICIT_CONTRACTS = (
         "tests/west_test_contracts/test_facade_ownership_contract.py",
         True,
     ),
-    # Recovered from a chain nothing executed: these eleven modules were named
-    # only from inside tests/run-west-test-metadata-contract.sh, which no
-    # entrypoint ran (its one caller passed --transport-gate-probe and returned
-    # before the body), so two of them had rotted to AttributeError unseen.
-    # They are registered individually here because the chain as a whole cannot
-    # complete on a workstation without mirror access.
+    # Each current-source runner contract is registered independently, so the
+    # aggregate metadata runner need not race its lifecycle assertion against
+    # the tier's concurrent West commands.
+    ("metadata-workload-execution", "tests/west_test_contracts/metadata_workload_execution_contract.py", True),
     ("metadata-selection", "tests/west_test_contracts/selection_contract.py", True),
     (
         "metadata-display",
         "tests/west_test_contracts/metadata_display_contract.py",
-        True,
-    ),
-    (
-        "metadata-runtime-profile",
-        "tests/west_test_contracts/metadata_runtime_profile_contract.py",
-        True,
-    ),
-    (
-        "metadata-runtime-profile-red",
-        "tests/west_test_contracts/metadata_runtime_profile_red_contract.py",
-        True,
-    ),
-    (
-        "metadata-source-profile",
-        "tests/west_test_contracts/metadata_source_profile_contract.py",
-        True,
-    ),
-    (
-        "runtime-profile-current-minus",
-        "tests/west_test_contracts/runtime_profile_current_minus_contract.py",
         True,
     ),
     (
@@ -329,9 +250,12 @@ EXPLICIT_CONTRACTS = (
 # and the census below fails the tier if a contract is in neither this mapping
 # nor CONTRACTS: an unaccounted contract silently proves nothing.
 EXCLUDED_CONTRACTS = {
+    "tests/run-truthful-nofile-contract.sh":
+        "real guest-runtime inherited-limit measurement requiring an installed DARLING_RUNTIME_ROOT "
+        "and an explicitly owned, prepared DW_NOFILE_PREFIX; no source-string audit or default host coverage",
     "tests/run-plane-deferred-arm-contract.sh":
-        "guest-runtime gate requiring the built Darwin fixture and an owned, deployed Darling prefix; "
-        "the host tier supplies neither and must not substitute a host execution for that runtime oracle",
+        "guest-runtime gate requiring an immutable installed runtime, an isolated prepared guest prefix "
+        "and explicit real guest CLT (or a supplied Mach-O fixture); saved-log model analysis is separate",
     "tests/run-symbol-ownership-contract.sh":
         "artifact contract: it reads the symbol tables of BUILT or DEPLOYED libraries with llvm-nm and fails when a "
         "public concurrency primitive (os_unfair_lock_lock/unlock/trylock/lock_with_options) has two definers, which is "
@@ -341,10 +265,10 @@ EXCLUDED_CONTRACTS = {
         "arguments, as the last step of any change that touches these libraries. It exits 77 and prints UNMEASURED when "
         "it is given nothing to inspect, because an unmeasured ownership must never read as a clean one",
     "tests/run-dtape-kqchan-modify-runtime-contract.sh":
-        "guest-runtime gate: it host-builds a prebuilt guest Mach-O fixture and executes it in a "
-        "booted Darling prefix (DPREFIX) whose darlingserver is under test, then asserts the "
-        "server's own kqchan modify debug lines. The host tier has no prefix lifecycle and no guest "
-        "runtime; run it with DARLING_BUILD_DIR and DPREFIX from the prefix-backed lane",
+        "guest-runtime gate over the retained flat dtape_kqchan_modify_runtime workload: "
+        "compiles inside Darling with real CLT, executes against installed R and writable P, "
+        "and requires the fixture plus fixed server-log modify-route oracles. The host tier "
+        "owns neither a guest prefix nor its production shutdown lifecycle",
     "tests/run-dtape-mutex-ownership-contract.sh":
         "host contract over the REAL duct-tape mutex implementation (duct-tape/src/locks.c plus the "
         "libsimple archive are compiled and executed, not modelled): it pins the ownership contract "
@@ -401,19 +325,13 @@ EXCLUDED_CONTRACTS = {
         "live-thread counts. The host tier has no prefix lifecycle and no guest runtime; run it "
         "with DPREFIX from the prefix-backed lane",
     "tests/run-dtape-kqchan-fill-runtime-contract.sh":
-        "guest-runtime gate: it host-builds a prebuilt guest Mach-O fixture that registers "
-        "EVFILT_MACHPORT and receives a message through the kqchan read path, executes it in a "
-        "booted Darling prefix (DPREFIX), and asserts the server's own read-path evidence. The host "
-        "tier has no prefix lifecycle and no guest runtime; run it with DARLING_BUILD_DIR and "
-        "DPREFIX from the prefix-backed lane",
+        "guest-runtime gate over the retained flat dtape_kqchan_fill_runtime workload: "
+        "compiles inside Darling with real CLT, checks all three Mach-right cases and the "
+        "fixed server-log read route, and requires clean production shutdown. Select an "
+        "installed DARLING_RUNTIME_ROOT and owned DPREFIX; no host-built runtime substitute",
     "tests/run-west-test-metadata-contract.sh":
-        "cannot complete without the immutable mirror: its west steps materialize profiles whose "
-        "lock-first batches fetch refs/tags/patch-stack/* from the mirror. That fetch is bounded "
-        "and non-interactive now, so it fails closed with a named unreachable-mirror error rather "
-        "than hanging, but a workstation with no mirror access still cannot run the chain to the "
-        "end. Its eleven python contracts are registered individually in EXPLICIT_CONTRACTS so "
-        "they execute in the tier; this runner is what drives the remaining west and "
-        "west patch check steps where the mirror is reachable",
+        "aggregate runner: its focused behavioral contracts are registered individually here; "
+        "the aggregate's initial no-live-job assertion must not race the tier's concurrent West commands",
     "tests/run-objc4-macro-contract.sh":
         "requires OBJC4_MACRO_CONTRACT_CANDIDATE, a reviewed objc4 source tree supplied by the operator",
     "tests/run-lifecycle-real-kernel-contract.sh":
@@ -424,21 +342,18 @@ EXCLUDED_CONTRACTS = {
         "does not trace its own output. The host tier has no prefix lifecycle and no guest runtime, so "
         "it is exercised by the prefix-backed lane that owns the Ring/plane work instead",
     "tests/run-darling-lane-concurrency-contract.sh":
-        "guest-runtime gate: its subject is two Real Darling runtimes booting and running at the same "
-        "time in two isolation lanes, one of them deploying an experimental launcher and then being "
-        "stopped mid-flight while the other still passes. It needs a bootstrapped rootless prefix and "
-        "two concurrent prefix lifecycles, neither of which the host tier has. Its mechanism-level "
-        "contract (isolation-lane) is registered and runs in the tier; this one is run by the operator, "
-        "through scripts/west-job.sh, with --base <a bootstrapped prefix>",
+        "guest-runtime gate: two independent isolation lanes consume the same immutable normal "
+        "installation. Product shutdown of A must leave B running and the selected installation "
+        "unchanged. Requires a bootstrapped base, fuse-overlayfs, a systemd user scope and two "
+        "prefix lifecycles. The host tier runs the isolation-lane mechanism contract; run this gate "
+        "through scripts/west-job.sh with --runtime-root ROOT --base PREFIX",
     "tests/run-darling-lane-test-lane-contract.sh":
-        "prefix-backed interface gate: it drives the existing `west test` runner twice, at once, in two "
-        "isolation lanes, so it needs a bootstrapped rootless prefix, fuse-overlayfs, a `systemd --user` "
-        "scope and two concurrent prefix lifecycles - none of which the host tier has. Its offline mode "
-        "runs the runner's own prefix lifecycle concurrently and repeatedly; its `--guest-profile` mode "
-        "adds two concurrent profile guest selections and needs that profile's staged immutable mirrors "
-        "(`source-bundles/<profile>/*.bundle`), which this tree does not carry. Its mechanism contract "
-        "(isolation-lane) is registered and runs in the tier; this one is run by the operator through "
-        "scripts/west-job.sh with --base <a bootstrapped prefix>",
+        "prefix-backed interface gate: drives the existing west test runner in two isolation lanes "
+        "against one immutable normal installation. Requires a bootstrapped base, fuse-overlayfs, "
+        "a systemd user scope and two prefix lifecycles. --guest-workload ID additionally executes "
+        "a flat guest workload; it does not materialize sources or an alternate runtime. The host "
+        "tier runs the isolation-lane mechanism contract; run this gate through scripts/west-job.sh "
+        "with --runtime-root ROOT --base PREFIX",
     "tests/west_test_contracts/a0_typed_wake_fault_hook_contract.py":
         "argparse tool, not a self-running contract: it needs --source, the materialized "
         "darlingserver source root an operator selects",
@@ -544,7 +459,7 @@ def unaccounted_contracts(tests_dir: Path) -> list[str]:
 
     A contract counts as accounted for when this tier registers it, when
     EXCLUDED_CONTRACTS lists it or the runner of its family with a reason, when
-    CI or patch metadata names it, or when a contract this tier runs names it:
+    CI or host workload metadata names it, or when a contract this tier runs names it:
     a registered contract that invokes another contract runs that one too.
     A mention in an excluded contract does not count, since that contract does
     not run.
@@ -567,14 +482,21 @@ def unaccounted_contracts(tests_dir: Path) -> list[str]:
     sources = list((workspace / "ci").rglob("*.py"))
     sources += list((workspace / "ci").rglob("*.sh"))
     sources += list((workspace / ".github" / "workflows").glob("*"))
-    # Only real patch declarations count. Tests synthesize temporary profiles
-    # under patches/__* while they run; a fixture is not a declaration, and one
-    # of those leftovers was crediting the metadata chain for a while.
-    sources += [
-        path
-        for path in (workspace / "patches").glob("*/patches.yml")
-        if not path.parent.name.startswith("__")
-    ]
+    workload_manifest = workspace / "testkit" / "workloads.yml"
+    if workload_manifest.is_file():
+        manifest = yaml.safe_load(workload_manifest.read_text()) or {}
+        for workload in manifest.get("workloads", []):
+            if workload.get("env") != "host":
+                continue
+            if workload.get("repo", "darling-workspace") != "darling-workspace":
+                continue
+            script = workload.get("script")
+            if isinstance(script, str):
+                path = workspace / script
+                name = path.name
+                if name in contracts:
+                    accounted.add(name)
+                    sources.append(path)
     sources += [workspace / contract for contract in CONTRACTS]
     sources += [workspace / path for _, path, _ in EXPLICIT_CONTRACTS]
     scanned: set[Path] = set()
@@ -627,20 +549,16 @@ class HostCommand(NamedTuple):
 #                                                  failed in-tier at both 8 and 4 workers
 #   tests/west_test_contracts/ctest_backend_contract.py  9 subprocess sites
 #   run-west-job-contract.sh                   1  (drives a contract and supervises a job)
-# The two profile sweeps in main() each materialize a profile and run a whole
-# host metadata sweep, so they are weighted too. run-ci-test-tiers-contract.sh
-# counts 42 references to other runners in its source but is not weighted: it
-# stubs them in a mirror repository, so it costs one slot. The remaining
-# 42-invocation command, run-west-test-metadata-contract.sh, is not in this
-# table because the tier does not run it yet, and a weight keyed on a command
-# that does not exist is a declaration that silently does nothing.
+# The canonical host workload sweep can drive nested runners and needs three
+# slots. Tier-wiring contracts stub children rather than recursively running
+# the tier.
 CONTRACT_WEIGHTS: dict[str, int] = {
     "run-west-test-testkit-contract": 4,
     "dev-check": 2,
     "run-west-test-ctest-backend-contract": 2,
     "run-west-job-contract": 2,
-    "homebrew-host-metadata": 3,
-    "wget-residual-host-metadata": 3,
+    "run-west-source-worktree-contract": 2,
+    "canonical-host-workloads": 3,
 }
 
 
@@ -900,7 +818,7 @@ def run_commands(
     return 0
 
 
-def build_commands(argv: list[str], *, prematerialized: str | None) -> list[HostCommand]:
+def build_commands(argv: list[str]) -> list[HostCommand]:
     """Build the host tier's command list.
 
     Kept separate from ``main`` so a contract can check the weight table against
@@ -920,45 +838,12 @@ def build_commands(argv: list[str], *, prematerialized: str | None) -> list[Host
         _explicit_command(name, path, cacheable)
         for name, path, cacheable in EXPLICIT_CONTRACTS
     ]
-    profile_materialization = [] if prematerialized == "homebrew" else ["--materialize-profile"]
     commands.append(
         HostCommand(
-            "homebrew-host-metadata",
-            [
-                "west",
-                "test",
-                "--profile",
-                "homebrew",
-                "--env",
-                "host",
-                *profile_materialization,
-                *argv,
-            ],
+            "canonical-host-workloads",
+            ["west", "test", "--env", "host", *argv],
             False,
-            _weight_for("homebrew-host-metadata"),
-        )
-    )
-    # The E-UNION host suites assert behaviour that only the wget-residual chain
-    # provides, so they are declared in that profile and run here. Measured at
-    # about 100 seconds end to end, most of it materialization.
-    wget_materialization = (
-        [] if prematerialized == "wget-residual" else ["--materialize-profile"]
-    )
-    commands.append(
-        HostCommand(
-            "wget-residual-host-metadata",
-            [
-                "west",
-                "test",
-                "--profile",
-                "wget-residual",
-                "--env",
-                "host",
-                *wget_materialization,
-                *argv,
-            ],
-            False,
-            _weight_for("wget-residual-host-metadata"),
+            _weight_for("canonical-host-workloads"),
         )
     )
     return commands
@@ -973,9 +858,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    commands = build_commands(
-        sys.argv[1:], prematerialized=os.environ.get("WEST_PREMATERIALIZED_PROFILE")
-    )
+    commands = build_commands(sys.argv[1:])
     unknown_weights = _validate_weights(commands)
     if unknown_weights:
         print(

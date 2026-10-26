@@ -17,21 +17,21 @@ import uuid
 
 
 SCENARIOS = ("homebrew-prepare", "homebrew-preflight", "homebrew-source", "exact-capture")
-_CONTEXT_KEYS = ("prefix", "runtime-profile", "executor", "bundle-root")
+_CONTEXT_KEYS = ("prefix", "runtime-root", "executor", "bundle-root")
 
 
 def add_scenario_parsers(subparsers) -> None:
     context = subparsers.add_parser("context", help="configure/select a named local runtime context")
     context.add_argument("name")
     context.add_argument("--prefix", type=Path)
-    context.add_argument("--runtime-profile")
+    context.add_argument("--runtime-root", type=Path)
     context.add_argument("--executor", type=Path)
     context.add_argument("--bundle-root", type=Path)
     run = subparsers.add_parser("run", help="launch and observe a managed diagnostic scenario")
     run.add_argument("scenario", choices=SCENARIOS)
     run.add_argument("--context")
     run.add_argument("--prefix", type=Path)
-    run.add_argument("--runtime-profile")
+    run.add_argument("--runtime-root", type=Path)
     run.add_argument("--executor", type=Path)
     run.add_argument("--bundle-root", type=Path)
     run.add_argument("--detach", action="store_true", help="start only; reconnect with dev follow JOB")
@@ -64,7 +64,8 @@ def _context(host, args) -> dict[str, str]:
             values[key] = str(override)
     if not values["prefix"]:
         raise ValueError(f"context {name!r} has no prefix; configure it with dev context {name} --prefix PATH")
-    values["runtime-profile"] = values["runtime-profile"] or "homebrew-lz4-source"
+    from runtime_install import resolve_runtime
+    values["runtime-root"] = str(resolve_runtime(values["runtime-root"]).root)
     if not values["bundle-root"]:
         # A declared state root owns this run's output, so bundles land under it
         # rather than beside the workspace, where every lane shares one root.
@@ -74,29 +75,18 @@ def _context(host, args) -> dict[str, str]:
             if declared_bundles
             else Path(host.topdir).parent / "darling-debug"
         )
-    for key in ("prefix", "bundle-root", "executor"):
+    for key in ("prefix", "runtime-root", "bundle-root", "executor"):
         if values[key]:
             values[key] = str(Path(values[key]).expanduser().absolute())
     return {key: value for key, value in values.items() if value is not None}
 
 
 def scenario_command(scenario: str, values: dict[str, str], west_argv: list[str]) -> list[str]:
-    if scenario.startswith("homebrew-") and values["runtime-profile"] != "homebrew-lz4-source":
-        raise ValueError("Homebrew scenarios require the homebrew-lz4-source runtime profile")
-    command = [*west_argv, "test", "--prefix", values["prefix"],
-               "--bundle-root", values["bundle-root"], "--executor", values["executor"]]
-    if scenario == "homebrew-prepare":
-        command += ["--bootstrap-runtime-profile", values["runtime-profile"]]
-    elif scenario == "exact-capture":
-        command += ["--diagnostic", "exact-capture", "--with-runtime-profile", values["runtime-profile"]]
-    elif scenario == "homebrew-preflight":
-        command += ["--profile", "wget-residual", "--patch", "darling/homebrew-prefix-tooling.patch",
-                    "--env", "darling", "--reuse-prefix-runtime"]
-    elif scenario == "homebrew-source":
-        command += ["--profile", "homebrew", "--patch", "darling/rootless-homebrew-userland.patch",
-                    "--env", "darling", "--reuse-prefix-runtime"]
-    else:
+    if scenario not in SCENARIOS:
         raise ValueError(f"unknown scenario: {scenario}")
+    command = [*west_argv, "test", "--runtime-root", values["runtime-root"],
+               "--prefix", values["prefix"], "--bundle-root", values["bundle-root"],
+               "--executor", values["executor"], "--workload", scenario]
     return command
 
 
@@ -152,7 +142,7 @@ def run_scenario_action(host, args, west_argv: list[str]) -> None:
         host.inf(f"Active context: {name}; prefix={prefix}")
         return
     values = _context(host, args)
-    runner = Path(host.topdir) / "darling-debug-runner"
+    runner = root / "tools/darling-debug-runner"
     build_runner = "executor" not in values
     if build_runner:
         values["executor"] = str(runner / "target/release/darling-debug-runner")

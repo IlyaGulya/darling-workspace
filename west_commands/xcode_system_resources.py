@@ -3,30 +3,24 @@
 Xcode 26.3 ships `/Library/Developer/PrivateFrameworks/{CoreSimulator,DVTDownloads,CoreDevice,
 CoreDeviceUtilities,ROCKit}.framework` OUTSIDE its bundle, in
 `Contents/Resources/Packages/XcodeSystemResources.pkg`, which Xcode's installer unpacks into
-`/Library/Developer/...` on a real Mac. This module is the declared, repeatable route that puts the
-demanded subset of that payload at the same guest paths. It exists because the route cannot be a
-hand copy:
+`/Library/Developer/...` on a real Mac. This module is the declared, repeatable route that puts
+that authenticated payload at the same guest paths.
 
-  * the DEMANDED SUBSET is measured, not assumed. Enumerating the whole unsatisfied set of Xcode's
-    `Contents/Frameworks/IDESimulatorFoundation.framework/Versions/A/IDESimulatorFoundation` against
-    the deployed prefix (`scripts/closure_analyze.py --cover --order 8 --entry <plug-in>`) reports
-    exactly ONE strong unmet IMAGE whose provider this tree does not implement -- `DVTDownloads` --
-    and the package's own bundle inventory is the only source of it. `CoreDevice` is reached only by
-    a WEAK load command (`XCTHarness`), which dyld binds to NULL rather than stopping on, and
-    `CoreDeviceUtilities`/`ROCKit` are not reached at all. Installing the whole package would also
-    put Apple's `CoreSimulator` where this tree's own build belongs, which is forbidden: the tree
-    builds and deploys that one itself.
-  * the guest-installer shape the CommandLineTools provider uses does not fit for the same two
-    reasons: `installer(8)` has no per-member selection, and the package installs all five
-    frameworks, one of which this tree implements. So this route reads the payload itself and places
-    only the measured subset -- at the package's own paths, with the package's own modes and
-    symlinks.
-  * the INTEGRITY DISCIPLINE is the same one `west_commands/guest_toolchain.py` applies to a
-    provisioned Apple package, and it runs BEFORE anything is written: the file's size, its XAR
-    envelope boundaries, the SHA-1 of the COMPRESSED XAR TOC the envelope names, and a reviewed
-    full-file SHA-256. Every digest is compared against a pinned value; a mismatch raises and no
-    bytes are placed. Publisher authentication is a separate obligation from local hashing (the same
-    distinction the CommandLineTools provider records).
+The route is deliberately the ordinary one:
+
+  * the package is authenticated before anything is installed: its size, XAR envelope boundaries,
+    the SHA-1 of the COMPRESSED XAR TOC the envelope names, and a reviewed full-file SHA-256;
+  * the authenticated package is staged into the writable guest prefix and installed once with
+    the selected product's own guest `/usr/bin/installer`, targeting the guest root through its
+    bundled guest sudo (guest UID/GID 0, never host sudo). The package's installer owns payload
+    paths, modes, symlinks and compatibility checks. A failure is final, never retried or replaced
+    by a host-side copy;
+  * the selected runtime image is immutable and is never written. Only writable guest state is
+    touched, so a fresh prefix can be provisioned without changing the installation other runs use;
+  * the DEMANDED image is measured, not assumed: `DVTDownloads` is the only strong unmet image of
+    Xcode's IDESimulatorFoundation load closure that this tree does not implement. The provisioning
+    receipt records the payload image digest and the installed guest image digest, and the run
+    fails unless those bytes match. A guest loader check then asks the real loader for that image.
 
 The pinned digests below were computed from the local Xcode 26.3 copy named by `docs/environment.md`
 (`/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app`); this is not publisher authentication.
@@ -43,7 +37,6 @@ import shutil
 import stat
 import struct
 import subprocess
-import sys
 import tempfile
 import xml.etree.ElementTree as ElementTree
 import zlib
@@ -51,6 +44,13 @@ from pathlib import Path
 from typing import NamedTuple
 
 from west.commands import WestCommand
+
+try:
+    from .runtime_install import InstalledRuntime, RuntimeInstallationError, resolve_runtime
+    from .test_guest_execution import run_guest_shell_argv
+except ImportError:  # Loaded as a West extension module, not a package.
+    from runtime_install import InstalledRuntime, RuntimeInstallationError, resolve_runtime
+    from test_guest_execution import run_guest_shell_argv
 
 DEFAULT_XCODE_APP = "/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app"
 
@@ -408,13 +408,9 @@ def _extract_framework(package: Path, info: dict[str, object], framework: Demand
     return staged
 
 
-def _place_tree(source: Path, destination: Path) -> list[dict[str, object]]:
-    """Copy a staged framework into *destination*, replacing whatever was there."""
+def _tree_rows(destination: Path) -> list[dict[str, object]]:
+    """Describe an installed framework tree for the provisioning receipt."""
 
-    if destination.exists() or destination.is_symlink():
-        shutil.rmtree(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, destination, symlinks=True)
     rows: list[dict[str, object]] = []
     for path in sorted(destination.rglob("*")):
         relative = str(path.relative_to(destination))
@@ -428,28 +424,114 @@ def _place_tree(source: Path, destination: Path) -> list[dict[str, object]]:
     return rows
 
 
-def prefix_roots(prefix: Path) -> tuple[Path, ...]:
-    """The two runtime copies a Darling prefix keeps (the guest-visible root and libexec/darling).
+def _verify_installed_framework(
+    prefix: Path, framework: DemandedFramework, expected_sha256: str
+) -> tuple[Path, list[dict[str, object]]]:
+    destination = prefix / framework.guest_dir.lstrip("/")
+    image = destination / "Versions" / "A" / framework.name
+    if not image.is_file():
+        raise XcodeSystemResourcesError(
+            f"the guest installer did not place {framework.guest_image}", kind="install"
+        )
+    actual = _sha256(image)
+    if actual != expected_sha256:
+        raise XcodeSystemResourcesError(
+            f"installed {image} has sha256 {actual}, but the authenticated package's "
+            f"{framework.payload_image} has {expected_sha256}: the installer did not install "
+            "the reviewed payload",
+            kind="integrity",
+        )
+    return image, _tree_rows(destination)
 
-    The guest-visible root shadows the other where both carry a name, and an absolute guest path
-    resolves there; the libexec copy is the runtime closure the deploy tooling keeps. Both are
-    written so the two copies cannot drift (the same rule ios-toolchain-runtime-additions.sh
-    applies).
+
+def _run_guest_installer(
+    *,
+    runtime: InstalledRuntime,
+    prefix: Path,
+    guest_package: str,
+    guest_runner=run_guest_shell_argv,
+    log=print,
+) -> dict[str, object]:
+    """Run once as guest root through the selected installation's bundled sudo.
+
+    Darling's sudo accepts ``-n`` and sets the guest UID/GID to zero without
+    host privilege elevation. Name that installed Mach-O through SystemRoot,
+    as the Xcode license setup does, rather than selecting a prefix/host sudo.
+    Installer compatibility, authentication and runtime errors are final.
     """
 
-    return (prefix, prefix / "libexec" / "darling")
+    environment = runtime.environment(prefix)
+    sudo = runtime.system_root / "usr/bin/sudo"
+    try:
+        with sudo.open("rb") as image:
+            magic = image.read(4)
+    except OSError as error:
+        raise XcodeSystemResourcesError(
+            f"missing installed Darling guest sudo: {sudo}; host sudo will not be used",
+            kind="setup",
+        ) from error
+    if not os.access(sudo, os.X_OK) or magic not in (
+        b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe",
+        b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce",
+        b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",
+        b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca",
+    ):
+        raise XcodeSystemResourcesError(
+            f"installed Darling guest sudo is not an executable Mach-O: {sudo}; "
+            "host sudo will not be used",
+            kind="setup",
+        )
+    guest_sudo = f"/Volumes/SystemRoot{sudo}"
+    argv = (guest_sudo, "-n", "/usr/bin/installer", "-pkg", guest_package, "-target", "/")
+    log(f"xcode-system-resources: guest installer: {' '.join(argv)}")
+    result = guest_runner(
+        str(runtime.launcher),
+        prefix,
+        argv,
+        cwd=Path.cwd(),
+        env=environment,
+        timeout_seconds=900,
+        capture_output=True,
+        heartbeat_seconds=30,
+        output_line=lambda stream, line: log(f"guest installer {stream}: {line}"),
+    )
+
+    def text(value: object) -> str:
+        return value.decode(errors="replace") if isinstance(value, bytes) else str(value or "")
+
+    output = text(getattr(result, "stdout", "")) + text(getattr(result, "stderr", ""))
+    attempt = {
+        "command": list(argv),
+        "returncode": result.returncode,
+        "timed_out": result.timed_out,
+        "output_tail": output[-4000:],
+    }
+    if result.returncode != 0 or result.timed_out:
+        raise XcodeSystemResourcesError(
+            f"guest installer failed for {guest_package} "
+            f"(rc={result.returncode}, timed_out={result.timed_out}): {output[-4000:]}",
+            kind="install",
+        )
+    return {"attempts": [attempt], "command": list(argv)}
 
 
 def provision(
     *,
     prefix: Path,
+    runtime: InstalledRuntime | None = None,
+    runtime_root: str | Path | None = None,
     xcode_app: Path = Path(DEFAULT_XCODE_APP),
     package: Path | None = None,
+    guest_runner=run_guest_shell_argv,
     log=print,
 ) -> dict[str, object]:
-    """Authenticate the package, place the demanded frameworks in BOTH prefix roots, write a receipt.
+    """Install Apple's authenticated package with the product's guest installer.
 
-    Idempotent: a re-run with the same package and payload reproduces the same bytes.
+    Only writable guest state is touched. The selected runtime image is never
+    modified, and no framework bytes are placed by host-side copying: the
+    package's own installer owns payload paths, modes and symlinks. The
+    provisioning receipt is written only after the installed guest image's
+    bytes match the reviewed payload image.
     """
 
     resolved = package or (xcode_app / PACKAGE_RELATIVE_PATH)
@@ -457,17 +539,22 @@ def provision(
         raise XcodeSystemResourcesError(
             f"no Xcode system-resources package at {resolved}", kind="setup"
         )
+    if not prefix.is_dir():
+        raise XcodeSystemResourcesError(
+            f"writable guest-state prefix is not a directory: {prefix}", kind="setup"
+        )
+    try:
+        selected = runtime or resolve_runtime(runtime_root)
+        selected.environment(prefix)
+    except RuntimeInstallationError as error:
+        raise XcodeSystemResourcesError(str(error), kind="setup") from error
     info = validate_package(resolved)
     log(
         "xcode-system-resources: authenticated {path} (size {size}, compressed-TOC SHA-1 {toc_sha1}, "
         "SHA-256 {sha256})".format(**info)
     )
 
-    receipt: dict[str, object] = {
-        "package": info,
-        "frameworks": [],
-    }
-    roots = prefix_roots(prefix)
+    expected: dict[str, tuple[DemandedFramework, str, list[dict[str, object]]]] = {}
     for framework in DEMANDED_FRAMEWORKS:
         with tempfile.TemporaryDirectory(prefix="west-xcode-system-resources-") as temporary:
             staging = Path(temporary) / f"{framework.name}.framework"
@@ -485,41 +572,95 @@ def provision(
                     f"{framework.image_sha256}",
                     kind="integrity",
                 )
-            copies: list[dict[str, object]] = []
-            for root in roots:
-                destination = root / framework.guest_dir.lstrip("/")
-                rows = _place_tree(staging, destination)
-                placed = destination / "Versions" / "A" / framework.name
-                placed_sha = _sha256(placed)
-                if placed_sha != actual:
-                    raise XcodeSystemResourcesError(
-                        f"{destination} carries {placed_sha} for {framework.name}, not the payload's "
-                        f"{actual}",
-                        kind="integrity",
-                    )
-                log(
-                    f"xcode-system-resources: {framework.name} -> {destination} "
-                    f"({len(rows)} members, image sha256 {placed_sha})"
-                )
-                copies.append({"root": str(root), "path": str(destination), "members": rows,
-                               "image_sha256": placed_sha})
+            expected[framework.name] = (framework, actual, staged)
+
+    receipt: dict[str, object] = {
+        "schema": 2,
+        "package": info,
+        "runtime": {
+            "root": str(selected.root),
+            "launcher": str(selected.launcher),
+            "system_root": str(selected.system_root),
+        },
+        "installer": None,
+        "frameworks": [],
+    }
+    receipt_path = prefix / RECEIPT_NAME
+    try:
+        existing = json.loads(receipt_path.read_text())
+    except (OSError, ValueError):
+        existing = None
+    if (
+        isinstance(existing, dict)
+        and existing.get("schema") == 2
+        and existing.get("package") == info
+        and existing.get("frameworks")
+    ):
+        matching = True
+        for framework in DEMANDED_FRAMEWORKS:
+            installed = prefix / framework.guest_image.lstrip("/")
+            if not installed.is_file() or _sha256(installed) != framework.image_sha256:
+                matching = False
+                break
+        if matching:
+            log(f"xcode-system-resources: verified already-installed guest payload at {receipt_path}")
+            return existing
+
+    receipt_path.unlink(missing_ok=True)
+    staged_package: Path | None = None
+    try:
+        staged_dir = prefix / "private/var/tmp"
+        staged_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            prefix="west-xcode-system-resources-",
+            suffix=".pkg",
+            dir=staged_dir,
+            delete=False,
+        ) as output:
+            staged_package = Path(output.name)
+            with resolved.open("rb") as source:
+                shutil.copyfileobj(source, output, length=1024 * 1024)
+        validate_package(staged_package)
+        try:
+            installer = _run_guest_installer(
+                runtime=selected,
+                prefix=prefix,
+                guest_package=f"/private/var/tmp/{staged_package.name}",
+                guest_runner=guest_runner,
+                log=log,
+            )
+        except RuntimeInstallationError as error:
+            raise XcodeSystemResourcesError(str(error), kind="setup") from error
+        receipt["installer"] = installer
+        for framework in DEMANDED_FRAMEWORKS:
+            expected_framework, expected_sha, staged = expected[framework.name]
+            image, rows = _verify_installed_framework(prefix, expected_framework, expected_sha)
+            installed_sha = _sha256(image)
+            log(
+                f"xcode-system-resources: verified installed {image} "
+                f"(image sha256 {installed_sha})"
+            )
             receipt["frameworks"].append(
                 {
                     "name": framework.name,
                     "guest_image": framework.guest_image,
                     "demand": framework.demand,
-                    "payload_image_sha256": actual,
+                    "payload_image_sha256": expected_sha,
                     "payload_members": staged,
-                    "copies": copies,
+                    "installed_members": rows,
+                    "installed_image_sha256": installed_sha,
                 }
             )
+    finally:
+        if staged_package is not None:
+            staged_package.unlink(missing_ok=True)
 
     pending = prefix / f"{RECEIPT_NAME}.pending"
     with pending.open("w") as output:
         json.dump(receipt, output, indent=2, sort_keys=True)
         output.write("\n")
-    pending.replace(prefix / RECEIPT_NAME)
-    log(f"xcode-system-resources: receipt {prefix / RECEIPT_NAME}")
+    pending.replace(receipt_path)
+    log(f"xcode-system-resources: receipt {receipt_path}")
     return receipt
 
 
@@ -532,7 +673,8 @@ def guest_loader_check(
     *,
     workspace: Path,
     prefix: Path,
-    launcher: Path,
+    runtime: InstalledRuntime | None = None,
+    runtime_root: str | Path | None = None,
     source: Path | None = None,
     guest_cc: str | None = None,
     guest_cflags: str | None = None,
@@ -546,16 +688,21 @@ def guest_loader_check(
     ladder's other guest oracles. Returns the transport's combined output.
     """
 
+    if not prefix.is_dir():
+        raise XcodeSystemResourcesError(
+            f"writable guest-state prefix is not a directory: {prefix}", kind="setup"
+        )
+    try:
+        selected = runtime or resolve_runtime(runtime_root)
+        environment = selected.environment(prefix)
+    except RuntimeInstallationError as error:
+        raise XcodeSystemResourcesError(str(error), kind="setup") from error
     fixture = source or (workspace / GUEST_CHECK_SOURCE)
     transport = workspace / GUEST_CHECK_TRANSPORT
     if not fixture.is_file():
         raise XcodeSystemResourcesError(f"guest check fixture missing: {fixture}", kind="setup")
     if not transport.is_file():
         raise XcodeSystemResourcesError(f"guest check transport missing: {transport}", kind="setup")
-    environment = dict(os.environ)
-    environment["DPREFIX"] = str(prefix)
-    environment["DARLING_PREFIX"] = str(prefix)
-    environment["DARLING_LAUNCHER"] = str(launcher)
     if guest_cc:
         environment["DARLING_GUEST_CC"] = guest_cc
     if guest_cflags:
@@ -568,7 +715,7 @@ def guest_loader_check(
         "--source",
         str(fixture),
         "--launcher",
-        str(launcher),
+        str(selected.launcher),
         "--ok-marker",
         GUEST_CHECK_MARKER,
     ]
@@ -590,15 +737,20 @@ class DarlingXcodeSystemResources(WestCommand):
         super().__init__(
             "darling-xcode-system-resources",
             "Provision Apple's Xcode system-resource frameworks into a Darling prefix",
-            "Authenticate Xcode's XcodeSystemResources.pkg and place the demanded frameworks at "
-            "their guest paths in BOTH prefix roots, then check them from inside the guest",
+            "Authenticate Xcode's package, install it once through the selected guest installer "
+            "using bundled guest sudo (never host sudo), verify the demanded image, then check it "
+            "from inside the guest",
             accepts_unknown_args=False,
         )
 
     def do_add_parser(self, parser_adder):
         parser = parser_adder.add_parser(self.name, description=self.description)
         parser.add_argument(
-            "--prefix", required=True, help="Darling prefix to provision"
+            "--prefix", required=True, help="writable Darling guest-state prefix to provision"
+        )
+        parser.add_argument(
+            "--runtime-root",
+            help="selected immutable Darling installation (default: DARLING_RUNTIME_ROOT)",
         )
         parser.add_argument(
             "--xcode-app",
@@ -639,7 +791,7 @@ class DarlingXcodeSystemResources(WestCommand):
         return parser
 
     def do_run(self, args, unknown):
-        prefix = Path(args.prefix).expanduser().resolve()
+        prefix = Path(args.prefix).expanduser()
         package = Path(args.package).expanduser() if args.package else None
         try:
             if args.check_only:
@@ -654,6 +806,7 @@ class DarlingXcodeSystemResources(WestCommand):
                 return
             provision(
                 prefix=prefix,
+                runtime_root=args.runtime_root,
                 xcode_app=Path(args.xcode_app).expanduser(),
                 package=package,
                 log=self.inf,
@@ -662,10 +815,11 @@ class DarlingXcodeSystemResources(WestCommand):
                 guest_loader_check(
                     workspace=Path(args.workspace).expanduser(),
                     prefix=prefix,
-                    launcher=prefix / "bin" / "darling",
+                    runtime_root=args.runtime_root,
                     guest_cc=args.guest_cc or None,
                     guest_cflags=args.guest_cflags or None,
                     log=self.inf,
                 )
-        except XcodeSystemResourcesError as error:
-            self.die(f"{error.kind}: {error}")
+        except (XcodeSystemResourcesError, RuntimeInstallationError) as error:
+            kind = getattr(error, "kind", "setup")
+            self.die(f"{kind}: {error}")

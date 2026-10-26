@@ -5,11 +5,26 @@ output_dir="${1:?diagnostic output directory is required}"
 prefix="${2:?the tier-owned Darling prefix is required}"
 
 mkdir -p "$output_dir/prefix-files"
+if [[ -n "${DARLING_RUNTIME_ROOT:-}" ]]; then
+	receipt="$DARLING_RUNTIME_ROOT/.darling-deploy-receipt.json"
+	if [[ -f "$receipt" && ! -L "$receipt" ]]; then
+		cp -- "$receipt" "$output_dir/installed-runtime-receipt.json"
+	fi
+	{
+		for artifact in "$DARLING_RUNTIME_ROOT/bin/darling" "$DARLING_RUNTIME_ROOT/bin/darlingserver"; do
+			[[ -f "$artifact" ]] || continue
+			sha256sum -- "$artifact"
+		done
+	} >"$output_dir/installed-runtime-artifacts.sha256"
+fi
+
 
 {
 	printf 'captured-at-utc: '
 	date -u +%Y-%m-%dT%H:%M:%SZ
 	printf 'prefix: %s\n' "$prefix"
+	printf 'runtime-root: %s\n' "${DARLING_RUNTIME_ROOT:-unknown}"
+	printf 'launcher: %s\n' "${DARLING_LAUNCHER:-${DARLING_RUNTIME_ROOT:+$DARLING_RUNTIME_ROOT/bin/darling}}"
 	printf 'runner: %s\n' "${RUNNER_NAME:-unknown}"
 	printf '\n[ulimit]\n'
 	ulimit -a || true
@@ -35,10 +50,12 @@ fi
 		pid="${proc##*/}"
 		[[ -r "$proc/environ" ]] || continue
 		env_text="$(cat "$proc/environ" 2>/dev/null | tr '\0' '\n' 2>/dev/null || true)"
-		prefix_value="$(printf '%s\n' "$env_text" | sed -n 's/^DARLING_PREFIX=//p' | head -n 1)"
-		[[ "$prefix_value" == "$prefix" ]] || continue
+		if ! printf '%s\n' "$env_text" | grep -F -x -q "DPREFIX=$prefix" &&
+			! printf '%s\n' "$env_text" | grep -F -x -q "DARLING_PREFIX=$prefix"; then
+			continue
+		fi
 		printf '[pid %s]\n' "$pid"
-		printf '%s\n' "$env_text" | grep -E '^(DARLING_PREFIX|DARLING_ROOTLESS|DARLING_LAUNCHER|DARLING_SERVER)' || true
+		printf '%s\n' "$env_text" | grep -E '^(DPREFIX|DARLING_PREFIX|DARLING_RUNTIME_ROOT|DARLING_LAUNCHER|DARLING_SERVER)=' || true
 		if command -v ps >/dev/null 2>&1; then
 			ps -o user,pid,ppid,pgid,sid,stat,etime,args -p "$pid" || true
 		fi

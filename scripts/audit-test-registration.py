@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Registration/applicability audit and reviewed-applicability maintenance.
 
-OUTPUT writes the native inventory evidence: every concrete patch test binding,
+OUTPUT writes the native inventory evidence: every distinct flat workload,
 its declaration identity and the reviewed applicability it resolves to.
-`report`, `carry` and `rekey` maintain audits/native-test-applicability.json.
+`report` and `carry` maintain audits/native-test-applicability.json.
 None of them builds a product target or executes a test. Generated evidence
 belongs in OUTPUT, not in source control.
 """
@@ -17,16 +17,14 @@ import sys
 
 DEFAULT_WORKSPACE = Path(__file__).resolve().parents[1]
 APPLICABILITY_RECORD = Path("audits/native-test-applicability.json")
-REVIEW_COMMANDS = ("report", "carry", "rekey")
+REVIEW_COMMANDS = ("report", "carry")
 REVIEW_USAGE = (
-    "applicability review commands (`report` is read-only, `carry` and `rekey` rewrite the "
-    "reviewed record): report | carry --move OLD=NEW [--move ...] [--drop KEY ...] | "
-    "rekey --shift OLD=NEW [--shift ...] [--drop KEY ...]"
+    "applicability review commands (`report` is read-only, `carry` rewrites the "
+    "reviewed record): report | carry --move OLD=NEW [--move ...] [--drop KEY ...]"
 )
 REVIEW_DESCRIPTION = {
     "report": "Print every binding's declaration identity and every applicability review gap.",
     "carry": "Move reviewed applicability policy between the keys a reviewer names explicitly.",
-    "rekey": "Re-record reviewed applicability under shifted ordinals of one patch entry.",
 }
 
 
@@ -51,56 +49,50 @@ def declaration_identity(declaration):
 
     The hash covers the normalized test entry and its relative West project path,
     never the key that holds the binding, so a declaration keeps its identity when
-    a profile is renamed or an ordinal shifts and changes only when the
-    declaration itself changes.
+    a stable workload id is renamed, and changes only when the declaration's
+    semantic inputs change.
     """
+    declaration = {**declaration, "test": {
+        key: value for key, value in declaration["test"].items() if key != "id"
+    }}
     declaration_bytes = json.dumps(declaration, sort_keys=True, separators=(",", ":"),
                                    ensure_ascii=False).encode()
     return hashlib.sha256(declaration_bytes).hexdigest()
 
 
 def declared_bindings(workspace, project_paths):
-    """Normalize every concrete patches/*/patches.yml entry with its declaration identity."""
+    """Normalize the canonical flat workload catalog with distinct stable keys."""
     sys.path.insert(0, str(workspace / "west_commands"))
-    from test_manifest import load_test_profile
+    from test_manifest import load_workloads
     from test_ctest import is_ctest_binding
 
-    profiles = []
-    patches = []
+    manifest = workspace / "testkit" / "workloads.yml"
+    data = load_workloads(manifest)
     bindings = []
-    for manifest in sorted((workspace / "patches").glob("*/patches.yml")):
-        data = load_test_profile(manifest)
-        profile = manifest.parent.name
-        profiles.append({"profile": profile, "manifest": str(manifest.relative_to(workspace)),
-                         "sha256": identity(manifest), "base_profile": data.get("base-profile")})
-        for patch in data.get("patches", []):
-            owner = {"profile": profile, "patch": patch["path"], "module": patch["module"],
-                     "bead": patch.get("bead"), "source_commit": patch.get("source-commit")}
-            tests = patch.get("tests") or []
-            patches.append({**owner, "test_count": len(tests),
-                            "exception": patch.get("test-exception")})
-            for ordinal, test in enumerate(tests, 1):
-                repo = test.get("repo", patch["module"])
-                repo_root = workspace if repo in {"darling-workspace", "manifest"} else workspace.parent / project_paths.get(repo, repo)
-                script = test.get("script")
-                asset = repo_root / script if script else None
-                runner = test.get("runner") or ("ctest" if is_ctest_binding(test) else "command" if test.get("command") else "script" if script else "unspecified")
-                bindings.append({**owner, "binding_id": f"{profile}:{patch['path']}:{ordinal}",
-                                 "name": test.get("name"), "runner": runner,
-                                 "environment": test.get("env", "host"),
-                                 "coverage_tier": test.get("coverage-tier"),
-                                 "blocked": test.get("blocked"), "red": bool(test.get("red")),
-                                 "red_proof": test.get("red-proof"),
-                                 "repo": repo, "script": script,
-                                 "asset_path": str(asset) if asset else None,
-                                 "asset_exists": asset.exists() if asset else None,
-                                 "asset_sha256": identity(asset) if asset else None,
-                                 "ctest_selector": test.get("ctest-label") or test.get("ctest-name"),
-                                 "requirements": test.get("requires", []),
-                                 "identity_sha256": declaration_identity(
-                                     {"project": project_paths.get(repo, repo), "test": test}),
-                                 "normalized_test": test})
-    return {"profiles": profiles, "patches": patches, "bindings": bindings}
+    for test in data["workloads"]:
+        repo = test.get("repo", test["module"])
+        repo_root = workspace if repo in {"darling-workspace", "manifest"} else workspace.parent / project_paths.get(repo, repo)
+        script = test.get("script") or test.get("source-script") or test.get("source-file")
+        asset = repo_root / script if script else None
+        runner = test.get("runner") or ("ctest" if is_ctest_binding(test) else "command" if test.get("command") else "script" if script else "unspecified")
+        bindings.append({
+            "binding_id": test["id"], "module": test["module"], "bead": test.get("bead"),
+            "name": test["name"], "runner": runner,
+            "environment": test.get("env"), "coverage_tier": test.get("coverage-tier"),
+            "blocked": test.get("blocked"), "red_proof": test.get("red-proof"),
+            "repo": repo, "script": script, "asset_path": str(asset) if asset else None,
+            "asset_exists": asset.exists() if asset else None,
+            "asset_sha256": identity(asset) if asset else None,
+            "ctest_selector": test.get("ctest-label") or test.get("ctest-name"),
+            "requirements": test.get("requires", []),
+            "identity_sha256": declaration_identity(
+                {"project": project_paths.get(repo, repo), "test": test}),
+            "normalized_test": test,
+        })
+    return {
+        "catalog": {"manifest": str(manifest.relative_to(workspace)), "sha256": identity(manifest)},
+        "bindings": bindings,
+    }
 
 
 def reviewed_policy_groups(spec):
@@ -159,7 +151,7 @@ def inventory_command(argv):
     output = args.output.resolve()
     project_paths = west_project_paths(workspace)
     census = declared_bindings(workspace, project_paths)
-    profiles, patches, bindings = census["profiles"], census["patches"], census["bindings"]
+    bindings = census["bindings"]
 
     output.mkdir(parents=True, exist_ok=True)
     configure = subprocess.run(
@@ -207,14 +199,6 @@ def inventory_command(argv):
         row["audit_execution_status"] = "not_run"
         if row["asset_exists"] is False:
             row["asset_resolution"] = "unresolved_in_current_checkout"
-            if row["source_commit"] and row["repo"] not in {"darling-workspace", "manifest"}:
-                root = workspace.parent / project_paths.get(row["repo"], row["repo"])
-                check = subprocess.run(["git", "-C", str(root), "cat-file", "-e",
-                                        f"{row['source_commit']}:{row['script']}"],
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-                row["declared_commit_asset"] = "present" if check.returncode == 0 else "unresolved"
-                if check.returncode:
-                    row["declared_commit_asset_diagnostic"] = check.stderr.strip()
 
     if state["problems"]:
         listing = "\n".join(f"  - {gap}" for gap in state["problems"])
@@ -225,8 +209,7 @@ def inventory_command(argv):
             f"in {APPLICABILITY_RECORD}.")
 
     summary = {
-        "profiles": len(profiles), "patch_entries": len(patches), "test_bindings": len(bindings),
-        "patches_without_tests": [p for p in patches if not p["test_count"]],
+        "workloads": len(bindings), "test_bindings": len(bindings),
         "environments": dict(collections.Counter(r["environment"] for r in bindings)),
         "runners": dict(collections.Counter(r["runner"] for r in bindings)),
         "coverage_tiers": dict(collections.Counter(r["coverage_tier"] for r in bindings)),
@@ -236,10 +219,10 @@ def inventory_command(argv):
         "native_policy": dict(collections.Counter(r["native_policy"]["policy"] for r in bindings)),
         "same_source_metadata_ctest_bindings": sum(bool(r["workspace_ctest_same_source"]) for r in bindings),
     }
-    snapshot = {"scope": "All concrete patches/*/patches.yml entries normalized independently, not an expanded runtime stack. Shared fixtures remain separate patch bindings. CTest scope is the configured workspace testkit with default options; source-repo CTest builds and disabled conditional suites are not executed or exhaustively discovered. Missing assets and unresolved applicability are not silently excluded. No run verdict is inferred from metadata, labels or declarations.",
+    snapshot = {"scope": "Every source-independent workload id is normalized independently. Shared fixtures remain distinct workload bindings. CTest scope is the configured workspace testkit with default options; source-repo CTest builds and disabled conditional suites are not executed or exhaustively discovered. Missing assets and unresolved applicability are not silently excluded. No run verdict is inferred from metadata, labels or declarations.",
                 "normalizer_sha256": identity(workspace / "west_commands/test_manifest.py"),
                 "policy_sha256": identity(workspace / APPLICABILITY_RECORD),
-                "profiles": profiles, "patches": patches, "bindings": bindings,
+                "catalog": census["catalog"], "bindings": bindings,
                 "workspace_ctest": ctest_cases, "summary": summary}
     output.mkdir(parents=True, exist_ok=True)
     (output / "inventory.json").write_text(json.dumps(snapshot, indent=2) + "\n")
@@ -256,7 +239,7 @@ def review_parser(command):
                              f"{APPLICABILITY_RECORD} under the workspace")
     if command == "report":
         return parser
-    flag = "--move" if command == "carry" else "--shift"
+    flag = "--move"
     parser.add_argument(flag, dest="moves", action="append", default=[], metavar="OLD=NEW",
                         help="explicit OLD=NEW mapping: the reviewer names the keys, "
                              "the tool never guesses them")
@@ -266,7 +249,7 @@ def review_parser(command):
 
 
 def parse_moves(parser, command, arguments, drops):
-    flag = "--move" if command == "carry" else "--shift"
+    flag = "--move"
     if not arguments and not drops:
         parser.error(f"{command} needs at least one {flag} OLD=NEW or --drop KEY")
     moves = {}
@@ -288,8 +271,8 @@ def report_command(command, workspace, record_path, spec, bindings, state):
     recorded = spec["bindings"]
     document = {
         "scope": "Read-only. identity_sha256 covers the normalized test declaration and its "
-                 "relative West project path, so a binding keeps its identity when its profile "
-                 "or ordinal changes. No product build, no test execution, no record write.",
+                 "relative West project path, excluding the stable id used as its key. "
+                 "No product build, no test execution, no record write.",
         "record": display_path(record_path, workspace),
         "counts": {
             "bindings": len(bindings),
@@ -341,9 +324,6 @@ def apply_review(command, workspace, record_path, spec, bindings, moves, drops):
     # declarations, so a malformed mapping is refused even when its targets
     # already carry the review it names.
     for old, new in moves.items():
-        if command == "rekey" and old.rsplit(":", 1)[0] != new.rsplit(":", 1)[0]:
-            return refuse(f"rekey re-records a pure index shift, so {old} and {new} must be "
-                          f"ordinals of the same profile and patch entry")
         if new not in bindings_by_key:
             return refuse(f"{new} declares no test in the current tree: refusing to record an "
                           f"applicability decision for a key with no binding")

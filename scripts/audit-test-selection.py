@@ -1,41 +1,11 @@
 #!/usr/bin/env python3
-"""Read-only census of which invocation selects each declared test.
+"""Read-only census of which canonical invocation selects each flat workload.
 
-The contract census in ``ci/run-host-tier.py`` proves that every contract runner
-is registered somewhere. Nothing did the same for tests, so a profile could
-declare a test that no invocation ever selects while the declaration still read
-like coverage. West's loader scope is where that hides: ``west test --profile
-<P>`` reads tests only from ``patches/<P>/patches.yml``, ``base-profile`` never
-inherits test declarations, and a patch entry resolves to a file inside the
-profile's own directory. A declaration left in the wrong profile is therefore
-selected by nothing and reports nothing.
-
-This census enumerates every declaration with the loader West itself uses
-(``test_manifest.load_test_profile``) and asks, for each one, which invocation
-selects it:
-
-* a tier phase in ``ci/run-test-tier.sh``;
-* a host metadata sweep in ``ci/run-host-tier.py`` (the homebrew and
-  wget-residual profile sweeps);
-* a documented operator command in ``docs/test-infra.md``.
-
-Selection is evaluated with West's own selector (``select_metadata_tests``) and
-the same resolved diagnostic mode, so the census reports what ``west test``
-would select rather than a second interpretation of the metadata. Commands that
-pin nothing (``--all``, a bare ``--env``) and prefix lifecycle operations
-(``--bootstrap-runtime-profile``, ``--gc``, ``--cleanup-prefix``) are reported in
-their own classes instead of being credited with a selection. An invocation
-that names no ``--profile`` reaches declared tests only through the CTest labels
-of declarations that are registration references, which is what ``west test``
-does without a profile. A declaration that no invocation selects is listed with
-its profile, patch path, test name and the cheapest available reason, and fails
-the census with exit status 1.
-
-The census is read-only and host-only: it starts no Darling prefix, materializes
-no profile and executes no test. ``--verify-lists N`` optionally runs at most
-``N`` ``west test --list`` discovery commands to compare this census's
-per-invocation counts with West's own selection; the default scan reads files
-only.
+The census uses West's production workload loader and selector. It reads CI
+tier commands, host sweeps and documented operator commands, then attributes
+each distinct stable workload id without constructing source profiles or a
+runtime. Unselected declarations fail with their environment and selectors.
+``--verify-lists N`` optionally compares safe discovery counts with West.
 """
 
 from __future__ import annotations
@@ -51,9 +21,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "west_commands"))
-from test_ctest import is_ctest_binding
-from test_manifest import ManifestError, load_test_profile
-from test_selection import metadata_test_labels, select_metadata_tests
+from test_manifest import ManifestError, load_workloads
+from test_selection import metadata_test_labels, select_workload_tests
 
 TIER_SOURCE = "ci/run-test-tier.sh"
 SWEEP_SOURCE = "ci/run-host-tier.py"
@@ -66,17 +35,10 @@ VALUE_FLAGS = frozenset(
     {
         "--diagnostic",
         "--prefix",
-        "--prefix-profile",
-        "--fresh-prefix-from",
-        "--with-runtime-profile",
-        "--runtime-profile",
-        "--runtime-cmake-define",
-        "--bootstrap-runtime-profile",
         "--bootstrap-executable",
         "--bootstrap-syscall-trace",
         "--bootstrap-stack-sample",
         "--bootstrap-timeout-seconds",
-        "--runtime-build-timeout-seconds",
         "--ctest-timeout-seconds",
         "--guest-macho-validation-group",
         "--guest-macho-evidence-dir",
@@ -93,8 +55,8 @@ VALUE_FLAGS = frozenset(
         "--executor",
         "-j",
         "--jobs",
-        "--profile",
-        "--patch",
+        "--runtime-root",
+        "--workload",
         "--bead",
         "--env",
         "--diag",
@@ -106,8 +68,7 @@ VALUE_FLAGS = frozenset(
 # Selectors that pin what an invocation can select. An invocation naming none of
 # them selects the default suite, which proves nothing about one declaration.
 PIN_FLAGS = (
-    "--profile",
-    "--patch",
+    "--workload",
     "--bead",
     "--env",
     "--diag",
@@ -123,7 +84,6 @@ UNRESOLVED = re.compile(r"[<>]|\$\{|\$[A-Za-z_@]|\.\.\.|^\s*$")
 # Prefix lifecycle operations: they provision, clean or collect, and West
 # rejects them in combination with a metadata selection, so they select nothing.
 LIFECYCLE_FLAGS = (
-    "--bootstrap-runtime-profile",
     "--cleanup-prefix",
     "--gc",
     "--gc-runtime-evidence",
@@ -132,8 +92,8 @@ LIFECYCLE_FLAGS = (
 # ``"${@:2}"`` and friends: selectors the operator supplies at the call site.
 PASSTHROUGH = re.compile(r"\$\{@|\$\*|^\$@$")
 
-# One row of ``west test --list``: ``<patch path>: <test name> [<axes>]``.
-LISTING_ROW = re.compile(r"^\S+\.patch: \S+ \[")
+# One flat workload row from the structured runner's listing.
+LISTING_ROW = re.compile(r"^\S+: \S+ \[")
 
 
 @dataclass(frozen=True)
@@ -142,8 +102,7 @@ class Invocation:
 
     source: str
     argv: tuple[str, ...]
-    profile: str | None = None
-    patch: str | None = None
+    workloads: tuple[str, ...] = ()
     bead: str | None = None
     env: str | None = None
     diag: str | None = None
@@ -152,7 +111,6 @@ class Invocation:
     group: str | None = None
     fuzz: bool = False
     stress: bool = False
-    red_only: bool = False
     lifecycle: bool = False
 
     @property
@@ -165,29 +123,22 @@ class Invocation:
 
     @property
     def pinned(self) -> bool:
-        """Whether this command pins a selection instead of sweeping the suite.
-
-        ``--env``/``--diag`` alone are not pins: without ``--profile`` West does
-        not turn them into CTest label filters, so they select the default
-        suite rather than named declarations.
-        """
+        """Whether an invocation names a meaningful canonical selection axis."""
         return bool(
-            self.profile
-            or self.patch
+            self.workloads
             or self.bead
+            or self.env
+            or self.diag
             or self.label_pattern
             or self.submodules
             or self.group
             or self.fuzz
             or self.stress
-            or self.red_only
         )
 
     def pins(self) -> list[str]:
         named = []
         for flag, value in (
-            ("--profile", self.profile),
-            ("--patch", self.patch),
             ("--bead", self.bead),
             ("--env", self.env),
             ("--diag", self.diag),
@@ -197,63 +148,47 @@ class Invocation:
             if value:
                 named.append(f"{flag} {value}")
         named.extend(f"--submodule {value}" for value in self.submodules)
+        named.extend(f"--workload {value}" for value in self.workloads)
         if self.fuzz:
             named.append("--fuzz")
         if self.stress:
             named.append("--stress")
-        if self.red_only:
-            named.append("--red-only")
         return named
 
-    def metadata_selection(self, profile: dict) -> list[tuple[dict, dict]]:
-        """Select declarations from one profile exactly as ``west test`` would."""
-        selection = select_metadata_tests(
-            profile,
-            patch_path=self.patch,
+    def metadata_selection(self, catalog: dict) -> list[tuple[dict, dict]]:
+        """Use the same source-independent selector as ``west test``."""
+        selection = select_workload_tests(
+            catalog,
+            workload=self.workloads or None,
             bead=self.bead,
             env=self.env,
             diag=self.diag,
             label=self.label_pattern,
-            red_only=self.red_only,
             validation_group=self.group,
             resolved_diag=resolved_diag,
-            defer_ctest=True,
+            defer_ctest=False,
         )
-        return selection.selected
-
-    def matches_ctest_labels(self, labels: set[str]) -> bool:
-        """Match a declaration's labels the way the CTest backend filters them.
-
-        Without ``--profile`` West builds CTest label arguments from
-        ``--bead``/``--label``/``--submodule``/``--fuzz``/``--stress`` only; the
-        environment and diagnostic mode select a runtime group, not a case.
-        """
-        if self.group:
-            return False
-        if self.bead and f"bead:{self.bead}" not in labels:
-            return False
-        if self.fuzz and "fuzz:true" not in labels:
-            return False
-        if self.stress and "stress:true" not in labels:
-            return False
-        if self.submodules and not any(
-            f"submod:{value}" in labels or f"submod:{value.rsplit('/', 1)[-1]}" in labels
-            for value in self.submodules
-        ):
-            return False
-        if self.label_pattern:
-            matcher = re.compile(self.label_pattern)
-            if not any(matcher.search(item) for item in labels):
-                return False
-        return True
+        selected = []
+        for owner, test in selection.selected:
+            labels = metadata_test_labels(owner, test, resolved_diag)
+            if self.fuzz and "fuzz:true" not in labels:
+                continue
+            if self.stress and "stress:true" not in labels:
+                continue
+            if self.submodules and not any(
+                f"submod:{value}" in labels or f"submod:{value.rsplit('/', 1)[-1]}" in labels
+                for value in self.submodules
+            ):
+                continue
+            selected.append((owner, test))
+        return selected
 
 
 @dataclass(frozen=True)
 class Declaration:
     """One declared test, identified by where it is declared."""
 
-    profile: str
-    patch: str
+    workload: str
     name: str
     env: str
     blocked: bool
@@ -261,7 +196,7 @@ class Declaration:
 
     @property
     def shown(self) -> str:
-        return f"{self.profile} {self.patch}: {self.name} [env:{self.env}]"
+        return f"{self.workload}: {self.name} [env:{self.env}]"
 
 
 def resolved_diag(test: dict) -> str:
@@ -416,8 +351,7 @@ def parse_invocation(source: str, command: str) -> tuple[Invocation | None, str 
     invocation = Invocation(
         source=source,
         argv=tuple(tokens),
-        profile=single("--profile"),
-        patch=single("--patch"),
+        workloads=tuple(flags.get("--workload") or ()),
         bead=single("--bead"),
         env=single("--env"),
         diag=single("--diag"),
@@ -426,7 +360,6 @@ def parse_invocation(source: str, command: str) -> tuple[Invocation | None, str 
         group=single("--guest-macho-validation-group"),
         fuzz="--fuzz" in named,
         stress="--stress" in named,
-        red_only="--red-only" in named,
         lifecycle=bool(named & set(LIFECYCLE_FLAGS)),
     )
     return invocation, None
@@ -463,34 +396,24 @@ def enumerate_invocations(
     return invocations, unpinned, lifecycle, unresolved
 
 
-def load_declarations(workspace: Path) -> tuple[dict[str, dict], list[Declaration]]:
-    """Load every declared test with West's own loader."""
-    profiles: dict[str, dict] = {}
-    declarations: list[Declaration] = []
-    for manifest in sorted((workspace / "patches").glob("*/patches.yml")):
-        try:
-            profile = load_test_profile(manifest)
-        except (ManifestError, OSError) as error:
-            raise SystemExit(f"selection census: {manifest}: {error}") from error
-        name = manifest.parent.name
-        profiles[name] = profile
-        for patch in profile.get("patches") or []:
-            for test in patch.get("tests") or []:
-                if not isinstance(test, dict):
-                    continue
-                declarations.append(
-                    Declaration(
-                        profile=name,
-                        patch=patch.get("path", "?"),
-                        name=str(
-                            test.get("name") or test.get("ctest-name") or patch.get("path", "?")
-                        ),
-                        env=str(test.get("env", "host")),
-                        blocked=bool(test.get("blocked")),
-                        identity=id(test),
-                    )
-                )
-    return profiles, declarations
+def load_declarations(workspace: Path) -> tuple[dict, list[Declaration]]:
+    """Load every stable workload id through West's own catalog loader."""
+    manifest = workspace / "testkit" / "workloads.yml"
+    try:
+        catalog = load_workloads(manifest)
+    except (ManifestError, OSError) as error:
+        raise SystemExit(f"selection census: {manifest}: {error}") from error
+    declarations = [
+        Declaration(
+            workload=test["id"],
+            name=test["name"],
+            env=str(test.get("env") or "ctest"),
+            blocked=bool(test.get("blocked")),
+            identity=id(test),
+        )
+        for test in catalog["workloads"]
+    ]
+    return catalog, declarations
 
 
 def collapse(invocations: list[Invocation]) -> list[Invocation]:
@@ -499,15 +422,15 @@ def collapse(invocations: list[Invocation]) -> list[Invocation]:
     seen: set[tuple] = set()
     for invocation in invocations:
         key = (
-            invocation.profile,
-            invocation.patch,
+            invocation.workloads,
             invocation.bead,
             invocation.env,
             invocation.diag,
             invocation.label_pattern,
             invocation.submodules,
             invocation.group,
-            invocation.red_only,
+            invocation.fuzz,
+            invocation.stress,
         )
         if key in seen:
             continue
@@ -517,26 +440,16 @@ def collapse(invocations: list[Invocation]) -> list[Invocation]:
 
 
 def invocation_selection(
-    invocations: list[Invocation], profiles: dict[str, dict]
+    invocations: list[Invocation], catalog: dict
 ) -> tuple[dict[int, list[Invocation]], list[tuple[Invocation, int]]]:
     """Map every declaration identity to the invocations that select it."""
     selected: dict[int, list[Invocation]] = {}
     counts: list[tuple[Invocation, int]] = []
     for invocation in collapse(invocations):
-        found: set[int] = set()
-        if invocation.profile:
-            profile = profiles.get(invocation.profile)
-            if profile is not None:
-                found = {id(test) for _patch, test in invocation.metadata_selection(profile)}
-        else:
-            for profile in profiles.values():
-                for patch in profile.get("patches") or []:
-                    for test in patch.get("tests") or []:
-                        if not isinstance(test, dict) or not is_ctest_binding(test):
-                            continue
-                        labels = metadata_test_labels(patch, test, resolved_diag)
-                        if invocation.matches_ctest_labels(labels):
-                            found.add(id(test))
+        try:
+            found = {id(test) for _owner, test in invocation.metadata_selection(catalog)}
+        except ValueError as error:
+            raise SystemExit(f"selection census: {invocation.label}: {error}") from error
         for identity in found:
             selected.setdefault(identity, []).append(invocation)
         counts.append((invocation, len(found)))
@@ -547,44 +460,29 @@ def unselected_reason(declaration: Declaration, invocations: list[Invocation]) -
     """State, as cheaply as this census can, why nothing selects a declaration."""
     if declaration.blocked:
         return "the declaration is marked blocked in metadata"
-    named = [
-        invocation for invocation in invocations if invocation.profile == declaration.profile
+    compatible = [
+        invocation for invocation in invocations
+        if invocation.env in (None, declaration.env) or declaration.env == "ctest"
     ]
-    if not named:
-        return (
-            f"profile '{declaration.profile}' is named by no invocation; a declaration is "
-            "reachable only through the profile that declares it"
-        )
-    compatible = [invocation for invocation in named if invocation.env in (None, declaration.env)]
     if not compatible:
-        envs = sorted({str(invocation.env) for invocation in named})
-        return (
-            f"profile '{declaration.profile}' is named only for env {', '.join(envs)}, and "
-            f"this declaration is env:{declaration.env}"
-        )
-    nearest = compatible[0]
+        return f"no invocation names this environment: env:{declaration.env}"
     return (
-        f"every invocation for profile '{declaration.profile}' and this environment is "
-        f"narrower; the first pins {', '.join(nearest.pins())}"
+        f"every invocation for env:{declaration.env} is narrower; "
+        f"the first pins {', '.join(compatible[0].pins())}"
     )
 
 
 def listing_argv(invocation: Invocation) -> list[str] | None:
     """Return the argv for a safe ``--list`` re-run, or None when it is not safe.
 
-    A discovery run must not materialize a profile, touch a prefix, or resolve a
-    shell variable this census only saw as text, so those invocations are left
-    out of the comparison instead of being approximated.
+    A discovery run must not touch a prefix or resolve a shell variable this
+    census only saw as text.
     """
-    if not invocation.profile:
-        return None
-    unsafe = ("--prefix", "--prefix-profile", "--reuse-prefix-runtime", "--prove-red")
+    unsafe = ("--prefix", "--prove-red")
     for token in invocation.argv:
         if "$" in token or token.startswith(unsafe):
             return None
-    return [
-        token for token in invocation.argv if token not in ("--materialize-profile", "--prove-red")
-    ]
+    return list(invocation.argv)
 
 
 def verify_lists(
@@ -642,7 +540,7 @@ def main() -> int:
         "--workspace",
         type=Path,
         default=ROOT,
-        help="workspace holding patches/, ci/ and docs/ (default: this checkout)",
+        help="workspace holding testkit/, ci/ and docs/ (default: this checkout)",
     )
     parser.add_argument(
         "--verify-lists",
@@ -653,18 +551,18 @@ def main() -> int:
     )
     args = parser.parse_args()
     workspace = args.workspace.resolve()
-    if not (workspace / "patches").is_dir():
-        raise SystemExit(f"selection census: no patches directory under {workspace}")
+    if not (workspace / "testkit" / "workloads.yml").is_file():
+        raise SystemExit(f"selection census: no testkit/workloads.yml under {workspace}")
     if not 0 <= args.verify_lists <= 8:
         raise SystemExit("selection census: --verify-lists accepts 0 to 8 commands")
 
     invocations, unpinned, lifecycle, unresolved = enumerate_invocations(workspace)
-    profiles, declarations = load_declarations(workspace)
-    selected, counts = invocation_selection(invocations, profiles)
+    catalog, declarations = load_declarations(workspace)
+    selected, counts = invocation_selection(invocations, catalog)
 
     print(
-        f"selection census: {len(declarations)} declared test(s) in {len(profiles)} "
-        f"profile(s), {len(counts)} pinned invocation(s)"
+        f"selection census: {len(declarations)} declared workload(s), "
+        f"{len(counts)} pinned invocation(s)"
     )
     print(f"selected by an invocation: {sum(1 for value in selected.values() if value)}")
     for invocation, count in counts:
@@ -688,13 +586,13 @@ def main() -> int:
         print("unselected: 0")
     else:
         print(f"unselected: {len(missing)}")
-        by_profile: dict[str, int] = {}
+        by_env: dict[str, int] = {}
         for declaration in missing:
-            by_profile[declaration.profile] = by_profile.get(declaration.profile, 0) + 1
+            by_env[declaration.env] = by_env.get(declaration.env, 0) + 1
         summary = ", ".join(
-            f"{profile} {count}" for profile, count in sorted(by_profile.items())
+            f"{env} {count}" for env, count in sorted(by_env.items())
         )
-        print(f"  by profile: {summary}")
+        print(f"  by environment: {summary}")
         for declaration in missing:
             print(f"  {declaration.shown}: {unselected_reason(declaration, invocations)}")
 

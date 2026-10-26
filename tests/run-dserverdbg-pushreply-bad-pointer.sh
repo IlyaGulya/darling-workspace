@@ -4,8 +4,11 @@ set -euo pipefail
 : "${DPREFIX:?set DPREFIX}"
 : "${DSERVER_TEST_TRACE_FILE:?set DSERVER_TEST_TRACE_FILE}"
 
-darling="${DARLING:-$DPREFIX/bin/darling}"
-dserverdbg="${DSERVERDBG:-$DPREFIX/bin/dserverdbg}"
+DARLING_WORKSPACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$DARLING_WORKSPACE_ROOT/scripts/darling-runtime.sh"
+darling_resolve_runtime "${DARLING_RUNTIME_ROOT:-}" "$DPREFIX"
+darling="$DARLING_LAUNCHER"
+dserverdbg="${DSERVERDBG:-$DARLING_RUNTIME_ROOT/bin/dserverdbg}"
 launch_log="${DSERVER_TEST_TRACE_FILE}.launch"
 launcher_pid=""
 

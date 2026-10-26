@@ -27,15 +27,19 @@ resolve the manifest from workspace configuration rather than assuming siblings.
 - Edit canonical clean `fix/*` branches, never generated integration branches.
   Before implementing a missing API, follow the manifest's authoritative-source
   reuse rules rather than inventing a replacement.
-- Use declared runtime providers for build/deploy/restore and serialize manual
-  focused validation through `west darling-build`, not raw parallel Ninja.
-  A libsystem_kernel change also requires dyld deployment for its static path.
+- Use a normal stock ALL build and complete ordinary install into immutable `R`;
+  select writable guest state `P` separately (`--runtime-root R --prefix P`).
+  Follow the boot skill for install/lease/bind-clone details; never deploy into
+  `P`, discover `P/bin/darling` or overwrite a published image.
+  A libsystem_kernel change also requires dyld in the same complete image.
 - Do not spoof SDK/runtime identities or disable compatibility gates. A native
   preflight is not a full source-build pass; diagnostic success and archive
   completeness are independent. Follow the testing skill's coverage rules.
 - Keep `.beads/`, agent instructions, skills and handoff state out of product
   commits. Stage exact owned paths; preserve unrelated work. Record actual
   verdicts, evidence locations and blockers in the owning Bead.
+- Source review includes tracked working/staged diffs only. Stage explicit new
+  owned files before review; untracked bytes are neither collected nor backed up.
 - Commit source and manifest changes separately. Preserve dirty work and owned
   refs before changing checkouts; a handoff does not retain uncommitted bytes or
   automatically cover sibling tooling repositories and external archives.

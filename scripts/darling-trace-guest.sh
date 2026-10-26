@@ -1,337 +1,344 @@
 #!/usr/bin/env python3
-"""Trace the short-lived guest processes of one Darling run and report what they actually map.
+"""Launch and sample one exclusively owned Darling guest (diagnostic, not acceptance).
 
-WHY THIS EXISTS. A guest process in Darling is not identifiable the way a host process is, and this was
-measured rather than assumed:
+Interface: --runtime-root R --prefix RAW_P [--wait SECONDS] [--interval SECONDS]
+[--comm NAME]... [--env K=V]... [--cmd COMMAND] [--log PATH]
+[--page HEX | --page-file PATH] [--page-offsets 0,4,8,16,24].
 
-  * /proc/<pid>/exe      fails with ENOENT -- the image file is gone (unlinked or memfd), so a matcher that
-                         resolves exe, including one written for exactly this purpose, cannot see it;
-  * /proc/<pid>/cmdline  is EMPTY -- not merely an in-guest path, so the prefix-substring matcher sees nothing;
-  * /proc/<pid>/comm     is the one stable name ("mldr", "launchd", "vchroot", "shellspawn");
-  * /proc/<pid>/maps     IS readable, and it is the only instrument that answers "which shared library is this
-                         process actually executing".
-
-That last question is not academic: probes compiled into BOTH deployed copies of libsystem_kernel did not fire,
-while messages from other code paths of the same library do appear in the run log, and no amount of reading the
-source can distinguish "the probe never ran" from "another copy of the library ran".
-
-The processes live under two seconds, so a shell loop that forks a reader per sample misses them entirely; this
-polls in-process at --interval and keeps a UNION over every sample, so a map seen once is reported.
-
-Usage:
-  darling-trace-guest.sh --prefix PATH [--wait SECONDS] [--interval SECONDS] [--comm NAME]... [--env K=V]...
-                         [--cmd 'shell command'] [--log PATH]
+R is an ordinary installation, P is disjoint writable guest state. The raw prefix
+is validated before any normalization. Default evidence is a unique directory in
+DW_STATE_ROOT/diagnostics (otherwise the workspace .west-state/diagnostics), never
+/tmp. --log selects a new guest-output file; adjacent .samples.jsonl and .report
+files preserve full observations and lifecycle evidence. Sampling may miss an
+entire short-lived image; absent data is not proof that it never loaded. Exit zero
+means the diagnostic command and normal cleanup completed, not workload PASS.
 """
 
 import argparse
-import glob
+import json
+import math
 import os
+from pathlib import Path
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 
-DESCRIBE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "darling-describe-artifact.sh")
+WORKSPACE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(WORKSPACE / "west_commands"))
+from runtime_install import resolve_runtime
+from test_prefix import PrefixLifecycleOwner
+from prefix_repair import cleanup_prefix_mounts, darling_init_pid_is_usable
+
+DESCRIBE = WORKSPACE / "scripts" / "darling-describe-artifact.sh"
+IDENTITY_KEYS = {"DPREFIX", "DARLING_PREFIX", "DARLING_RUNTIME_ROOT", "DARLING_LAUNCHER", "DARLING"}
 
 
 def read(path, binary=False):
-    """Read a /proc file, tolerating the races: a process can vanish between the glob and the open, and a
-    binary file cannot be opened with `errors=` -- the first version of this function did, and died on the
-    very first cmdline it read."""
+    """Keep unavailable /proc fields distinct from an observed empty field."""
     try:
         if binary:
-            with open(path, "rb") as f:
-                return f.read().replace(b"\0", b" ").decode("utf8", "replace").strip()
-        with open(path, "r", errors="replace") as f:
-            return f.read().strip()
+            return Path(path).read_bytes().replace(b"\0", b" ").decode("utf8", "replace").strip()
+        return Path(path).read_text(errors="replace").strip()
     except OSError:
         return None
 
 
-def sample(pids_of_interest):
-    """Return {pid: {"comm":..., "cmdline":..., "maps": set(), "state":..., "exe":...}} for one moment."""
-    out = {}
-    for d in glob.glob("/proc/[0-9]*"):
-        pid = d.rsplit("/", 1)[-1]
-        comm = read(d + "/comm")
-        if comm is None or comm not in pids_of_interest:
+def memory(pid, address, size):
+    try:
+        with open(f"/proc/{pid}/mem", "rb", buffering=0) as stream:
+            stream.seek(address)
+            raw = stream.read(size)
+        return {"address": hex(address), "requested": size, "bytes": len(raw),
+                "hex": raw.hex(), "error": None if len(raw) == size else "short read"}
+    except (OSError, ValueError, OverflowError) as error:
+        return {"address": hex(address), "requested": size, "bytes": 0, "hex": "", "error": str(error)}
+
+
+def syscall_info(pid, path, maps_raw):
+    info = {"raw": None, "pc": None, "sp": None, "pc_where": None}
+    try:
+        raw = Path(path).read_text().strip()
+    except OSError as error:
+        info["unavailable"] = str(error)
+        return info
+    info["raw"] = raw
+    parts = raw.split()
+    if len(parts) < 9:
+        return info
+    try:
+        info["pc"], info["sp"] = int(parts[-1], 0), int(parts[-2], 0)
+        for line in (maps_raw or "").splitlines():
+            fields = line.split(None, 5)
+            lo, hi = (int(value, 16) for value in fields[0].split("-"))
+            if lo <= info["pc"] < hi:
+                info["pc_where"] = {"map": line, "file_offset": int(fields[2], 16) + info["pc"] - lo}
+                break
+        # Linux x86_64 ABI only. Preserve the raw syscall even for unknown ABIs.
+        if os.uname().machine == "x86_64":
+            argument = {"202": 4, "35": 1, "230": 3, "449": 4}.get(parts[0])
+            if argument is not None:
+                pointer = int(parts[argument], 0)
+                info["timeout_pointer"] = parts[argument]
+                if pointer:
+                    data = memory(pid, pointer, 16)
+                    info["timeout"] = data
+                    if data["bytes"] == 16:
+                        raw16 = bytes.fromhex(data["hex"])
+                        data["sec"] = int.from_bytes(raw16[:8], "little", signed=True)
+                        data["nsec"] = int.from_bytes(raw16[8:], "little", signed=True)
+    except (ValueError, IndexError) as error:
+        info["parse_error"] = str(error)
+    return info
+
+
+def sample(owned_rows, comms, page_address, offsets):
+    """Sample only the common ownership oracle's PIDs; comm is just a filter."""
+    observations = []
+    for row in owned_rows:
+        pid = row.split(" ", 1)[0]
+        directory = Path("/proc") / pid
+        comm = read(directory / "comm")
+        if comms is not None and comm not in comms:
             continue
-        maps = set()
-        raw = read(d + "/maps")
-        if raw:
-            for line in raw.splitlines():
-                parts = line.split()
-                if len(parts) >= 6 and parts[-1].startswith("/"):
-                    maps.add(parts[-1])
-        stat = read(d + "/stat") or ""
-        # field 3 is the state; the exit code is field 52 (index 51) once the process is a zombie
-        fields = stat.rsplit(")", 1)[-1].split() if ")" in stat else []
-        out[pid] = {
-            "comm": comm,
-            "cmdline": read(d + "/cmdline", binary=True) or "",
-            # WHAT it is blocked in, not merely THAT it is blocked: /proc/<pid>/syscall gives the syscall
-            # number, its arguments and the stack pointer for a sleeping process, and for a running one it
-            # gives -1. MEASURED need (doc section 183): a guest process that prints nothing, takes no
-            # signal and never returns cannot be distinguished from one parked in a bounded wait without
-            # this field -- and "bounded waits cannot park forever" was exactly the assumption that did not
-            # survive contact with the run.
-            "syscall": read(d + "/syscall") or "",
-            # PER THREAD with ids: /proc/<pid>/syscall reports one thread, so a process whose loop thread is
-            # parked while a helper thread polls looks identical to one that is cycling. MEASURED need: the
-            # sampled 1 ms sleeps and the loop's own stopped progress could not both belong to one thread.
-            "threads": sorted(os.listdir(d + "/task")) if os.path.isdir(d + "/task") else [],
-            "page_bytes": None,
-            "exe": os.readlink(d + "/exe") if os.path.exists(d + "/exe") else "<ENOENT>",
-            "maps": maps,
-            # the RAW lines as well: the ranges are what a pc is resolved against, and a set of paths cannot
-            # answer "which file is this address in" (measured: the first version of this resolution silently
-            # did nothing because only the paths were kept).
-            "maps_raw": raw or "",
-            "state": fields[0] if fields else "?",
-            "exit_code": fields[50] if len(fields) > 50 else "",
-        }
-    return out
+        stat = read(directory / "stat")
+        fields = stat.rsplit(")", 1)[-1].split() if stat and ")" in stat else []
+        if len(fields) < 20:
+            observations.append({"pid": pid, "comm": comm, "ownership": row,
+                                 "missing": "process disappeared before stat"})
+            continue
+        maps_raw = read(directory / "maps")
+        try:
+            exe = os.readlink(directory / "exe")
+        except OSError as error:
+            exe = {"unavailable": str(error)}
+        info = {"pid": pid, "starttime": fields[19], "comm": comm, "ownership": row,
+                "cmdline": read(directory / "cmdline", binary=True), "exe": exe,
+                "state": fields[0], "maps_raw": maps_raw,
+                "syscall": syscall_info(pid, directory / "syscall", maps_raw),
+                # stat field 52: wait status, not a guessed disappearance exit code.
+                "exit_code": fields[49] if len(fields) > 49 and fields[0] in {"Z", "X"} else None,
+                "threads": {}}
+        try:
+            threads = sorted((directory / "task").iterdir(), key=lambda entry: int(entry.name))
+        except OSError as error:
+            threads = []
+            info["threads_error"] = str(error)
+        for thread in threads:
+            info["threads"][thread.name] = syscall_info(pid, thread / "syscall", maps_raw)
+        if page_address is not None:
+            data = memory(pid, page_address, 128)
+            raw = bytes.fromhex(data["hex"])
+            data["fields"] = {str(offset): int.from_bytes(raw[offset:offset + 4], "little")
+                              for offset in offsets if offset + 4 <= len(raw)}
+            info["page"] = data
+        observations.append(info)
+    return observations
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--prefix", required=True)
-    ap.add_argument("--wait", type=float, default=45.0)
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--runtime-root", help="ordinary installed runtime R (or DARLING_RUNTIME_ROOT)")
+    ap.add_argument("--prefix", required=True, help="raw absolute writable guest prefix P")
+    ap.add_argument("--wait", type=float, default=45.0, help="maximum sampling duration")
     ap.add_argument("--interval", type=float, default=0.05)
-    ap.add_argument("--comm", action="append", default=None,
-                    help="guest process name to watch (default: mldr launchd vchroot shellspawn)")
-    ap.add_argument("--env", action="append", default=[])
+    ap.add_argument("--comm", action="append", help="optional owned process comm filter (default: all verified owned processes)")
+    ap.add_argument("--env", action="append", default=[], help="explicit diagnostic KEY=VALUE; cannot change P/R identity")
     ap.add_argument("--cmd", default="echo HELLO=1")
-    # Read a shared page out of a parked guest process, from OUTSIDE: a process blocked in its first wait cannot
-    # print, so the only way to see whether the server's completion reached ITS page is to read that page's memory
-    # here. --page is the guest-virtual base, --page-offsets the byte offsets to report.
-    ap.add_argument("--page", default=None)
-    # ...or discover it from a file the guest itself writes (its address cannot be guessed across runs: ASLR).
-    ap.add_argument("--page-file", default=None)
+    pages = ap.add_mutually_exclusive_group()
+    pages.add_argument("--page")
+    pages.add_argument("--page-file")
     ap.add_argument("--page-offsets", default="0,4,8,16,24")
-    ap.add_argument("--log", default=None)
+    ap.add_argument("--log", help="new durable guest log path (will not overwrite existing evidence)")
     args = ap.parse_args()
+    comms = set(args.comm) if args.comm else None
+    if not all(math.isfinite(value) and value > 0 for value in (args.wait, args.interval)):
+        ap.error("--wait and --interval must be finite and positive")
+    try:
+        offsets = [int(value) for value in args.page_offsets.split(",")]
+        if any(value < 0 or value + 4 > 128 for value in offsets):
+            raise ValueError("page offsets must select a four-byte word within 128 bytes")
+        page_address = int(args.page, 16) if args.page else None
+        if page_address is not None and page_address < 0:
+            raise ValueError("--page must be nonnegative")
+        runtime = resolve_runtime(args.runtime_root)
+        # environment() guards the original spelling, combined images and P/R overlap.
+        selected = runtime.environment(args.prefix)
+        base = dict(os.environ)
+        for setting in args.env:
+            if "=" not in setting:
+                raise ValueError(f"--env wants KEY=VALUE, got {setting!r}")
+            key, value = setting.split("=", 1)
+            if not key or "\0" in setting:
+                raise ValueError("invalid --env setting")
+            if key in IDENTITY_KEYS and value != selected[key]:
+                raise ValueError(f"--env {key} cannot redirect selected runtime/prefix identity")
+            base[key] = value
+        env = runtime.environment(args.prefix, base)
+        state = Path(os.environ.get("DW_STATE_ROOT", str(WORKSPACE.parent / ".west-state")))
+        if not state.is_absolute():
+            raise ValueError("DW_STATE_ROOT must be absolute")
+        if args.log:
+            log = Path(args.log)
+        else:
+            root = state / "diagnostics"
+            if root.resolve().is_relative_to(Path("/tmp")):
+                raise ValueError("diagnostic evidence must not be under /tmp")
+            root.mkdir(parents=True, exist_ok=True)
+            log = Path(tempfile.mkdtemp(prefix="trace-guest-", dir=root)) / "guest.log"
+        if not log.is_absolute() or log.resolve().is_relative_to(Path("/tmp")):
+            raise ValueError("--log must be an absolute durable path outside /tmp")
+        log.parent.mkdir(parents=True, exist_ok=True)
+    except (OSError, ValueError) as error:
+        ap.error(str(error))
 
-    prefix = os.path.abspath(args.prefix)
-    comms = set(args.comm or ["mldr", "launchd", "vchroot", "shellspawn"])
-    log = args.log or "/tmp/darling-trace-%d.log" % int(time.time())
+    # All files are exclusive: a repeated explicit path cannot destroy evidence.
+    with log.open("x") as guest, Path(str(log) + ".samples.jsonl").open("x") as samples, \
+            Path(str(log) + ".report").open("x") as report:
+        errors = []
 
-    env = dict(os.environ,
-               DPREFIX=prefix, DARLING_PREFIX=prefix,
-               DARLING_ROOTLESS="1", DARLING_NOOVERLAYFS="1", DARLING_EUNION="1")
-    for kv in args.env:
-        if "=" not in kv:
-            print("--env wants KEY=VALUE, got %r" % kv, file=sys.stderr)
-            return 2
-        k, v = kv.split("=", 1)
-        env[k] = v
-
-    launcher = os.path.join(prefix, "bin", "darling")
-    if not os.path.exists(launcher):
-        print("no launcher at %s" % launcher, file=sys.stderr)
-        return 2
-
-    before = set(glob.glob("/proc/[0-9]*"))
-    f = open(log, "w")
-    proc = subprocess.Popen([launcher, "--rootless", "shell", "/bin/sh", "-c", args.cmd],
-                            env=env, stdout=f, stderr=subprocess.STDOUT, start_new_session=True)
-
-    # union over every sample, so a map that exists for one poll is still reported
-    seen = {}
-    order = []
-    deadline = time.time() + args.wait
-    while time.time() < deadline:
-        for pid, info in sample(comms).items():
-            # A process that already existed before the launch belongs to another run: reporting it as part
-            # of this one attributes an artifact from a different prefix to this measurement. MEASURED: a
-            # stale shellspawn of another prefix appeared in the report and read as "this run loads its
-            # libraries from somewhere else".
-            if ("/proc/" + pid) in before:
-                continue
-            if pid not in seen:
-                order.append(pid)
-                seen[pid] = dict(info, maps=set(info["maps"]), samples=0, states=[], cmds=set(), syscalls={})
-            rec = seen[pid]
-            rec["maps"] |= info["maps"]
-            rec["samples"] += 1
-            rec["states"].append(info["state"])
-            if info["cmdline"]:
-                rec["cmds"].add(info["cmdline"])
-            # Resolve the parked pc against THIS sample's maps: an address is meaningless across runs (ASLR) and
-            # "the wait is in libc" versus "the wait is in the loader" is the whole remaining question, so the
-            # answer has to be produced where the maps are still readable.
-            _page_addr = args.page
-            if args.page_file:
+        def emit(message):
+            # Losing an observer pipe or filling the evidence volume must never
+            # short-circuit the lifecycle owner's cleanup while it holds P.
+            for stream in (sys.stdout, report):
                 try:
-                    _txt = open(args.page_file).read().strip()
-                    if _txt.startswith("0x"):
-                        _page_addr = _txt
-                except OSError:
-                    _page_addr = None
-            if _page_addr:
-                try:
-                    with open(os.path.join("/proc", str(pid), "mem"), "rb", 0) as _mf:
-                        _mf.seek(int(_page_addr, 16))
-                        info["page_bytes"] = _mf.read(128)
-                except (OSError, ValueError):
-                    info["page_bytes"] = None
-            for tid in (info.get("threads") or []):
-                try:
-                    sc_t = read(os.path.join("/proc", str(pid), "task", tid, "syscall")) or ""
-                except OSError:
-                    sc_t = ""
-                if not sc_t:
-                    continue
-                rec.setdefault("per_thread", {})
-                rec["per_thread"][tid] = sc_t.split(" ")[0]
-            if info.get("syscall"):
-                parts = info["syscall"].split(" ")
-                if len(parts) >= 9:
-                    try:
-                        pc = int(parts[-1], 16)  # the LAST field is the pc; parts[-2] is the sp (stack, anonymous)
-                    except ValueError:
-                        pc = None
-                    # READ THE ARGUMENTS THE KERNEL WAS HANDED, not just their addresses. A FUTEX_WAIT with a
-                    # one-millisecond relative timeout that does not return cannot be diagnosed from the call
-                    # itself -- the timeout POINTER is what the kernel reads, and /proc/<pid>/mem holds the
-                    # bytes. MEASURED: this is the only field that separates "the kernel was asked for one
-                    # millisecond and did not honour it" from "the caller passed something else".
-                    if len(parts) >= 5:
+                    print(message, file=stream, flush=True)
+                except OSError as error:
+                    errors.append(f"evidence output unavailable: {error}")
+
+        def err(message):
+            errors.append(message)
+            emit(message)
+
+        owner = PrefixLifecycleOwner(
+            resolve_launcher=lambda _prefix: str(runtime.launcher),
+            prefix_env=lambda raw: runtime.environment(raw, base),
+            cleanup_mounts=cleanup_prefix_mounts, init_pid_is_usable=darling_init_pid_is_usable,
+            inf=emit, err=err, wrn=emit)
+        emit(f"run log: {log}")
+        emit(f"samples: {samples.name}")
+        emit(f"runtime-root: {runtime.root}; prefix: {args.prefix}")
+        emit("installation-identity: " + json.dumps(runtime.summary(), sort_keys=True))
+        seen = {}
+        proc = None
+        status = 1
+        cleanup_ok = False
+        started = time.monotonic()
+        old_handlers = {}
+
+        def interrupt(_signum, _frame):
+            raise KeyboardInterrupt
+
+        with owner.locked(args.prefix):
+            try:
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    old_handlers[sig] = signal.signal(sig, interrupt)
+                proc = subprocess.Popen([str(runtime.launcher), "shell", "/bin/sh", "-c", args.cmd],
+                                        env=env, stdout=guest, stderr=subprocess.STDOUT)
+                emit("command: " + json.dumps(proc.args))
+                deadline = time.monotonic() + args.wait
+                while True:
+                    now = time.monotonic()
+                    address = page_address
+                    page_error = None
+                    if args.page_file:
                         try:
-                            tmo = int(parts[4], 16)
-                        except ValueError:
-                            tmo = 0
-                        # The timespec is a different argument per syscall: FUTEX_WAIT takes it in arg3, and
-                        # clock_nanosleep/nanosleep in arg2. MEASURED: reading arg3 for clock_nanosleep read the
-                        # REMAIN pointer, whose contents are garbage, which is exactly what the first version
-                        # of this reader reported.
-                        num = parts[0]
-                        if num in ("230", "35"):
-                            try:
-                                tmo = int(parts[3], 16)
-                            except (ValueError, IndexError):
-                                tmo = 0
-                        if tmo > 0x10000:
-                            try:
-                                with open(os.path.join("/proc", str(pid), "mem"), "rb", 0) as mf:
-                                    mf.seek(tmo)
-                                    raw16 = mf.read(16)
-                                if len(raw16) == 16:
-                                    sec, nsec = int.from_bytes(raw16[:8], "little", signed=True), int.from_bytes(raw16[8:], "little", signed=True)
-                                    rec.setdefault("timeouts", {})
-                                    key = "sec=%d nsec=%d" % (sec, nsec)
-                                    rec["timeouts"][key] = rec["timeouts"].get(key, 0) + 1
-                            except (OSError, ValueError):
-                                pass
-                    if pc is not None:
-                        for line_ in (info.get("maps_raw") or "").splitlines():
-                            f = line_.split()
-                            if len(f) >= 6 and f[1] not in ("r--p", "---p"):
-                                try:
-                                    lo, hi = (int(x, 16) for x in f[0].split("-"))
-                                except ValueError:
-                                    continue
-                                if lo <= pc < hi:
-                                    fo = int(f[2], 16)
-                                    rec.setdefault("pc_where", {})
-                                    key = "%s+0x%x" % (f[5], fo + (pc - lo))
-                                    rec["pc_where"][key] = rec["pc_where"].get(key, 0) + 1
-                                    break
-            if info.get("page_bytes"):
-                _b = info["page_bytes"]
-                _fields = {}
-                for _off in (int(_x) for _x in args.page_offsets.split(",")):
-                    if _off + 4 <= len(_b):
-                        _fields[_off] = int.from_bytes(_b[_off:_off + 4], "little")
-                rec.setdefault("page_reads", {})
-                # the RAW bytes, so a marker written by either side can be seen without guessing offsets
-                rec["page_hex"] = _b[:128].hex()
-
-                _key = " ".join("%d:%d" % (o, v) for o, v in sorted(_fields.items()))
-                rec["page_reads"][_key] = rec["page_reads"].get(_key, 0) + 1
-                rec.setdefault("page_timeline", [])
-                if not rec["page_timeline"] or rec["page_timeline"][-1][1] != _key:
-                    rec["page_timeline"].append((len(rec["page_timeline"]), _key))
-                # keep the union, and count repeats: "the same syscall in every sample" is what says parked.
-                # The FULL line is kept too, because the number alone says which syscall and not what it was
-                # asked to do -- and for futex the arguments (op, compare value, timespec pointer, stack
-                # pointer) are the whole question. MEASURED: a FUTEX_WAIT with a one-millisecond relative
-                # timeout that does not return cannot be diagnosed from the syscall NUMBER.
-                sc = info["syscall"].split(" ")[0]
-                rec["syscalls"][sc] = rec["syscalls"].get(sc, 0) + 1
-                rec.setdefault("syscall_full", {})
-                rec["syscall_full"][info["syscall"]] = rec["syscall_full"].get(info["syscall"], 0) + 1
-            if info["exit_code"] != "":
-                rec["exit_code"] = info["exit_code"]
-            rec["exe"] = info["exe"] if rec.get("exe", "<ENOENT>") == "<ENOENT>" else rec["exe"]
-        time.sleep(args.interval)
-
-    print("run log: %s" % log)
-    print("guest processes observed: %d" % len(order))
-    for pid in order:
-        rec = seen[pid]
-        print("\npid=%s comm=%s samples=%d states=%s exit_code=%s"
-              % (pid, rec["comm"], rec["samples"], "".join(sorted(set(rec["states"]))),
-                 rec.get("exit_code", "")))
-        print("  exe:     %s" % rec.get("exe", "<ENOENT>"))
-        if rec.get("syscalls"):
-            tops = sorted(rec["syscalls"].items(), key=lambda kv: -kv[1])[:4]
-            print("  syscalls: %s" % ", ".join("%s x%d" % (k, v) for k, v in tops))
-        if rec.get("timeouts"):
-            for k, v in sorted(rec["timeouts"].items(), key=lambda kv: -kv[1])[:3]:
-                print("  timeout-arg: %s  (x%d)" % (k, v))
-        if rec.get("per_thread"):
-            main_sc = rec["per_thread"].get(str(pid), "<none>")
-            others = [(t, sc) for t, sc in rec["per_thread"].items() if t != str(pid)]
-            print("  main-thread(%s) last syscall: %s" % (pid, main_sc))
-            if others:
-                print("  other threads: %s" % ", ".join("tid %s sc%s" % (t, sc) for t, sc in others[:4]))
-        if rec.get("page_timeline"):
-            for idx, key in rec["page_timeline"][:6]:
-                print("  page-seq #%d: %s" % (idx, key))
-        if rec.get("page_hex"):
-            print("  page-hex: %s" % rec["page_hex"])
-        if rec.get("page_reads"):
-            for _k, _v in sorted(rec["page_reads"].items(), key=lambda kv: -kv[1])[:3]:
-                print("  page: %s  (x%d)" % (_k, _v))
-        if rec.get("pc_where"):
-            for k, v in sorted(rec["pc_where"].items(), key=lambda kv: -kv[1])[:3]:
-                print("  pc-where: %s  (x%d)" % (k[:110], v))
-        if rec.get("syscall_full"):
-            for line, n in sorted(rec["syscall_full"].items(), key=lambda kv: -kv[1])[:2]:
-                print("  parked:   %s  (x%d)" % (line[:120], n))
-        if rec["cmds"]:
-            for c in sorted(rec["cmds"]):
-                print("  cmdline: %s" % c[:100])
-        else:
-            print("  cmdline: (empty -- measured for guest processes)")
-        # Include ANY path under a Darling prefix, not just ones whose name contains "darling": the exec'd
-        # image itself (`<prefix>/sbin/launchd`) does not, and excluding it hid the answer to "which binary is
-        # this process actually running" -- the question this tool exists for.
-        libs = sorted(p for p in rec["maps"]
-                      if "libsystem" in p or p.endswith("/dyld") or "mldr" in p or "/darling" in p
-                      or "/sbin/" in p or "/usr/libexec/" in p or p.startswith("/tmp/dr-"))
-        others = sorted(set(rec["maps"]) - set(libs))
-        if libs:
-            print("  the files it actually maps:")
-            for p in libs:
-                exists = os.path.exists(p)
-                mark = "" if exists else "   <-- NOT ON DISK"
-                print("    %s%s" % (p, mark))
-                if exists and os.path.exists(DESCRIBE):
-                    # a mapped library that is not the one deployed is the whole point of printing this
-                    r = subprocess.run(["sh", DESCRIBE, p], capture_output=True, text=True)
-                    for line in r.stdout.splitlines():
-                        if line.startswith("sha256:"):
-                            print("      %s" % line.strip())
-        elif rec["maps"]:
-            print("  %d mapped file(s), none of them a Darling library:" % len(rec["maps"]))
-            for p in others[:8]:
-                print("    %s" % p)
-        else:
-            print("  no path-backed mappings observed (sampled before exec, or all anonymous)")
-    if proc.poll() is None:
-        proc.terminate()
-    return 0
+                            address = int(Path(args.page_file).read_text().strip(), 16)
+                            if address < 0:
+                                raise ValueError("negative page address")
+                        except (OSError, ValueError) as error:
+                            address = None
+                            page_error = str(error)
+                    owned = owner.process_snapshot(Path(args.prefix))
+                    observations = sample(owned, comms, address, offsets)
+                    json.dump({"elapsed": now - started, "owned": owned, "page_file_error": page_error,
+                               "launcher_rc": proc.poll(), "observations": observations}, samples)
+                    samples.write("\n")
+                    samples.flush()
+                    for info in observations:
+                        if "starttime" not in info:
+                            continue
+                        key = (info["pid"], info["starttime"])
+                        rec = seen.setdefault(key, {"comm": info["comm"], "samples": 0, "states": set(),
+                                                    "maps": set(), "maps_raw": set(), "exit_code": None})
+                        rec["samples"] += 1
+                        rec["states"].add(info["state"])
+                        rec["exit_code"] = info["exit_code"] if info["exit_code"] is not None else rec["exit_code"]
+                        rec["last_elapsed"] = now - started
+                        rec["last_syscall"] = info["syscall"]
+                        rec["last_threads"] = info["threads"]
+                        for line in (info["maps_raw"] or "").splitlines():
+                            rec["maps_raw"].add(line)
+                            fields = line.split(None, 5)
+                            if len(fields) == 6 and fields[5].startswith("/"):
+                                rec["maps"].add(fields[5])
+                    if now >= deadline:
+                        status = proc.poll()
+                        if status is None:
+                            status = 124
+                            emit("sampling deadline reached with launcher still running (timeout, not acceptance)")
+                        break
+                    time.sleep(min(args.interval, max(0, deadline - time.monotonic())))
+            except KeyboardInterrupt:
+                status = 130
+                emit("interrupted; retaining evidence and shutting down selected prefix")
+            except Exception as error:
+                status = 1
+                err(f"trace error: {type(error).__name__}: {error}")
+            finally:
+                # A second interrupt must not release the lease halfway through cleanup.
+                for sig in old_handlers:
+                    signal.signal(sig, signal.SIG_IGN)
+                try:
+                    cleanup_ok = owner.shutdown(Path(args.prefix))
+                except Exception as error:
+                    err(f"cleanup error: {type(error).__name__}: {error}")
+                    try:
+                        owner.finalize(Path(args.prefix))
+                    except Exception as rescue_error:
+                        err(f"rescue cleanup error: {type(rescue_error).__name__}: {rescue_error}")
+                finally:
+                    if proc is not None:
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            err("launcher did not exit after prefix cleanup; bounded wait exhausted")
+                        emit(f"launcher exit status: {proc.poll()} (None means unobserved)")
+                    emit(f"normal cleanup: {cleanup_ok}; lifecycle errors: {len(errors)}")
+                    for sig, handler in old_handlers.items():
+                        signal.signal(sig, handler)
+        emit(f"owned runtime processes observed: {len(seen)}")
+        if not seen:
+            emit("missing data: no selected owned process sampled; short-lived images may have been missed")
+        described = set()
+        for (pid, starttime), rec in seen.items():
+            emit(f"pid={pid} starttime={starttime} comm={rec['comm']} samples={rec['samples']} "
+                 f"states={''.join(sorted(rec['states']))} exit_code={rec['exit_code']} "
+                 "(None means no exit status sampled)")
+            emit(f"  last-sample-elapsed: {rec['last_elapsed']:.3f}s")
+            emit("  syscall: " + json.dumps(rec["last_syscall"], sort_keys=True))
+            for tid, state in rec["last_threads"].items():
+                emit(f"  thread={tid} syscall: " + json.dumps(state, sort_keys=True))
+            for line in sorted(rec["maps_raw"]):
+                emit("  map: " + line)
+            for path in sorted(rec["maps"]):
+                if path in described:
+                    continue
+                described.add(path)
+                if not Path(path).is_file():
+                    emit(f"  artifact unavailable: {path}")
+                    continue
+                try:
+                    result = subprocess.run(["sh", str(DESCRIBE), path], capture_output=True,
+                                            text=True, timeout=15)
+                    emit(f"  describe-artifact: {path}; rc={result.returncode}")
+                    for line in (result.stdout + result.stderr).splitlines():
+                        emit("    " + line)
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    emit(f"  describe-artifact unavailable: {path}: {error}")
+        emit("diagnostic sampling only; full per-thread syscall/PC/SP, timeout bytes and page timeline are in samples")
+        return status if status else (0 if cleanup_ok and not errors else 1)
 
 
 if __name__ == "__main__":

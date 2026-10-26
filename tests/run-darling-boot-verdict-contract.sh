@@ -37,22 +37,26 @@ harness="$workspace_root/scripts/darling-boot-run.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 prefix="$tmp/prefix-verdict"
-mkdir -p "$prefix/bin"
-# The stub stands in for <prefix>/bin/darling. The harness calls it twice per run: `--rootless shutdown` (a no-op
-# here) and `--rootless shell /bin/bash -c CMD`, which must run CMD on the host so its output reaches the log the
-# harness judges. Nothing here emulates Darling; the harness under test is the shell script above the launcher.
-cat > "$prefix/bin/darling" <<'STUB'
+runtime="$tmp/runtime with space"
+mkdir -p "$prefix" "$runtime/bin" "$runtime/libexec/darling"
+# Only the launcher is stubbed: the harness lifecycle and verdict run unchanged.
+# The installed runtime is deliberately outside the writable guest state.
+cat > "$runtime/bin/darling" <<'STUB'
 #!/bin/sh
-case "$*" in
-	*" shell "*) ;;
-	*) exit 0 ;;
+case "$1" in
+	shell) ;;
+	shutdown) exit "${DARLING_TEST_SHUTDOWN_RC:-0}" ;;
+	*) exit 2 ;;
 esac
-[ $# -ge 5 ] || { echo "stub launcher: unexpected argv: $*" >&2; exit 2; }
-shift 2		# --rootless shell
+[ $# -ge 4 ] || { echo "stub launcher: unexpected argv: $*" >&2; exit 2; }
+[ "$DPREFIX" = "$DARLING_PREFIX" ] || exit 2
+printf '%s\n' "$DPREFIX" > "$DARLING_RUNTIME_ROOT/selected-prefix"
+shift		# shell
 shift 2		# /bin/bash -c
 exec /bin/bash -c "$1"
 STUB
-chmod 755 "$prefix/bin/darling"
+chmod 755 "$runtime/bin/darling"
+cp "$runtime/bin/darling" "$runtime/bin/darlingserver"
 
 fail=0
 n=0
@@ -80,7 +84,7 @@ verdict_of() { printf '%s\n' "$1" | sed -n 's/^VERDICT: //p' | tail -1; }
 # One harness run. stdout: the harness's own console; status: the harness's exit status.
 run_harness() { # args...
 	n=$((n + 1))
-	out="$("$harness" --prefix "$prefix" --log "$tmp/run-$n.log" --no-bundle "$@" 2>&1)"
+	out="$("$harness" --runtime-root "$runtime" --prefix "$prefix" --log "$tmp/run-$n.log" --no-bundle "$@" 2>&1)"
 	rc=$?
 	printf '%s' "$out"
 	return "$rc"
@@ -100,6 +104,14 @@ out="$(run_harness --wait 15 --poll 'XCB_RC=' --marker 'XCB_RC=' --cmd 'echo XCB
 check "arm 2: zero workload status is PASS" PASS "$(verdict_of "$out")"
 check "arm 2: zero workload status exits 0" 0 "$rc"
 check "arm 2: the status line names the value it judged" yes "$(contains "$out" "STATUS ok   XCB_RC= value=0")"
+check "selected installation receives isolated guest prefix" "$prefix" "$(cat "$runtime/selected-prefix")"
+
+# A successful workload cannot hide a failed product shutdown behind rescue.
+export DARLING_TEST_SHUTDOWN_RC=7
+out="$(run_harness --wait 2 --status-marker 'XCB_RC=' --cmd 'echo XCB_RC=0')"; rc=$?
+check "failed product shutdown prevents PASS" FAIL "$(verdict_of "$out")"
+check_nonzero "failed product shutdown exits nonzero" "$rc"
+unset DARLING_TEST_SHUTDOWN_RC
 
 # 3. The explicit declaration form, with a non-zero value.
 out="$(run_harness --wait 15 --status-marker 'XCB_RC=' --cmd 'echo HELLO=1; echo FINAL=1; echo XCB_RC=4')"; rc=$?

@@ -19,6 +19,7 @@ try:
         guest_c_fixture_prerequisite_problems,
         repair_prefix_prerequisites,
     )
+    from .runtime_install import RuntimeInstallationError, resolve_runtime
     from .test_execution import ProcessResult
     from .test_guest_execution import run_guest_shell_argv
 except ImportError:  # Loaded as a West extension module, not a package.
@@ -26,6 +27,7 @@ except ImportError:  # Loaded as a West extension module, not a package.
         guest_c_fixture_prerequisite_problems,
         repair_prefix_prerequisites,
     )
+    from runtime_install import RuntimeInstallationError, resolve_runtime
     from test_execution import ProcessResult
     from test_guest_execution import run_guest_shell_argv
 
@@ -348,6 +350,7 @@ def _selected_prerequisite_problems(
     prefix: Path,
     launcher: str,
     *,
+    system_root: Path,
     cwd: Path,
     env: dict[str, str],
     timeout_seconds: int,
@@ -358,6 +361,7 @@ def _selected_prerequisite_problems(
         DEFAULT_GUEST_CC,
         DEFAULT_GUEST_CFLAGS
         + " -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX12.1.sdk",
+        system_root=system_root,
     )
     if problems:
         return problems
@@ -402,6 +406,7 @@ def _ensure_selected_command_line_tools(
     *,
     prefix: Path,
     launcher: str,
+    system_root: Path,
     cwd: Path,
     env: dict[str, str],
     timeout_seconds: int,
@@ -418,6 +423,7 @@ def _ensure_selected_command_line_tools(
     }
     probe_args = dict(
         cwd=cwd, env=env, timeout_seconds=timeout_seconds, guest_runner=guest_runner,
+        system_root=system_root,
     )
     try:
         installed = json.loads(receipt.read_text())
@@ -474,7 +480,7 @@ def _ensure_selected_command_line_tools(
         if staged is not None:
             staged.unlink(missing_ok=True)
 
-    repair = repair_prefix_prerequisites(prefix)
+    repair = repair_prefix_prerequisites(prefix, system_root=system_root)
     problems = repair.problems + _selected_prerequisite_problems(
         prefix, launcher, **probe_args
     )
@@ -501,7 +507,7 @@ def _ensure_selected_command_line_tools(
 
 def ensure_command_line_tools(
     *,
-    prefix: Path,
+    prefix: str | Path,
     launcher: str,
     cwd: Path,
     env: dict[str, str],
@@ -524,17 +530,31 @@ def ensure_command_line_tools(
 
     require_guest_toolchain_provisioning_allowed()
     require_guest_toolchain_provisioning_allowed(env)
+    # Resolve only an ordinary installed runtime; never discover one under P.
+    runtime_root = env.get("DARLING_RUNTIME_ROOT")
+    if runtime_root is None:
+        selected_launcher = Path(env.get("DARLING_LAUNCHER", launcher)).expanduser()
+        if selected_launcher.name != "darling" or selected_launcher.parent.name != "bin":
+            raise RuntimeInstallationError(
+                "cannot identify an installation from the guest launcher; select DARLING_RUNTIME_ROOT"
+            )
+        runtime_root = str(selected_launcher.parent.parent)
+    runtime = resolve_runtime(runtime_root)
+    env = runtime.environment(prefix, env)
+    prefix = Path(prefix)
+    launcher = str(runtime.launcher)
     selected = env.get("DARLING_CLT_PACKAGE", os.environ.get("DARLING_CLT_PACKAGE"))
     if selected is not None:
         return _ensure_selected_command_line_tools(
             Path(selected).expanduser(),
             prefix=prefix, launcher=launcher, cwd=cwd, env=env,
+            system_root=runtime.system_root,
             timeout_seconds=timeout_seconds, guest_runner=guest_runner, log=log,
             command_prefix=command_prefix,
         )
 
     missing = guest_c_fixture_prerequisite_problems(
-        prefix, DEFAULT_GUEST_CC, DEFAULT_GUEST_CFLAGS
+        prefix, DEFAULT_GUEST_CC, DEFAULT_GUEST_CFLAGS, system_root=runtime.system_root
     )
     if not missing:
         return ["guest CommandLineTools already provisioned"]
@@ -588,7 +608,7 @@ def ensure_command_line_tools(
         for staged in staged_paths:
             staged.unlink(missing_ok=True)
 
-    repair = repair_prefix_prerequisites(prefix)
+    repair = repair_prefix_prerequisites(prefix, system_root=runtime.system_root)
     if repair.problems:
         raise GuestToolchainError(
             "CommandLineTools installed but prefix repair failed: "
@@ -596,7 +616,7 @@ def ensure_command_line_tools(
             kind="setup",
         )
     remaining = guest_c_fixture_prerequisite_problems(
-        prefix, DEFAULT_GUEST_CC, DEFAULT_GUEST_CFLAGS
+        prefix, DEFAULT_GUEST_CC, DEFAULT_GUEST_CFLAGS, system_root=runtime.system_root
     )
     if remaining:
         raise GuestToolchainError(

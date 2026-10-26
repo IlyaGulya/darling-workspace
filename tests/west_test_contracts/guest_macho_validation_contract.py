@@ -3,6 +3,7 @@
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "west_commands"))
@@ -12,6 +13,8 @@ from guest_macho_validation import (
     expected_marker_from_corpus,
     finalize_guest_macho_evidence,
     write_guest_macho_evidence,
+    validate_cli_selection,
+    validate_selected_group,
 )
 
 assert expected_marker_from_corpus(
@@ -21,6 +24,28 @@ assert expected_marker_from_corpus(
         "fixture": "select_fdset_guest",
     }
 ) == "SELECT_FDSET_GUEST_OK"
+
+group_args = SimpleNamespace(
+    guest_macho_validation_group="homebrew", guest_macho_evidence_dir=None,
+    env="darling", bead=None, diag=None, label=None, workload=None,
+)
+validate_cli_selection(group_args)
+group_cases = [
+    ({"path": fixture}, {"fixture": fixture, "runner": "guest-macho-fixture", "validation-group": "homebrew"})
+    for fixture in VALIDATION_GROUP_FIXTURES["homebrew"]
+]
+validate_selected_group(group_cases, "homebrew")
+for invalid in (
+    group_cases[:-1],
+    [*group_cases, group_cases[0]],
+    [(owner, {**test, "validation-group": "unrelated"}) for owner, test in group_cases],
+):
+    try:
+        validate_selected_group(invalid, "homebrew")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("group selection accepted incomplete, duplicate or unrelated fixtures")
 
 
 with tempfile.TemporaryDirectory(prefix="west-guest-macho-validation-contract-") as raw:

@@ -8,6 +8,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
@@ -19,19 +20,65 @@ use std::time::{Duration, Instant};
 #[derive(Parser)]
 #[command(about = "Run and capture local or Darling debugging experiments")]
 struct Cli {
+    /// Ordinary product installation, independent of writable guest state.
+    #[arg(long, global = true)]
+    runtime_root: Option<PathBuf>,
     #[command(subcommand)]
     command: RunnerCommand,
 }
 
 mod diag;
 
+static RUNTIME_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+fn select_runtime_root(path: PathBuf) -> Result<()> {
+    let path = expand_home(&path);
+    let absolute = if path.is_absolute() { path } else { std::env::current_dir().context("resolving relative runtime root")?.join(path) };
+    let selected = fs::canonicalize(&absolute).unwrap_or(absolute);
+    let _ = RUNTIME_ROOT.set(selected);
+    Ok(())
+}
+
+pub(crate) fn runtime_root() -> Result<&'static Path> {
+    if RUNTIME_ROOT.get().is_none() {
+        if let Some(root) = std::env::var_os("DARLING_RUNTIME_ROOT") {
+            select_runtime_root(PathBuf::from(root))?;
+        } else {
+            let launcher = std::env::var_os("DARLING_LAUNCHER").map(PathBuf::from).or_else(|| {
+                std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths)
+                    .map(|path| path.join("darling")).find(|path| fs::metadata(path)
+                        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).unwrap_or(false)))
+            }).context("no installed Darling selected; pass --runtime-root ROOT")?;
+            let launcher = fs::canonicalize(expand_home(&launcher)).context("resolve installed launcher")?;
+            if launcher.file_name().and_then(|name| name.to_str()) != Some("darling")
+                || launcher.parent().and_then(Path::file_name).and_then(|name| name.to_str()) != Some("bin") {
+                bail!("cannot identify an ordinary installation from {}; pass --runtime-root", launcher.display());
+            }
+            select_runtime_root(launcher.parent().and_then(Path::parent).context("launcher installation root")?.to_path_buf())?;
+        }
+    }
+    Ok(RUNTIME_ROOT.get().context("installed runtime root")?.as_path())
+}
+
+pub(crate) fn installed_runtime_root() -> Result<&'static Path> {
+    let root = runtime_root()?;
+    let launcher = root.join("bin/darling");
+    if !launcher.is_file() || fs::metadata(&launcher)?.permissions().mode() & 0o111 == 0
+        || !root.join("bin/darlingserver").is_file() || !root.join("libexec/darling").is_dir() {
+        bail!("incomplete ordinary Darling installation at {}", root.display());
+    }
+    Ok(root)
+}
+
 #[derive(Subcommand)]
 enum RunnerCommand {
+    /// Capture an arbitrary host command. The caller owns any guest prefix lifecycle;
+    /// ambient DPREFIX never acquires a lease (the command may itself be a lifecycle owner).
     Run(RunArgs),
     Darling(DarlingArgs),
     Capture(CaptureArgs),
     Signal(SignalArgs),
-    /// Resolve a reported offset to `symbol + offset` for any image (guest dylib or server binary).
+    /// Inspect runtime identity, workload evidence, processes, traces and debugging artifacts.
     #[command(subcommand)]
     Diag(diag::DiagCommand),
 }
@@ -145,12 +192,11 @@ struct RunArgs {
 struct DarlingArgs {
     #[command(flatten)]
     common: CommonArgs,
-    #[arg(long, default_value = "~/work/darling-prefix/bin/darling")]
-    darling: PathBuf,
+    /// Explicit ordinary installed launcher (otherwise --runtime-root / DARLING_RUNTIME_ROOT / PATH).
+    #[arg(long)]
+    darling: Option<PathBuf>,
     #[arg(long, default_value = "~/.darling")]
     dprefix: PathBuf,
-    #[arg(long)]
-    install_server: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -340,20 +386,68 @@ fn make_bundle(root: &Path, name: &str) -> Result<PathBuf> {
             }
         })
         .collect();
-    let bundle = expand_home(root).join(format!(
+    let mut bundle = expand_home(root);
+    fs::create_dir_all(&bundle)?;
+    bundle.push(format!(
         "{}-{safe_name}",
         Utc::now().format("%Y%m%dT%H%M%SZ")
     ));
-    fs::create_dir_all(&bundle)?;
+    fs::create_dir(&bundle).with_context(|| format!(
+        "creating a new owned bundle {}; existing paths are never reused",
+        bundle.display(),
+    ))?;
     Ok(bundle)
 }
 
-fn shell_hook(command: &str, bundle: &Path, pid: u32) {
-    let _ = Command::new("/bin/bash")
-        .args(["-lc", command])
-        .env("BUNDLE", bundle)
-        .env("TARGET_PID", pid.to_string())
+/// Apply the shared storage policy only after this bundle's capture writers close.
+/// Its index, byte verification and writer census remain Python-owned authorities.
+fn finalize_bundle_storage(bundle: &Path, command_result: &str, retained_live: bool) -> Result<bool> {
+    let metadata = bundle.join("summary-storage-status.txt");
+    if retained_live {
+        fs::write(&metadata, format!(
+            "state=deferred\ncommand_result={command_result}\nreason=explicit live-payload retention; bundle is not finalized\n",
+        ))?;
+        println!("STORAGE=deferred reason=live-payload-retained metadata={}", metadata.display());
+        return Ok(true);
+    }
+
+    // JSONL and summary-prefixed files are protected metadata, so the helper
+    // never selects its own still-open output as an archival payload.
+    let report = bundle.join("storage-report.jsonl");
+    let errors = bundle.join("summary-storage-errors.txt");
+    let outcome = Command::new("python3")
+        .arg("-B")
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/darling-evidence.py"))
+        .args(["compress", "--recursive"])
+        .arg(bundle)
+        .stdin(Stdio::null())
+        .stdout(File::create(&report)?)
+        .stderr(File::create(&errors)?)
         .status();
+    let (state, helper_status, successful) = match outcome {
+        Ok(status) => (
+            if status.success() { "processed" } else { "incomplete" },
+            status.to_string(),
+            status.success(),
+        ),
+        Err(error) => ("unavailable", format!("cannot start shared storage helper: {error}"), false),
+    };
+    fs::write(&metadata, format!(
+        "state={state}\ncommand_result={command_result}\nhelper_status={helper_status}\nreport={}\nerrors={}\n",
+        report.display(), errors.display(),
+    ))?;
+    println!("STORAGE={state} report={} errors={} metadata={}",
+        report.display(), errors.display(), metadata.display());
+    Ok(successful)
+}
+
+fn shell_hook(command: &str, bundle: &Path, pid: u32) -> std::io::Result<std::process::ExitStatus> {
+    let mut hook = Command::new("/bin/bash");
+    hook.args(["-lc", command])
+        .env("BUNDLE", bundle)
+        .env("TARGET_PID", pid.to_string());
+    inherit_owner_lease(&mut hook);
+    hook.status()
 }
 
 fn find_pid(pid: Option<u32>, pattern: Option<&str>) -> Result<u32> {
@@ -960,6 +1054,7 @@ impl StraceAttacher {
                             "strace",
                             "-f",
                             "-ttt",
+                            "-i",
                             "-yy",
                             "-e",
                             &format!("trace={expr}"),
@@ -1020,11 +1115,13 @@ impl StraceAttacher {
     /// Must run before any gdb capture (a process can only have one tracer).
     fn detach(self) {
         self.stop.store(true, Ordering::Relaxed);
+        // The poller may still be spawning or publishing its tracer handle.
+        // Join it first so no writer can appear after we take the final handle.
+        let _ = self.handle.join();
         if let Some(mut child) = self.child.lock().unwrap().take() {
             let _ = nix::sys::signal::kill(Pid::from_raw(child.id() as i32), Signal::SIGINT);
             let _ = child.wait();
         }
-        let _ = self.handle.join();
     }
 }
 
@@ -1044,6 +1141,10 @@ fn spawn(
         .envs(extra_env)
         .stdout(stdout)
         .stderr(stderr);
+    if OWNER_LEASE_FD.get().is_some() {
+        // This payload is a runtime child, not a nested lifecycle owner.
+        process.env_remove("WEST_TEST_PREFIX_LEASE").env_remove("WEST_TEST_PREFIX_LEASE_FD");
+    }
     if let Some(cwd) = &args.cwd {
         process.current_dir(expand_home(cwd));
     }
@@ -1079,7 +1180,7 @@ fn run_experiment(
     env_lines.sort();
     fs::write(bundle.join("env.txt"), env_lines.join("\n") + "\n")?;
     if let Some(command) = &args.prepare_command {
-        shell_hook(command, &bundle, 0);
+        let _ = shell_hook(command, &bundle, 0);
     }
     // Validate the observation plan before anything is spawned or prepared: an invalid plan that is
     // discovered afterwards leaves a payload running with no way to explain what was asked for.
@@ -1363,16 +1464,20 @@ fn run_experiment(
             }
         }
         if let Some(command) = &args.capture_command {
-            shell_hook(command, &bundle, child.id());
+            let _ = shell_hook(command, &bundle, child.id());
         }
         if result != "stall" || !args.leave_running_on_stall {
             if let Some(command) = &args.terminate_command {
-                shell_hook(command, &bundle, child.id());
-                fs::write(bundle.join("cleanup-status.txt"), "ran terminate-command\n")?;
+                let cleanup = match shell_hook(command, &bundle, child.id()) {
+                    Ok(status) => format!("authority=terminate-hook state={} status={} product_shutdown_verified=false external_rescue=unknown\n",
+                        if status.success() { "hook-completed" } else { "hook-failed" }, status),
+                    Err(error) => format!("authority=terminate-hook state=hook-error error={error} product_shutdown_verified=false external_rescue=unknown\n"),
+                };
+                fs::write(bundle.join("cleanup-status.txt"), cleanup)?;
             } else {
                 fs::write(
                     bundle.join("cleanup-status.txt"),
-                    terminate_group(&mut child)?,
+                    format!("authority=host-process-group state=externally-rescued product_shutdown_verified=false\n{}", terminate_group(&mut child)?),
                 )?;
             }
         }
@@ -1380,14 +1485,12 @@ fn run_experiment(
     if (result != "stall" || !args.leave_running_on_stall)
         && let Some(command) = &args.cleanup_command
     {
-        shell_hook(command, &bundle, child.id());
+        let _ = shell_hook(command, &bundle, child.id());
     }
     Ok((bundle, result))
 }
 
-fn darling_command(args: &DarlingArgs) -> Result<(Vec<String>, HashMap<String, String>)> {
-    let darling = expand_home(&args.darling);
-    let dprefix = expand_home(&args.dprefix);
+fn darling_command(args: &DarlingArgs, darling: &Path, dprefix: &Path) -> Result<(Vec<String>, HashMap<String, String>)> {
     let mut env = HashMap::new();
     env.insert("DPREFIX".to_owned(), dprefix.display().to_string());
     let mut command = vec![
@@ -1407,22 +1510,131 @@ fn darling_command(args: &DarlingArgs) -> Result<(Vec<String>, HashMap<String, S
     Ok((command, env))
 }
 
-fn prepare_darling(args: &DarlingArgs) -> Result<()> {
-    let darling = expand_home(&args.darling);
-    let dprefix = expand_home(&args.dprefix);
-    let _ = Command::new(&darling)
-        .env("DPREFIX", &dprefix)
-        .arg("shutdown")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    thread::sleep(Duration::from_secs(3));
-    if let Some(server) = &args.install_server {
-        let destination = darling
-            .parent()
-            .context("invalid --darling path")?
-            .join("darlingserver");
-        fs::copy(expand_home(server), destination).context("failed to install darlingserver")?;
+fn selected_darling(args: &DarlingArgs) -> Result<PathBuf> {
+    if let Some(launcher) = &args.darling {
+        let launcher = fs::canonicalize(expand_home(launcher)).context("resolve --darling")?;
+        let root = launcher.parent().and_then(Path::parent).context("installed launcher root")?;
+        if launcher.file_name().and_then(|name| name.to_str()) != Some("darling")
+            || launcher.parent().and_then(Path::file_name).and_then(|name| name.to_str()) != Some("bin") {
+            bail!("--darling must identify ROOT/bin/darling from an ordinary installation");
+        }
+        if RUNTIME_ROOT.get().is_none() {
+            select_runtime_root(root.to_path_buf())?;
+        }
+        if installed_runtime_root()? != root {
+            bail!("--darling and --runtime-root select different installations");
+        }
+        return Ok(launcher);
+    }
+    Ok(installed_runtime_root()?.join("bin/darling"))
+}
+
+static OWNER_LEASE_FD: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+
+// Only owner helpers/hooks inherit the descriptor. All other execs see CLOEXEC.
+pub(crate) fn inherit_owner_lease(command: &mut Command) {
+    if let Some(&fd) = OWNER_LEASE_FD.get() {
+        unsafe {
+            command.pre_exec(move || {
+                let flags = nix::libc::fcntl(fd, nix::libc::F_GETFD);
+                if flags < 0 || nix::libc::fcntl(fd, nix::libc::F_SETFD, flags & !nix::libc::FD_CLOEXEC) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+}
+
+/// Use the shared Python lifecycle owner, borrowing only its validated inherited
+/// descriptor. Runtime/debugger execs close it; known owner hooks retain it.
+pub(crate) struct PrefixScope {
+    child: Child,
+}
+
+impl PrefixScope {
+    pub(crate) fn acquire(prefix: &Path, runtime: &Path, require_idle: bool) -> Result<Self> {
+        if std::env::var_os("WEST_TEST_PREFIX_LEASE").is_some() {
+            let fd: i32 = std::env::var("WEST_TEST_PREFIX_LEASE_FD")
+                .unwrap_or_else(|_| "8".to_string()).parse().context("prefix lease descriptor")?;
+            if fd < 3 { bail!("prefix lease descriptor must not be a standard stream"); }
+            unsafe {
+                let flags = nix::libc::fcntl(fd, nix::libc::F_GETFD);
+                if flags < 0 || nix::libc::fcntl(fd, nix::libc::F_SETFD, flags | nix::libc::FD_CLOEXEC) < 0 {
+                    return Err(std::io::Error::last_os_error()).context("protecting owner lease descriptor");
+                }
+            }
+            let _ = OWNER_LEASE_FD.set(fd);
+        }
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut helper = Command::new("python3");
+        helper.args(["-B", "-c", r#"
+import os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from west_commands.test_prefix import PrefixLifecycleOwner, validate_borrowed_prefix_lease
+from west_commands.prefix_repair import cleanup_prefix_mounts, darling_init_pid_is_usable
+from west_commands.runtime_install import resolve_runtime
+p = Path(sys.argv[2])
+validate_borrowed_prefix_lease(sys.argv[2])
+r = resolve_runtime(sys.argv[3])
+log = lambda message: print(message, file=sys.stderr, flush=True)
+owner = PrefixLifecycleOwner(
+    resolve_launcher=lambda _: str(r.launcher),
+    prefix_env=lambda raw: r.environment(raw),
+    cleanup_mounts=cleanup_prefix_mounts,
+    init_pid_is_usable=darling_init_pid_is_usable,
+    inf=log, err=log, wrn=log,
+)
+with owner.locked(sys.argv[2]) as lease_fd:
+    os.set_inheritable(lease_fd, False)
+    # Shutdown launches runtime children, not nested lifecycle owners.
+    os.environ.pop("WEST_TEST_PREFIX_LEASE", None)
+    os.environ.pop("WEST_TEST_PREFIX_LEASE_FD", None)
+    r.environment(sys.argv[2])
+    if sys.argv[4] == "idle" and owner.process_snapshot(p):
+        raise RuntimeError("guest state is still owned by live runtime processes")
+    print("LEASED", flush=True)
+    action = sys.stdin.readline().strip()
+    if action == "shutdown" or (sys.argv[4] == "lifecycle" and action != "retain"):
+        sys.exit(0 if owner.shutdown(p) else 1)
+"#])
+            .arg(workspace).arg(prefix).arg(runtime).arg(if require_idle { "idle" } else { "lifecycle" })
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+        inherit_owner_lease(&mut helper);
+        let mut child = helper.spawn().context("starting shared prefix lifecycle owner")?;
+        let mut ready = String::new();
+        use std::io::BufRead as _;
+        std::io::BufReader::new(child.stdout.take().context("prefix owner stdout")?)
+            .read_line(&mut ready)?;
+        if ready.trim() != "LEASED" {
+            let status = child.wait()?;
+            bail!("shared prefix owner refused {}: {status}", prefix.display());
+        }
+        Ok(Self { child })
+    }
+
+    fn shutdown(&mut self) -> Result<bool> {
+        use std::io::Write as _;
+        writeln!(self.child.stdin.as_mut().context("prefix owner stdin")?, "shutdown")?;
+        self.child.stdin.take();
+        Ok(self.child.wait()?.success())
+    }
+}
+
+impl Drop for PrefixScope {
+    fn drop(&mut self) {
+        self.child.stdin.take();
+        let _ = self.child.wait();
+    }
+}
+
+fn prepare_darling(darling: &Path, dprefix: &Path) -> Result<()> {
+    if !diag::prefix_processes(&dprefix).is_empty() {
+        let status = Command::new(darling).env("DPREFIX", &dprefix).arg("shutdown").status()?;
+        if !status.success() || !diag::prefix_processes(&dprefix).is_empty() {
+            bail!("product shutdown did not stop the selected guest prefix {}", dprefix.display());
+        }
     }
     Ok(())
 }
@@ -1496,6 +1708,9 @@ fn main() -> Result<ExitCode> {
             return Ok(if e.use_stderr() { ExitCode::from(2) } else { ExitCode::SUCCESS });
         }
     };
+    if let Some(root) = cli.runtime_root.as_ref() {
+        select_runtime_root(root.clone())?;
+    }
     let mut transcript_path: Option<PathBuf> = None;
     {
         use std::io::Write;
@@ -1569,14 +1784,32 @@ fn main() -> Result<ExitCode> {
     // The run/capture path announces its bundle before the payload starts, so the announcement is
     // available for a hang instead of only for a finished run; do not print a second, later copy.
     let announced_early = matches!(cli.command, RunnerCommand::Run(_) | RunnerCommand::Capture(_));
+    let (owns_bundle, can_retain_payload) = match &cli.command {
+        RunnerCommand::Run(args) => (true, args.common.leave_running_on_stall),
+        RunnerCommand::Darling(args) => (true, args.common.leave_running_on_stall),
+        RunnerCommand::Capture(_) => (true, false),
+        RunnerCommand::Signal(_) => (false, false),
+        RunnerCommand::Diag(_) => unreachable!("diag dispatched before the bundle machinery"),
+    };
     let (bundle, result) = match cli.command {
         RunnerCommand::Run(args) => {
             let command = args.common.command.clone();
             run_experiment(&args.common, command, HashMap::new())?
         }
         RunnerCommand::Darling(mut args) => {
-            prepare_darling(&args)?;
+            let darling = selected_darling(&args)?;
             let dprefix = expand_home(&args.dprefix);
+            // This route itself owns a lifecycle, unlike generic `run`. Reexec
+            // under the shared CLI so nested managed hooks can borrow the lease.
+            if std::env::var_os("WEST_TEST_PREFIX_LEASE").is_none() {
+                let owner = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../west_commands/test_prefix.py");
+                let error = Command::new("python3").arg("-B").arg(owner)
+                    .arg("--prefix").arg(&dprefix).arg("--")
+                    .arg(std::env::current_exe()?).args(std::env::args_os().skip(1)).exec();
+                return Err(error).context("entering shared prefix lifecycle owner");
+            }
+            let mut scope = PrefixScope::acquire(&dprefix, installed_runtime_root()?, false)?;
+            prepare_darling(&darling, &dprefix)?;
             if args.common.stall_log.is_none()
                 && (args.common.stall_pattern.is_some() || args.common.stall_seconds.is_some())
             {
@@ -1587,12 +1820,24 @@ fn main() -> Result<ExitCode> {
                     "DPREFIX={} {} shutdown",
                     shell_escape::escape(Cow::Owned(dprefix.display().to_string())),
                     shell_escape::escape(Cow::Owned(
-                        expand_home(&args.darling).display().to_string()
+                        darling.display().to_string()
                     ))
                 ));
             }
-            let (command, env) = darling_command(&args)?;
-            run_experiment(&args.common, command, env)?
+            let (command, env) = darling_command(&args, &darling, &dprefix)?;
+            let outcome = run_experiment(&args.common, command, env);
+            if args.common.leave_running_on_stall
+                && matches!(&outcome, Ok((_, "stall"))) {
+                use std::io::Write as _;
+                writeln!(scope.child.stdin.as_mut().context("prefix owner stdin")?, "retain")?;
+                outcome?
+            } else {
+                let clean = scope.shutdown()?;
+                let (bundle, result) = outcome?;
+                fs::write(bundle.join("prefix-cleanup-status.txt"),
+                    format!("authority=shared-prefix-owner product_shutdown_verified={clean}\n"))?;
+                (bundle, if clean { result } else { "failed" })
+            }
         }
         RunnerCommand::Capture(args) => {
             let pid = find_pid(args.pid, args.pattern.as_deref())?;
@@ -1640,17 +1885,51 @@ fn main() -> Result<ExitCode> {
                 let pgid = getpgid(Some(Pid::from_raw(pid as i32)))?;
                 killpg(pgid, signal)?;
             } else {
+                #[cfg(target_os = "linux")]
+                {
+                    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+                    let descriptor = unsafe {
+                        nix::libc::syscall(nix::libc::SYS_pidfd_open, pid as i32, 0)
+                    } as i32;
+                    if descriptor < 0 {
+                        return Err(std::io::Error::last_os_error())
+                            .context(format!("pin signal target pid={pid}"));
+                    }
+                    let descriptor = unsafe { OwnedFd::from_raw_fd(descriptor) };
+                    if unsafe {
+                        nix::libc::syscall(nix::libc::SYS_pidfd_send_signal,
+                            descriptor.as_raw_fd(), signal as i32,
+                            std::ptr::null::<nix::libc::siginfo_t>(), 0)
+                    } < 0 {
+                        return Err(std::io::Error::last_os_error())
+                            .context(format!("signal pinned target pid={pid}"));
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
                 nix::sys::signal::kill(Pid::from_raw(pid as i32), signal)?;
             }
+            println!("SIGNAL pid={pid} signal={signal:?} group={}", args.group);
             (PathBuf::from("."), "signaled")
         }
     };
-    if !announced_early {
+    if owns_bundle && !announced_early {
         println!("BUNDLE={}", bundle.display());
     }
     println!("RESULT={result}");
+    let storage_ok = if owns_bundle {
+        match finalize_bundle_storage(&bundle, result, result == "stall" && can_retain_payload) {
+            Ok(successful) => successful,
+            Err(error) => {
+                eprintln!("STORAGE=unavailable bundle={} reason={error:#}; inspect retained raw/indexed payloads",
+                    bundle.display());
+                false
+            }
+        }
+    } else {
+        true
+    };
     if matches!(result, "exited" | "captured" | "signaled") {
-        Ok(ExitCode::SUCCESS)
+        Ok(if storage_ok { ExitCode::SUCCESS } else { ExitCode::from(3) })
     } else {
         bail!("{result}")
     }
@@ -1832,3 +2111,4 @@ fn sample_threads(pid: u32) -> Vec<ThreadState> {
     }
     out
 }
+

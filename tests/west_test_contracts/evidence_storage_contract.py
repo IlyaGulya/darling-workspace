@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import subprocess
+import struct
 import sys
 import tempfile
 import unittest
@@ -15,13 +16,15 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "west_commands"))
 
 from west_commands import evidence_storage as storage
 from west_commands.test_runtime_evidence import RuntimeEvidenceStore
+from west_commands.test_store import durable_subdir
 
 CLI = ROOT / "scripts/darling-evidence.py"
 PAYLOAD = b"unique diagnostic witness 0123456789\n" * 8192
-SCRATCH = ROOT / ".west-state/supervisor-tooling-20261025/storage-contracts"
+SCRATCH = durable_subdir(ROOT.parent, "test-scratch") / "evidence-storage"
 
 
 class EvidenceStorageContract(unittest.TestCase):
@@ -177,6 +180,97 @@ class EvidenceStorageContract(unittest.TestCase):
             with storage.open_payload(corrupt) as reader:
                 reader.read()
 
+    def test_optional_bundle_streams_distinguish_absence_from_lost_indexed_bytes(self) -> None:
+        from west_commands.test_guest_c import failure_phase_from_debug_bundle
+
+        stderr = self.payload("stderr.log", b"WEST_GUEST_STAGE=upload\n" + PAYLOAD)
+        reference = f"BUNDLE={self.root}\n"
+        self.assertEqual(failure_phase_from_debug_bundle(reference), "setup")
+        with self.assertRaises(storage.PayloadNotFoundError):
+            with storage.open_payload(self.root / "stdout.log"):
+                self.fail("absent optional stream unexpectedly opened")
+        for name in ("stdout.log", "stdout.log.zst"):
+            malformed = self.root / name
+            malformed.mkdir()
+            with self.assertRaises(storage.EvidenceError) as invalid:
+                with storage.open_payload(self.root / "stdout.log"):
+                    self.fail("non-regular optional payload unexpectedly opened")
+            self.assertNotIsInstance(invalid.exception, storage.PayloadNotFoundError)
+            self.assertIsNone(failure_phase_from_debug_bundle(reference))
+            malformed.rmdir()
+        self.assertEqual(self.archive(stderr)["action"], "compressed")
+        self.assertEqual(failure_phase_from_debug_bundle(reference), "setup")
+
+        stderr.with_name(stderr.name + ".zst").unlink()
+        with self.assertRaises(storage.EvidenceError) as failure:
+            with storage.open_payload(stderr):
+                self.fail("lost indexed stream unexpectedly opened")
+        self.assertNotIsInstance(failure.exception, storage.PayloadNotFoundError)
+        self.assertIsNone(failure_phase_from_debug_bundle(reference))
+
+    def test_bundle_consumers_use_verified_logical_bytes_before_and_after_compression(self) -> None:
+        from west_commands.test_diagnostics import verify_exact_capture
+        from west_commands.test_guest_c import failure_phase_from_debug_bundle
+        from west_commands.test_verdict_cache import bundle_stdout_digest
+
+        stdout_bytes = b"MACHO_EXACT_GUEST_READY\nWEST_GUEST_STAGE=run\n" + PAYLOAD
+        stderr_bytes = b"WEST_GUEST_STAGE=run\n" + PAYLOAD
+        stdout = self.payload("stdout.log", stdout_bytes)
+        stderr = self.payload("stderr.log", stderr_bytes)
+        self.payload("exit-status.txt", b"42\n")
+        self.payload("timeout.txt", b"expected diagnostic deadline\n")
+        exact = self.root / "exact"
+        exact.mkdir()
+        image = b"\xcf\xfa\xed\xfe" + b"synthetic captured-image parser input\n" + PAYLOAD
+        (exact / "sleep.macho").write_bytes(image)
+        core = bytearray(128)
+        core[:7] = b"\x7fELF\x02\x01\x01"
+        struct.pack_into("<HHI", core, 16, 4, 62, 1)
+        struct.pack_into("<Q", core, 32, 64)
+        struct.pack_into("<HHH", core, 52, 64, 56, 1)
+        struct.pack_into("<IIQQQQQQ", core, 64, 1, 4, 120, 0x1000, 0, 8, 8, 4096)
+        core[120:] = b"coredata"
+        core.extend(PAYLOAD)
+        (exact / "sleep.core").write_bytes(core)
+        (exact / "gdb.txt").write_bytes(b"rip = 0x1000\n" + PAYLOAD)
+        (exact / "manifest.json").write_text(json.dumps({
+            "complete": True,
+            "processes": [{
+                "pid": 123,
+                "images": [{
+                    "complete": True,
+                    "path": "/bin/sleep",
+                    "file": "sleep.macho",
+                    "sha256": hashlib.sha256(image).hexdigest(),
+                }],
+                "core": {"file": "sleep.core"},
+            }],
+        }))
+        reference = f"BUNDLE={self.root}\n"
+        expected_digest = hashlib.sha256(stdout_bytes).hexdigest()
+        expected_processes = [{"pid": 123, "image": "sleep.macho", "core": "sleep.core"}]
+        for compressed in (False, True):
+            if compressed:
+                for payload in (stdout, stderr, exact / "sleep.macho", exact / "sleep.core", exact / "gdb.txt"):
+                    self.assertEqual(self.archive(payload)["action"], "compressed")
+                    self.assertFalse(payload.exists())
+            self.assertEqual(bundle_stdout_digest(self.root), expected_digest)
+            self.assertEqual(failure_phase_from_debug_bundle(reference), "run")
+            self.assertEqual(verify_exact_capture(self.root)["guest_processes"], expected_processes)
+
+        # The frame still decodes and contains every positive marker, but the
+        # committed logical digest is wrong. No consumer may accept bytes
+        # yielded before open_payload performs its context-exit validation.
+        index_path = self.root / storage.INDEX_NAME
+        index = json.loads(index_path.read_text())
+        index["files"][stdout.name]["sha256"] = "0" * 64
+        index_path.write_text(json.dumps(index))
+        self.assertIsNone(bundle_stdout_digest(self.root))
+        self.assertIsNone(failure_phase_from_debug_bundle(reference))
+        with self.assertRaises(storage.EvidenceError):
+            verify_exact_capture(self.root)
+        self.assertIsNone(bundle_stdout_digest(None))
+
     def test_symlink_addition_is_rejected_without_touching_sealed_bytes(self) -> None:
         path = self.payload()
         self.cli("compress", path)
@@ -323,7 +417,13 @@ class EvidenceStorageContract(unittest.TestCase):
         tracked = self.payload("archive/tracked.log")
         subprocess.run(["git", "-C", str(self.root), "add", "archive/tracked.log"], check=True)
         untouched = [tracked]
-        for name in ("source/compile.log", "build/build.log", "prefix/server.log", "cache/cache.log", "README.txt", "manifest.json", "proof.sha256", "source.c", "rescue.bundle"):
+        for name in (
+            "source/compile.log", "build/build.log", "prefix/server.log", "cache/cache.log",
+            "README.txt", "manifest.json", "proof.sha256", "source.c", "rescue.bundle",
+            "command.txt", "env.txt", "pid.txt", "target-pid.txt", "exit-status.txt",
+            "cleanup-status.txt", "prefix-cleanup-status.txt", "attach-strace.txt",
+            "fatal-targets.txt", "evidence-manifest",
+        ):
             untouched.append(self.payload("archive/" + name))
         external = self.root / "elsewhere"
         external.mkdir()

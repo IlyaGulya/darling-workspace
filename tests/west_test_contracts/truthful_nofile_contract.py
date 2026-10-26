@@ -1,32 +1,9 @@
 #!/usr/bin/env python3
-"""Contract for the truthful-no-raise RLIMIT_NOFILE architecture (dar-dar6x4-perf-5dq.34).
+"""Measure inherited NOFILE limits in a real installed Darling, without source-text assertions.
 
-The architecture decision is that DarlingServer keeps the RLIMIT_NOFILE it inherited and never raises it, so
-the inherited limit is authoritative for the server and every descendant.
-
-Two layers, and each says which one it ran:
-
-  AUDIT    always runnable, no prefix needed. The server must not raise the limit (no setrlimit on
-           RLIMIT_NOFILE, no /proc/sys/fs/nr_open read), the requirement it checks must be DERIVED from
-           measured role peaks rather than pasted from the observed boot wall, and the launcher must be able
-           to notice a dead server (a reaped child, not kill(pid, 0), which succeeds for a zombie).
-
-  RUNTIME  runs only when DW_NOFILE_PREFIX is set, because it needs a real bootable prefix. It proves the
-           behavior the audit can only read:
-             - a supported limit boots and the guest runs;
-             - every prefix-owned process, including the guest command, holds EXACTLY the inherited value
-               (this is the measurement that distinguishes a raised server from a truthful one, and it is
-               why the limit is lowered rather than assumed);
-             - an insufficient limit gives one deterministic diagnostic (inherited value, required value,
-               reason), a normal non-zero exit, no signal, no guest process, and fails fast instead of
-               waiting out the shellspawn timeout.
-
-  MATRIX   the FD-slope matrix is measured separately (scripts/darling-fd-slope.sh) because it needs the
-           workload asset staged inside the prefix; this contract does not stand in for it.
-
-Exits 0 when every layer it ran passed, non-zero otherwise.
+Requires DARLING_RUNTIME_ROOT and an explicitly owned, prepared DW_NOFILE_PREFIX.
+No selection is a formal SKIP, not host/runtime coverage. The FD-slope matrix is separate.
 """
-
 from __future__ import annotations
 
 import os
@@ -37,246 +14,128 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
-FAILURES: list[str] = []
-RAN: list[str] = []
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from west_commands.runtime_install import resolve_runtime
+from west_commands.test_prefix import prefix_lease, rootless_prefix_process_snapshot
 
-SUPPORTED_LIMIT = 256      # above the derived requirement, and low enough that a raise would be visible
-INSUFFICIENT_LIMIT = 32    # below the derived requirement
+SUPPORTED_LIMIT = 256
+INSUFFICIENT_LIMIT = 32
 GUEST_MARKER = "NOFILE-CONTRACT-GUEST-RAN"
 
 
-def fail(message: str) -> None:
-    FAILURES.append(message)
-    print(f"FAIL {message}")
-
-
-def ok(message: str) -> None:
-    print(f"ok   {message}")
-
-
-def skip(message: str) -> None:
-    print(f"SKIP {message}")
-
-
-def _strip_comments(text: str) -> str:
-    """Drop C/C++ comments so an audit matches CODE, not prose that explains what was removed."""
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-    return re.sub(r"//[^\n]*", "", text)
-
-
-def source_tree() -> Path | None:
-    """The West topdir is the manifest repository's parent."""
-    manifest_root = Path(__file__).resolve().parents[2]
-    darling = manifest_root.parent / "darling"
-    return darling if (darling / "src").is_dir() else None
-
-
-def audit_layer() -> None:
-    darling = source_tree()
-    if darling is None:
-        skip("audit: no darling source tree beside the manifest repository")
-        return
-    RAN.append("audit")
-
-    server = darling / "src/external/darlingserver/src/darlingserver.cpp"
-    launcher = darling / "src/startup/darling.c"
-    for path in (server, launcher):
-        if not path.is_file():
-            fail(f"audit: {path} is missing")
-            return
-    server_text = _strip_comments(server.read_text())
-    launcher_text = _strip_comments(launcher.read_text())
-
-    # 1. The server must not raise the limit, by any route.
-    if re.search(r"setrlimit\s*\(\s*RLIMIT_NOFILE", server_text):
-        fail("audit: darlingserver still calls setrlimit(RLIMIT_NOFILE)")
-    else:
-        ok("audit: darlingserver never calls setrlimit(RLIMIT_NOFILE)")
-    if "nr_open" in server_text:
-        fail("audit: darlingserver still reads /proc/sys/fs/nr_open")
-    else:
-        ok("audit: darlingserver does not read /proc/sys/fs/nr_open")
-
-    # 2. The requirement must be derived from measured role peaks, not the observed boot wall.
-    if "kMinimumInheritedNofile" not in server_text:
-        fail("audit: the server has no inherited-limit requirement constant")
-    elif "kLargestRoleDescriptorPeak" not in server_text:
-        fail("audit: the requirement constant is not derived from a role-peak constant")
-    else:
-        ok("audit: the requirement is derived from a role-peak constant")
-    if re.search(r"kMinimumInheritedNofile\s*=\s*(59|64)\s*;", server_text):
-        fail("audit: the requirement is a pasted literal instead of a derivation")
-    else:
-        ok("audit: the requirement is not a pasted literal")
-
-    # 3. The launcher must be able to see a dead server: kill(pid, 0) succeeds for a zombie.
-    if "waitpid" not in launcher_text:
-        fail("audit: the launcher liveness check does not reap, so a dead server looks alive")
-    else:
-        ok("audit: the launcher reaps the server child before judging liveness")
-    if "shellspawn did not become ready" not in launcher_text:
-        fail("audit: the launcher readiness message changed; review this contract")
-    else:
-        ok("audit: the launcher still reports a shellspawn readiness timeout (unchanged path)")
-
-
 def _watch_limits(prefix: Path, stop: threading.Event, seen: dict[str, set[int]]) -> None:
-    """Record every soft RLIMIT_NOFILE observed in a prefix-owned process, per role."""
-    prefix_text = str(prefix)
     while not stop.is_set():
-        for entry in Path("/proc").iterdir():
-            if not entry.name.isdigit():
-                continue
+        for row in rootless_prefix_process_snapshot(prefix):
+            process = Path("/proc") / row.split(" ", 1)[0]
             try:
-                exe = os.readlink(entry / "exe")
+                role = Path(os.readlink(process / "exe").removesuffix(" (deleted)")).name
+                limits = (process / "limits").read_text()
             except OSError:
                 continue
-            if not exe.startswith(prefix_text):
-                continue
-            role = Path(exe).name
-            try:
-                cmdline = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
-            except OSError:
-                cmdline = ""
-            if "ring_mach_msg_test" in cmdline or "/bin/bash" in cmdline or "darling" == role:
-                role = role if role != "mldr" else "guest"
-            try:
-                limits_text = (entry / "limits").read_text()
-            except OSError:
-                continue
-            match = re.search(r"Max open files\s+(\d+)\s+(\d+)", limits_text)
+            if role == "mldr":
+                role = "guest"
+            match = re.search(r"Max open files\s+(\d+)\s+(\d+)", limits)
             if match:
                 seen.setdefault(role, set()).add(int(match.group(1)))
         stop.wait(0.1)
 
 
-def run_guest(prefix: Path, limit: int, timeout: float) -> tuple[int, str, float, dict[str, set[int]]]:
-    """Boot through the launcher with the inherited `limit`, and witness the limits it propagates.
+def _cleanup(runtime, prefix: str, environment: dict[str, str]) -> int:
+    result = subprocess.run(
+        [str(ROOT / "scripts/prefix-cleanup.sh"), "--runtime-root", str(runtime.root),
+         "--prefix", prefix, "--settle", "1"],
+        env=environment, capture_output=True, text=True, timeout=90, check=False,
+    )
+    print(result.stdout, end="")
+    print(result.stderr, end="", file=sys.stderr)
+    return result.returncode
 
-    The limit is lowered by a wrapper shell before exec, so it applies to the launcher -- and therefore to
-    everything the launcher spawns -- without touching this contract's own limit. A shell wrapper is used
-    deliberately instead of preexec_fn: this process has a sampling thread running, and Python documents
-    preexec_fn as deadlock-prone in the presence of threads (measured here as a 900s hang with no output).
-    """
-    cleanup = prefix.parent / "darling-workspace/scripts/prefix-cleanup.sh"
-    if cleanup.is_file():
-        subprocess.run(
-            ["bash", str(cleanup), "--prefix", str(prefix), "--settle", "2"],
-            capture_output=True, check=False, timeout=180,
-        )
-    env = dict(os.environ)
-    env.update({
-        "DPREFIX": str(prefix),
-        "DARLING_PREFIX": str(prefix),
-        "DARLING_LAUNCHER": str(prefix / "bin/darling"),
-        "DARLING_ROOTLESS": "1",
-        "DARLING_NOOVERLAYFS": "1",
-        "DARLING_EUNION": "1",
-        "DARLING_ROOTLESS_SHELLSPAWN_READY_TIMEOUT_MS": "30000",
-        "DARLING_SERVER_MODE": "balanced",
-    })
 
+def run_guest(runtime, prefix: str, limit: int) -> tuple[int, str, float, dict[str, set[int]], int]:
+    environment = runtime.environment(prefix)
+    environment["WEST_TEST_PREFIX_LEASE"] = prefix
+    if _cleanup(runtime, prefix, environment):
+        raise RuntimeError("initial prefix cleanup failed; refusing to launch")
     seen: dict[str, set[int]] = {}
     stop = threading.Event()
-    watcher = threading.Thread(target=_watch_limits, args=(prefix, stop, seen), daemon=True)
-    watcher.start()
-
-    # Capture to a FILE, not a pipe. The rootless server outlives the guest command and inherits stderr, so
-    # a pipe is never closed by it: a pipe-based communicate() was measured to hang past its own timeout and
-    # then hang again in the un-timed communicate() after kill(). The launcher itself does exit, so poll it.
-    out_path = Path(tempfile.mkstemp(prefix="nofile-contract-", suffix=".out")[1])
+    watcher = threading.Thread(target=_watch_limits, args=(Path(prefix), stop, seen), daemon=True)
+    state = Path(os.environ.get("DW_STATE_ROOT", str(ROOT.parent / ".west-state"))) / "contracts/nofile"
+    state.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=f"limit-{limit}-", suffix=".log", dir=state)
+    output_path = Path(name)
     started = time.monotonic()
-    with out_path.open("wb") as sink:
-        proc = subprocess.Popen(
-            [
-                "/bin/sh", "-c",
-                f'ulimit -S -n {limit} 2>/dev/null || exit 99\nexec "$0" shell /bin/bash --login -c "$1"',
-                str(prefix / "bin/darling"),
-                f"sleep 2; echo {GUEST_MARKER}",
-            ],
-            env=env, stdout=sink, stderr=subprocess.STDOUT,
-        )
-        try:
-            rc = proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+    cleanup_rc = 1
+    watcher.start()
+    try:
+        with os.fdopen(descriptor, "wb") as sink:
+            process = subprocess.Popen(
+                ["/bin/sh", "-c",
+                 f'ulimit -S -n {limit} || exit 99\nexec "$0" shell /bin/bash --login -c "$1"',
+                 str(runtime.launcher), f"set -e; sleep 2; printf '%s\\n' {GUEST_MARKER}"],
+                env=environment, stdout=sink, stderr=subprocess.STDOUT,
+            )
             try:
-                rc = proc.wait(timeout=30)
+                rc = process.wait(timeout=180)
             except subprocess.TimeoutExpired:
+                process.send_signal(signal.SIGINT)
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=10)
                 rc = 124
+    finally:
+        stop.set()
+        watcher.join(timeout=5)
+        cleanup_rc = _cleanup(runtime, prefix, environment)
     elapsed = time.monotonic() - started
-    stop.set()
-    watcher.join(timeout=5)
-    output = out_path.read_text(errors="replace")
-    out_path.unlink(missing_ok=True)
-    return rc, output, elapsed, seen
-
-
-def runtime_layer() -> None:
-    prefix_env = os.environ.get("DW_NOFILE_PREFIX")
-    if not prefix_env:
-        skip("runtime: set DW_NOFILE_PREFIX to run the behavior layer")
-        return
-    prefix = Path(prefix_env).resolve()
-    if not (prefix / "bin/darling").is_file():
-        fail(f"runtime: {prefix}/bin/darling is missing; bootstrap the prefix first")
-        return
-    RAN.append("runtime")
-
-    # Supported limit: the guest must run, and every process must hold EXACTLY the inherited value.
-    rc, out, elapsed, seen = run_guest(prefix, SUPPORTED_LIMIT, 180.0)
-    if rc != 0 or GUEST_MARKER not in out:
-        fail(f"runtime: supported-limit boot failed (rc={rc}, {elapsed:.1f}s)")
+    output = output_path.read_text(errors="replace")
+    print(output, end="" if output.endswith("\n") else "\n")
+    if cleanup_rc == 0:
+        output_path.unlink()
     else:
-        ok(f"runtime: supported-limit boot runs the guest (rc=0, {elapsed:.1f}s)")
-    if not seen:
-        fail("runtime: the witness observed no prefix-owned process; the measurement proves nothing")
-    else:
-        raised = {role: sorted(v) for role, v in seen.items() if v != {SUPPORTED_LIMIT}}
-        if raised:
-            fail(f"runtime: some prefix-owned process did not hold the inherited limit: {raised}")
-        else:
-            roles = ", ".join(f"{role}={sorted(v)[0]}" for role, v in sorted(seen.items()))
-            ok(f"runtime: every observed process held the inherited limit ({roles})")
-
-    # Insufficient limit: one diagnostic, non-zero exit, no signal, no guest, and fast.
-    rc, out, elapsed, _ = run_guest(prefix, INSUFFICIENT_LIMIT, 180.0)
-    if rc == 0:
-        fail("runtime: insufficient limit still booted")
-    elif rc in (-signal.SIGILL, -signal.SIGSEGV, 132, 139):
-        fail(f"runtime: insufficient limit died through a signal (rc={rc})")
-    else:
-        ok(f"runtime: insufficient limit exits normally with rc={rc}")
-    for needle, why in (
-        ("Insufficient RLIMIT_NOFILE", "prints the refusal"),
-        (f"the inherited soft limit is {INSUFFICIENT_LIMIT}", "names the inherited soft limit"),
-        ("the bootstrap closure needs", "names the required value"),
-        ("largest role peak", "names the reason"),
-    ):
-        if needle not in out:
-            fail(f"runtime: the diagnostic does not {why}")
-        else:
-            ok(f"runtime: the diagnostic {why}")
-    if GUEST_MARKER in out:
-        fail("runtime: a guest command ran despite the refusal")
-    else:
-        ok("runtime: no guest process ran")
-    if elapsed >= 25.0:
-        fail(f"runtime: the refusal took {elapsed:.1f}s, i.e. it waited out the shellspawn timeout")
-    else:
-        ok(f"runtime: the refusal surfaces promptly ({elapsed:.1f}s)")
+        print(f"retained failed-cleanup output: {output_path}", file=sys.stderr)
+    return rc, output, elapsed, seen, cleanup_rc
 
 
 def main() -> int:
-    audit_layer()
-    runtime_layer()
-    print(f"TRUTHFUL-NOFILE-CONTRACT layers={','.join(RAN) or 'none'} failures={len(FAILURES)}")
-    if not RAN and not FAILURES:
-        print("TRUTHFUL-NOFILE-CONTRACT nothing was executed")
-    return 1 if FAILURES else 0
+    prefix = os.environ.get("DW_NOFILE_PREFIX")
+    if not prefix:
+        print("SKIP truthful NOFILE runtime: select DARLING_RUNTIME_ROOT and owned DW_NOFILE_PREFIX; no coverage executed")
+        return 77
+    try:
+        runtime = resolve_runtime()
+        runtime.environment(prefix)
+        borrowed = os.environ.get("WEST_TEST_PREFIX_LEASE")
+        if borrowed and borrowed != prefix:
+            raise ValueError("borrowed prefix lease does not match DW_NOFILE_PREFIX")
+        lease = nullcontext() if borrowed else prefix_lease(prefix)
+        with lease:
+            rc, output, elapsed, seen, cleanup_rc = run_guest(runtime, prefix, SUPPORTED_LIMIT)
+            if rc or GUEST_MARKER not in output or cleanup_rc:
+                print(f"FAIL supported inherited limit: rc={rc} cleanup_rc={cleanup_rc} elapsed={elapsed:.1f}s")
+                return 1
+            missing = {"darlingserver", "guest"} - seen.keys()
+            changed = {role: sorted(values) for role, values in seen.items() if values != {SUPPORTED_LIMIT}}
+            if missing or changed:
+                print(f"FAIL inherited-limit measurement: missing_roles={sorted(missing)} differing_limits={changed}")
+                return 1
+            print(f"PASS inherited limit {SUPPORTED_LIMIT}: observed={seen}")
+            rc, output, elapsed, _, cleanup_rc = run_guest(runtime, prefix, INSUFFICIENT_LIMIT)
+            if rc == 0 or rc < 0 or 128 <= rc <= 192 or GUEST_MARKER in output or elapsed >= 25 or cleanup_rc:
+                print(f"FAIL insufficient inherited limit: rc={rc} cleanup_rc={cleanup_rc} elapsed={elapsed:.1f}s")
+                return 1
+            print(f"PASS insufficient limit {INSUFFICIENT_LIMIT}: normal nonzero rc={rc}, no guest marker, elapsed={elapsed:.1f}s")
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        print(f"FAIL truthful NOFILE runtime: {error}", file=sys.stderr)
+        return 1
+    print("TRUTHFUL-NOFILE-CONTRACT RUNTIME PASS")
+    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

@@ -26,11 +26,13 @@ cargo build --offline --locked --manifest-path "$CRATE/Cargo.toml"
 BIN="$ROOT/$CRATE/target/debug/darling-debug-runner"
 [ -x "$BIN" ] || { echo "contract: no binary at $BIN" >&2; exit 3; }
 
-MIRROR=$(mktemp -d /tmp/dwdiag-evidence-contract-XXXXXX)
+STATE_ROOT="${DW_STATE_ROOT:-$ROOT/../.west-state}/contracts/dwdiag-evidence"
+mkdir -p "$STATE_ROOT"
+MIRROR=$(mktemp -d "$STATE_ROOT/run.XXXXXX")
 trap 'rm -rf "$MIRROR"' EXIT
 
-# The fixture window is fixed in the year 2000 so every real /tmp/darling-boot-*.log on this host is OUTSIDE it: the
-# table must not depend on what other runs happen to have left behind.
+# The fixed year-2000 window excludes current runs. Only declared log identities
+# may contribute to this fixture's evidence.
 START=946684800
 END=946771200
 INSTRUMENT_LINE='[ulock-wait-park] obj=0x1000 op=wait owner_tid=2 waiter_tid=3'

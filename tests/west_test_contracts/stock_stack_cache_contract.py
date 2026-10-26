@@ -37,18 +37,14 @@ sys.path.insert(0, str(ROOT / "west_commands"))
 
 import test_stock_stack_cache as cache  # noqa: E402
 
-PROFILE = "stock-stack-contract"
-FINGERPRINT = {
-    "schema": 2,
-    "profile": PROFILE,
-    "source-profile": "fixture",
-    "source-lock-sha256": "a" * 64,
-    "source-commits": {"darling": "b" * 40},
-    "patchsets": [{"profile": "fixture", "sha256": "c" * 64, "patches": []}],
-    "runtime-manifest-sha256": "d" * 64,
-    "runtime-profile-definition-sha256": "e" * 64,
-    "launcher-sha256": "f" * 64,
-}
+from runtime_install import InstalledRuntime
+
+FINGERPRINT = {"schema": 1, "launcher-sha256": "f" * 64, "system-image-sha256": "d" * 64}
+
+
+def installed_runtime(root: Path, identity=FINGERPRINT):
+    installation = root / "installed-runtime"
+    return InstalledRuntime(installation, installation / "bin/darling", installation / "libexec/darling", identity)
 CLT_RECEIPT = {"package": "Command_Line_Tools_for_Xcode_13.2", "sha256": "1" * 64}
 FORMULAS = (("lz4", "1.10.0"), ("cmake", "3.31.6"), ("wget", "1.25.0"))
 WORK_TOKEN = "fixture0001"
@@ -76,12 +72,6 @@ def build_prefix(
     """Build a small stand-in for a bootstrapped prefix, with the stack staged."""
 
     prefix = root / "prefix"
-    (prefix / "bin").mkdir(parents=True)
-    (prefix / "bin" / "darling").write_text("#!/bin/sh\nexit 0\n")
-    write_json(
-        prefix / ".west-runtime-profile.json",
-        {"schema": 2, "profile": PROFILE, "source-profile": "fixture", "fingerprint": FINGERPRINT},
-    )
     write_json(prefix / ".west-command-line-tools.json", CLT_RECEIPT)
     developer = prefix / "Library/Developer"
     (developer / "CommandLineTools.apple-clt-13.2/usr/bin").mkdir(parents=True)
@@ -159,14 +149,10 @@ def materialize_stack(prefix: Path, *, work_token: str, ballast: int = 0) -> Pat
 def synthetic_request(root: Path, prefix: Path) -> dict:
     request = cache.stack_request(
         prefix=prefix,
-        manifest_repo=root / "manifest",
-        topdir=root,
-        profile_name=PROFILE,
         environ={},
+        runtime=installed_runtime(root),
     )
-    assert request is not None, (
-        "a prefix with a retained runtime marker and a launcher must yield an identity"
-    )
+    assert request is not None, "a recorded installed runtime must yield an identity"
     return request
 
 
@@ -281,45 +267,19 @@ def exercise(
     finally:
         module.SCHEMA = original_schema
     assert module.request_key(request) == request_key
-    # A prefix that retains a provider is keyed by it, even when the caller has
-    # no profile name -- a guest-runtime-script invocation carries none.
-    nameless = cache.stack_request(
-        prefix=first_prefix,
-        manifest_repo=manifest,
-        topdir=workspace,
-        profile_name=None,
-        environ={},
+    same_install = cache.stack_request(
+        prefix=first_prefix, environ={}, runtime=installed_runtime(workspace),
     )
-    assert nameless is not None, (
-        "a prefix retaining a runtime provider must key without a named profile"
+    assert same_install is not None
+    assert same_install["runtime"] == request["runtime"]
+    different_install = cache.stack_request(
+        prefix=first_prefix, environ={},
+        runtime=installed_runtime(workspace, {**FINGERPRINT, "launcher-sha256": "9" * 64}),
     )
-    assert nameless["runtime"] == request["runtime"]
-    # A caller naming a different provider than the prefix retains reuses
-    # nothing at all.
-    assert (
-        cache.stack_request(
-            prefix=first_prefix,
-            manifest_repo=manifest,
-            topdir=workspace,
-            profile_name="some-other-provider",
-            environ={},
-        )
-        is None
-    ), "a named profile the prefix does not retain must not be keyed"
-    # A prefix with no retained marker and no resolvable definition cannot be
-    # keyed, so its stack is never reused.
-    adrift = build_prefix(workspace / "adrift", stack=False)
-    (adrift / ".west-runtime-profile.json").unlink()
-    assert (
-        cache.stack_request(
-            prefix=adrift,
-            manifest_repo=manifest,
-            topdir=workspace,
-            profile_name=None,
-            environ={},
-        )
-        is None
-    ), "an unknown deployed runtime must not be keyed"
+    assert different_install["runtime"] != request["runtime"]
+    assert cache.stack_request(
+        prefix=first_prefix, environ={}, runtime=installed_runtime(workspace, None),
+    ) is None, "an installation without recorded provenance must not reuse a stack"
 
     # Capture: archive the synthetic stack and publish it atomically.
     context = (
@@ -606,6 +566,31 @@ def exercise(
         raise AssertionError(f"a bound of {bad!r} must be rejected")
 
     exercise_provider(module, workspace, environ)
+    exercise_prepared_resource(module, workspace, environ)
+
+
+def exercise_prepared_resource(module, workspace: Path, environ: dict) -> None:
+    """Preparation hands off pinned inputs, never a completed cache verdict."""
+
+    prefix = build_prefix(workspace / "prepared-inputs")
+    work = prefix / "private/var/tmp" / f"west-homebrew-lz4-{WORK_TOKEN}"
+    (work / "install-roundtrip.ok").unlink()
+    (work / "reuse-roundtrip.ok").unlink()
+    shutil.rmtree(prefix / "usr/local/Cellar")
+    assert module.staged_work_directory(prefix, require_complete=False) == work
+    assert module.staged_work_directory(prefix, require_complete=True) is None
+    command = Command(workspace / "prepared-manifest")
+    command.runtime = installed_runtime(workspace, None)
+    environment = {
+        **environ, "DPREFIX": str(prefix), "DARLING_LAUNCHER": str(command.runtime.launcher),
+        "WEST_STOCK_STACK_CACHE": "off",
+    }
+    with module.stock_stack_context(command, {"requires_resources": ["homebrew-lz4"]}, environment) as prepared:
+        assert prepared["DARLING_HOMEBREW_LZ4_WORK"] == "/" + work.relative_to(prefix).as_posix()
+        assert prepared["DARLING_HOMEBREW_LZ4_INPUTS"] == str(work / "inputs.json")
+        assert "DARLING_HOMEBREW_LZ4_RESTORED" not in prepared
+        assert not (work / "install-roundtrip.ok").exists()
+    assert any("prepared pinned inputs" in line for line in command.lines)
 
 
 class Command:
@@ -615,6 +600,10 @@ class Command:
         self.manifest = SimpleNamespace(repo_abspath=str(manifest))
         self.topdir = manifest
         self.lines: list[str] = []
+        self.runtime = installed_runtime(manifest.parent)
+
+    def _installed_runtime(self):
+        return self.runtime
 
     def inf(self, message: str) -> None:
         self.lines.append(str(message))
@@ -687,8 +676,7 @@ def exercise_provider(module, workspace: Path, environ: dict) -> None:
 
     original = test_homebrew.homebrew_lz4_context
     test_homebrew.homebrew_lz4_context = staging_double
-    # A guest-runtime-script invocation carries no runtime profile; the prefix's
-    # retained provider is the identity the cache keys on.
+    # Writable prefixes share one recorded installed runtime.
     invocation = {
         "name": "stock_stack_provider_contract",
         "requires_resources": ["homebrew-lz4"],
@@ -742,14 +730,14 @@ def exercise_provider(module, workspace: Path, environ: dict) -> None:
             assert any("hit" in line for line in warm_command.lines), warm_command.lines
             assert module.read_stats(store).value("hits") == 1
 
-            # A run that names a provider the prefix does not retain must build
-            # from source instead of restoring another provider's stack.
+            # An installation with unknown provenance never restores a stack.
             mismatched = build_prefix(workspace / "mismatched", stack=False)
             mismatch_command = Command(manifest)
+            mismatch_command.runtime = installed_runtime(workspace, None)
             staging_before = len(staging_calls)
             with test_resources.resource_context(
                 mismatch_command,
-                {**invocation, "runtime_profile": "some-other-provider"},
+                invocation,
                 {
                     "DPREFIX": str(mismatched),
                     "DARLING_LAUNCHER": str(mismatched / "bin/darling"),
@@ -757,10 +745,10 @@ def exercise_provider(module, workspace: Path, environ: dict) -> None:
             ) as staged:
                 assert staged is not None
                 assert "DARLING_HOMEBREW_LZ4_RESTORED" not in staged, (
-                    "a mismatched runtime profile must not restore"
+                    "an installation without identity must not restore"
                 )
             assert len(staging_calls) == staging_before + 1
-            assert any("no deployed-runtime identity" in line for line in mismatch_command.lines), (
+            assert any("no runtime identity" in line for line in mismatch_command.lines), (
                 mismatch_command.lines
             )
 
@@ -771,16 +759,8 @@ def exercise_provider(module, workspace: Path, environ: dict) -> None:
             adopted = build_prefix(workspace / "adopted", stack=True)
             # A different deployed-runtime identity so the restore misses: this arm
             # is about what happens when a snapshot cannot serve the invocation.
-            write_json(
-                adopted / ".west-runtime-profile.json",
-                {
-                    "schema": 2,
-                    "profile": PROFILE,
-                    "source-profile": "fixture",
-                    "fingerprint": {**FINGERPRINT, "runtime-manifest-sha256": "f" * 64},
-                },
-            )
             adopted_command = Command(manifest)
+            adopted_command.runtime = installed_runtime(workspace, {**FINGERPRINT, "system-image-sha256": "8" * 64})
             staging_before = len(staging_calls)
             captures_before = module.read_stats(store).value("captures")
             with test_resources.resource_context(

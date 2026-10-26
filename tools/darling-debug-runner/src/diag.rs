@@ -19,10 +19,12 @@
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use regex::Regex;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::os::unix::ffi::OsStrExt;
 
 #[path = "evidence.rs"]
 mod stored_evidence;
@@ -222,27 +224,21 @@ pub struct SourceArgs {
     /// Source files whose consumption must be proven.
     #[arg(long = "source")]
     sources: Vec<PathBuf>,
-    /// ALSO report the provenance of the run this build would serve: the component source revisions, whether
-    /// they are dirty or untracked, the patch-series identity (profile patches.yml, the profile-composition
-    /// lock and the workspace lock), and the hashes of the artifacts deployed into --prefix.
+    /// Report immutable installed-image provenance and separately identify the selected mutable build.
     ///
-    /// WHY THIS EXISTS: excellent runtime evidence was obtained repeatedly from an untracked scratch source
-    /// tree whose revision matched no branch, so a closed Bead rested on source nobody could reproduce. A run
-    /// may still be useful diagnostically from dirty source, but a run used to close a product Bead, declare
-    /// FINAL acceptance or start the next milestone must be able to prove what it ran. The check is a
-    /// statement, not a repair: it never edits a tree, it only refuses to call a dirty tree canonical.
+    /// This reports identity, not a source repair or a guest acceptance result. Recorded source and
+    /// manifest provenance belong to the installed image; a later build cannot redefine them.
+    /// Workspace source review excludes untracked bytes. Stage explicit new owned source files
+    /// before source check/package rather than treating a review package as a complete checkout.
     #[arg(long)]
     provenance: bool,
-    /// Prefix whose deployed artifacts are hashed for the provenance record.
+    /// Writable guest state, reported separately from the selected installation.
     #[arg(long)]
     prefix: Option<PathBuf>,
-    /// Workspace (manifest) root whose patch-series files identify the profile. Taken from DWDIAG_WORKSPACE.
+    /// Manifest workspace for source identity. Taken from DWDIAG_WORKSPACE.
     #[arg(long)]
     workspace: Option<PathBuf>,
-    /// Profile whose patches.yml and composition lock are part of the provenance record.
-    #[arg(long, default_value = "arch")]
-    profile: String,
-    /// Require a canonical provenance: exit non-zero when the tree is dirty, untracked or unreceipted.
+    /// Require verified installed bytes and recorded clean source/manifest provenance.
     #[arg(long)]
     require_canonical: bool,
     #[arg(long)]
@@ -361,92 +357,33 @@ fn run_build(args: BuildArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// One iteration of the loop this stage actually performs: build, deploy the pair, run the workload, then report
-/// which instruments fired. Written because the same four steps were retyped as a long shell command at every
-/// attempt, with the prefix, the build tree and the artifact pair spelled out each time -- and because a probe
-/// census is a fact about INSTRUMENTS, not about my grep. Defaults come from DWDIAG_BUILD and DWDIAG_PREFIX.
+/// Publish the complete normal product installation into the selected immutable runtime root.
 #[derive(clap::Args, Debug)]
 pub struct DeployArgs {
-    /// Build tree and prefix. Taken from DWDIAG_BUILD / DWDIAG_PREFIX when the flags are absent.
+    /// Configured normal product build; publishing always installs the complete image.
     #[arg(long)]
     build: Option<PathBuf>,
-    #[arg(long)]
-    prefix: Option<PathBuf>,
-    /// Deploy only these components (default: the whole set).
-    #[arg(long = "component", value_delimiter = ',')]
-    component: Vec<String>,
 }
 
-/// The component set a prefix must hold, as ONE unit.
-///
-/// WHY THIS SUBCOMMAND EXISTS, MEASURED: a prefix was left holding an instrumented `bin/darlingserver` from one
-/// build tree while its guest libraries came from another, and the symptom was "Failed to exec launchd: No such file
-/// or directory" -- a boot failure that said nothing about the real cause, cost two hours of deductions drawn from
-/// logs whose workload never ran, and was found only by comparing sha256 sums of the seven components across
-/// prefixes. The paths are the ones `scripts/darling-artifact-manifest.sh` owns (`built_path` / `dest_paths`), so
-/// there is one mapping for both tools and not a second, drifting list.
-const DEPLOY_SET: [(&str, &str, &str); 7] = [
-    ("mldr", "src/startup/mldr/mldr", "libexec/darling/usr/libexec/darling/mldr"),
-    ("dyld", "src/external/dyld/dyld", "usr/lib/dyld"),
-    ("libsystem_kernel", "src/external/xnu/darling/src/libsystem_kernel/libsystem_kernel.dylib", "usr/lib/system/libsystem_kernel.dylib"),
-    ("darlingserver", "src/external/darlingserver/darlingserver", "bin/darlingserver"),
-    ("shellspawn", "src/shellspawn/shellspawn", "usr/libexec/shellspawn"),
-    ("vchroot", "src/vchroot/vchroot", "usr/libexec/darling/vchroot"),
-    ("launchd", "src/launchd/src/launchd", "sbin/launchd"),
-];
-
-/// Deploy the complete component set from ONE build tree, then verify every copy by sha256.
-///
-/// A prefix is only meaningful as a set: the components are built against each other, and a mixture of two builds
-/// boots into a failure that looks like something else. So this copies all of them (or the named subset) and then
-/// re-reads each destination and compares its digest with the source. Verification is not optional here: the whole
-/// point is that "the prefix holds build X" is a claim the caller can trust.
+/// Publish through the normal immutable product build/install authority.
 fn run_deploy(a: DeployArgs) -> Result<ExitCode> {
-    let build = required_path("--build", a.build.clone(), "DWDIAG_BUILD")?;
-    let prefix = required_path("--prefix", a.prefix.clone(), "DWDIAG_PREFIX")?;
-    let mut failures: Vec<String> = Vec::new();
-    let mut deployed: usize = 0;
-
-    for (name, built_rel, dest_rel) in DEPLOY_SET {
-        if !a.component.is_empty() && !a.component.iter().any(|c| c == name) {
-            continue;
-        }
-        let src = build.join(built_rel);
-        if !src.exists() {
-            failures.push(format!("{name}: build tree has no {built_rel}"));
-            println!("DEPLOY {name} MISSING-IN-BUILD {built_rel}");
-            continue;
-        }
-        let dst = prefix.join(dest_rel);
-        if let Some(parent) = dst.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-        }
-        let want = sha256_of(&src)?;
-        install_artifact_into_prefix(src.as_path(), &dst, prefix.as_path())?;
-        let got = sha256_of(&dst)?;
-        let bytes = fs::metadata(&dst).map(|m| m.len()).unwrap_or(0);
-        if want != got {
-            failures.push(format!("{name}: deployed copy differs from source ({want} vs {got})"));
-            println!("DEPLOY {name} VERIFY-FAILED dest={dest_rel} want={want} got={got}");
-        } else {
-            deployed += 1;
-            println!("DEPLOY {name} ok sha={} bytes={} dest={dest_rel}", &want[..12.min(want.len())], bytes);
-        }
-    }
-
-    if failures.is_empty() {
-        println!("DEPLOY-SET ok components={deployed} prefix={} build={}", prefix.display(), build.display());
-    } else {
-        println!("DEPLOY-SET FAILED components={deployed} failures={}", failures.join("; "));
-    }
-    Ok(if failures.is_empty() { ExitCode::SUCCESS } else { ExitCode::from(3) })
+    let build = required_path("--build", a.build, "DWDIAG_BUILD")?;
+    let runtime = crate::runtime_root()?;
+    let status = Command::new("mise")
+        .args(["run", "west", "darling-build", "--build-dir"]).arg(&build)
+        .arg("--runtime-root").arg(runtime).arg("--install").arg("--with-test-data")
+        .status().context("publishing ordinary Darling installation")?;
+    println!("INSTALL runtime-root={} build={} rc={}", runtime.display(), build.display(), status.code().unwrap_or(-1));
+    Ok(if status.success() { ExitCode::SUCCESS } else { ExitCode::from(3) })
 }
 
+/// Publish or explicitly reuse an installed image, run a workload and report instrument observations.
 #[derive(Args, Debug)]
 pub struct CycleArgs {
-    /// Build tree and prefix. Taken from DWDIAG_BUILD / DWDIAG_PREFIX when the flags are absent.
+    /// Configured product build (default DWDIAG_BUILD); optional with --skip-build.
     #[arg(long)]
     build: Option<PathBuf>,
+    /// Writable guest state (default DWDIAG_PREFIX), separate from the runtime installation.
     #[arg(long)]
     prefix: Option<PathBuf>,
     #[arg(long, default_value = "basic")]
@@ -459,11 +396,9 @@ pub struct CycleArgs {
     wait: u64,
     #[arg(long)]
     skip_build: bool,
-    #[arg(long = "target", value_delimiter = ',', default_value = "libsystem_kernel.dylib,dyld")]
+    /// Additional build-only targets before the complete normal product install.
+    #[arg(long = "target", value_delimiter = ',')]
     targets: Vec<String>,
-    /// `NAME=PATH` runtime components to deploy; the default pair is libsystem_kernel and dyld, built together.
-    #[arg(long = "artifact", value_parser = parse_kv, num_args = 0..)]
-    artifact: Vec<(String, String)>,
     #[arg(long = "env", value_parser = parse_kv, num_args = 0..)]
     env: Vec<(String, String)>,
     /// Instrument tags to report per run; omitted reports every registered instrument that fired.
@@ -495,81 +430,50 @@ pub struct CycleArgs {
     /// held by that run and a following run would collide with it.
     #[arg(long)]
     freeze_on_fail: bool,
-    /// Print the FINAL-RUN PROVENANCE WITNESS after the series: component revisions and their dirty/untracked
-    /// state, the patch-series identity, and the hashes of the artifacts actually deployed into the prefix.
+    /// Print selected source and immutable installed-image provenance after the series.
     ///
-    /// WHY IT IS ON THE RUN AND NOT ONLY ON THE SOURCE CHECK: a series is the thing that becomes evidence, and
-    /// a series whose source was untracked cannot support a product claim however clean its verdicts looked.
+    /// Run evidence must identify the actual installed image. A mutable build or source-review package
+    /// cannot replace installation identity or an exercised guest result.
     #[arg(long)]
     provenance: bool,
-    /// Refuse (non-zero exit) when the provenance is not canonical: dirty, untracked or unreceipted source.
+    /// Refuse unverified installed bytes or dirty/unknown recorded source provenance.
     /// Use it for runs that will close a Bead, declare FINAL acceptance, or start the next milestone.
     #[arg(long)]
     require_canonical: bool,
-    /// Profile whose patch-series identity is part of the witness.
-    #[arg(long, default_value = "arch")]
-    profile: String,
 }
 
 fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
-    let build = required_path("--build", args.build.clone(), "DWDIAG_BUILD")?;
+    let build = if args.skip_build {
+        args.build.clone().or_else(|| std::env::var_os("DWDIAG_BUILD").map(PathBuf::from))
+    } else { Some(required_path("--build", args.build.clone(), "DWDIAG_BUILD")?) };
     let prefix = required_path("--prefix", args.prefix.clone(), "DWDIAG_PREFIX")?;
-    if !args.skip_build {
-        let rc = run_build(BuildArgs {
-            build: Some(build.clone()),
-            targets: args.targets.clone(),
-            expect: Vec::new(),
-            kernel: PathBuf::from("src/external/xnu/darling/src/libsystem_kernel/libsystem_kernel.dylib"),
-            dyld: PathBuf::from("src/external/dyld/dyld"),
-            json: false,
-        })?;
+    if args.skip_build {
+        if !args.targets.is_empty() {
+            bail!("--skip-build runs an existing image and cannot build --target inputs");
+        }
+        crate::installed_runtime_root()?;
+        println!("CYCLE existing-image runtime-root={} (no build/install)", crate::runtime_root()?.display());
+    } else {
+        let build = build.as_ref().context("normal installation requires --build")?;
+        if !args.targets.is_empty() {
+            let status = Command::new("mise").args(["run", "west", "darling-build", "--build-dir"])
+                .arg(build).arg("--targets").args(&args.targets).status()?;
+            if !status.success() { return Ok(ExitCode::from(3)); }
+        }
+        let rc = run_deploy(DeployArgs { build: Some(build.clone()) })?;
         if rc != ExitCode::SUCCESS {
-            println!("CYCLE aborted at build");
+            println!("CYCLE aborted at normal installation");
             return Ok(rc);
         }
     }
-    // THE LOADER IS DEPLOYED BY DEFAULT TOO. MEASURED: a cycle refreshed libsystem_kernel.dylib and dyld but left
-    // the prefix's mldr alone, so a loader edit was invisible in the run and a guest-visible claim about thread
-    // creation was read off a stale image -- the same false-negative class as a probe that is not in the artifact.
-    // Every guest thread's creation passes through the loader, so it belongs in the default pair.
-    let mut artifacts = vec![
-        (
-            "libsystem_kernel".to_string(),
-            build
-                .join("src/external/xnu/darling/src/libsystem_kernel/libsystem_kernel.dylib")
-                .display()
-                .to_string(),
-        ),
-        (
-            "dyld".to_string(),
-            build.join("src/external/dyld/dyld").display().to_string(),
-        ),
-        (
-            "mldr".to_string(),
-            build.join("src/startup/mldr/mldr").display().to_string(),
-        ),
-    ];
-    for (k, v) in &args.artifact {
-        artifacts.retain(|(n, _)| n != k);
-        artifacts.push((k.clone(), v.clone()));
-    }
     let rc = run_prefix(PrefixArgs {
-        prefix: prefix.clone(),
-        bootstrap_profile: None,
-        install: Vec::new(),
-        asset: Vec::new(),
-        artifact: artifacts,
-        env: args.env.clone(),
-        mode: String::new(),
-        args: String::new(),
+        prefix: prefix.clone(), build: None, bootstrap: false,
+        guest_toolchain: None, no_build: true, asset: Vec::new(),
+        env: args.env.clone(), mode: String::new(), args: String::new(),
         guest_command: "/private/var/tmp/ring_mach_msg_test".to_string(),
-        wait: args.wait,
-        json: false,
+        wait: args.wait, json: false,
     })?;
-    if rc != ExitCode::SUCCESS {
-        println!("CYCLE aborted at deploy");
-        return Ok(rc);
-    }
+    if rc != ExitCode::SUCCESS { return Ok(rc); }
     // FRESHNESS IS A WITNESS, NOT A STATEMENT, AND THIS PATH HAS NO VERDICT CACHE TO BYPASS.
     // MEASURED (2026-09-29), correcting an earlier claim of this very tool: `cycle` launches
     // `scripts/darling-boot-run.sh` through setsid and that script never invokes `west test`, so the
@@ -607,7 +511,7 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
     if args.capture_wchan {
         let stop = wchan_stop.clone();
         let store = wchan_samples.clone();
-        let needle = prefix.to_string_lossy().to_string();
+        let sampled_prefix = prefix.clone();
         std::thread::spawn(move || {
             let mut n: u64 = 0;
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
@@ -620,7 +524,7 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
                         }
                         let cmd = std::fs::read(format!("/proc/{name}/cmdline")).unwrap_or_default();
                         let cmds = String::from_utf8_lossy(&cmd).replace('\0', " ");
-                        if !cmds.contains(&needle) {
+                        if !process_owns_prefix(name.parse().unwrap_or(0), &sampled_prefix) {
                             continue;
                         }
                         let wchan = std::fs::read_to_string(format!("/proc/{name}/wchan"))
@@ -703,6 +607,10 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
                 );
                 break;
             }
+            if v.verdict.contains("harness or product shutdown") {
+                println!("CYCLE-LIFECYCLE-FAIL log={}; stopping before another prefix-backed run", v.log.display());
+                break;
+            }
         }
         // The witness, read from the log the run itself produced. `workload_lines` counts the workload's own
         // progress marks (its iteration/port marks and its start line); `result` is the last line that looks
@@ -753,13 +661,12 @@ fn run_cycle(args: CycleArgs) -> Result<ExitCode> {
         }
     }
 
-    if args.provenance {
+    if args.provenance || args.require_canonical {
         let workspace = std::env::var("DWDIAG_WORKSPACE").ok().map(PathBuf::from);
         let (canonical, reasons, lines) = provenance_report(
-            &build,
+            build.as_deref(),
             Some(prefix.as_path()),
             workspace.as_deref(),
-            &args.profile,
         );
         for l in &lines {
             println!("{l}");
@@ -892,197 +799,71 @@ fn sig_line(pid: &str, key: &str) -> Option<String> {
     None
 }
 
-/// Provenance of the source that a build tree was made from, and of the artifacts it deployed.
-///
-/// MEASURED REASON THIS EXISTS: the transport phase produced strong runtime evidence from a scratch source
-/// tree that was an untracked checkout of no branch, so the Bead closure rested on source nobody could
-/// reproduce and the fix could not be exported as a patch. This report makes that state a machine-readable
-/// fact instead of something a later reader has to guess, and `--require-canonical` turns it into a gate.
-///
-/// A DIRTY TREE IS NOT AN ERROR HERE. Diagnostic runs from dirty source are legitimate and common; what is
-/// not legitimate is calling such a run the evidence for a product claim. So this reports, and only refuses
-/// when asked to refuse.
+/// Report immutable install provenance through the workspace receipt authority.
+/// Mutable selected builds are identified separately, never substituted for the installed image.
 fn provenance_report(
-    build: &std::path::Path,
-    prefix: Option<&std::path::Path>,
-    workspace: Option<&std::path::Path>,
-    profile: &str,
+    build: Option<&Path>, prefix: Option<&Path>, workspace: Option<&Path>,
 ) -> (bool, Vec<String>, Vec<String>) {
-    let mut lines: Vec<String> = Vec::new();
-    let mut reasons: Vec<String> = Vec::new();
-
-    // The source root is what the build tree was configured against; without it the build tree itself is
-    // inspected, which is honest but usually means "no source identity available".
-    let mut source_root = build.to_path_buf();
-    let cache = build.join("CMakeCache.txt");
-    if let Ok(text) = read_log_lossy(&cache) {
-        for l in text.lines() {
-            if let Some(rest) = l.strip_prefix("CMAKE_HOME_DIRECTORY:INTERNAL=") {
-                source_root = PathBuf::from(rest.trim());
-                break;
-            }
+    let mut lines = Vec::new();
+    let mut reasons = Vec::new();
+    if let Some(build) = build {
+        lines.push(format!("PROVENANCE selected-build={} (mutable, not installed-image authority)", build.display()));
+        let cache = build.join("CMakeCache.txt");
+        if let Some(digest) = sha256_file(&cache) {
+            lines.push(format!("PROVENANCE selected-build-cache-sha256={digest}"));
         }
     }
-    lines.push(format!("PROVENANCE source-root={}", source_root.display()));
-    lines.push(format!("PROVENANCE build-tree={}", build.display()));
-
-    // Components whose revision must be provable. Paths are tried with and without the leading `src/` so the
-    // report works whether the build tree was configured against the superproject or a nested checkout.
-    const COMPONENTS: [&str; 5] = [
-        "src/external/darlingserver",
-        "src/startup/mldr",
-        "src/external/xnu",
-        "src/launchd",
-        "src/external/dyld",
-    ];
-    for rel in COMPONENTS {
-        let candidates = [
-            source_root.join(rel),
-            source_root.join(rel.trim_start_matches("src/")),
-        ];
-        let dir = match candidates.iter().find(|c| c.exists()) {
-            Some(d) => d.clone(),
-            None => {
-                lines.push(format!("PROVENANCE component={rel} state=missing"));
-                reasons.push(format!("{rel}:missing"));
-                continue;
+    let root = match crate::installed_runtime_root() {
+        Ok(root) => root,
+        Err(error) => return (false, vec![format!("installation:unavailable:{error}")], lines),
+    };
+    lines.push(format!("PROVENANCE runtime-root={} guest-prefix={}", root.display(),
+        prefix.map(|path| path.display().to_string()).unwrap_or_else(|| "<unset>".to_string())));
+    let compiled_workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().and_then(Path::parent);
+    let Some(workspace) = workspace.or(compiled_workspace) else {
+        return (false, vec!["workspace:receipt-authority-unavailable".to_string()], lines);
+    };
+    let script = r#"import json, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / 'west_commands'))
+from deploy_receipt import read_receipt, verify_receipt
+root = Path(sys.argv[2])
+receipt = read_receipt(root)
+if receipt is None:
+    print('PROVENANCE install-receipt=absent identity=unknown/unverified')
+    raise SystemExit(1)
+problems, notes = verify_receipt(receipt)
+for problem in problems[:8]:
+    print('PROVENANCE integrity-problem=' + problem.label + ': ' + problem.message)
+for note in notes:
+    print('PROVENANCE ' + note)
+source = receipt.get('source', {})
+workspace = receipt.get('workspace', {})
+build = receipt.get('build', {})
+print('PROVENANCE recorded-source=' + json.dumps({key: value for key, value in source.items() if key != 'gitlinks'}, sort_keys=True, separators=(',', ':')))
+links = source.get('gitlinks', [])
+for row in links[:8]:
+    print('PROVENANCE recorded-gitlink=' + json.dumps(row, sort_keys=True, separators=(',', ':')))
+if len(links) > 8:
+    print('PROVENANCE recorded-gitlinks-omitted=' + str(len(links) - 8) + '; full identity in ' + str(root / '.darling-deploy-receipt.json'))
+print('PROVENANCE recorded-workspace=' + json.dumps(workspace, sort_keys=True, separators=(',', ':')))
+print('PROVENANCE recorded-build=' + str(build.get('directory')) + ' cache-sha256=' + str(build.get('cache_sha256')))
+identities = [source, workspace, *source.get('gitlinks', [])]
+clean = all(row.get('dirty') is False and row.get('untracked') == 0 for row in identities)
+known = bool(source.get('revision')) and bool(workspace.get('manifest_commit'))
+links_match = all(row.get('revision') == row.get('gitlink_revision') for row in source.get('gitlinks', []))
+raise SystemExit(0 if not problems and clean and known and links_match else 1)
+"#;
+    match Command::new("python3").args(["-B", "-c", script]).arg(workspace).arg(root).output() {
+        Ok(output) => {
+            lines.extend(String::from_utf8_lossy(&output.stdout).lines().map(str::to_string));
+            if !output.status.success() {
+                reasons.push("installation:unverified-or-noncanonical-recorded-provenance".to_string());
+                lines.extend(String::from_utf8_lossy(&output.stderr).lines().take(8).map(|line| format!("PROVENANCE authority-error={line}")));
             }
-        };
-        let rev = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&dir)
-            .args(["rev-parse", "HEAD"])
-            .output();
-        let rev = match rev {
-            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-            _ => {
-                lines.push(format!("PROVENANCE component={rel} dir={} state=no-git", dir.display()));
-                reasons.push(format!("{rel}:no-git"));
-                continue;
-            }
-        };
-        let status = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&dir)
-            .args(["status", "--porcelain"])
-            .output();
-        let (dirty, untracked) = match status {
-            Ok(o) if o.status.success() => {
-                let text = String::from_utf8_lossy(&o.stdout);
-                let untracked = text.lines().filter(|l| l.starts_with("?? ")).count();
-                let dirty = text
-                    .lines()
-                    .filter(|l| !l.starts_with("?? ") && !l.trim().is_empty())
-                    .count();
-                (dirty, untracked)
-            }
-            _ => (0, 0),
-        };
-        let branch = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&dir)
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_else(|| "?".to_string());
-        lines.push(format!(
-            "PROVENANCE component={rel} rev={rev} branch={branch} dirty-tracked={dirty} untracked={untracked}"
-        ));
-        if dirty > 0 {
-            reasons.push(format!("{rel}:dirty-tracked={dirty}"));
         }
-        if untracked > 0 {
-            reasons.push(format!("{rel}:untracked={untracked}"));
-        }
+        Err(error) => reasons.push(format!("installation:receipt-authority-unavailable:{error}")),
     }
-
-    // Patch-series identity. A revision alone does not say which series produced it, and the series is what a
-    // reviewer must be able to replay, so the profile's own files are hashed by name.
-    if let Some(ws) = workspace {
-        let patches = ws.join("patches").join(profile).join("patches.yml");
-        match sha256_file(&patches) {
-            Some(h) => lines.push(format!("PROVENANCE patches-yml={} sha256={h}", patches.display())),
-            None => {
-                lines.push(format!("PROVENANCE patches-yml={} state=missing", patches.display()));
-                reasons.push(format!("patches-yml:{profile}:missing"));
-            }
-        }
-        let vest = ws.join("west.lock.yml");
-        match sha256_file(&vest) {
-            Some(h) => lines.push(format!("PROVENANCE west-lock={} sha256={h}", vest.display())),
-            None => {
-                lines.push(format!("PROVENANCE west-lock={} state=missing", vest.display()));
-                reasons.push("west-lock:missing".to_string());
-            }
-        }
-        let locks = ws.join("locks");
-        let mut composition: Option<(String, String)> = None;
-        // The composition lock sits under locks/, but the registry directories under it are also named for
-        // their subject, so the search walks one level down instead of assuming a single flat directory.
-        let mut dirs = vec![locks.clone()];
-        if let Ok(rd) = std::fs::read_dir(&locks) {
-            for e in rd.flatten() {
-                if e.path().is_dir() {
-                    dirs.push(e.path());
-                }
-            }
-        }
-        for dir in dirs {
-            if composition.is_some() {
-                break;
-            }
-            if let Ok(rd) = std::fs::read_dir(&dir) {
-                for e in rd.flatten() {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    if name.contains(profile) && name.contains("composition") {
-                        if let Some(h) = sha256_file(&e.path()) {
-                            composition = Some((e.path().display().to_string(), h));
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        match composition {
-            Some((p, h)) => lines.push(format!("PROVENANCE composition={p} sha256={h}")),
-            None => {
-                lines.push(format!("PROVENANCE composition profile={profile} state=missing"));
-                reasons.push(format!("composition:{profile}:missing"));
-            }
-        }
-    } else {
-        lines.push("PROVENANCE workspace=<unset> patch-series identity unavailable".to_string());
-        reasons.push("workspace:unset".to_string());
-    }
-
-    // What is actually deployed, because a source identity says nothing about the binary a run executed.
-    if let Some(pfx) = prefix {
-        const ARTIFACTS: [&str; 5] = [
-            "bin/darlingserver",
-            "bin/mldr",
-            "libexec/darling/usr/libexec/darling/mldr",
-            "libexec/darling/usr/lib/system/libsystem_kernel.dylib",
-            "usr/lib/dyld",
-        ];
-        let mut found = 0usize;
-        for rel in ARTIFACTS {
-            let p = pfx.join(rel);
-            if let Some(h) = sha256_file(&p) {
-                lines.push(format!("PROVENANCE artifact={rel} sha256={h}"));
-                found += 1;
-            }
-        }
-        lines.push(format!("PROVENANCE prefix={} artifacts-hashed={found}", pfx.display()));
-        if found == 0 {
-            reasons.push("prefix:no-artifacts-hashed".to_string());
-        }
-    } else {
-        lines.push("PROVENANCE prefix=<unset> deployed artifact identity unavailable".to_string());
-        reasons.push("prefix:unset".to_string());
-    }
-
     (reasons.is_empty(), reasons, lines)
 }
 
@@ -1094,6 +875,7 @@ fn sha256_file(path: &std::path::Path) -> Option<String> {
     String::from_utf8_lossy(&out.stdout)
         .split_whitespace()
         .next()
+        .filter(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .map(|s| s.to_string())
 }
 
@@ -1162,7 +944,7 @@ a run here would exercise the OLD artifact, not this source",
         }
     }
 
-    if args.provenance {
+    if args.provenance || args.require_canonical {
         let prefix = args
             .prefix
             .clone()
@@ -1172,9 +954,9 @@ a run here would exercise the OLD artifact, not this source",
             .clone()
             .or_else(|| std::env::var("DWDIAG_WORKSPACE").ok().map(PathBuf::from));
         let (canonical, reasons, lines) =
-            provenance_report(&build, prefix.as_deref(), workspace.as_deref(), &args.profile);
+            provenance_report(Some(&build), prefix.as_deref(), workspace.as_deref());
         if args.json {
-            let items: Vec<String> = lines.iter().map(|l| format!("{:?}", l)).collect();
+            let items: Vec<String> = lines.iter().map(|line| jstr(line)).collect();
             println!(
                 "{{\"provenance\":\"{}\",\"reasons\":[{}],\"fields\":[{}]}}",
                 if canonical { "CANONICAL" } else { "NON-CANONICAL" },
@@ -1206,10 +988,9 @@ a run here would exercise the OLD artifact, not this source",
 }
 
 fn run_watch(args: WatchArgs) -> Result<ExitCode> {
-    let build = required_path("--build", args.build.clone(), "DWDIAG_BUILD")?;
+    let build = args.build.clone().or_else(|| std::env::var_os("DWDIAG_BUILD").map(PathBuf::from));
     let prefix = required_path("--prefix", args.prefix.clone(), "DWDIAG_PREFIX")?;
     let loader_suffix = "/mldr";
-    let prefix_s = prefix.display().to_string();
 
     // The run underneath: probes force a fresh run, which is the whole point.
     let run_prefix = prefix.clone();
@@ -1219,15 +1000,14 @@ fn run_watch(args: WatchArgs) -> Result<ExitCode> {
     let repeat = args.repeat;
     let runner = std::thread::spawn(move || {
         run_cycle(CycleArgs {
-            build: Some(run_build),
+            build: run_build,
             prefix: Some(run_prefix),
             mode,
             args: run_args,
             repeat,
             wait: 90,
             skip_build: true,
-            targets: vec!["libsystem_kernel.dylib".to_string(), "dyld".to_string()],
-            artifact: Vec::new(),
+            targets: Vec::new(),
             env: Vec::new(),
             probe: vec!["wait4".to_string()],
             fresh: true,
@@ -1237,7 +1017,6 @@ fn run_watch(args: WatchArgs) -> Result<ExitCode> {
             freeze_on_fail: false,
             provenance: false,
             require_canonical: false,
-            profile: "arch".to_string(),
         })
     });
 
@@ -1294,7 +1073,7 @@ fn run_watch(args: WatchArgs) -> Result<ExitCode> {
                     let exe = std::fs::read_link(format!("/proc/{pid}/exe"))
                         .map(|p| p.display().to_string())
                         .unwrap_or_default();
-                    if !(exe.starts_with(&prefix_s) && exe.ends_with(loader_suffix)) {
+                    if !exe.ends_with(loader_suffix) || !process_owns_prefix(pid.parse().unwrap_or(0), &prefix) {
                         continue;
                     }
                     let cmd = std::fs::read(format!("/proc/{pid}/cmdline"))
@@ -2434,17 +2213,21 @@ fn run_crash(args: CrashArgs) -> Result<ExitCode> {
 /// produced by the command that reads it. This prints them, and says `unavailable` for anything the record
 /// genuinely does not contain rather than leaving the reader to guess.
 fn crash_identity(prefix: &std::path::Path) {
+    let Ok(root) = crate::installed_runtime_root() else {
+        println!("CRASH-IDENTITY runtime-root=unavailable image-identity=unknown");
+        return;
+    };
     const CANDIDATES: [&str; 6] = [
         "bin/darlingserver",
-        "bin/mldr",
+        "libexec/darling/usr/libexec/shellspawn",
         "libexec/darling/usr/libexec/darling/mldr",
         "libexec/darling/usr/lib/system/libsystem_kernel.dylib",
         "libexec/darling/usr/lib/system/libdyld.dylib",
-        "usr/lib/dyld",
+        "libexec/darling/usr/lib/dyld",
     ];
     let mut reporting = 0usize;
     for rel in CANDIDATES {
-        let p = prefix.join(rel);
+        let p = root.join(rel);
         let sha = match sha256_file(&p) {
             Some(h) => h,
             None => continue,
@@ -2464,25 +2247,11 @@ fn crash_identity(prefix: &std::path::Path) {
             if has { "yes" } else { "no" }
         );
     }
-    let server_pid = std::fs::read_dir("/proc")
-        .ok()
-        .into_iter()
-        .flatten()
-        .flatten()
-        .find_map(|e| {
-            let name = e.file_name().to_string_lossy().to_string();
-            if !name.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
-            }
-            let exe = std::fs::read_link(format!("/proc/{name}/exe")).ok()?;
-            if exe == prefix.join("bin/darlingserver") {
-                Some(name)
-            } else {
-                None
-            }
-        });
+    let server_pid = prefix_processes(prefix).into_iter().find(|pid|
+        fs::read_link(format!("/proc/{pid}/exe")).map(|exe| exe == root.join("bin/darlingserver")).unwrap_or(false)
+    ).map(|pid| pid.to_string());
     println!(
-        "CRASH-IDENTITY prefix={} images-reporting-the-probe={} server-host-pid={} host-tid=unavailable(the crash record carries no host tid)",
+        "CRASH-IDENTITY prefix={} images-reporting-the-probe={} server-host-pid={} host-tid=unavailable(the crash record carries no host tid); image-root-is-shared",
         prefix.display(),
         reporting,
         server_pid.as_deref().unwrap_or("not-running")
@@ -2540,7 +2309,7 @@ pub struct VerdictArgs {
     /// processes stay ALIVE for inspection (darling-debug, native stacks, host wchan). WHY THIS IS IN THE
     /// TOOL: the harness already implemented the freeze, but the tool did not forward it, so catching a
     /// failure for inspection meant abandoning the tool and reconstructing its command by hand -- and the
-    /// command it builds carries MLDR_DIAG_LOG, one --cmd argument, and the deployment identity, which a
+    /// command it builds carries one --cmd argument and the installed-image identity, which a
     /// hand-rolled invocation gets wrong. A frozen prefix is left running on purpose; clean it up with the
     /// command the harness prints.
     #[arg(long)]
@@ -2748,101 +2517,53 @@ fn judge_run_log(text: &str, mode: &str) -> (String, String, Option<i32>) {
     (line, verdict, rc)
 }
 
-/// The identity of the runtime a run is about to use, written beside and into its log.
-///
-/// MEASURED COST OF NOT HAVING THIS: a run log records what the guest and the loader printed, but not WHICH copy of
-/// the loader served it. Two prefixes existed -- one freshly deployed, one stale -- and a log served by the stale
-/// copy was read as evidence about the fresh build, twice, before the mistake was caught by hand. The fingerprint
-/// below makes every log self-attributing: the resolved prefix and the sha256 of each runtime artifact found there,
-/// printed before the workload starts, written to a sidecar file (the run truncates its own log), and appended to
-/// the log once the run has finished.
-/// Report the prefix prerequisites a run needs, BEFORE it is attempted.
-///
-/// MEASURED, AND IT COST HOURS: a scratch prefix lost `bin/shellspawn`; every run after that failed to launch, and the
-/// only witness was the harness's own line buried in the guest log ("Failed to exec launchd: No such file or
-/// directory", "shellspawn did not become ready"). Ten verdicts read as HANG or NO-RUN -- statements about a workload
-/// that never executed -- before anyone read that line. A missing prerequisite is a fact about the PREFIX, it is
-/// cheap to check, and it belongs in front of the run rather than after the diagnosis.
-fn prefix_prereq_report(prefix: &std::path::Path) -> bool {
-    // THE REAL DESTINATION PATHS, taken from scripts/darling-artifact-manifest.sh (dest_paths) rather than guessed.
-    // MEASURED FALSE ALARM: the first version of this check looked for "bin/shellspawn", a path that exists in NO
-    // prefix -- not even in a healthy one -- because shellspawn is deployed to usr/libexec/shellspawn. The check
-    // reported "PREFIX-PREREQ MISSING" for a prefix that was in fact fine, and a guard that cries wolf is worse than
-    // no guard: it sends the next reader to repair something that is not broken. One representative destination per
-    // component is enough; the manifest owns the full list.
-    const NEEDED: [&str; 5] = [
-        "usr/libexec/shellspawn",
-        "bin/darlingserver",
-        "sbin/launchd",
-        "libexec/darling/usr/libexec/darling/mldr",
-        "usr/lib/dyld",
-    ];
-    let mut missing: Vec<&str> = Vec::new();
-    for rel in NEEDED {
-        if !prefix.join(rel).exists() {
-            missing.push(rel);
-        }
-    }
+/// Installation prerequisites never live in writable guest state.
+fn runtime_prereq_report(root: &Path) -> bool {
+    let missing: Vec<&str> = RUNTIME_FINGERPRINT_CANDIDATES.iter().copied()
+        .filter(|relative| !root.join(relative).is_file()).collect();
     if missing.is_empty() {
-        println!("PREFIX-PREREQ ok prefix={} checked={}", prefix.display(), NEEDED.len());
+        println!("RUNTIME-PREREQ ok runtime-root={}", root.display());
         true
     } else {
-        println!(
-            "PREFIX-PREREQ MISSING prefix={} missing={} -- a run on this prefix fails to launch; fix the prefix \
-(repair it or bootstrap a fresh one) before reading any verdict as a statement about the workload",
-            prefix.display(),
-            missing.join(",")
-        );
+        println!("RUNTIME-PREREQ missing runtime-root={} paths={}", root.display(), missing.join(","));
         false
     }
 }
 
+/// A shared installed executable is not prefix identity: use retained directory
+/// capabilities or the launcher's explicit guest-state environment.
+fn process_owns_prefix(pid: u32, prefix: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let process = PathBuf::from(format!("/proc/{pid}"));
+    if let (Ok(expected), Ok(descriptors)) = (fs::metadata(prefix), fs::read_dir(process.join("fd"))) {
+        if descriptors.flatten().any(|entry| fs::metadata(entry.path())
+            .map(|actual| actual.is_dir() && actual.dev() == expected.dev() && actual.ino() == expected.ino())
+            .unwrap_or(false)) {
+            return true;
+        }
+    }
+    let environment = fs::read(process.join("environ")).unwrap_or_default();
+    environment.split(|byte| *byte == 0).any(|value| {
+        value.strip_prefix(b"DPREFIX=").or_else(|| value.strip_prefix(b"DARLING_PREFIX="))
+            .map(|raw| Path::new(std::ffi::OsStr::from_bytes(raw)) == prefix).unwrap_or(false)
+    })
+}
 
-/// The processes that hold a prefix's files open, found the only way that works from the host.
-///
-/// MEASURED, AND IT STOPPED A GATE RUN: an aborted cycle left darlingserver (reparented to pid 1), launchd and
-/// shellspawn alive; the next install of `mldr` failed with ETXTBSY and the harness reported only "installing
-/// .../mldr (after a shutdown attempt; first error: Text file busy)". `bin/darling --rootless shutdown` stops the
-/// server the harness knows about, not the guest processes it does not, so the retry failed the same way and the
-/// message named neither the file's holders nor what to do. A file lock is a fact about processes, so report the
-/// processes.
-///
-/// Matching is on `exe` AS WELL AS `cmdline`, because a guest process runs through the prefix's `mldr` (its `exe`
-/// is the loader, its `cmdline` is the guest argv) while the server's `cmdline` names the prefix without `exe` doing
-/// so. The caller's own ancestry is excluded: a blanket match must never reach the process asking the question, and
-/// killing an ancestor at any depth ends the caller instead of the holder (that mistake was made once already).
-fn prefix_processes(prefix: &std::path::Path) -> Vec<u32> {
-    let needle = prefix.to_string_lossy().to_string();
-    let mut excluded: Vec<u32> = Vec::new();
+pub(crate) fn prefix_processes(prefix: &Path) -> Vec<u32> {
+    let mut excluded = Vec::new();
     let mut pid = std::process::id();
     while pid > 1 {
         excluded.push(pid);
-        let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
-            Ok(s) => s,
-            Err(_) => break,
-        };
-        pid = match stat.rsplit(')').next().and_then(|tail| tail.split_whitespace().nth(1)) {
-            Some(v) => v.parse().unwrap_or(1),
-            None => break,
-        };
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else { break };
+        pid = stat.rsplit(')').next().and_then(|tail| tail.split_whitespace().nth(1))
+            .and_then(|value| value.parse().ok()).unwrap_or(1);
     }
-    let mut found: Vec<u32> = Vec::new();
+    let mut found = Vec::new();
     if let Ok(entries) = fs::read_dir("/proc") {
         for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let other: u32 = match name.parse() {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            if excluded.contains(&other) {
-                continue;
-            }
-            let exe = fs::read_link(format!("/proc/{other}/exe")).ok();
-            let cmdline = fs::read(format!("/proc/{other}/cmdline")).unwrap_or_default();
-            let exe_hit = exe.as_ref().map(|p| p.to_string_lossy().contains(&needle)).unwrap_or(false);
-            let cmd_hit = String::from_utf8_lossy(&cmdline).contains(&needle);
-            if exe_hit || cmd_hit {
-                found.push(other);
+            let Some(pid) = entry.file_name().to_str().and_then(|value| value.parse::<u32>().ok()) else { continue };
+            if !excluded.contains(&pid) && process_owns_prefix(pid, prefix) {
+                found.push(pid);
             }
         }
     }
@@ -2850,128 +2571,66 @@ fn prefix_processes(prefix: &std::path::Path) -> Vec<u32> {
     found
 }
 
-/// Stop every process holding the prefix, settle, then escalate. Returns the pids we found (for the message).
-fn stop_prefix_holders(prefix: &std::path::Path) -> Vec<u32> {
-    let victims = prefix_processes(prefix);
-    for &pid in &victims {
-        unsafe { libc_kill(pid as i32, 15) };
-    }
-    std::thread::sleep(std::time::Duration::from_secs(3));
-    for &pid in &victims {
-        if Path::new(&format!("/proc/{pid}")).exists() {
-            unsafe { libc_kill(pid as i32, 9) };
-        }
-    }
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    victims
+fn runtime_fingerprint(root: &Path) -> String {
+    let parts = runtime_fingerprint_parts(root);
+    let joined = parts.iter().map(|(name, digest)| format!("{name}={digest}")).collect::<Vec<_>>().join(" ");
+    format!("runtime-root={} {joined}", root.display())
 }
 
-unsafe extern "C" {
-    #[link_name = "kill"]
-    fn libc_kill(pid: i32, sig: i32) -> i32;
-}
-
-
-/// Install ONE file into a prefix, removing whatever holds it.
-///
-/// There is exactly ONE way to install a file into a prefix, and this is it: both `deploy` and the cycle's staging
-/// path call it, because a second implementation of the same step drifts and then one of them is the one that fails
-/// at 3 a.m. The order is: copy, and when that fails, `bin/darling --rootless shutdown`, then stop the processes that
-/// still hold the file (a surviving launchd/shellspawn keeps `mldr` busy -- ETXTBSY is a fact about processes, not
-/// about permissions), then retry once and report the holders if it still fails.
-fn install_artifact_into_prefix(
-    built: &Path,
-    dest_path: &Path,
-    prefix: &std::path::Path,
-) -> Result<()> {
-    let source = built.to_path_buf();
-    if let Err(first) = fs::copy(&source, dest_path) {
-        let _ = Command::new(prefix.join("bin/darling"))
-            .arg("--rootless")
-            .arg("shutdown")
-            .output();
-        let holders = stop_prefix_holders(prefix);
-        if !holders.is_empty() {
-            println!(
-                "PREFIX-STOP-HELD prefix={} pids={} (they still held the staged files after shutdown)",
-                prefix.display(),
-                holders.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
-            );
-        }
-        return fs::copy(&source, dest_path)
-            .map(|_| ())
-            .with_context(|| {
-                format!(
-                    "installing {} -> {} (after a shutdown attempt and stopping {} prefix process(es); first error: {first})",
-                    built.display(),
-                    dest_path.display(),
-                    holders.len()
-                )
-            });
-    }
-    Ok(())
-}
-
-fn runtime_fingerprint(prefix: &std::path::Path) -> String {
-    let parts = runtime_fingerprint_parts(prefix);
-    let joined = parts.iter().map(|(n, v)| format!("{n}={v}")).collect::<Vec<_>>().join(" ");
-    format!("prefix={} {}", prefix.display(), joined)
-}
-
-/// The DEPLOYED runtime copies the artifact identity line digests, in the order they are printed. The list lives
-/// HERE, once: a second list would answer "which build actually ran" about a different set of files, and the whole
-/// reason this line exists is that two prefixes (one stale) served two runs that were then compared.
+/// One ordinary installed location per component; no duplicate guest-upper copies.
 const RUNTIME_FINGERPRINT_CANDIDATES: [&str; 7] = [
+    "bin/darling",
+    "bin/darlingserver",
     "libexec/darling/usr/libexec/darling/mldr",
-    "usr/libexec/darling/mldr",
     "libexec/darling/usr/lib/system/libsystem_kernel.dylib",
-    "usr/lib/system/libsystem_kernel.dylib",
     "libexec/darling/usr/lib/dyld",
-    "usr/lib/dyld",
-    "libexec/darling/usr/bin/darlingserver",
+    "libexec/darling/usr/libexec/shellspawn",
+    "libexec/darling/sbin/launchd",
 ];
 
-/// `(name, first-12-hex-of-sha256)` per distinct deployed copy. A copy whose digest has already been printed is
-/// skipped, because the prefix installs several of these files twice and two rows with one digest say nothing.
-fn runtime_fingerprint_parts(prefix: &std::path::Path) -> Vec<(String, String)> {
-    let mut parts: Vec<(String, String)> = Vec::new();
-    let mut seen: Vec<String> = Vec::new();
+fn runtime_fingerprint_parts(root: &Path) -> Vec<(String, String)> {
+    let mut parts = Vec::new();
     for rel in RUNTIME_FINGERPRINT_CANDIDATES {
-        let p = prefix.join(rel);
-        if !p.exists() {
-            continue;
+        let p = root.join(rel);
+        let Ok(resolved) = fs::canonicalize(&p) else { continue };
+        if !resolved.starts_with(root) { continue; }
+        if let Some(digest) = sha256_file(&resolved) {
+            let name = p.file_name().and_then(|name| name.to_str()).unwrap_or(rel);
+            parts.push((name.to_string(), digest[..12].to_string()));
         }
-        let sum = std::process::Command::new("sha256sum")
-            .arg(&p)
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .and_then(|s| s.split_whitespace().next().map(|v| v.to_string()))
-            .unwrap_or_else(|| "?".to_string());
-        let short = sum.chars().take(12).collect::<String>();
-        if seen.contains(&short) {
-            continue;
-        }
-        seen.push(short.clone());
-        let name = p
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("?")
-            .to_string();
-        parts.push((name, short));
     }
     parts
+}
+
+fn guest_fixture_path(prefix: &Path, guest_path: &str, runtime: Option<&Path>) -> PathBuf {
+    let relative = guest_path.trim_start_matches('/');
+    let upper = prefix.join(relative);
+    if upper.is_file() { return upper; }
+    if let Some(root) = runtime {
+        let installed = root.join("libexec/darling").join(relative);
+        if installed.is_file() { return installed; }
+    }
+    upper
+}
+
+fn completed_harness(output: &std::process::Output) -> bool {
+    output.status.success() && String::from_utf8_lossy(&output.stdout).lines().rev()
+        .find(|line| line.starts_with("VERDICT:")) == Some("VERDICT: PASS")
 }
 
 fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
     let Some(prefix) = args.prefix.as_ref() else {
         bail!("running a workload needs --prefix; use --log to judge a log that already exists");
     };
+    let runtime = crate::installed_runtime_root()?;
+    if !runtime_prereq_report(runtime) {
+        bail!("selected installation is missing runtime prerequisites");
+    }
     // A WORKLOAD THAT IS NOT THERE IS NOT A HANG, AND ITS ABSENCE COSTS NO BOOT. The fixture is a TEST ASSET, so the
     // prefix either has it or the run cannot mean anything; checking first turns a wrong path into an immediate
     // verdict instead of a full watchdog wait followed by `HANG (watchdog)`. MEASURED (2026-10-04): 200 runs at one
     // wrong path produced 200 such verdicts and no product information at all.
-    let guest_host = prefix.join(args.guest_command.trim_start_matches('/'));
+    let guest_host = guest_fixture_path(prefix, &args.guest_command, Some(runtime));
     if !guest_host.is_file() {
         let log = std::env::temp_dir().join(format!(
             "dwdiag-verdict-{}-{}{}.log",
@@ -3008,11 +2667,10 @@ fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
     ));
     let _ = fs::remove_file(&log);
     // Self-attributing run: see runtime_fingerprint for the incident this exists to prevent.
-    let fp = runtime_fingerprint(prefix);
+    let fp = format!("prefix={} {}", prefix.display(), runtime_fingerprint(runtime));
     let env_log = log.with_extension("log.env");
     let _ = fs::write(&env_log, format!("[dwdiag-env {fp}]\n"));
     eprintln!("RUN-ENV {fp}");
-    prefix_prereq_report(prefix);
     // The workload's OWN exit status is part of the observation: MEASURED, a workload that dies of SIGSEGV
     // (`EXITRC=139`) produces exactly the same evidence as a deadlock -- no result line -- and every
     // measurement drawn from "HANG" then chases a lock that does not exist. The status is printed by the
@@ -3034,7 +2692,7 @@ fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
     } else {
         Command::new(&args.boot_runner)
     };
-    c.arg("--prefix")
+    c.arg("--runtime-root").arg(runtime).arg("--prefix")
         .arg(prefix)
         .arg("--wait")
         .arg(args.wait.to_string())
@@ -3048,27 +2706,21 @@ fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
     for (k, v) in &args.env {
         c.arg("--env").arg(format!("{k}={v}"));
     }
-    // THE GUEST LOG MUST BE CAPTURED BY IDENTITY, NOT BY LUCK. The verdict's own progress summary reads the guest
-    // diagnostic log from MLDR_DIAG_LOG; nothing on this path set it, so every verdict printed last-guest=<none> and
-    // the stage had to be found by hand in marker files. The harness writes the run's log to --log, and the loader
-    // appends its diagnostics to whatever MLDR_DIAG_LOG names, so point both at the same file.
-    c.env("MLDR_DIAG_LOG", &log);
-    // A marker that can never appear: the harness exits non-zero, and the VERDICT below is ours, not its marker test.
-    c.arg("--marker").arg("__dwdiag_never__");
+    c.arg("--status-marker").arg("__DWDIAG_RC=").arg("--poll").arg("__DWDIAG_RC=");
+    c.arg("--marker").arg(format!("RING_MACH_TEST mode={} ", args.mode));
     // FREEZE IS A DIAGNOSTIC POLICY, AND IT IS PASSED THROUGH RATHER THAN REIMPLEMENTED: the harness owns the
     // prefix lifecycle, so it owns leaving the failing incarnation alive. Silence here was measured friction:
     // the only way to inspect a caught failure was to retype the harness command by hand, which loses
-    // MLDR_DIAG_LOG and the single-argument --cmd shape this builder exists to get right.
+    // the single-argument --cmd shape this builder exists to get right.
     if args.freeze_on_fail {
         c.arg("--freeze-on-fail");
     }
+    crate::inherit_owner_lease(&mut c);
     let out = c
         .output()
         .with_context(|| format!("running {}", args.boot_runner.display()))?;
 
-    // The harness's own exit code is deliberately ignored: it reports whether its MARKERS appeared, which is not the
-    // question here (MEASURED: a marker matching the workload's start line made a hang look like a pass).
-    let _ = out;
+    let harness_clean = completed_harness(&out);
 
     // Append the identity to the run's own log so the log alone answers "which build served this?".
     if log.exists() {
@@ -3084,7 +2736,10 @@ fn run_one_workload(args: &VerdictArgs, tag: &str) -> Result<Verdict> {
     // made this matcher read the HEADER, find no `pass=`, and report FAIL for a run whose workload printed
     // `pass=1` and exited 0. Every other mode prints one such line, so preferring a line that carries `pass=` --
     // and otherwise the LAST match, since a result is emitted at the end -- is strictly more honest.
-    let (line, verdict, rc) = judge_run_log(&text, &args.mode);
+    let (line, mut verdict, rc) = judge_run_log(&text, &args.mode);
+    if verdict == "PASS" && !harness_clean {
+        verdict = "FAIL (harness or product shutdown)".to_string();
+    }
     let denied = text
         .lines()
         .filter(|l| l.contains("rpc-socket-DENIED"))
@@ -3157,7 +2812,7 @@ fn list_modes(args: &VerdictArgs) -> Result<ExitCode> {
     let Some(prefix) = args.prefix.as_ref() else {
         bail!("listing modes needs --prefix (the fixture lives inside a prefix)");
     };
-    let host = prefix.join(args.guest_command.trim_start_matches('/'));
+    let host = guest_fixture_path(prefix, &args.guest_command, crate::installed_runtime_root().ok());
     if !host.is_file() {
         println!("MODES-FIXTURE absent {}", host.display());
         println!(
@@ -3275,10 +2930,7 @@ fn run_verdict(args: VerdictArgs) -> Result<ExitCode> {
             verdicts.push(v.verdict.clone());
             if !v.ok() {
                 let text = read_log_lossy(&v.log).unwrap_or_default();
-                // The loader appends its diagnostics to MLDR_DIAG_LOG, which this tool points at the SAME file the
-                // harness writes, so the guest side and the harness side are one text. Reading a process environment
-                // variable here instead was wrong twice over: this process never sets it in its own environment (only
-                // in the child's), so every verdict printed last-guest=<none> no matter how much the guest logged.
+                // Inspect only this run's captured output; diagnostic environment remains explicit.
                 let guest = text.clone();
                 // A BOOT THAT DIES OF A SIGNAL MUST EXPLAIN ITSELF IN THE SAME OUTPUT. MEASURED: the failing runs
                 // printed VERDICT/VERDICT-STAGE and the crash had to be chased with a second command and a hand
@@ -3396,11 +3048,7 @@ fn run_verdict(args: VerdictArgs) -> Result<ExitCode> {
         // `[mldr-ctl]` and `process-control-service` by hand, three runs in a row).
         if v.verdict != "PASS" {
             let text = read_log_lossy(&v.log).unwrap_or_default();
-            // The loader appends its diagnostics to MLDR_DIAG_LOG, which this tool points at the SAME file the
-            // harness writes, so the guest side and the harness side are one text. Reading this process's own
-            // environment variable instead was wrong twice over: it is set only in the CHILD's environment
-            // (MLDR_DIAG_LOG never appears here), so every verdict printed last-guest=<none> however much the
-            // guest logged -- and this is the site the prefix path actually prints from.
+            // Inspect only this run's captured output; diagnostic environment remains explicit.
             let guest = text.clone();
             // The SAME self-explanation as the other verdict path: a run that dies of a signal must name the fault and its
             // callers in this output, not only in a second command.
@@ -3465,13 +3113,9 @@ pub struct SuiteArgs {
     /// here (measured), and a retry that is printed is evidence, not silence.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     retry_failed_rows: bool,
-    /// Record this suite's verdict into the DEPLOY RECEIPT the deployment path wrote, so the provenance of a
-    /// tested product names the run it was accepted with. The receipt is owned by
-    /// `west_commands/deploy_receipt.py`: this tool adds exactly one field, never rewrites the rest, refuses a
-    /// receipt that already carries a verdict, and never creates one. Absent by default -- a run that records
-    /// nothing says nothing rather than inventing provenance.
+    /// Write a new standalone workload-evidence receipt; never mutate installed-image provenance.
     #[arg(long)]
-    record_receipt: Option<PathBuf>,
+    record_evidence: Option<PathBuf>,
 }
 
 fn split_chunks(modes: &[String]) -> Vec<String> {
@@ -3481,6 +3125,17 @@ fn split_chunks(modes: &[String]) -> Vec<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+fn record_workload_evidence(path: &Path, root: &Path, verdict: &str) -> Result<()> {
+    use std::io::Write as _;
+    let evidence = format!("{{\"schema_version\":1,\"runtime_root\":{},\"runtime_fingerprint\":{},\"runtime_verdict\":{verdict}}}\n",
+        jstr(&root.display().to_string()), jstr(&runtime_fingerprint(root)));
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(path)
+        .with_context(|| format!("create workload evidence {}", path.display()))?;
+    file.write_all(evidence.as_bytes())?;
+    file.sync_all()?;
+    Ok(())
 }
 
 fn run_suite(args: SuiteArgs) -> Result<ExitCode> {
@@ -3515,6 +3170,12 @@ fn run_suite(args: SuiteArgs) -> Result<ExitCode> {
             log: None,
         };
         let mut v = run_one_workload(&va, "")?;
+        if v.verdict.contains("harness or product shutdown") {
+            failures += 1;
+            println!("ROW-LIFECYCLE-FAIL mode={} log={}; no retry or next prefix-backed row", v.mode, v.log.display());
+            rows.push(v);
+            break;
+        }
         // perf#30: a row that is not PASS is retried ONCE, and both verdicts are printed. MEASURED: two acceptance
         // rows failed in one suite run (`sem_gap 5000 1` HANG, `basic 20` NO-RUN) and then passed 3/3 and 4/4 when
         // run individually -- i.e. the row-level flake, not the workload, decided the suite verdict. The retry is
@@ -3533,6 +3194,11 @@ fn run_suite(args: SuiteArgs) -> Result<ExitCode> {
             } else {
                 v = v2;
             }
+        }
+        if v.verdict.contains("harness or product shutdown") {
+            failures += 1;
+            rows.push(v);
+            break;
         }
         if !v.ok() {
             failures += 1;
@@ -3569,13 +3235,13 @@ fn run_suite(args: SuiteArgs) -> Result<ExitCode> {
         rows.push(v);
     }
     let pass = failures == 0;
-    if let Some(path) = &args.record_receipt {
+    if let Some(path) = &args.record_evidence {
         let rows_json: Vec<String> = rows
             .iter()
             .map(|v| {
                 format!(
                     "{{\"mode\":\"{}\",\"verdict\":\"{}\",\"denied\":{},\"created\":{}}}",
-                    v.mode, v.verdict, v.denied, v.created
+                    jesc(&v.mode), jesc(&v.verdict), v.denied, v.created
                 )
             })
             .collect();
@@ -3588,13 +3254,9 @@ fn run_suite(args: SuiteArgs) -> Result<ExitCode> {
             args.require_zero_creations,
             rows_json.join(",")
         );
-        let existing = fs::read_to_string(path)
-            .with_context(|| format!("read deploy receipt {}", path.display()))?;
-        let merged = merge_runtime_verdict(&existing, &verdict)
-            .with_context(|| format!("record the runtime verdict into {}", path.display()))?;
-        fs::write(path, merged).with_context(|| format!("write deploy receipt {}", path.display()))?;
+        record_workload_evidence(path, crate::installed_runtime_root()?, &verdict)?;
         println!(
-            "RECEIPT-RECORD {} verdict={} rows={} failures={}",
+            "EVIDENCE-RECORD {} verdict={} rows={} failures={}",
             path.display(),
             if pass { "PASS" } else { "FAIL" },
             rows.len(),
@@ -3667,8 +3329,8 @@ pub struct ProgressArgs {
     /// private/var/log/dserver.log -- so several of this session's conclusions were drawn from an absence that meant
     /// "not captured" rather than "not produced". Reading it here makes "the server sent it" and "the guest received
     /// it" two facts in one report instead of a guess.
-    /// Server log to search. Left unset, the prefix is taken from the run's own identity line (or DWDIAG_PREFIX),
-    /// so a run served by another prefix cannot have its evidence read from the wrong one.
+    /// Server log to search. Otherwise use explicit --prefix, then this run's recorded prefix.
+    /// Without either, server evidence is unavailable; ambient/default prefixes are never read.
     #[arg(long)]
     server_log: Option<PathBuf>,
 }
@@ -4552,6 +4214,10 @@ pub struct UnwindArgs {
     /// Seconds to wait for the caught signal before giving up.
     #[arg(long, default_value_t = 180)]
     catch_timeout: u64,
+    /// Scan stack words instead of following frame pointers, including callers built without them.
+    /// Reported addresses are candidates, not a backtrace.
+    #[arg(long)]
+    scan: bool,
     #[arg(long)]
     json: bool,
 }
@@ -5822,46 +5488,23 @@ fn run_mappings(args: MappingsArgs) -> Result<ExitCode> {
 /// Print the run's artifact identity line. The candidate table lives in `runtime_fingerprint_parts` so this and
 /// `verdict`'s line can never describe different sets of files.
 fn run_env(args: EnvArgs) -> Result<ExitCode> {
-    let prefix = args.prefix.clone().or_else(|| {
-        for key in ["DWDIAG_PREFIX", "DPREFIX"] {
-            if let Ok(v) = std::env::var(key) {
-                if !v.is_empty() {
-                    return Some(PathBuf::from(v));
-                }
-            }
-        }
-        None
-    });
-    let prefix = prefix.with_context(|| {
-        "no prefix: pass --prefix, or set DWDIAG_PREFIX/DPREFIX. This digest is of DEPLOYED files, so a build tree \
-         cannot answer it"
-    })?;
-    if !prefix.is_dir() {
-        bail!("{} is not a directory, so no deployed copy can be digested", prefix.display());
-    }
-    let parts = runtime_fingerprint_parts(&prefix);
+    let root = crate::installed_runtime_root()?;
+    let prefix = resolve_prefix(args.prefix, None).or_else(|| std::env::var_os("DPREFIX").map(PathBuf::from));
+    let parts = runtime_fingerprint_parts(root);
+    let complete = parts.len() == RUNTIME_FINGERPRINT_CANDIDATES.len();
     if args.json {
-        let pairs: Vec<(&str, String)> = parts
-            .iter()
-            .map(|(n, v)| (n.as_str(), jstr(v)))
-            .collect();
-        let mut pairs = pairs;
-        pairs.push(("prefix", jstr(&prefix.display().to_string())));
+        let mut pairs: Vec<(&str, String)> = parts.iter().map(|(name, digest)| (name.as_str(), jstr(digest))).collect();
+        pairs.push(("runtime_root", jstr(&root.display().to_string())));
+        pairs.push(("prefix", prefix.as_ref().map(|path| jstr(&path.display().to_string())).unwrap_or_else(|| "null".to_string())));
+        pairs.push(("complete", complete.to_string()));
         crate::say(&json_object(pairs));
-        return Ok(ExitCode::SUCCESS);
+    } else {
+        let joined = parts.iter().map(|(name, digest)| format!("{name}={digest}")).collect::<Vec<_>>().join(" ");
+        crate::say(&format!("RUN-ENV runtime-root={} prefix={} {joined}", root.display(),
+            prefix.as_ref().map(|path| path.display().to_string()).unwrap_or_else(|| "<unset>".to_string())));
+        if !complete { eprintln!("RUN-ENV incomplete: {} of {} installed components hashed", parts.len(), RUNTIME_FINGERPRINT_CANDIDATES.len()); }
     }
-    crate::say(&format!("RUN-ENV {}", runtime_fingerprint(&prefix)));
-    if parts.is_empty() {
-        // The line is printed either way; the emptiness is stated so "no digests" cannot read as "identical build".
-        eprintln!(
-            "RUN-ENV-EMPTY prefix={} : none of the {} runtime candidate paths exists under this prefix, so this line \
-             identifies no build -- the prefix has no runtime installed",
-            prefix.display(),
-            RUNTIME_FINGERPRINT_CANDIDATES.len()
-        );
-        return Ok(ExitCode::from(1));
-    }
-    Ok(ExitCode::SUCCESS)
+    Ok(if complete { ExitCode::SUCCESS } else { ExitCode::from(1) })
 }
 
 /// Read a CORE, because it is the one artifact that still has the faulting thread in it.
@@ -6959,9 +6602,8 @@ fn run_trap(args: TrapArgs) -> Result<ExitCode> {
         }
     };
 
-    let prefix = args.prefix.clone().or_else(|| {
-        std::env::var("DWDIAG_PREFIX").ok().filter(|s| !s.is_empty()).map(PathBuf::from)
-    });
+    let runtime = crate::installed_runtime_root().ok();
+    if let Some(prefix) = &args.prefix { println!("TRAP guest-prefix={} (not an image root)", prefix.display()); }
 
     let mut rows: Vec<String> = Vec::new();
     for line in text.lines() {
@@ -6972,11 +6614,11 @@ fn run_trap(args: TrapArgs) -> Result<ExitCode> {
         if let Some(want) = &args.process {
             if !name.contains(want.as_str()) { continue; }
         }
-        let sym = match &prefix {
-            Some(p) => resolve_in_prefix(p, &image)
+        let sym = match runtime {
+            Some(root) => resolve_installed_image(root, &image)
                 .and_then(|path| unwind_symbolize(ip.wrapping_sub(base), path.to_str().unwrap_or("")))
-                .unwrap_or_else(|| "<image not found under the prefix>".to_string()),
-            None => "<no prefix: pass --prefix or DWDIAG_PREFIX>".to_string(),
+                .unwrap_or_else(|| "<image not found in selected installation>".to_string()),
+            None => "<installed image identity unavailable; pass --runtime-root>".to_string(),
         };
         rows.push(format!(
             "TRAP pid={} name={} reason={} image={} base={:#x} size={:#x} off={:#x} -> {}",
@@ -7059,30 +6701,32 @@ fn parse_trap_line(line: &str) -> Option<(String, u64, String, u64, String, u64,
     Some((name.to_string(), pid, reason, ip?, image?, base?, size?))
 }
 
-/// Find a deployed image by basename, preferring the loader-visible copies before walking the tree.
-fn resolve_in_prefix(prefix: &std::path::Path, image: &str) -> Option<PathBuf> {
-    const DIRS: [&str; 6] = [
-        "usr/lib/system", "usr/lib", "usr/libexec/darling",
-        "libexec/darling/usr/lib/system", "libexec/darling/usr/lib",
+/// Find an image only in the selected immutable installation, never guest system aliases.
+fn resolve_installed_image(root: &Path, image: &str) -> Option<PathBuf> {
+    const DIRS: [&str; 4] = [
+        "bin", "libexec/darling/usr/lib/system", "libexec/darling/usr/lib",
         "libexec/darling/usr/libexec/darling",
     ];
     for d in DIRS {
-        let p = prefix.join(d).join(image);
-        if p.is_file() { return Some(p); }
+        let p = root.join(d).join(image);
+        if let Ok(resolved) = fs::canonicalize(&p) {
+            if resolved.starts_with(root) && resolved.is_file() { return Some(resolved); }
+        }
     }
     // Anything else: bounded walk, only for the file we were told to find.
     fn walk(dir: &std::path::Path, want: &str, depth: usize) -> Option<PathBuf> {
         if depth == 0 { return None; }
         for e in std::fs::read_dir(dir).ok()?.flatten() {
             let p = e.path();
-            if p.is_file() && p.file_name().map(|n| n == want).unwrap_or(false) { return Some(p); }
-            if p.is_dir() {
+            let kind = e.file_type().ok()?;
+            if kind.is_file() && p.file_name().map(|name| name == want).unwrap_or(false) { return Some(p); }
+            if kind.is_dir() {
                 if let Some(f) = walk(&p, want, depth - 1) { return Some(f); }
             }
         }
         None
     }
-    walk(prefix, image, 8)
+    walk(&root.join("libexec/darling"), image, 8)
 }
 
 /// The word gdb wants after `handle`: a bare signal NAME.
@@ -7281,9 +6925,13 @@ fn run_unwind(args: UnwindArgs) -> Result<ExitCode> {
                 .map(|o| o.stdout)
                 .unwrap_or_default()
         };
-        // The frame-pointer chain when it validates, and the word scan only when it does not --
-        // and the output says which, because those are different kinds of evidence.
-        let fp_rets = fp_chain(&mem, rsp, *rbp_ref, rsp, &maps, &image_ok, args.max);
+        // Frame-pointer chains can omit callers compiled without frame pointers.
+        // An explicit scan reports candidates; it must never be presented as a backtrace.
+        let fp_rets = if args.scan {
+            Vec::new()
+        } else {
+            fp_chain(&mem, rsp, *rbp_ref, rsp, &maps, &image_ok, args.max)
+        };
         let (frames, via) = if fp_rets.is_empty() {
             (scan_stack(&mem, &maps, &image_ok, args.max, &mut segments), "scan")
         } else {
@@ -7585,10 +7233,8 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
         // and compares that hash with the deployed prefix binary: MATCH is the only state in which "the deploy took
         // effect" is a fact.
         {
-            // The deployed binary to compare against must be the one from THIS run's prefix. Without a resolved
-            // prefix the comparison has no subject, and saying so is the only honest output.
             let prefix = resolve_prefix(args.prefix.clone(), Some(&args.log));
-            let deployed_path = prefix.as_ref().map(|p| p.join("bin/darlingserver"));
+            let deployed_path = crate::installed_runtime_root().ok().map(|root| root.join("bin/darlingserver"));
             let deployed_hash = match &deployed_path {
                 Some(p) => match sha256_of(p) {
                     Ok(h) => Some(h),
@@ -7599,7 +7245,7 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
                 },
                 None => {
                     println!(
-                        "SERVER-IDENTITY deployed=UNMEASURED (no prefix resolved: no --prefix, no DWDIAG_PREFIX, no prefix= in the log)"
+                        "SERVER-IDENTITY installed=UNMEASURED (no ordinary runtime selected; pass --runtime-root)"
                     );
                     None
                 }
@@ -7625,6 +7271,9 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
                     let name = e.file_name().to_string_lossy().to_string();
                     if name.is_empty() || !name.chars().all(|c| c.is_ascii_digit()) {
                         continue;
+                    }
+                    if let Some(prefix) = &prefix {
+                        if !process_owns_prefix(name.parse().unwrap_or(0), prefix) { continue; }
                     }
                     let exe = match fs::read_link(format!("/proc/{name}/exe")) {
                         Ok(x) => x,
@@ -7690,15 +7339,9 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
         }
         // SERVER SIDE, from its own log (see the option's comment). Counts only: the two files have different clocks,
         // so an interleaved ordering would be a fabricated one. Presence plus count is what decides the question.
-        {
-            // The prefix comes from the run's own identity line when the caller did not name a log, so a run served
-            // by another prefix cannot have its server evidence read from the wrong one (see resolve_prefix).
-            /* THE PREFIX COMES FROM THE LOG BEING READ, BEFORE ANY DEFAULT (dar-4cp9). MEASURED: a boot-fail run
-             * of /tmp/r1-repro-prefix was reported with SERVER-LOG-PATH /tmp/dr-on-matched/private/var/log/... and
-             * a doorbell count of 19228 taken from THAT prefix's server log -- a number about a different prefix,
-             * presented next to this run's report. The run's own identity line carries the resolved prefix, so read
-             * it from there first; name the source of whatever path is used, and refuse to present a count whose
-             * file belongs to another prefix. */
+        'server_evidence: {
+            // Only an explicit log or this run's recorded prefix can supply
+            // server facts. Ambient/default prefixes may belong to another run.
             let mut prefix_from_log: Option<PathBuf> = None;
             for line in run.lines() {
                 let mut rest = line;
@@ -7714,16 +7357,20 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
                     rest = &rest[end..];
                 }
             }
-            let (server_log_path, server_log_source) = match args.server_log.clone() {
-                Some(p) => (p, "explicit --server-log"),
-                None => match prefix_from_log.clone().or_else(|| resolve_prefix(None, None)) {
-                    Some(p) => (p.join("private/var/log/dserver.log"), "the run's own prefix line"),
-                    None => (
-                        PathBuf::from("/tmp/dr-on-matched").join("private/var/log/dserver.log"),
-                        "DEFAULT -- no prefix in the log; counts below may belong to another prefix",
-                    ),
-                },
-            };
+            let (server_log_path, server_log_source): (Cow<'_, Path>, &str) =
+                match args.server_log.as_deref() {
+                    Some(path) => (Cow::Borrowed(path), "explicit --server-log"),
+                    None => match args.prefix.as_ref().or(prefix_from_log.as_ref()) {
+                        Some(prefix) => (
+                            Cow::Owned(prefix.join("private/var/log/dserver.log")),
+                            if args.prefix.is_some() { "explicit --prefix" } else { "the run's own prefix line" },
+                        ),
+                        None => {
+                            println!("SERVER-LOG unavailable: pass --server-log/--prefix or a run log with prefix=; server-side facts are NOT included");
+                            break 'server_evidence;
+                        }
+                    },
+                };
             eprintln!("SERVER-LOG-PATH {} (from {})", server_log_path.display(), server_log_source);
             let server_text = read_log_lossy(&server_log_path).unwrap_or_default();
             if server_text.is_empty() {
@@ -8029,64 +7676,13 @@ pub struct ProcessesArgs {
 
 fn run_processes(args: ProcessesArgs) -> Result<ExitCode> {
     let wanted = args.prefix.to_string_lossy().to_string();
-    let canonical = fs::canonicalize(&args.prefix)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| wanted.clone());
-    // THE CENSUS MUST NOT MATCH ITSELF OR ITS ANCESTORS. This command's own argv carries the prefix path, so a
-    // straight cmdline match reported the census as a prefix process (measured: count=1 clean=0 on an idle prefix);
-    // the same mistake, one level up, is the guard that killed a grandparent and returned 137. The excluded set is
-    // this pid and the chain that leads to it, read from /proc before any process is examined.
-    let mut excluded: Vec<i32> = vec![std::process::id() as i32];
-    {
-        let mut cur = std::process::id() as i32;
-        for _ in 0..64 {
-            let stat = fs::read_to_string(format!("/proc/{cur}/stat")).unwrap_or_default();
-            let ppid = stat
-                .rsplit_once(')')
-                .and_then(|(_, rest)| rest.split_whitespace().nth(1))
-                .and_then(|p| p.parse::<i32>().ok());
-            match ppid {
-                Some(p) if p > 0 => {
-                    excluded.push(p);
-                    cur = p;
-                }
-                _ => break,
-            }
-        }
-    }
-    let mut rows: Vec<(i32, String, String)> = Vec::new();
-    for entry in fs::read_dir("/proc").context("reading /proc")? {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        let name = entry.file_name().to_string_lossy().to_string();
-        let pid: i32 = match name.parse() {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        if excluded.contains(&pid) {
-            continue;
-        }
-        // The EXECUTABLE PATH is the handle that survives a rewritten argv, and the COMMAND LINE is the handle that
-        // survives a re-exec; a stale-process rule needs both, which is why both are matched here and printed.
-        let exe = fs::read_link(entry.path().join("exe"))
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let cmdline = fs::read(entry.path().join("cmdline"))
-            .map(|b| {
-                String::from_utf8_lossy(&b)
-                    .replace('\0', " ")
-                    .trim_end()
-                    .to_string()
-            })
-            .unwrap_or_default();
-        let owned = (!exe.is_empty() && (exe.contains(&wanted) || exe.contains(&canonical)))
-            || cmdline.contains(&wanted)
-            || cmdline.contains(&canonical);
-        if owned {
-            rows.push((pid, exe, cmdline));
-        }
+    let mut rows = Vec::new();
+    for pid in prefix_processes(&args.prefix) {
+        let exe = fs::read_link(format!("/proc/{pid}/exe")).map(|path| path.display().to_string()).unwrap_or_default();
+        let command = fs::read(format!("/proc/{pid}/cmdline")).map(|bytes|
+            String::from_utf8_lossy(&bytes).replace('\0', " ").trim_end().to_string()
+        ).unwrap_or_default();
+        rows.push((pid, exe, command));
     }
     rows.sort_by_key(|r| r.0);
     if args.json {
@@ -8164,11 +7760,7 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
 
 /// The durable-artifact gate, as ONE supported command instead of a hand-rolled script per attempt.
 ///
-/// MEASURED motivation: proving that the CLEAN-BUILT artifacts work took three ad-hoc scripts, each of which grew its own
-/// defects (a stuck `$?` after a pipe, a lost output stream, artifacts installed from the session prefix by hand). The
-/// steps are the same every time -- bootstrap a prefix with a named profile, install the built artifacts with a sha256
-/// check per copy, install the test assets, run a workload, read the census -- so they belong here, where the transcript,
-/// the log path and the stage announcements already are.
+/// Prepare isolated guest state with an ordinary installation and explicit test assets.
 ///
 /// Every step prints a `PREFIX-STAGE` line BEFORE it runs. That is not decoration: a gate that was killed at a wait
 /// boundary once produced no output at all, and the stage line is what turns "it went silent" into "it died at boot".
@@ -8176,30 +7768,26 @@ pub fn dispatch(cmd: DiagCommand) -> Result<ExitCode> {
 pub struct PrefixArgs {
     #[arg(long)]
     prefix: PathBuf,
-    /// Bootstrap profile for `west test --bootstrap-runtime-profile`. Omit to use the prefix as it is.
+    /// Run ordinary darling-bootstrap before staging test inputs.
     #[arg(long)]
-    bootstrap_profile: Option<String>,
-    /// `BUILT=DESTINATION` pairs for the artifacts under test, each sha256-checked after installation. DESTINATION is
-    /// inside the prefix unless it is absolute.
-    #[arg(long = "install", value_parser = parse_kv, num_args = 0..)]
-    install: Vec<(String, String)>,
+    bootstrap: bool,
+    #[arg(long)]
+    build: Option<PathBuf>,
+    #[arg(long)]
+    guest_toolchain: Option<String>,
+    /// Bootstrap against an already installed image without building/installing.
+    #[arg(long)]
+    no_build: bool,
     /// `SOURCE=DESTINATION` pairs for TEST ASSETS, which are not part of the runtime install (the workload fixture is
     /// one, and its absence is what made an earlier run report workload=absent).
     #[arg(long = "asset", value_parser = parse_kv, num_args = 0..)]
     asset: Vec<(String, String)>,
-    /// `NAME=BUILT` for a runtime component, expanded to EVERY copy the prefix layout needs, because the guest root is
-    /// `libexec/darling` and a component installed only at the host-visible path is one the guest cannot open (MEASURED:
-    /// `Cannot open /usr/lib/dyld` after exactly that mistake). The layout is knowledge this tool must hold rather than a
-    /// list every caller retypes: darlingserver -> bin/darlingserver; mldr -> usr/libexec/darling/mldr and its libexec
-    /// mirror; libsystem_kernel -> usr/lib/system/... and its mirror; dyld -> usr/lib/dyld and its mirror.
-    #[arg(long = "artifact", value_parser = parse_kv, num_args = 0..)]
-    artifact: Vec<(String, String)>,
     /// `KEY=VALUE` environment for the harness, and through it for the launcher, the server and the guest -- the same
     /// shape as `verdict --env`. MEASURED need: a gate that needs an environment must not be reachable only by exporting
     /// it in the caller's shell; one attempt at enabling the server-side plane log that way did not arrive at all.
     #[arg(long = "env", value_parser = parse_kv, num_args = 0..)]
     env: Vec<(String, String)>,
-    /// Workload to run when the installation succeeded; omitted stops after the installation.
+    /// Workload mode after guest-state and asset preparation; omitted stops after preparation.
     #[arg(long, default_value = "")]
     mode: String,
     #[arg(long, default_value = "")]
@@ -8216,197 +7804,76 @@ pub struct PrefixArgs {
     json: bool,
 }
 
-/// The installed copy must equal the built file, and the check has to be on the DESTINATION: `install` was measured to
-/// succeed while the deployed file was the stale one, and a deploy that is not verified is a claim about the wrong
-/// binary. Uses the host `sha256sum` rather than pulling a hash crate in for one comparison.
+/// Hash actual file bytes with the host sha256sum utility.
+/// Runtime-image integrity belongs to the normal installation receipt; test assets are separate.
 fn sha256_of(path: &Path) -> Result<String> {
-    let out = Command::new("sha256sum")
-        .arg(path)
-        .output()
-        .with_context(|| format!("hashing {}", path.display()))?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    Ok(text
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_string())
+    sha256_file(path).with_context(|| format!("hashing {}", path.display()))
+}
+
+fn stage_test_asset(source: &Path, destination: &Path, prefix: &Path) -> Result<()> {
+    if !prefix.is_absolute() || prefix.components().any(|part| matches!(part, std::path::Component::ParentDir))
+        || prefix.ancestors().any(Path::is_symlink) {
+        bail!("guest state must be an absolute no-symlink path without '..': {}", prefix.display());
+    }
+    let relative = destination.strip_prefix(prefix).context("test asset must stay inside guest state")?;
+    if !relative.starts_with("private/var/tmp")
+        || relative.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
+        bail!("test assets belong under guest /private/var/tmp, not system-image paths");
+    }
+    let parent = destination.parent().context("test asset parent")?;
+    let mut ancestor = destination;
+    while ancestor != prefix {
+        if ancestor.is_symlink() { bail!("test asset destination traverses a guest symlink: {}", ancestor.display()); }
+        ancestor = ancestor.parent().context("test asset path ancestry")?;
+    }
+    fs::create_dir_all(parent)?;
+    fs::copy(source, destination).with_context(|| format!("staging test asset {} -> {}", source.display(), destination.display()))?;
+    let expected = sha256_of(source)?;
+    let actual = sha256_of(destination)?;
+    if expected != actual { bail!("staged test fixture digest differs: {}", destination.display()); }
+    println!("ASSET-INSTALL MATCH sha256={actual} source={} destination={}", source.display(), destination.display());
+    Ok(())
 }
 
 fn run_prefix(args: PrefixArgs) -> Result<ExitCode> {
     let prefix = &args.prefix;
-    if let Some(profile) = &args.bootstrap_profile {
-        println!(
-            "PREFIX-STAGE bootstrap profile={profile} prefix={}",
-            prefix.display()
-        );
-        if prefix.exists() {
-            // `west test` refuses a non-empty prefix by design, and a half-installed prefix would make every later
-            // step lie about what it measured: start from nothing, and say so.
-            println!("PREFIX-STAGE clearing {}", prefix.display());
-            fs::remove_dir_all(prefix).with_context(|| format!("clearing {}", prefix.display()))?;
-        }
-        fs::create_dir_all(prefix)?;
-        let status = Command::new("mise")
-            .args(["run", "west", "test", "--prefix"])
-            .arg(prefix)
-            .args(["--bootstrap-runtime-profile", profile])
-            .status()
-            .context("running the bootstrap")?;
-        println!(
-            "PREFIX-STAGE bootstrap done rc={}",
-            status.code().unwrap_or(-1)
-        );
-        if !status.success() {
-            println!("PREFIX: bootstrap FAILED; nothing was installed and no workload was run");
-            return Ok(ExitCode::from(3));
-        }
+    let root = crate::runtime_root()?;
+    if args.bootstrap {
+        let build = required_path("--build", args.build.clone(), "DWDIAG_BUILD")?;
+        println!("PREFIX-STAGE bootstrap runtime-root={} prefix={}", root.display(), prefix.display());
+        let mut command = Command::new("mise");
+        command.args(["run", "west", "darling-bootstrap", "--build-dir"]).arg(build)
+            .arg("--runtime-root").arg(root).arg("--prefix").arg(prefix);
+        if let Some(toolchain) = &args.guest_toolchain { command.arg("--guest-toolchain").arg(toolchain); }
+        if args.no_build { command.arg("--no-build"); }
+        crate::inherit_owner_lease(&mut command);
+        let status = command.status().context("ordinary installed-runtime bootstrap")?;
+        if !status.success() { return Ok(ExitCode::from(3)); }
+    } else if args.guest_toolchain.is_some() {
+        bail!("--guest-toolchain requires explicit --bootstrap");
     }
-    let mut installed = 0usize;
-    let layout: &[(&str, &[&str])] = &[
-        ("darlingserver", &["bin/darlingserver"]),
-        ("mldr", &["usr/libexec/darling/mldr", "libexec/darling/usr/libexec/darling/mldr"]),
-        (
-            "libsystem_kernel",
-            &["usr/lib/system/libsystem_kernel.dylib", "libexec/darling/usr/lib/system/libsystem_kernel.dylib"],
-        ),
-        ("dyld", &["usr/lib/dyld", "libexec/darling/usr/lib/dyld"]),
-        // MEASURED FRICTION: the guest's pthread library is a component a diagnosis regularly needs to deploy (the
-        // creation path lives in it), and without an entry here the cycle refused it as "unknown component" while the
-        // prefix could install it perfectly well -- a dead end in the tool, not in the runtime.
-        ("libsystem_pthread.dylib", &[
-            "usr/lib/system/libsystem_pthread.dylib",
-            "libexec/darling/usr/lib/system/libsystem_pthread.dylib",
-        ]),
-    ];
-    let mut pairs: Vec<(String, String)> = args.install.clone();
-    for (name, built) in &args.artifact {
-        let destinations = layout
-            .iter()
-            .find(|(n, dests)| {
-                // THE COMPONENT KEY OR THE LIBRARY'S OWN FILE NAME. The key is the documented spelling, but what a
-                // caller has in front of them is the file they just built (`libsystem_kernel.dylib`), and MEASURED: the
-                // file-name spelling aborted the whole invocation before any component in it was installed, so a
-                // correct `dyld=...` pair next to it silently did nothing as well. Accept both spellings.
-                *n == name
-                    || dests.iter().any(|d| {
-                        std::path::Path::new(d)
-                            .file_name()
-                            .and_then(|f| f.to_str())
-                            == Some(name.as_str())
-                    })
-            })
-            .map(|(_, d)| *d)
-            .with_context(|| {
-                format!(
-                    "--artifact {name}: unknown component; known: {}",
-                    layout.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")
-                )
-            })?;
-        for dest in destinations {
-            pairs.push((built.clone(), (*dest).to_string()));
-        }
+    crate::installed_runtime_root()?;
+    // Bootstrap and the workload harness are lifecycle owners themselves. Lease
+    // only the intervening asset mutation; never nest an outer lock around them.
+    let staging_scope = crate::PrefixScope::acquire(prefix, root, true)?;
+    let mut explicit_workload = false;
+    let host_view = prefix.join(args.guest_command.trim_start_matches('/'));
+    for (source, destination) in &args.asset {
+        let destination = Path::new(destination);
+        let destination = if destination.is_absolute() { destination.to_path_buf() } else { prefix.join(destination) };
+        println!("PREFIX-STAGE asset {} -> {}", source, destination.display());
+        stage_test_asset(Path::new(source), &destination, prefix)?;
+        explicit_workload |= destination == host_view;
     }
-    for (built, dest) in &pairs {
-        let dest_path = if PathBuf::from(dest).is_absolute() {
-            PathBuf::from(dest)
-        } else {
-            prefix.join(dest)
-        };
-        println!("PREFIX-STAGE install {built} -> {}", dest_path.display());
-        let source = PathBuf::from(built);
+    if !explicit_workload {
+        let name = Path::new(&args.guest_command).file_name().context("guest workload basename")?;
+        let source = root.join("libexec/darling/usr/bin").join(name);
         if !source.is_file() {
-            println!("PREFIX-INSTALL MISSING-BUILD-ARTIFACT {built}");
-            continue;
+            bail!("installed workload prerequisite missing: {}; provide an explicit --asset for a custom fixture", source.display());
         }
-        // ETXTBSY: A RUNNING darlingserver CANNOT BE OVERWRITTEN. MEASURED: the install of bin/darlingserver failed
-        // with the tool exiting 1 right after printing the install line, which reads as "the run refused" rather than
-        // "the server is still up". The documented rule is to stop the server first, so do exactly that here and
-        // retry once -- the alternative is every caller remembering it.
-        install_artifact_into_prefix(Path::new(built), &dest_path, prefix)?;
-        let a = sha256_of(&source)?;
-        let b = sha256_of(&dest_path)?;
-        println!(
-            "PREFIX-INSTALL {} {} {}",
-            if a == b { "MATCH" } else { "MISMATCH" },
-            &a[..16.min(a.len())],
-            dest_path.display()
-        );
-        if a != b {
-            return Ok(ExitCode::from(3));
-        }
-        installed += 1;
+        stage_test_asset(&source, &host_view, prefix)?;
     }
-    for (src, dest) in &args.asset {
-        let dest_path = if PathBuf::from(dest).is_absolute() {
-            PathBuf::from(dest)
-        } else {
-            prefix.join(dest)
-        };
-        println!("PREFIX-STAGE asset {src} -> {}", dest_path.display());
-        // A FRESH PREFIX DOES NOT HAVE usr/bin, AND THE COPY'S ENOENT NAMES NEITHER THE MISSING DIRECTORY NOR THE
-        // DESTINATION. MEASURED: that cost a full debugging cycle -- the failure looked like a missing SOURCE file
-        // while the source was present and only its parent directory was absent. Create the parent and name the
-        // destination in the error.
-        if let Some(parent) = dest_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating asset destination directory {}", parent.display()))?;
-        }
-        fs::copy(src, &dest_path)
-            .with_context(|| format!("installing asset {src} -> {}", dest_path.display()))?;
-    }
-    println!(
-        "PREFIX-INSTALLED artifacts={installed} assets={}",
-        args.asset.len()
-    );
-    // ADVISORY GUEST-VIEW CHECK, printed BEFORE the workload runs. The guest's /usr/bin resolves through
-    // /Volumes/SystemRoot to the HOST's /usr/bin, so a fixture copied into <prefix>/usr/bin is not the one the
-    // workload opens. MEASURED: a gate whose fixture was never installed via --asset ends with workload=absent and
-    // says nothing about why, and that shape cost this work repeated cycles. This line is what makes the difference
-    // visible at the top of the run instead of after it.
-    /* THE FIXTURE IS PART OF THE MEASUREMENT, SO REFRESH IT FROM THE BUILD TREE (dar-4cp9). MEASURED trap this
-     * closes: the guest fixture is read from the prefix, and a run of an OLD copy is indistinguishable from a run
-     * of the new one -- this session hit it exactly, running `forkexec` against a fixture installed hours earlier
-     * that did not contain the mode at all, and the workload answered `unknown_mode` for a mode that was in the
-     * source. The build tree is the only source of truth here (DWDIAG_BUILD), the copy is verified by sha256 like
-     * every other artifact, and a missing source is reported rather than silently skipped. */
-    {
-        let base = Path::new(&args.guest_command)
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "ring_mach_msg_test".to_string());
-        let build_root = std::env::var("DWDIAG_BUILD")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from);
-        let src = match build_root {
-            Some(b) => b.join("src/tools").join(&base),
-            None => PathBuf::from("/nonexistent-no-build-tree").join(&base),
-        };
-        let dst = prefix.join(args.guest_command.trim_start_matches('/'));
-        if src.is_file() {
-            if let (Ok(a), _) = (sha256_of(&src), ()) {
-                let same = sha256_of(&dst).map(|b| b == a).unwrap_or(false);
-                if !same {
-                    match install_artifact_into_prefix(src.as_path(), &dst, prefix) {
-                        Ok(()) => {
-                            let b = sha256_of(&dst).unwrap_or_default();
-                            println!(
-                                "FIXTURE-INSTALL {} {} {}",
-                                if b == a { "MATCH" } else { "MISMATCH" },
-                                &a[..16.min(a.len())],
-                                dst.display()
-                            );
-                        }
-                        Err(e) => println!("FIXTURE-INSTALL FAILED {e}"),
-                    }
-                } else {
-                    println!("FIXTURE-INSTALL MATCH {} (already current) {}", &a[..16.min(a.len())], dst.display());
-                }
-            }
-        } else {
-            println!("FIXTURE-INSTALL MISSING-BUILD-ARTIFACT {}", src.display());
-        }
-    }
+    println!("PREFIX-STAGE assets={} runtime-root={} (no runtime files copied into guest state)", args.asset.len(), root.display());
     let host_view = prefix.join(args.guest_command.trim_start_matches('/'));
     println!(
         "ASSET-CHECK guest={} host={} host-present={} asset-installs={}",
@@ -8415,6 +7882,7 @@ fn run_prefix(args: PrefixArgs) -> Result<ExitCode> {
         host_view.is_file(),
         args.asset.len()
     );
+    drop(staging_scope);
     if args.mode.trim().is_empty() {
         println!("PREFIX-STAGE: no --mode given, stopping after installation");
         return Ok(ExitCode::SUCCESS);
@@ -8465,10 +7933,9 @@ pub enum DiagCommand {
     /// Build the runtime pair the rule requires (libsystem_kernel and the dyld image TOGETHER) and check that the
     /// instrument strings a caller expects are present in the built artifact.
     Build(BuildArgs),
-    /// Build, deploy and run ONE workload, then report which instruments fired and which stayed silent: the four
-    /// steps this stage repeats, with the prefix, the build tree and the artifact pair taken from the environment.
-    /// Deploy the complete component set from ONE build tree into a prefix, verifying every copy by sha256.
+    /// Publish the complete normal CMake installation into the selected immutable runtime root.
     Deploy(DeployArgs),
+    /// Publish or explicitly reuse an installed image, run a workload and report fired instruments.
     Cycle(CycleArgs),
     /// Resolve a reported offset to `symbol + offset` for any image (guest dylib or server binary).
     Symbolize(SymbolizeArgs),
@@ -8535,12 +8002,11 @@ pub enum DiagCommand {
     /// the symbol `mach_driver_get_fd` in the KERNEL image (not dyld, not the server binary), which is a trap that has
     /// already produced one wrong attribution; passing `--kernel` resolves it here instead of by hand.
     Denials(DenialsArgs),
-    /// Prove a PREFIX rather than a working tree: bootstrap it, install the built artifacts with a sha256 check each,
-    /// install the test assets, then run ONE workload on it. Prints a PREFIX-STAGE line before every step, so a gate that
-    /// dies part way says where it died instead of going silent.
+    /// Prepare writable guest state and test assets for the selected installed runtime, then optionally run a workload.
+    /// Runtime files are never copied into the guest prefix.
     Prefix(PrefixArgs),
-    /// Report the processes a PREFIX owns, matched by executable path AND command line: a name match that finds
-    /// nothing is not a clean prefix, and the count this prints is the one a stale-process claim may rest on.
+    /// Report processes owning the guest prefix through directory descriptors or exact prefix environment.
+    /// The count describes the observed census; normal product shutdown and lifecycle cleanup remain required.
     Processes(ProcessesArgs),
     /// Read the KERNEL's own report of where a guest died and symbolize the address inside a prefix.
     ///
@@ -8584,13 +8050,8 @@ pub enum DiagCommand {
     /// wrong. The reader below is the one `core`/`identity`/`unwind` already use; this command is its standalone
     /// face, so the mapping table can be read without naming a faulting function first.
     Mappings(MappingsArgs),
-    /// Print the run's artifact identity line (`RUN-ENV prefix=... mldr=... libsystem_kernel.dylib=... dyld=...`):
-    /// the sha256 of every DEPLOYED runtime copy, which is what answers "which build actually ran".
-    ///
-    /// MEASURED why it is a command: `verdict`/`cycle` print that line for a run they started, so a run started any
-    /// other way (the boot harness, a hand-invoked launcher) carried no identity at all, and two runs served by
-    /// different copies were compared as if they were the same build. The table of candidate paths lives here, once,
-    /// so a caller cannot invent a second list.
+    /// Print the runtime root and compact fingerprint of key installed binaries, with guest state reported separately.
+    /// Shares verdict/cycle's candidate set; this compact fingerprint does not replace the complete install receipt.
     Env(EnvArgs),
 }
 
@@ -8628,7 +8089,7 @@ pub struct MappingsArgs {
 
 #[derive(clap::Args, Debug)]
 pub struct EnvArgs {
-    /// Prefix whose deployed runtime copies are digested. Defaults to DWDIAG_PREFIX, then DPREFIX.
+    /// Optional writable guest-state prefix, reported separately from installed image digests.
     #[arg(long)]
     prefix: Option<PathBuf>,
     /// One compact JSON line instead of the RUN-ENV line.
@@ -8752,7 +8213,8 @@ fn run_courier(args: CourierArgs) -> Result<ExitCode> {
     // The artifacts must come from the prefix THIS RUN used: a default pointing at some other prefix decides the
     // census against the wrong binary, which is worse than not deciding it.
     let resolved_prefix = resolve_prefix(args.prefix.clone(), Some(&log));
-    let default_artifacts: Vec<PathBuf> = match &resolved_prefix {
+    let selected_runtime = crate::installed_runtime_root().ok();
+    let default_artifacts: Vec<PathBuf> = match selected_runtime {
         Some(p) => vec![
             p.join("libexec/darling/usr/libexec/darling/mldr"),
             p.join("libexec/darling/usr/lib/system/libsystem_kernel.dylib"),
@@ -8763,7 +8225,7 @@ fn run_courier(args: CourierArgs) -> Result<ExitCode> {
         ],
         None => {
             println!(
-                "COURIER-WARN no prefix resolved (no --prefix, no DWDIAG_PREFIX, no prefix= in the log): every instrument check below is UNMEASURED"
+                "COURIER-WARN no ordinary installation selected: instrument checks are UNMEASURED; pass --runtime-root or explicit --artifact"
             );
             Vec::new()
         }
@@ -8920,58 +8382,6 @@ fn run_courier(args: CourierArgs) -> Result<ExitCode> {
     }
 }
 
-/// Merge a runtime verdict into the deploy receipt, byte-for-byte elsewhere.
-///
-/// WHY A TEXT MERGE: the receipt is JSON owned by `west_commands/deploy_receipt.py` and this tool has no JSON
-/// library (its other outputs are hand-written too). The rules that make a text merge safe are checked here and
-/// in `receipt_tests`: the document must be a JSON object, must not already carry `runtime_verdict` (a verdict is
-/// evidence about ONE build, and overwriting one makes the receipt describe a run it never measured), and every
-/// other byte is preserved.
-fn merge_runtime_verdict(existing: &str, verdict: &str) -> Result<String> {
-    let trimmed_end = existing.trim_end();
-    if !trimmed_end.ends_with('}') {
-        bail!("not a JSON object: no trailing '}}'");
-    }
-    if trimmed_end.contains("\"runtime_verdict\"") {
-        bail!("receipt already carries a runtime_verdict");
-    }
-    let body = trimmed_end.trim_end_matches('}');
-    let body_trimmed = body.trim_end();
-    let separator = if body_trimmed.ends_with('{') { "" } else { "," };
-    Ok(format!("{body_trimmed}{separator}\n  \"runtime_verdict\": {verdict}\n}}\n"))
-}
-
-#[cfg(test)]
-mod receipt_tests {
-    use super::*;
-
-    #[test]
-    fn merge_adds_the_verdict_and_preserves_everything_else() {
-        let receipt = "{\n  \"schema_version\": 1,\n  \"workspace\": {\"manifest_commit\": \"abc\"}\n}\n";
-        let merged = merge_runtime_verdict(receipt, "{\"rows\":9}").unwrap();
-        assert!(merged.contains("\"workspace\": {\"manifest_commit\": \"abc\"}"));
-        assert!(merged.contains("\"runtime_verdict\": {\"rows\":9}"));
-        assert!(merged.trim_end().ends_with('}'));
-    }
-
-    #[test]
-    fn merge_refuses_an_existing_verdict() {
-        let receipt = "{\"runtime_verdict\": {\"rows\":9}}";
-        assert!(merge_runtime_verdict(receipt, "{\"rows\":9}").is_err());
-    }
-
-    #[test]
-    fn merge_refuses_a_document_that_is_not_an_object() {
-        assert!(merge_runtime_verdict("not json", "{}").is_err());
-        assert!(merge_runtime_verdict("", "{}").is_err());
-    }
-
-    #[test]
-    fn merge_handles_an_empty_object() {
-        let merged = merge_runtime_verdict("{}", "{\"rows\":0}").unwrap();
-        assert_eq!(merged, "{\n  \"runtime_verdict\": {\"rows\":0}\n}\n");
-    }
-}
 
 #[cfg(test)]
 mod witness_tests {
@@ -9279,19 +8689,49 @@ mod runtime_fingerprint_tests {
     #[test]
     fn the_fingerprint_names_a_deployed_copy_and_is_empty_without_one() {
         let root = std::env::temp_dir().join(format!("dwdiag-env-{}-{}", std::process::id(), line!()));
-        let deployed = root.join("usr/libexec/darling");
+        let deployed = root.join("libexec/darling/usr/libexec/darling");
         fs::create_dir_all(&deployed).unwrap();
         fs::write(deployed.join("mldr"), b"not-really-a-loader\n").unwrap();
         let parts = runtime_fingerprint_parts(&root);
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].0, "mldr");
         assert_eq!(parts[0].1.len(), 12);
-        assert!(runtime_fingerprint(&root).starts_with(&format!("prefix={} mldr=", root.display())));
+        assert!(runtime_fingerprint(&root).starts_with(&format!("runtime-root={} mldr=", root.display())));
         let empty = std::env::temp_dir().join(format!("dwdiag-envempty-{}", std::process::id()));
         fs::create_dir_all(&empty).unwrap();
         assert!(runtime_fingerprint_parts(&empty).is_empty());
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&empty);
+    }
+
+    #[test]
+    fn capabilities_distinguish_guest_prefixes_with_shared_executables() {
+        let root = std::env::temp_dir().join(format!("dwdiag-ownership-{}", std::process::id()));
+        let first = root.join("first");
+        let second = root.join("second");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let retained = fs::File::open(&first).unwrap();
+        assert!(process_owns_prefix(std::process::id(), &first));
+        assert!(!process_owns_prefix(std::process::id(), &second));
+        drop(retained);
+        assert!(!process_owns_prefix(std::process::id(), &first));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workload_recording_never_rewrites_install_receipts_or_existing_evidence() {
+        let root = std::env::temp_dir().join(format!("dwdiag-evidence-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let receipt = root.join(".darling-deploy-receipt.json");
+        fs::write(&receipt, "immutable install provenance").unwrap();
+        let evidence = root.join("run.json");
+        record_workload_evidence(&evidence, &root, "{\"verdict\":\"PASS\"}").unwrap();
+        assert_eq!(fs::read_to_string(&receipt).unwrap(), "immutable install provenance");
+        let recorded = fs::read(&evidence).unwrap();
+        assert!(record_workload_evidence(&evidence, &root, "{\"verdict\":\"FAIL\"}").is_err());
+        assert_eq!(fs::read(&evidence).unwrap(), recorded);
+        fs::remove_dir_all(root).unwrap();
     }
 }
 
@@ -9624,7 +9064,6 @@ mod core_identity_tests {
         assert!(once_operands(&r, |a| (a == 0x1000).then_some(1 << 40)).is_none());
     }
 
-    #[test]
     /// `--catch SIGSEGV` is the spelling a reader writes; it must not become `SIGSIGSEGV`.
     #[test]
     fn the_armed_signal_word_keeps_one_sig_prefix() {
@@ -9634,6 +9073,7 @@ mod core_identity_tests {
         assert_eq!(gdb_signal_word("11"), "11");
     }
 
+    #[test]
     fn the_signal_label_is_a_name_a_reader_recognises() {
         assert_eq!(sig_label(4), "SIGILL");
         assert_eq!(sig_label(11), "SIGSEGV");
@@ -9734,12 +9174,15 @@ fn job_step(
     lines: usize,
     timeout_seconds: u64,
 ) -> JobStep {
-    let command = format!("{} {}", exe.display(), argv.join(" "));
-    let out = Command::new("timeout")
-        .arg(timeout_seconds.to_string())
-        .arg(exe)
-        .args(argv)
-        .output();
+    let root = crate::RUNTIME_ROOT.get();
+    let command = match root {
+        Some(root) => format!("{} --runtime-root {} {}", exe.display(), root.display(), argv.join(" ")),
+        None => format!("{} {}", exe.display(), argv.join(" ")),
+    };
+    let mut child = Command::new("timeout");
+    child.arg(timeout_seconds.to_string()).arg(exe);
+    if let Some(root) = root { child.arg("--runtime-root").arg(root); }
+    let out = child.args(argv).output();
     let mut step = JobStep {
         label: label.to_string(),
         command,
@@ -12763,5 +12206,46 @@ mod guest_fault_tests {
         // A fatal mark with no mapping source at all: nothing to name, so not selectable.
         assert!(!log_has_symbolizable_fault(&format!("{FATAL_RIP}\n")));
         assert!(!log_has_symbolizable_fault("no fault here\n"));
+    }
+}
+
+#[cfg(test)]
+mod installed_runtime_contract_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn workload_completion_cannot_override_harness_or_shutdown_failure() {
+        let mut output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: b"VERDICT: PASS\n".to_vec(), stderr: Vec::new(),
+        };
+        assert!(completed_harness(&output));
+        output.status = std::process::ExitStatus::from_raw(1 << 8);
+        assert!(!completed_harness(&output));
+        output.status = std::process::ExitStatus::from_raw(0);
+        output.stdout = b"RING_MACH_TEST mode=basic pass=1\n".to_vec();
+        assert!(!completed_harness(&output));
+        output.stdout = b"VERDICT: PASS\nVERDICT: FAIL\n".to_vec();
+        assert!(!completed_harness(&output));
+    }
+
+    #[test]
+    fn test_asset_staging_cannot_install_system_files_or_follow_guest_symlinks() {
+        let root = std::env::temp_dir().join(format!("dwdiag-assets-{}", std::process::id()));
+        let prefix = root.join("guest");
+        let source = root.join("fixture");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&source, b"fixture input").unwrap();
+        let asset = prefix.join("private/var/tmp/fixture");
+        stage_test_asset(&source, &asset, &prefix).unwrap();
+        assert_eq!(fs::read(&asset).unwrap(), b"fixture input");
+        assert!(stage_test_asset(&source, &prefix.join("usr/lib/dyld"), &prefix).is_err());
+        let external = root.join("external");
+        fs::create_dir(&external).unwrap();
+        std::os::unix::fs::symlink(&external, prefix.join("private/var/tmp/redirect")).unwrap();
+        assert!(stage_test_asset(&source, &prefix.join("private/var/tmp/redirect/fixture"), &prefix).is_err());
+        assert!(!external.join("fixture").exists());
+        fs::remove_dir_all(root).unwrap();
     }
 }

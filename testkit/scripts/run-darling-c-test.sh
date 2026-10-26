@@ -160,18 +160,10 @@ dump_runtime_file_state() {
 	for link_index in "${!link_files[@]}"; do
 		dump_file_sha "link_file_${link_index}" "${link_files[$link_index]}"
 	done
-	dump_file_sha prefix_dyld "$prefix/usr/lib/dyld"
-	dump_file_sha prefix_nested_dyld "$prefix/libexec/darling/usr/lib/dyld"
-	dump_file_sha prefix_libsystem_kernel "$prefix/usr/lib/system/libsystem_kernel.dylib"
-	dump_file_sha prefix_nested_libsystem_kernel \
-		"$prefix/libexec/darling/usr/lib/system/libsystem_kernel.dylib"
-	if [[ -n "${WEST_RUNTIME_SOURCE_ROOT:-}" ]]; then
-		local module
-		for module in . src/external/xnu src/external/dyld src/external/darlingserver; do
-			git -C "$WEST_RUNTIME_SOURCE_ROOT/$module" rev-parse HEAD |
-				sed "s#^#WEST_RUNTIME_SOURCE_COMMIT $module #" >&2
-		done
-	fi
+	local runtime_root="${DARLING_RUNTIME_ROOT:?selected installed runtime root is required}"
+	dump_file_sha installed_dyld "$runtime_root/libexec/darling/usr/lib/dyld"
+	dump_file_sha installed_libsystem_kernel \
+		"$runtime_root/libexec/darling/usr/lib/system/libsystem_kernel.dylib"
 }
 
 dump_boot_trace() {

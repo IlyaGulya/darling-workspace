@@ -9,9 +9,9 @@
 # runtime can load answers it, and does so for the artifact that is actually executed rather than for the source.
 #
 # Usage:
-#   darling-artifact-manifest.sh --build DIR --prefix PATH --save FILE
-#   darling-artifact-manifest.sh --build DIR --prefix PATH --check FILE
-#   darling-artifact-manifest.sh --prefix PATH --probe '[my-tag]' [--probe TAG]...
+#   darling-artifact-manifest.sh --build DIR --runtime-root ROOT --save FILE
+#   darling-artifact-manifest.sh --build DIR --runtime-root ROOT --check FILE
+#   darling-artifact-manifest.sh --runtime-root ROOT --probe '[my-tag]' [--probe TAG]...
 #
 # --save writes an ordered, diffable manifest; --check reports every difference and exits non-zero.
 # --probe answers, across all runtime copies, whether a probe tag is present -- the check that would have caught a
@@ -20,6 +20,10 @@
 set -u
 
 PREFIX=""
+RUNTIME_ROOT=""
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+DARLING_WORKSPACE_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+. "$SCRIPT_DIR/darling-runtime.sh"
 BUILD=""
 SAVE=""
 CHECK=""
@@ -28,6 +32,7 @@ PROBES=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--prefix) PREFIX="$2"; shift 2 ;;
+		--runtime-root) RUNTIME_ROOT="$2"; shift 2 ;;
 		--build) BUILD="$2"; shift 2 ;;
 		--save) SAVE="$2"; shift 2 ;;
 		--check) CHECK="$2"; shift 2 ;;
@@ -37,6 +42,8 @@ $2"; shift 2 ;;
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac
 done
+
+darling_resolve_runtime "$RUNTIME_ROOT" || exit $?
 
 COMPONENTS="mldr dyld libsystem_kernel darlingserver shellspawn vchroot launchd"
 
@@ -55,13 +62,13 @@ built_path() {
 
 dest_paths() {
 	case "$1" in
-		mldr)             echo "libexec/darling/usr/libexec/darling/mldr"; echo "usr/libexec/darling/mldr" ;;
-		dyld)             echo "usr/lib/dyld"; echo "libexec/darling/usr/lib/dyld" ;;
-		libsystem_kernel) echo "usr/lib/system/libsystem_kernel.dylib"; echo "libexec/darling/usr/lib/system/libsystem_kernel.dylib" ;;
+		mldr)             echo "libexec/darling/usr/libexec/darling/mldr" ;;
+		dyld)             echo "libexec/darling/usr/lib/dyld" ;;
+		libsystem_kernel) echo "libexec/darling/usr/lib/system/libsystem_kernel.dylib" ;;
 		darlingserver)    echo "bin/darlingserver" ;;
-		shellspawn)       echo "usr/libexec/shellspawn"; echo "libexec/darling/usr/libexec/shellspawn" ;;
-		vchroot)          echo "usr/libexec/darling/vchroot"; echo "libexec/darling/usr/libexec/darling/vchroot" ;;
-		launchd)          echo "sbin/launchd" ;;
+		shellspawn)       echo "libexec/darling/usr/libexec/shellspawn" ;;
+		vchroot)          echo "libexec/darling/usr/libexec/darling/vchroot" ;;
+		launchd)          echo "libexec/darling/sbin/launchd" ;;
 		*) return 1 ;;
 	esac
 }
@@ -77,10 +84,10 @@ emit() {
 			fi
 		done
 	fi
-	if [ -n "$PREFIX" ]; then
+	if [ -n "$DARLING_RUNTIME_ROOT" ]; then
 		for c in $COMPONENTS; do
 			dest_paths "$c" | while read -r rel; do
-				dst="$PREFIX/$rel"
+				dst="$DARLING_RUNTIME_ROOT/$rel"
 				if [ -f "$dst" ]; then
 					printf '%s\tdeployed\t%s\n' "$(sha256sum "$dst" | cut -c1-64)" "$rel"
 				else
@@ -132,13 +139,13 @@ if [ -n "$CHECK" ]; then
 	exit 1
 fi
 
-if [ -n "$PREFIX" ] && [ -n "$PROBES" ]; then
+if [ -n "$PROBES" ]; then
 	echo "$PROBES" | while IFS= read -r t; do
 		[ -n "$t" ] || continue
 		echo "probe $t:"
 		for c in $COMPONENTS; do
 			dest_paths "$c" | while read -r rel; do
-				dst="$PREFIX/$rel"
+				dst="$DARLING_RUNTIME_ROOT/$rel"
 				[ -f "$dst" ] || continue
 				# -F is mandatory: a tag contains '[' and ']', so as a regex it is a bracket expression and
 				# grep rejects it outright ("Invalid range end"). An earlier version wrote

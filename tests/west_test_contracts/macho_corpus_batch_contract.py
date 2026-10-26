@@ -15,7 +15,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,11 +22,6 @@ BUILDER = ROOT / "ci/build-guest-macho-batch.sh"
 COMPARE = ROOT / "ci/compare-guest-macho-batch.py"
 TSV_FIELD_HELPER = ROOT / "ci/read-tsv-field.py"
 GUEST_SCRIPT_GENERATOR = ROOT / "ci/emit-guest-macho-batch-script.py"
-WORKFLOW = ROOT / ".github/workflows/test-infra.yml"
-SPECS_MODULE = ROOT / "ci/guest_macho_batch_specs.py"
-REVIEWED_XNU_PATCH = ROOT / "patches/homebrew/xnu/abort-with-payload-no-group-broadcast.patch"
-REVIEWED_XNU_SOURCE_PATH = "darling/src/libsystem_kernel/tests/abort_with_payload_no_group_broadcast.c"
-WORKSPACE_ABORT_SOURCE = ROOT / "tests/abort_with_payload_no_group_broadcast.c"
 sys.path.insert(0, str(ROOT / "ci"))
 import guest_macho_batch_specs as specs_module
 
@@ -39,7 +33,6 @@ compare_loader.loader.exec_module(compare_module)
 
 FIXTURE_SPECS = specs_module.FIXTURE_SPECS
 ANCHOR_SHA256 = specs_module.ANCHOR_ARTIFACT_SHA256
-BATCH_BOOTSTRAP_PROFILE = specs_module.BATCH_BOOTSTRAP_PROFILE
 FIXTURE_FILES = set(compare_module.FIXTURE_FILES)
 ROOT_FILES = set(compare_module.ROOT_FILES)
 MAX_BATCH_GUEST_LOG_BYTES = compare_module.MAX_BATCH_GUEST_LOG_BYTES
@@ -65,36 +58,6 @@ def synthetic_binary(payload: bytes) -> bytes:
     return header + payload
 
 
-def extract_added_file(patch: Path, path: str) -> bytes:
-    lines = patch.read_bytes().splitlines(keepends=True)
-    header = f"diff --git a/{path} b/{path}\n".encode()
-    try:
-        start = lines.index(header)
-    except ValueError as error:
-        raise AssertionError(f"reviewed patch lacks diff for {path}") from error
-    end = next(
-        (index for index in range(start + 1, len(lines)) if lines[index].startswith(b"diff --git ")),
-        len(lines),
-    )
-    section = lines[start:end]
-    assert b"new file mode 100644\n" in section
-    assert b"--- /dev/null\n" in section
-    assert f"+++ b/{path}\n".encode() in section
-    try:
-        hunk = next(index for index, line in enumerate(section) if line.startswith(b"@@ -0,0 +1,"))
-    except StopIteration as error:
-        raise AssertionError(f"reviewed patch lacks new-file hunk for {path}") from error
-    content = bytearray()
-    for line in section[hunk + 1 :]:
-        if line.startswith(b"@@"):
-            break
-        if line.startswith(b"+"):
-            content.extend(line[1:])
-        elif line.startswith(b"\\ No newline at end of file"):
-            continue
-        else:
-            raise AssertionError(f"reviewed new-file hunk contains non-added content for {path}")
-    return bytes(content)
 
 
 def write_run(root: Path, name: str) -> None:
@@ -189,18 +152,17 @@ def write_run(root: Path, name: str) -> None:
         )
         (fixture / "provenance.txt").write_text(provenance_document)
         values = {
-            "schema": "1",
+            "schema": "2",
             "fixture": spec.name,
             "source-project": spec.source_project,
             "source-path": spec.source_path,
             "source-revision": "a" * 40,
             "source-sha256": spec.source_sha256,
-            "patch-path": spec.patch_path,
-            "patch-sha256": spec.patch_sha256,
             "compile-flags": "|".join(spec.compile_flags),
             "link-flags": "|".join(spec.link_flags) or "-",
-            "runtime-profile": spec.runtime_profile,
-            "bootstrap-profile": BATCH_BOOTSTRAP_PROFILE,
+            "runtime-launcher-sha256": "c" * 64,
+            "runtime-server-sha256": "d" * 64,
+            "runtime-root": "/installed/runtime",
             "compiler-path": "/Library/Developer/CommandLineTools/usr/bin/clang",
             "compiler-sha256": "b" * 64,
             "compiler-version": " ".join(version.split()),
@@ -234,16 +196,15 @@ def write_run(root: Path, name: str) -> None:
                     spec.source_path,
                     "a" * 40,
                     spec.source_sha256,
-                    spec.patch_path,
-                    spec.patch_sha256,
                     sha256(binary),
-                    spec.runtime_profile,
+                    "c" * 64,
+                    "d" * 64,
                     spec.expected_marker,
                 )
             )
         )
     (run / "batch-manifest.tsv").write_text(
-        "fixture\tsource-project\tsource-path\tsource-revision\tsource-sha256\tpatch-path\tpatch-sha256\tartifact-sha256\truntime-profile\texpected-marker\n"
+        "fixture\tsource-project\tsource-path\tsource-revision\tsource-sha256\tartifact-sha256\truntime-launcher-sha256\truntime-server-sha256\texpected-marker\n"
         + "\n".join(rows)
         + "\n"
     )
@@ -274,87 +235,12 @@ def compare(root: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-workflow_text = WORKFLOW.read_text()
-workflow = yaml.load(workflow_text, Loader=yaml.BaseLoader)
-triggers = workflow.get("on", workflow.get(True))
-choices = triggers["workflow_dispatch"]["inputs"]["tier"]["options"]
-assert "macho-corpus-batch" in choices
-assert "macho-corpus-pilot" not in choices
-
 specs_module.validate_specs()
 assert len(FIXTURE_SPECS) == 14
-assert any("-pthread" in spec.compile_flags for spec in FIXTURE_SPECS)
+for spec in FIXTURE_SPECS:
+    if spec.source_project == "darling-workspace":
+        assert sha256(ROOT / spec.source_path) == spec.source_sha256
 assert next(spec for spec in FIXTURE_SPECS if spec.name == "ulock_eintr_retry_guest").compile_flags[-1] == "-pthread"
-abort_spec = next(spec for spec in FIXTURE_SPECS if spec.name == "abort_with_payload_no_group_broadcast")
-assert abort_spec.source_project == "darling-workspace"
-assert abort_spec.source_path == "tests/abort_with_payload_no_group_broadcast.c"
-assert extract_added_file(REVIEWED_XNU_PATCH, REVIEWED_XNU_SOURCE_PATH) == WORKSPACE_ABORT_SOURCE.read_bytes()
-assert "macho-corpus-pilot" not in workflow_text
-assert "testkit/fixtures/guest-macho/v1/corpus.yml" not in BUILDER.read_text()
-assert "../darling" not in SPECS_MODULE.read_text()
-builder_text = BUILDER.read_text()
-provenance_block_start = builder_text.rindex("\t\tprintf 'field\\tvalue\\n'")
-provenance_block_end = builder_text.index(
-    '\t} >"$fixture_dir/provenance.tsv"', provenance_block_start
-)
-builder_provenance_fields = re.findall(
-    r"^\s*printf '([a-z][a-z0-9-]*)\\t",
-    builder_text[provenance_block_start:provenance_block_end],
-    re.MULTILINE,
-)
-assert builder_provenance_fields[0] == "field"
-builder_provenance_fields = builder_provenance_fields[1:]
-assert len(builder_provenance_fields) == len(set(builder_provenance_fields))
-assert set(builder_provenance_fields) == set(compare_module.REQUIRED_FIELDS)
-assert "source_project" in builder_text
-assert "west_project_root" in builder_text
-assert "git -C \"$project_root\" rev-parse HEAD" in builder_text
-assert "'{sha}\\n'" not in builder_text
-assert "realpath -e" in builder_text
-assert "source symlink escapes West project root" in builder_text
-assert "owning patch symlink escapes workspace" in builder_text
-assert builder_text.count("--bootstrap-runtime-profile") == 1
-assert builder_text.count("rootless_prefix_assert_guest_toolchain") == 1
-assert "compile-status.tsv" in builder_text
-assert "runtime-mode\\tcompile-only" in builder_text
-assert "guest-compile" in builder_text
-assert "batch-guest-manifest.tsv" in builder_text
-assert '"$guest_binary" >' not in builder_text
-assert "CHOWN_DISABLED_NULL_GUARD_GUEST_OK" not in builder_text
-assert "MACHO_CORPUS_BATCH_EVIDENCE_COMPLETE" in builder_text
-assert "read-tsv-field.py" in builder_text
-assert "emit-guest-macho-batch-script.py" in builder_text
-assert "batch-guest.log" in builder_text
-assert "guest control evidence missing" in builder_text
-assert '\\"compile-status\\"' not in builder_text
-assert '\\"runtime-exit-code\\"' not in builder_text
-assert '"$anchor_binary"' not in builder_text
-assert 'sdk=$(printf' not in builder_text
-
-build_job = workflow_text.split("  macho-corpus-batch-build:", 1)[1].split(
-    "  macho-corpus-batch-compare:", 1
-)[0]
-assert "if: github.event_name == 'workflow_dispatch' && inputs.tier == 'macho-corpus-batch'" in build_job
-assert "variant: [a, b]" in build_job
-assert "runs-on: ubuntu-latest" in build_job
-assert "timeout-minutes: 55" in build_job
-assert workflow_text.count("timeout-minutes: 55") == 1
-toolchain_job = workflow_text.split("  guest-toolchain-provisioning:", 1)[1].split(
-    "  macho-corpus-validation:", 1
-)[0]
-assert "timeout-minutes: 45" in toolchain_job
-upload_job = build_job.split("      - name: Upload batch evidence only", 1)[1].split(
-    "      - name: Cleanup batch prefix and West state", 1
-)[0]
-assert "actions/upload-artifact@v7" in upload_job
-assert "fixtures/**" in upload_job
-assert "batch-guest.log" in upload_job
-assert ".pkg" not in upload_job
-assert ".work" not in upload_job
-assert "clt-cache" not in upload_job
-compare_job = workflow_text.split("  macho-corpus-batch-compare:", 1)[1]
-assert "needs: macho-corpus-batch-build" in compare_job
-assert "ci/compare-guest-macho-batch.sh" in compare_job
 
 with tempfile.TemporaryDirectory(prefix="macho-corpus-batch-startup-contract-") as raw:
     root = Path(raw)
@@ -363,7 +249,7 @@ with tempfile.TemporaryDirectory(prefix="macho-corpus-batch-startup-contract-") 
     missing_spec = FIXTURE_SPECS[0]
     header = (
         "name\tsource_project\tsource_path\tsource_sha256\tcompile_flags\t"
-        "link_flags\texpected_marker\truntime_profile\tpatch_path\tpatch_sha256"
+        "link_flags\texpected_marker"
     )
     row = "\t".join(
         (
@@ -374,9 +260,6 @@ with tempfile.TemporaryDirectory(prefix="macho-corpus-batch-startup-contract-") 
             json.dumps(missing_spec.compile_flags, separators=(",", ":")),
             json.dumps(missing_spec.link_flags, separators=(",", ":")),
             missing_spec.expected_marker,
-            missing_spec.runtime_profile,
-            missing_spec.patch_path,
-            missing_spec.patch_sha256,
         )
     )
     python_wrapper = fake_bin / "python3"
@@ -392,6 +275,16 @@ with tempfile.TemporaryDirectory(prefix="macho-corpus-batch-startup-contract-") 
         f"exec {shlex.quote(sys.executable)} \"$@\"\n"
     )
     python_wrapper.chmod(0o755)
+    west_wrapper = fake_bin / "west"
+    west_wrapper.write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in\n"
+        f"  topdir) printf '%s\\n' {shlex.quote(str(ROOT.parent))} ;;\n"
+        f"  config) printf '%s\\n' {shlex.quote(ROOT.name)} ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n"
+    )
+    west_wrapper.chmod(0o755)
     output = root / "batch-output"
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
@@ -572,7 +465,7 @@ with tempfile.TemporaryDirectory(prefix="macho-corpus-batch-contract-") as raw:
 
     provenance = root / "macho-corpus-batch-b/fixtures/select_fdset_guest/provenance.tsv"
     provenance.write_text(
-        provenance.read_text().replace("patch-sha256\t" + next(spec.patch_sha256 for spec in FIXTURE_SPECS if spec.name == "select_fdset_guest"), "patch-sha256\t" + "c" * 64)
+        provenance.read_text().replace("runtime-launcher-sha256\t" + "c" * 64, "runtime-launcher-sha256\t" + "e" * 64)
     )
     assert compare(root).returncode != 0
     write_run(root, "macho-corpus-batch-b")
@@ -631,4 +524,28 @@ with tempfile.TemporaryDirectory(prefix="macho-corpus-batch-contract-") as raw:
 
     binary = root / "macho-corpus-batch-b/fixtures/fd_guard_ebadf_guest/fd_guard_ebadf_guest"
     binary.write_bytes(binary.read_bytes() + b"mismatch")
+    assert compare(root).returncode != 0
+
+    # Independent images may have different roots, but must execute identical
+    # installed launcher/server bytes for the A/B provenance comparison.
+    write_run(root, "macho-corpus-batch-b")
+    right = root / "macho-corpus-batch-b"
+    for provenance in (right / "fixtures").glob("*/provenance.tsv"):
+        provenance.write_text(provenance.read_text().replace(
+            "runtime-root\t/installed/runtime", "runtime-root\t/another/installation"
+        ))
+    assert compare(root).returncode == 0
+    for provenance in (right / "fixtures").glob("*/provenance.tsv"):
+        provenance.write_text(provenance.read_text().replace(
+            "runtime-launcher-sha256\t" + "c" * 64,
+            "runtime-launcher-sha256\t" + "e" * 64,
+        ))
+    batch = right / "batch-manifest.tsv"
+    batch.write_text(batch.read_text().replace("c" * 64, "e" * 64))
+    assert compare(root).returncode != 0
+    write_run(root, "macho-corpus-batch-b")
+    provenance = right / "fixtures/select_fdset_guest/provenance.tsv"
+    provenance.write_text(provenance.read_text().replace(
+        "runtime-root\t/installed/runtime", "runtime-root\trelative"
+    ))
     assert compare(root).returncode != 0

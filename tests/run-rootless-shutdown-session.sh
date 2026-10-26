@@ -1,23 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 : "${DPREFIX:?set DPREFIX}"
-: "${DARLING:?set DARLING}"
 prefix="$DPREFIX"
-source "$(dirname "$0")/../testkit/scripts/darling-guest-shell.sh"
-log="$(mktemp /tmp/west-rootless-shutdown-session.XXXXXX)"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+DARLING_WORKSPACE_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+source "$DARLING_WORKSPACE_ROOT/scripts/darling-runtime.sh"
+darling_resolve_runtime "${DARLING_RUNTIME_ROOT:-}" "$prefix"
+source "$DARLING_WORKSPACE_ROOT/testkit/scripts/darling-guest-shell.sh"
+log_root="${DW_STATE_ROOT:-${DARLING_WORKSPACE_ROOT%/*}/.west-state}/shutdown-session"
+mkdir -p "$log_root"
+log="$(mktemp "$log_root/guest-XXXXXX.log")"
+printf 'WEST_ROOTLESS_SHUTDOWN_LOG=%s\n' "$log"
 shell_job=
 cleanup() {
 	local status=$?
 	if [ -n "$shell_job" ]; then
-		env DARLING_PREFIX="$prefix" DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1 "$DARLING" shutdown || true
+		if ! "$DARLING_LAUNCHER" shutdown >>"$log" 2>&1; then
+			printf 'rootless shutdown cleanup failed; retained log: %s\n' "$log" >&2
+			status=1
+		fi
 		wait "$shell_job" || true
 	fi
-	rm -f "$log"
+	printf 'rootless shutdown evidence: %s\n' "$log"
 	exit "$status"
 }
 trap cleanup EXIT
-export DARLING_ROOTLESS=1 DARLING_NOOVERLAYFS=1 DARLING_EUNION=1
-darling_guest_shell "$DARLING" "$prefix" 45 '
+darling_guest_shell "$DARLING_LAUNCHER" "$prefix" 45 '
 	/bin/sleep 120 &
 	first=$!
 	/bin/sleep 120 &
@@ -40,29 +48,23 @@ if [ -z "$ready" ]; then
 fi
 read -r marker shell_pid first_pid second_pid <<<"$ready"
 # Both lifecycle owners must acknowledge the same stopped state successfully.
-env DARLING_PREFIX="$prefix" "$DARLING" shutdown &
+"$DARLING_LAUNCHER" shutdown &
 first_shutdown=$!
-env DARLING_PREFIX="$prefix" "$DARLING" shutdown &
+"$DARLING_LAUNCHER" shutdown &
 second_shutdown=$!
 shutdown_status=0
 wait "$first_shutdown" || shutdown_status=1
 wait "$second_shutdown" || shutdown_status=1
 [ "$shutdown_status" -eq 0 ] || exit "$shutdown_status"
-# A force-stopped shell need not return success. Its processes must be gone
-# before shutdown returns, while the RPC server remains available until then.
+# Guest PID values are namespace-local, not host /proc identities. The final
+# ownership census below proves the whole selected prefix is gone without
+# accidentally inspecting an unrelated host process with the same numeric PID.
 for pid in "$shell_pid" "$first_pid" "$second_pid"; do
-	if stat="$(cat "/proc/$pid/stat" 2>/dev/null)"; then
-		state="${stat##*) }"
-		state="${state%% *}"
-		if [ "$state" != Z ] && [ "$state" != X ]; then
-			printf 'rootless shutdown left prefix-owned process(es): %s\n' "$pid" >&2
-			exit 1
-		fi
-	elif [ -e "/proc/$pid/stat" ]; then
-		printf 'rootless shutdown cannot read process state: %s\n' "$pid" >&2
-		exit 1
-	fi
+	case "$pid" in ''|*[!0-9]*) echo "invalid guest readiness PID: $pid" >&2; exit 1 ;; esac
+	[ "$pid" -gt 0 ] || exit 1
 done
+[ "$shell_pid" != "$first_pid" ] && [ "$shell_pid" != "$second_pid" ] && \
+	[ "$first_pid" != "$second_pid" ] || exit 1
 wait "$shell_job" || true
 shell_job=
 if grep -E -q 'Failed to interrupt_enter|interrupt_enter failed' "$log"; then
@@ -71,25 +73,21 @@ if grep -E -q 'Failed to interrupt_enter|interrupt_enter failed' "$log"; then
 	exit 1
 fi
 for attempt in $(seq 1 20); do
-	left=()
-	for proc in /proc/[0-9]*; do
-		[ -r "$proc/environ" ] || continue
-		if { tr '\0' '\n' <"$proc/environ"; } 2>/dev/null | grep -F -x "DARLING_PREFIX=$prefix" >/dev/null; then
-			executable="$(readlink "$proc/exe" 2>/dev/null || true)"
-			case "$executable" in "$prefix"/*) left+=("${proc##*/}");; esac
-		fi
-	done
-	[ "${#left[@]}" -eq 0 ] && break
+	if ! left=$(darling_prefix_owned_pids "$prefix"); then
+		printf 'rootless shutdown cannot establish prefix process ownership\n' >&2
+		exit 1
+	fi
+	[ -z "$left" ] && break
 	if [ "$attempt" -eq 20 ]; then
-		printf 'rootless shutdown left prefix-owned process(es): %s\n' "${left[*]}" >&2
-		ps -o pid=,ppid=,pgid=,sid=,comm=,args= -p "$(IFS=,; printf '%s' "${left[*]}")" >&2 || true
-		for pid in "${left[@]}"; do printf 'rootless shutdown executable %s: %s\n' "$pid" "$(readlink "/proc/$pid/exe" 2>/dev/null || printf '<unreadable>')" >&2; done
+		printf 'rootless shutdown left prefix-owned process(es): %s\n' "$left" >&2
+		ps -o pid=,ppid=,pgid=,sid=,comm=,args= -p "${left//$'\n'/,}" >&2 || true
+		for pid in $left; do printf 'rootless shutdown executable %s: %s\n' "$pid" "$(readlink "/proc/$pid/exe" 2>/dev/null || printf '<unreadable>')" >&2; done
 		exit 1
 	fi
 	sleep 0.1
 done
 for state in .init.pid .darlingserver.sock; do
-	if [ -e "$prefix/$state" ]; then
+	if [ -e "$prefix/$state" ] || [ -L "$prefix/$state" ]; then
 		printf 'rootless shutdown left prefix state: %s\n' "$state" >&2
 		exit 1
 	fi

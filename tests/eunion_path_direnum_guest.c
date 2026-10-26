@@ -129,10 +129,10 @@ expect_dir_merge(const char* dir)
 int
 main(void)
 {
-	const char* dir = "/private/var/tmp/west-eunion-direnum";
-	const char* lower = "/private/var/tmp/west-eunion-direnum/lower-only.txt";
-	const char* upper = "/private/var/tmp/west-eunion-direnum/upper-only.txt";
-	const char* shadow = "/private/var/tmp/west-eunion-direnum/shadow.txt";
+	const char* dir = "/usr/share/darling/tests/eunion/direnum";
+	const char* lower = "/usr/share/darling/tests/eunion/direnum/lower-only.txt";
+	const char* upper = "/usr/share/darling/tests/eunion/direnum/upper-only.txt";
+	const char* shadow = "/usr/share/darling/tests/eunion/direnum/shadow.txt";
 
 	if (read_exact(lower, "LOWER_ONLY\n") != 0)
 		return 1;

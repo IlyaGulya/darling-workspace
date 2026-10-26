@@ -65,7 +65,7 @@ test = new_test(
 build = test._configure_and_build(
     testkit,
     "/usr/bin/darling-debug-runner",
-    darling_launcher="/prefix/bin/darling",
+    darling_launcher="/installed/bin/darling",
     prefix="/prefix",
     bundle_root="/bundles",
     cmake_defines={"B_DEFINE": "2", "A_DEFINE": "1"},
@@ -86,7 +86,6 @@ assert stages == [
             "-DB_DEFINE=2",
             "-DDARLING_TEST_EXECUTOR=/usr/bin/darling-debug-runner",
             "-DDARLING_TEST_PREFIX=/prefix",
-            "-DDARLING_TEST_NO_OVERLAYFS=ON",
             "-DDARLING_TEST_BUNDLE_ROOT=/bundles",
         ],
     ),
@@ -102,6 +101,16 @@ assert test._configure_and_build(testkit, None, build_dir=configure_only, compil
 )
 assert [stage for stage, _args in stages] == ["configure"], stages
 assert stages[0][1] == ["cmake", "-S", str(testkit), "-B", str(configure_only), "-G", "Ninja"]
+
+stages.clear()
+test._source_root = Path("/current-source")
+test._configure_and_build(testkit, None, compile_tests=False)
+assert "-DDARLING_SRC=/current-source" in stages[-1][1], stages
+stages.clear()
+test._configure_and_build(testkit, None, compile_tests=False,
+                          cmake_defines={"DARLING_SRC": "/explicit-current-source"})
+assert "-DDARLING_SRC=/explicit-current-source" in stages[-1][1], stages
+assert "-DDARLING_SRC=/current-source" not in stages[-1][1], stages
 
 # --- _run_testkit_build_command ------------------------------------------
 # The runner must be resolved through the facade namespace, because focused
@@ -172,13 +181,13 @@ with tempfile.TemporaryDirectory(prefix="west-cmake-fixture-") as raw:
         "name": "fixture",
         "cwd": source,
         "env": dict(os.environ),
-        "configure_args": ["-DDARLING_SKIP_DRIFT_GATE=ON"],
+        "configure_args": ["-DFIXTURE_FEATURE=ON"],
         "fake_tools": {"cmake": fake_cmake},
         "marker_files": [{"path": "markers/one.txt", "content": "marker\n"}],
         "expect": {
             "returncode": 0,
             "output-contains": ["fake cmake configured"],
-            "tool-args-contains": {"cmake": ["-DDARLING_SKIP_DRIFT_GATE=ON"]},
+            "tool-args-contains": {"cmake": ["-DFIXTURE_FEATURE=ON"]},
         },
     }
     assert test._run_cmake_configure_fixture(invocation) == 0

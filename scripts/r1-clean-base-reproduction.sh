@@ -1,133 +1,232 @@
 #!/usr/bin/env bash
-# Clean-base reproduction of the transport work (directive section 3E).
-#
-# Proves: the PRODUCT rebuilds from a clean materialization of the pinned upstream revision plus a CONTENT-based delta of
-# the working tree, with a FRESH configure into a FRESH build directory and a SEPARATE install prefix.
-# Does not touch the live prefix, does not reuse the dirty build tree, does not copy any working tree.
-#
-# Two lessons are baked in, both measured:
-#   * the local product commit is EMPTY, so "base revision" cannot mean it: the base is the pinned west revision.
-#   * submodules have submodules: the walk recurses (a one-level walk left metal/deps/indium empty and configure failed).
-#   * a delta selected by modification time is INCOMPLETE: the tree carries untracked, build-required files
-#     (e.g. src/startup/mldr/signal_atomic.h). The delta is therefore diff-based, which is complete by construction.
-set -u
+# Reproduce a committed transport candidate through the normal product installation.
+# The original R1 baseline remains an explicit comparison input, not a deployment recipe.
+# Dirty overlays, profile replay, partial artifact copies and historical source trees are not used.
+set -euo pipefail
 
 WS="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-SRC_REPO=/home/ilyagulya/work/procctl-src
-DARLING="$(cd -- "$WS/.." && pwd -P)/darling"
-PINNED=5f2d7401d878455cf3c3c0865ee5a4290dfa03f0
-REF=/home/ilyagulya/work/r1-clean-ref
-CLEAN=/home/ilyagulya/work/r1-clean-base
-CLEAN_BUILD=/home/ilyagulya/work/r1-clean-build
-CLEAN_PREFIX=/tmp/r1-clean-prefix
-EVID="$(cd -- "$WS/.." && pwd -P)/hunt/r1-clean-base-reproduction"
+TOP="$(cd -- "$WS/.." && pwd -P)"
+BASELINE=5f2d7401d878455cf3c3c0865ee5a4290dfa03f0
+SOURCE=
+REVISION=
+EXECUTOR=
+RUN=
+JOBS=8
+WORKLOADS=()
 
-mat_one() { # $1 repository dir, $2 commit, $3 destination
-	local repo="$1" sha="$2" dest="$3" sha_n path dir
-	git -C "$repo" archive "$sha" 2>/dev/null | tar -x -C "$dest" || { echo "  ARCHIVE FAILED $repo@$sha"; return 1; }
-	while read -r sha_n path; do
-		[ -n "$path" ] || continue
-		dir="$repo/$path"
-		if git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
-			mkdir -p "$dest/$path"
-			mat_one "$dir" "$sha_n" "$dest/$path"
-		else
-			echo "  no local repository for nested submodule: $path @ $sha_n"
+usage() {
+	cat <<'USAGE'
+usage: r1-clean-base-reproduction.sh --source REPOSITORY --revision COMMIT
+       --executor REAL_DEBUG_RUNNER --workload NAME [--workload NAME ...]
+       [--baseline COMMIT] [--state-dir NEW_DIRECTORY] [--jobs N]
+
+Reproduce only committed source, with exact nested gitlinks prepared by the supported
+Darling source-worktree owner. The original baseline is 5f2d7401d878455cf3c3c0865ee5a4290dfa03f0;
+--baseline selects a different explicit comparison commit. Neither baseline diffs nor
+dirty working-tree bytes are applied to the candidate.
+
+The transport experiment explicitly enables the paired ring switches and malloc-region
+diagnostic tool; all targets and runtime files otherwise use normal Release/stock CMake
+build/install rules. --workload selects the real structured runtime oracle, not a source
+recipe. For example, select comparison_on_ring_mode and comparison_on_ring_fd_lifetime.
+Both need the real diagnostic executor; guest C uses genuinely provisioned CLT.
+
+State defaults to <West root>/.west-state/r1-reproduction, or the absolute DW_STATE_ROOT.
+Each invocation creates a fresh source worktree, build, immutable runtime installation
+and independent short guest prefix. Existing installations and prefixes are never reused
+or overwritten. Source/build/install inputs, full per-phase stdout/stderr and verdicts
+are retained; the final lifecycle cleanup must succeed before rc=0 is reported.
+
+Run long invocations through scripts/west-job.sh start/follow. Child phase logs register
+with that supervisor automatically. No source worktree, installation or guest-state tree
+is deleted by this command; retain its printed paths for supported cleanup afterward.
+USAGE
+}
+
+die() {
+	printf 'r1 reproduction: %s\n' "$*" >&2
+	exit 2
+}
+
+while (($#)); do
+	case "$1" in
+		--source|--revision|--baseline|--executor|--state-dir|--workload|--jobs)
+			(($# >= 2)) || die "missing value for $1"
+			case "$1" in
+				--source) SOURCE="$2" ;;
+				--revision) REVISION="$2" ;;
+				--baseline) BASELINE="$2" ;;
+				--executor) EXECUTOR="$2" ;;
+				--state-dir) RUN="$2" ;;
+				--workload) WORKLOADS+=("$2") ;;
+				--jobs) JOBS="$2" ;;
+			esac
+			shift 2
+			;;
+		--help|-h) usage; exit 0 ;;
+		*) die "unknown argument: $1" ;;
+	esac
+done
+[[ -n "$SOURCE" && -n "$REVISION" && -n "$EXECUTOR" ]] || {
+	usage >&2
+	die '--source, --revision and --executor are required'
+}
+((${#WORKLOADS[@]})) || die 'select the actual completed oracle with --workload'
+[[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die '--jobs must be a positive integer'
+SOURCE="$(realpath -e -- "$SOURCE")"
+EXECUTOR="$(realpath -e -- "$EXECUTOR")"
+[[ -x "$EXECUTOR" ]] || die "diagnostic executor is not executable: $EXECUTOR"
+[[ -z "$(git -C "$SOURCE" status --porcelain --untracked-files=all)" ]] ||
+	die 'source repository must be clean; preserve/commit the candidate before reproducing it'
+REVISION="$(git -C "$SOURCE" rev-parse --verify --end-of-options "$REVISION^{commit}")"
+BASELINE="$(git -C "$SOURCE" rev-parse --verify --end-of-options "$BASELINE^{commit}")"
+
+export DW_STATE_ROOT="${DW_STATE_ROOT:-$TOP/.west-state/r1-reproduction}"
+[[ "$DW_STATE_ROOT" == /* ]] || die 'DW_STATE_ROOT must be absolute'
+DW_STATE_ROOT="$(realpath -m -- "$DW_STATE_ROOT")"
+case "$DW_STATE_ROOT" in
+	/|"$HOME"|"$WS"|"$WS"/*|"$SOURCE"|"$SOURCE"/*|/tmp|/tmp/*|/var/tmp|/var/tmp/*)
+		die "unsafe DW_STATE_ROOT: $DW_STATE_ROOT" ;;
+esac
+mkdir -p -- "$DW_STATE_ROOT"
+if [[ -n "$RUN" ]]; then
+	[[ "$RUN" == /* ]] || die '--state-dir must be absolute'
+	RUN="$(realpath -m -- "$RUN")"
+	case "$RUN" in "$DW_STATE_ROOT"/*) ;; *) die '--state-dir must be inside DW_STATE_ROOT' ;; esac
+	[[ ! -e "$RUN" && ! -L "$RUN" ]] || die "state directory already exists: $RUN"
+	mkdir -- "$RUN"
+else
+	RUN="$(mktemp -d -- "$DW_STATE_ROOT/r1.XXXXXX")"
+fi
+EVID="$RUN/evidence"
+CLEAN="$RUN/source"
+BUILD="$RUN/build"
+RUNTIME="$RUN/runtime"
+PREFIX=
+PREFIX_ENTERED=0
+WEST=(mise -C "$WS" run west)
+mkdir -- "$EVID" "$RUN/tmp"
+export TMPDIR="$RUN/tmp"
+export WEST_TEST_VERDICT_CACHE=off
+export ROOTLESS_TIER_REPO="$WS"
+. "$WS/ci/rootless-prefix.sh"
+
+run_step() {
+	local name="$1" rc
+	shift
+	printf '%q ' "$@" >"$EVID/$name.command"
+	printf '\n' >>"$EVID/$name.command"
+	printf 'r1 phase start: %s (stdout=%s stderr=%s)\n' \
+		"$name" "$EVID/$name.stdout" "$EVID/$name.stderr"
+	if "$@" >"$EVID/$name.stdout" 2>"$EVID/$name.stderr"; then
+		rc=0
+	else
+		rc=$?
+	fi
+	printf '%s\n' "$rc" >"$EVID/$name.rc"
+	printf 'r1 phase complete: %s rc=%s\n' "$name" "$rc"
+	return "$rc"
+}
+
+finish() {
+	local rc=$? cleanup_rc=0 seal_rc=0
+	trap - EXIT INT TERM
+	set +e
+	if ((PREFIX_ENTERED)); then
+		rootless_prefix_assert_owned r1-reproduction "$PREFIX"
+		cleanup_rc=$?
+		if ((cleanup_rc == 0)); then
+			run_step cleanup "${WEST[@]}" test --runtime-root "$RUNTIME" \
+				--prefix "$PREFIX" --cleanup-prefix
+			cleanup_rc=$?
 		fi
-	done < <(git -C "$repo" ls-tree -r "$sha" | awk '$2 == "commit" {print $3" "$4}')
+		((cleanup_rc == 0)) || { ((rc != 0)) || rc="$cleanup_rc"; }
+	else
+		printf 'NOT_LAUNCHED\n' >"$EVID/cleanup.status"
+	fi
+	printf '%s\n' "$cleanup_rc" >"$EVID/cleanup.rc"
+	printf '%s\n' "$rc" >"$EVID/execution.rc"
+	python3 -B "$WS/scripts/darling-evidence.py" verify "$EVID" --recursive --write-manifest
+	seal_rc=$?
+	printf '%s\n' "$seal_rc" >"$RUN/seal.rc"
+	((seal_rc == 0)) || { ((rc != 0)) || rc="$seal_rc"; }
+	printf '%s\n' "$rc" >"$RUN/final.rc"
+	printf 'CLEAN-BASE-DONE rc=%s source=%s build=%s runtime-root=%s prefix=%s evidence=%s\n' \
+		"$rc" "$CLEAN" "$BUILD" "$RUNTIME" "${PREFIX:-(not allocated)}" "$EVID"
+	exit "$rc"
 }
+trap finish EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-git -C "$DARLING" cat-file -e "$PINNED^{commit}" || {
-	echo "Pinned reproduction commit unavailable in $DARLING: $PINNED" >&2
-	exit 1
-}
-mkdir -p "$EVID" || exit 1
+# Use the CI owner's compact, independently owned prefix allocation, not a runtime-root alias.
+R1_PREFIX_REQUEST=
+PREFIX="$(rootless_prefix_create r1-reproduction R1_PREFIX_REQUEST)"
+python3 -B - "$EVID" "$SOURCE" "$REVISION" "$BASELINE" "$CLEAN" "$BUILD" \
+	"$RUNTIME" "$PREFIX" "$EXECUTOR" "${WORKLOADS[@]}" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
 
-echo "== 0a. reference materialization of the base =="
-rm -rf "$REF"; mkdir -p "$REF"
-mat_one "$DARLING" "$PINNED" "$REF"
-echo "reference files=$(find "$REF" -type f | wc -l)"
-
-echo "== 0b. CONTENT-based delta (every differing or missing path) =="
-python3 -B - "$SRC_REPO" "$REF" "$EVID" <<'PY'
-import hashlib, os, subprocess, sys, tarfile, time
-src, ref, evid = sys.argv[1], sys.argv[2], sys.argv[3]
-out = subprocess.run(['diff', '-rq', '--no-dereference', ref, src], capture_output=True, text=True).stdout
-changed = set()
-for line in out.splitlines():
-    if line.startswith('Files ') and ' differ' in line:
-        changed.add(os.path.relpath(line.split(' and ')[1].rsplit(' differ', 1)[0], src))
-    elif line.startswith('Only in '):
-        head, name = line[len('Only in '):].split(': ', 1)
-        p = os.path.join(head, name)
-        # A path that exists only in the REFERENCE is not part of the delta (the delta is what the working tree adds or
-        # changes). MEASURED: without this guard the script tried to archive a base-only path relative to the working
-        # tree and died on a path that cannot exist.
-        if not p.startswith(src + os.sep):
-            if os.path.isdir(p):
-                for root, _dirs, names in os.walk(p):
-                    for n in names:
-                        changed.add(os.path.relpath(os.path.join(root, n), src)) if False else None
-            continue
-        if os.path.isfile(p):
-            changed.add(os.path.relpath(p, src))
-        elif os.path.isdir(p):
-            for root, _dirs, names in os.walk(p):
-                for n in names:
-                    changed.add(os.path.relpath(os.path.join(root, n), src))
-changed = sorted(changed)
-stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
-arch = os.path.join(evid, f'r1-transport-sources-{stamp}.tar.gz')
-man = arch.replace('.tar.gz', '.sha256')
-# Symlinks are skipped: the SDK stubs are dangling links by design (libSystem.dylib -> a versioned file that the tree
-# does not carry), MEASURED to abort the tar step, and a link is not a product change. If one ever matters, the build
-# will name it and it can be handled explicitly instead of guessed at.
-skipped_links = [rel for rel in changed if os.path.islink(os.path.join(src, rel))]
-changed = [rel for rel in changed if not os.path.islink(os.path.join(src, rel))]
-missing = [rel for rel in changed if not os.path.isfile(os.path.join(src, rel))]
-changed = [rel for rel in changed if os.path.isfile(os.path.join(src, rel))]
-if skipped_links:
-    print(f"skipped {len(skipped_links)} symlink path(s), e.g. {skipped_links[0]}")
-if missing:
-    print(f"skipped {len(missing)} non-regular path(s), e.g. {missing[0]}")
-with tarfile.open(arch, 'w:gz') as tf:
-    for rel in changed:
-        tf.add(os.path.join(src, rel), arcname=rel, recursive=False)
-with open(man, 'w') as fh:
-    for rel in changed:
-        fh.write(f"{hashlib.sha256(open(os.path.join(src, rel), 'rb').read()).hexdigest()}  {rel}\n")
-open(os.path.join(evid, 'r1-transport-sources-LATEST'), 'w').write(
-    f"{arch}\npaths={len(changed)}\nbase={ref}\npinned={os.environ.get('PINNED_FOR_MANIFEST', '')}\n")
-print(f"delta paths={len(changed)} bytes={os.path.getsize(arch)}")
-print(f"manifest {man}")
-print(f"includes signal_atomic.h: {'src/startup/mldr/signal_atomic.h' in changed}")
+evidence = Path(sys.argv[1])
+record = dict(zip(("source_repository", "revision", "comparison_baseline", "source_root",
+                   "build_dir", "runtime_root", "guest_prefix", "executor"), sys.argv[2:10]))
+record["workloads"] = sys.argv[10:]
+with (evidence / "selection.json").open("x", encoding="utf-8") as output:
+    json.dump(record, output, indent=2, sort_keys=True)
+    output.write("\n")
+state = os.environ.get("WEST_JOB_STATE_DIR")
+if state:
+    directory = Path(state) / "activity-logs.d"
+    directory.mkdir(exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix="r1-reproduction-", suffix=".tmp", dir=directory)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(b"directory\0" + os.fsencode(evidence) + b"\0")
+        temporary.replace(temporary.with_suffix(".logs"))
+    finally:
+        temporary.unlink(missing_ok=True)
 PY
 
-echo "== 1. materialize a FRESH tree at the pinned revision =="
-rm -rf "$CLEAN"; mkdir -p "$CLEAN"
-mat_one "$DARLING" "$PINNED" "$CLEAN"
-echo "clean files=$(find "$CLEAN" -type f | wc -l)"
+# The baseline diff is review evidence only. All build inputs come from the selected commit.
+git -C "$SOURCE" diff --binary --submodule=log "$BASELINE" "$REVISION" >"$EVID/baseline-to-candidate.diff"
+run_step source-create git -C "$SOURCE" worktree add --detach "$CLEAN" "$REVISION"
+run_step source-prepare "${WEST[@]}" darling-source-worktree prepare \
+	--source "$CLEAN" --canonical "$SOURCE" --record "$EVID/source-record.json"
+run_step configure cmake -S "$CLEAN" -B "$BUILD" -G Ninja \
+	-DCMAKE_BUILD_TYPE=Release -DCOMPONENTS=stock -DCMAKE_INSTALL_PREFIX="$RUNTIME" \
+	-DCMAKE_C_COMPILER="${CC:-clang}" -DCMAKE_CXX_COMPILER="${CXX:-clang++}" \
+	-DDARLING_NO_CCACHE=ON -DDARLING_RING_TRANSPORT=ON -DDSERVER_RING_TRANSPORT=ON \
+	-DDARLING_MALLOC_REGION_TEST=ON
+cp -- "$BUILD/CMakeCache.txt" "$EVID/CMakeCache.txt"
+run_step source-check "${WEST[@]}" darling-source-worktree check \
+	--record "$EVID/source-record.json" --build-dir "$BUILD"
+run_step build-install "${WEST[@]}" darling-build --build-dir "$BUILD" \
+	--runtime-root "$RUNTIME" --install --jobs "$JOBS" --json
+run_step installation-record python3 -B - "$WS/west_commands" "$RUNTIME" \
+	"$EVID/install-receipt.json" <<'PY'
+from pathlib import Path
+import shutil
+import sys
+sys.path.insert(0, sys.argv[1])
+from deploy_receipt import receipt_path
+from runtime_install import resolve_runtime
+runtime = resolve_runtime(sys.argv[2])
+if runtime.identity is None:
+    raise SystemExit("normal build/install did not publish an installation identity")
+shutil.copyfile(receipt_path(runtime.root), Path(sys.argv[3]))
+PY
 
-echo "== 2. apply the delta =="
-ARCHIVE=$(head -1 "$EVID/r1-transport-sources-LATEST")
-tar -xzf "$ARCHIVE" -C "$CLEAN" || { echo "apply failed"; exit 1; }
-echo "applied $(tar -tzf "$ARCHIVE" | wc -l) paths from $(basename "$ARCHIVE")"
-
-echo "== 3. FRESH configure =="
-rm -rf "$CLEAN_BUILD" "$CLEAN_PREFIX"; mkdir -p "$CLEAN_PREFIX"
-cmake -S "$CLEAN" -B "$CLEAN_BUILD" -G Ninja \
-  -DCMAKE_BUILD_TYPE=Debug -DCMAKE_INSTALL_PREFIX="$CLEAN_PREFIX" \
-  -DDARLING_EUNION=ON -DDARLING_MALLOC_REGION_TEST=ON -DDARLING_RING_TRANSPORT=ON \
-  -DDARLING_ROOTLESS_HOMEBREW=ON -DDARLING_ROOTLESS_TOOLCHAIN=ON -DDARLING_SKIP_DRIFT_GATE=ON \
-  > "$CLEAN_BUILD.configure.log" 2>&1 || { echo "CONFIGURE FAILED"; tail -15 "$CLEAN_BUILD.configure.log"; exit 1; }
-echo "configure OK -> $CLEAN_BUILD"
-
-echo "== 4. build the artifacts the transport work touches =="
-( cd "$CLEAN_BUILD" && ninja mldr darlingserver libsystem_kernel.dylib dyld ) > "$CLEAN_BUILD.build.log" 2>&1
-rc=$?
-echo "BUILD rc=$rc (log: $CLEAN_BUILD.build.log)"
-[ $rc -ne 0 ] && grep -m4 -iE "error|fatal" "$CLEAN_BUILD.build.log" | cut -c1-180
-for f in src/startup/mldr/mldr src/external/darlingserver/darlingserver src/external/xnu/darling/src/libsystem_kernel/libsystem_kernel.dylib src/external/dyld/dyld; do
-	[ -f "$CLEAN_BUILD/$f" ] && echo "  built $(sha256sum "$CLEAN_BUILD/$f" | cut -c1-16) $f"
+PREFIX_ENTERED=1
+run_step bootstrap "${WEST[@]}" darling-bootstrap --build-dir "$BUILD" \
+	--runtime-root "$RUNTIME" --prefix "$PREFIX" --no-build \
+	--guest-toolchain darling-command-line-tools --json
+for index in "${!WORKLOADS[@]}"; do
+	run_step "workload-$index" "${WEST[@]}" test --workload "${WORKLOADS[$index]}" \
+		--env darling --source-root "$CLEAN" --runtime-root "$RUNTIME" --prefix "$PREFIX" \
+		--executor "$EXECUTOR" --bundle-root "$EVID/bundles" \
+		--proof-scratch-root "$RUN/scratch" --runtime-evidence-root "$EVID/runtime"
 done
-echo "CLEAN-BASE-DONE rc=$rc"

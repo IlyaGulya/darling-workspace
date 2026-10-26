@@ -114,44 +114,44 @@ bind_unix_socket(const char* path)
 int
 main(void)
 {
-	const char* root = "/private/var/tmp/west-eunion-mutate";
+	const char* root = "/usr/share/darling/tests/eunion/mutation";
 
-	if (write_exact("/private/var/tmp/west-eunion-mutate/copy.txt", "UPPER_COPY\n") != 0)
+	if (write_exact("/usr/share/darling/tests/eunion/mutation/copy.txt", "UPPER_COPY\n") != 0)
 		return 1;
-	if (read_exact("/private/var/tmp/west-eunion-mutate/copy.txt", "UPPER_COPY\n") != 0)
+	if (read_exact("/usr/share/darling/tests/eunion/mutation/copy.txt", "UPPER_COPY\n") != 0)
 		return 1;
 
-	if (unlink("/private/var/tmp/west-eunion-mutate/delete.txt") != 0) {
+	if (unlink("/usr/share/darling/tests/eunion/mutation/delete.txt") != 0) {
 		printf("unlink lower-only delete.txt failed: %s\n", strerror(errno));
 		return 1;
 	}
-	if (expect_absent("/private/var/tmp/west-eunion-mutate/delete.txt") != 0)
+	if (expect_absent("/usr/share/darling/tests/eunion/mutation/delete.txt") != 0)
 		return 1;
 
-	if (create_file("/private/var/tmp/west-eunion-mutate/create_parent/new.txt", "NEW\n") != 0)
+	if (create_file("/usr/share/darling/tests/eunion/mutation/create_parent/new.txt", "NEW\n") != 0)
 		return 1;
-	if (read_exact("/private/var/tmp/west-eunion-mutate/create_parent/new.txt", "NEW\n") != 0)
+	if (read_exact("/usr/share/darling/tests/eunion/mutation/create_parent/new.txt", "NEW\n") != 0)
 		return 1;
 
-	if (rename("/private/var/tmp/west-eunion-mutate/rename_src",
-	    "/private/var/tmp/west-eunion-mutate/rename_dst") != 0) {
+	if (rename("/usr/share/darling/tests/eunion/mutation/rename_src",
+	    "/usr/share/darling/tests/eunion/mutation/rename_dst") != 0) {
 		printf("rename lower dir failed: %s\n", strerror(errno));
 		return 1;
 	}
-	if (expect_absent("/private/var/tmp/west-eunion-mutate/rename_src/child.txt") != 0)
+	if (expect_absent("/usr/share/darling/tests/eunion/mutation/rename_src/child.txt") != 0)
 		return 1;
-	if (read_exact("/private/var/tmp/west-eunion-mutate/rename_dst/child.txt", "RENAME_CHILD\n") != 0)
-		return 1;
-
-	if (create_file("/private/var/tmp/west-eunion-mutate/sp_link/new-through-symlink.txt", "SYMLINK_PARENT\n") != 0)
-		return 1;
-	if (read_exact("/private/var/tmp/west-eunion-mutate/sp_real/new-through-symlink.txt", "SYMLINK_PARENT\n") != 0)
+	if (read_exact("/usr/share/darling/tests/eunion/mutation/rename_dst/child.txt", "RENAME_CHILD\n") != 0)
 		return 1;
 
-	if (bind_unix_socket("/private/var/tmp/west-eunion-mutate/bind_parent/sock") != 0)
+	if (create_file("/usr/share/darling/tests/eunion/mutation/sp_link/new-through-symlink.txt", "SYMLINK_PARENT\n") != 0)
+		return 1;
+	if (read_exact("/usr/share/darling/tests/eunion/mutation/sp_real/new-through-symlink.txt", "SYMLINK_PARENT\n") != 0)
+		return 1;
+
+	if (bind_unix_socket("/usr/share/darling/tests/eunion/mutation/bind_parent/sock") != 0)
 		return 1;
 	struct stat st;
-	if (lstat("/private/var/tmp/west-eunion-mutate/bind_parent/sock", &st) != 0) {
+	if (lstat("/usr/share/darling/tests/eunion/mutation/bind_parent/sock", &st) != 0) {
 		printf("lstat bound socket failed: %s\n", strerror(errno));
 		return 1;
 	}

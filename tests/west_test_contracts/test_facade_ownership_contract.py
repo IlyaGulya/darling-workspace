@@ -32,12 +32,7 @@ for node in ast.walk(tree):
 
 assert not violations, f"domain mutation returned to test.py: {violations}"
 
-for owner in (
-    "RuntimeSourceMaterializer",
-    "RuntimeDeploymentService",
-    "RuntimeProofStateMachine",
-    "PrefixLifecycleOwner",
-):
+for owner in ("resolve_runtime", "PrefixLifecycleOwner"):
     assert owner in source, f"test.py no longer delegates to {owner}"
 
 print("PASS test-facade-ownership-contract")

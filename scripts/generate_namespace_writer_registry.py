@@ -461,6 +461,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--inventory", type=Path, default=DEFAULT_INVENTORY)
     parser.add_argument(
+        "--source-root", type=Path,
+        help="selected Darling worktree (default: DARLING_SOURCE_ROOT or canonical West source)",
+    )
+    parser.add_argument(
         "--audit", type=Path, help="candidate audit path (default: the inventory's reference)"
     )
     parser.add_argument(
@@ -475,6 +479,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     contract = _contract()
+    if args.source_root is not None:
+        contract.DARLING = args.source_root.expanduser().resolve()
+    print(f"source-only namespace audit: Darling source={contract.DARLING}", file=sys.stderr)
     inventory_path = args.inventory.resolve()
     inventory = load_json(inventory_path)
     audit_path = (

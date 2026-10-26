@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host contract for the real guest helper's license/setup state transitions.
+"""Host contracts for Xcode guest privilege selection and license/setup transitions.
 
 The controlled executable models Xcode's external license state; it does not
 claim Apple runtime coverage. The real helper decides whether a workload may
@@ -13,6 +13,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import ModuleType, SimpleNamespace
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "testkit/scripts/xcode-license.sh"
@@ -122,6 +124,131 @@ class XcodeLicenseContract(unittest.TestCase):
         self.assertIn("action=verification-failed", result.stderr)
         self.assertIn("check_after_rc=69", (self.evidence / "status.txt").read_text())
 
+
+
+class XcodeGuestInstallerContract(unittest.TestCase):
+    """Exercise provisioner decisions, not the real Apple package or guest runtime."""
+
+    def setUp(self) -> None:
+        # The focused host runner does not require West to be installed.
+        sys.path.insert(0, str(ROOT))
+        self.addCleanup(sys.path.remove, str(ROOT))
+        commands = ModuleType("west.commands")
+        commands.WestCommand = object
+        with patch.dict(sys.modules, {"west": ModuleType("west"), "west.commands": commands}):
+            from west_commands import xcode_system_resources
+        self.resources = xcode_system_resources
+        self.temporary = tempfile.TemporaryDirectory(prefix="xcode-installer-contract-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.prefix = self.root / "guest-state"
+        self.prefix.mkdir()
+        self.runtime = SimpleNamespace(
+            root=self.root / "installed runtime",
+            launcher=self.root / "installed runtime/bin/darling",
+            system_root=self.root / "installed runtime/libexec/darling",
+            environment=Mock(return_value={"DPREFIX": str(self.prefix)}),
+        )
+        self.sudo = self.runtime.system_root / "usr/bin/sudo"
+        self.sudo.parent.mkdir(parents=True)
+        self.sudo.write_bytes(b"\xcf\xfa\xed\xfe" + bytes(28))
+        self.sudo.chmod(0o755)
+        self.runner = Mock(return_value=SimpleNamespace(
+            returncode=0, timed_out=False, stdout="installed", stderr="",
+        ))
+
+    def install(self):
+        return self.resources._run_guest_installer(
+            runtime=self.runtime, prefix=self.prefix,
+            guest_package="/private/var/tmp/authenticated package.pkg",
+            guest_runner=self.runner, log=lambda _: None,
+        )
+
+    def test_installed_guest_sudo_runs_real_installer_exactly_once(self) -> None:
+        # A writable-prefix sudo must not shadow the selected product's helper.
+        shadow = self.prefix / "usr/bin/sudo"
+        shadow.parent.mkdir(parents=True)
+        shadow.write_text("not the selected helper")
+        receipt = self.install()
+        self.runner.assert_called_once()
+        args, kwargs = self.runner.call_args
+        self.assertEqual(args[:2], (str(self.runtime.launcher), self.prefix))
+        self.assertEqual(args[2], (
+            f"/Volumes/SystemRoot{self.sudo}", "-n", "/usr/bin/installer",
+            "-pkg", "/private/var/tmp/authenticated package.pkg", "-target", "/",
+        ))
+        self.assertEqual(kwargs["env"], {"DPREFIX": str(self.prefix)})
+        self.assertEqual(len(receipt["attempts"]), 1)
+        self.assertEqual(receipt["attempts"][0]["command"], list(args[2]))
+        self.assertEqual(receipt["attempts"][0]["output_tail"], "installed")
+
+    def test_missing_or_host_sudo_is_rejected_without_installer_attempt(self) -> None:
+        shadow = self.prefix / "usr/bin/sudo"
+        shadow.parent.mkdir(parents=True)
+        shadow.write_bytes(b"\xcf\xfa\xed\xfe" + bytes(28))
+        shadow.chmod(0o755)
+        for contents, mode in ((None, 0), (b"\x7fELF", 0o755),
+                               (b"#!/bin/sh\n", 0o755), (b"\xcf\xfa\xed\xfe", 0o644)):
+            with self.subTest(contents=contents, mode=mode):
+                self.sudo.unlink(missing_ok=True)
+                if contents is not None:
+                    self.sudo.write_bytes(contents)
+                    self.sudo.chmod(mode)
+                with self.assertRaises(self.resources.XcodeSystemResourcesError) as caught:
+                    self.install()
+                self.assertEqual(caught.exception.kind, "setup")
+                self.assertIn("guest sudo", str(caught.exception))
+                self.runner.assert_not_called()
+
+    def test_first_installer_failure_and_timeout_are_final(self) -> None:
+        for message, timed_out in (
+            ("package requires a newer operating system", False),
+            ("package authentication failed", False),
+            ("dyld: Library not loaded", False),
+            ("installer timed out", True),
+        ):
+            with self.subTest(message=message):
+                self.runner.reset_mock()
+                self.runner.return_value = SimpleNamespace(
+                    returncode=71, timed_out=timed_out,
+                    stdout=b"initial installer output\n", stderr=message.encode(),
+                )
+                with self.assertRaises(self.resources.XcodeSystemResourcesError) as caught:
+                    self.install()
+                self.assertEqual(caught.exception.kind, "install")
+                self.assertIn("initial installer output", str(caught.exception))
+                self.assertIn(message, str(caught.exception))
+                self.assertIn("rc=71", str(caught.exception))
+                self.assertIn(f"timed_out={timed_out}", str(caught.exception))
+                self.runner.assert_called_once()
+
+    def test_runtime_rejection_precedes_guest_execution(self) -> None:
+        self.runtime.environment.side_effect = self.resources.RuntimeInstallationError("rejected prefix")
+        with self.assertRaises(self.resources.RuntimeInstallationError):
+            self.install()
+        self.runner.assert_not_called()
+
+    def test_package_authentication_failure_never_installs_or_writes_receipt(self) -> None:
+        package = self.root / "unreviewed.pkg"
+        package.write_bytes(b"unreviewed")
+        for staged in (False, True):
+            with self.subTest(staged=staged):
+                failure = self.resources.XcodeSystemResourcesError("authentication failed", kind="integrity")
+                validator = Mock(side_effect=(
+                    [{"path": str(package), "size": 10, "toc_sha1": "pin", "sha256": "pin"}, failure]
+                    if staged else failure
+                ))
+                with patch.object(self.resources, "validate_package", validator), \
+                     patch.object(self.resources, "DEMANDED_FRAMEWORKS", ()):
+                    with self.assertRaises(self.resources.XcodeSystemResourcesError) as caught:
+                        self.resources.provision(
+                            prefix=self.prefix, runtime=self.runtime, package=package,
+                            guest_runner=self.runner, log=lambda _: None,
+                        )
+                self.assertEqual(caught.exception.kind, "integrity")
+                self.runner.assert_not_called()
+                self.assertFalse((self.prefix / self.resources.RECEIPT_NAME).exists())
+                self.assertEqual(list(self.prefix.glob("private/var/tmp/*.pkg")), [])
 
 
 if __name__ == "__main__":

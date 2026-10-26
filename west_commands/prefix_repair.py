@@ -14,7 +14,6 @@ from enum import Enum
 from pathlib import Path
 
 
-PREFIX_ROOTS = ("", "libexec/darling")
 TMP_RELS = ("private/var/tmp",)
 PRIVATE_TMP_RELS = ("private/tmp",)
 ROOT_TMP_RELS = ("tmp",)
@@ -28,17 +27,6 @@ DARLING_CLT_CLANG_REL = Path("Library/Developer/DarlingCLT/usr/bin/clang")
 DARLING_CLT_CLANG_TARGET = Path("../../../CommandLineTools/usr/bin/clang")
 INIT_PID_REL = Path(".init.pid")
 SERVER_SOCKET_REL = Path(".darlingserver.sock")
-EUNION_KERNEL_RELS = (
-    Path("usr/lib/system/libsystem_kernel.dylib"),
-    Path("libexec/darling/usr/lib/system/libsystem_kernel.dylib"),
-)
-EUNION_BINARY_MARKERS = (
-    b"/.union-work",
-    b"user.union.whiteout",
-    b"user.union.opaque",
-)
-
-
 @dataclass
 class PrefixRepairResult:
     changed: list[str] = field(default_factory=list)
@@ -55,11 +43,20 @@ class PrefixRepairResult:
         return not self.problems
 
 
-def prefix_roots(prefix: Path) -> list[tuple[str, Path]]:
-    return [
-        ("prefix root", prefix),
-        ("base tree", prefix / "libexec/darling"),
-    ]
+def prefix_roots(
+    prefix: Path, system_root: Path | None = None
+) -> list[tuple[str, Path]]:
+    """Guest-visible roots holding writable state and immutable runtime files.
+
+    The writable prefix is always first. A selected installation's system root is
+    added only for *reads* (a guest toolchain may legitimately come from the
+    immutable image); repair never writes there.
+    """
+
+    roots = [("prefix root", prefix)]
+    if system_root is not None and Path(system_root) != Path(prefix):
+        roots.append(("runtime system root", Path(system_root)))
+    return roots
 
 
 class PrefixBootPhase(Enum):
@@ -118,42 +115,25 @@ def prefix_boot_prerequisite_problems(
     return problems
 
 
-def guest_c_fixture_prerequisite_problems(
-    prefix: Path,
-    guest_cc: str,
-    guest_cflags: str,
+EUNION_BINARY_MARKERS = (
+    b"/.union-work",
+    b"user.union.whiteout",
+    b"user.union.opaque",
+)
+
+
+def eunion_prefix_prerequisite_problems(
+    prefix: Path, *, system_root: Path | None = None
 ) -> list[str]:
-    problems = []
+    """Check the installed runtime's kernel image without a legacy combined-root fallback."""
 
-    def check_guest_path(guest_path: str, description: str):
-        rel = guest_path.lstrip("/")
-        for root_name, root in prefix_roots(prefix):
-            host_path = root / rel
-            if not host_path.exists():
-                problems.append(f"{description} missing in {root_name}: {guest_path}")
-
-    if guest_cc.startswith("/Library/Developer/CommandLineTools/"):
-        check_guest_path(guest_cc, "guest compiler")
-    words = guest_cflags.split()
-    for index, word in enumerate(words):
-        if word == "-isysroot" and index + 1 < len(words):
-            sysroot = words[index + 1]
-            if sysroot.startswith("/Library/Developer/CommandLineTools/"):
-                check_guest_path(sysroot, "guest SDK sysroot")
-    return problems
-
-
-def eunion_prefix_prerequisite_problems(prefix: Path) -> list[str]:
-    problems = []
-    template = prefix / "libexec/darling"
-    if not template.is_dir():
-        problems.append("libexec/darling missing in Darling prefix")
-
-    kernels = [prefix / rel for rel in EUNION_KERNEL_RELS if (prefix / rel).is_file()]
+    problems: list[str] = []
+    roots = [root for _name, root in prefix_roots(prefix, system_root)]
+    kernels = [root / "usr/lib/system/libsystem_kernel.dylib" for root in roots]
+    kernels = [kernel for kernel in kernels if kernel.is_file()]
     if not kernels:
-        problems.append("libsystem_kernel.dylib missing in Darling prefix")
+        problems.append("libsystem_kernel.dylib missing in guest filesystem or runtime system root")
         return problems
-
     supported = False
     for kernel in kernels:
         try:
@@ -167,8 +147,45 @@ def eunion_prefix_prerequisite_problems(prefix: Path) -> list[str]:
     if not supported:
         problems.append(
             "installed libsystem_kernel.dylib lacks E-UNION markers; rebuild "
-            "Darling with -DDARLING_EUNION=ON and redeploy libsystem_kernel"
+            "Darling with -DDARLING_EUNION=ON and install a reviewed runtime"
         )
+    return problems
+
+
+def guest_c_fixture_prerequisite_problems(
+    prefix: Path,
+    guest_cc: str,
+    guest_cflags: str,
+    *,
+    system_root: Path | None = None,
+) -> list[str]:
+    """Read guest prerequisites from writable upper state or the selected image.
+
+    Missing upper paths may be supplied by the installed lower image; neither
+    this check nor repair requires a duplicate copy in both roots.
+    """
+    problems = []
+
+    def check_guest_path(guest_path: str, description: str):
+        rel = guest_path.lstrip("/")
+        roots = prefix_roots(prefix, system_root)
+        for _root_name, root in roots:
+            host_path = root / rel
+            if host_path.exists():
+                return
+            # An upper entry shadows the lower image, including dangling links.
+            if host_path.is_symlink():
+                break
+        problems.append(f"{description} missing in selected guest filesystem: {guest_path}")
+
+    if guest_cc.startswith("/Library/Developer/CommandLineTools/"):
+        check_guest_path(guest_cc, "guest compiler")
+    words = guest_cflags.split()
+    for index, word in enumerate(words):
+        if word == "-isysroot" and index + 1 < len(words):
+            sysroot = words[index + 1]
+            if sysroot.startswith("/Library/Developer/CommandLineTools/"):
+                check_guest_path(sysroot, "guest SDK sysroot")
     return problems
 
 
@@ -566,7 +583,6 @@ def _repair_clt_for_root(
     result: PrefixRepairResult,
     *,
     check: bool,
-    fallback_root: Path | None = None,
 ) -> None:
     link = root / CANONICAL_CLT_REL
     if link.exists():
@@ -584,41 +600,6 @@ def _repair_clt_for_root(
         result.changed.append(f"{root_name}: removed dangling {CANONICAL_CLT_REL}")
 
     candidates = _candidate_clt_dirs(root)
-    if not candidates and fallback_root is not None:
-        fallback_candidates = _candidate_clt_dirs(fallback_root)
-        if fallback_candidates:
-            fallback = fallback_candidates[0]
-            developer = root / "Library/Developer"
-            local_candidate = developer / fallback.name
-            if check:
-                result.problems.append(
-                    f"{root_name}: no local {fallback.name} link under Library/Developer"
-                )
-                return
-            developer.mkdir(parents=True, exist_ok=True)
-            relative = os.path.relpath(fallback, start=developer)
-            local_candidate.symlink_to(relative)
-            result.changed.append(f"{root_name}: linked {local_candidate.relative_to(root)}")
-            candidates = [local_candidate]
-        else:
-            fallback_canonical = fallback_root / CANONICAL_CLT_REL
-            if (
-                fallback_canonical.is_dir()
-                and (fallback_canonical / "usr/bin/clang").exists()
-            ):
-                if check:
-                    result.problems.append(
-                        f"{root_name}: canonical {CANONICAL_CLT_REL} symlink missing"
-                    )
-                    return
-                developer = root / "Library/Developer"
-                developer.mkdir(parents=True, exist_ok=True)
-                relative = os.path.relpath(fallback_canonical, start=developer)
-                link.symlink_to(relative)
-                result.changed.append(
-                    f"{root_name}: linked {CANONICAL_CLT_REL} -> {relative}"
-                )
-                return
     if not candidates:
         result.problems.append(
             f"{root_name}: no CommandLineTools.apple-clt-* candidate under Library/Developer"
@@ -671,7 +652,9 @@ def repair_prefix_prerequisites(
     prefix: Path,
     *,
     check: bool = False,
+    system_root: Path | None = None,
 ) -> PrefixRepairResult:
+    """Repair guest state only, using *system_root* solely as read-only context."""
     result = PrefixRepairResult()
     _repair_stale_init_pid(prefix, result, check=check)
     result.extend(repair_prefix_boot_prerequisites(prefix) if not check else PrefixRepairResult())
@@ -680,8 +663,18 @@ def repair_prefix_prerequisites(
         for rel in ROOTLESS_RUNTIME_DIR_RELS:
             if not (prefix / rel).is_dir():
                 result.problems.append(f"{rel} missing")
-    for root_name, root in prefix_roots(prefix):
-        fallback_root = prefix if root != prefix else None
-        _repair_clt_for_root(root_name, root, result, check=check, fallback_root=fallback_root)
-        _repair_darling_clang_for_root(root_name, root, result, check=check)
+    # Lower-image prerequisites are read-only context, never a link/copy source.
+    upper_clt = prefix / CANONICAL_CLT_REL
+    lower_clt = system_root / CANONICAL_CLT_REL if system_root is not None else None
+    if (
+        not upper_clt.exists()
+        and not upper_clt.is_symlink()
+        and not _candidate_clt_dirs(prefix)
+        and lower_clt is not None
+        and (lower_clt / "usr/bin/clang").exists()
+    ):
+        result.ok.append("runtime system root: canonical CommandLineTools has clang")
+    else:
+        _repair_clt_for_root("prefix root", prefix, result, check=check)
+        _repair_darling_clang_for_root("prefix root", prefix, result, check=check)
     return result

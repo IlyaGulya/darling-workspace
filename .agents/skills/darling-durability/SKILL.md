@@ -79,6 +79,13 @@ destroyed archive.
 - Record chronology, evidence and remaining work in the owning Bead. Instructions
   and skills remain normative; no incident log or one-off acceptance transcript.
 
+- Source review is tracked-only: untracked files are excluded and not collected.
+  Stage explicit new owned files before `west dev check`/`package`; unstaged
+  tracked diffs are included. There are no `--tracked-only` or `--stage-new-files`
+  switches. Retain receipt, `source-review.json`, manifest, tracked working and
+  staged diffs, and index/SHA identity. This is not untracked-byte backup,
+  recovery mboxes or portable Git closure; preserve at-risk bytes separately.
+
 Durability means accepted component and manifest commits reachable from their
 respective declared remotes, committed Beads state, and clean OR explicitly
 reported dirty worktrees. This does not authorize pushing. Never push branches,
@@ -105,8 +112,10 @@ A successful exit alone does not prove desired commits were included.
 
 Record source/runner/manifest identities, remaining dirt, context recreation
 instructions and evidence transfer locations. Named context keys include
-`dev.active-context` and `dev-NAME.{prefix,runtime-profile,executor,bundle-root}`;
-record how to recreate them rather than treating host paths as portable defaults.
+`dev.active-context` and `dev-NAME.{prefix,runtime-root,executor,bundle-root}`;
+record the installed-image identity and how to recreate the context rather than
+treating host paths as portable defaults. A prepared derived clean fix worktree
+is valid when canonical source is foreign dirty, not a second source authority.
 
 ## Completion boundary
 

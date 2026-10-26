@@ -55,9 +55,9 @@ int
 main(void)
 {
 	const char* direct_path =
-	    "/private/var/tmp/west-b/d/s";
+	    "/usr/share/darling/tests/eunion/nested-bind/d/s";
 	const char* nested_path =
-	    "/private/var/tmp/west-b/l/s";
+	    "/usr/share/darling/tests/eunion/nested-bind/l/s";
 
 	if (bind_socket(direct_path) != 0)
 		return 1;
