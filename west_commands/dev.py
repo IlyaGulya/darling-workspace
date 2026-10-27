@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import json
+import os
 from pathlib import Path
 import shlex
 import shutil
@@ -334,6 +335,8 @@ class DarlingDev(WestCommand):
         subparsers = parser.add_subparsers(dest="action", required=True)
         from dev_scenarios import add_scenario_parsers
         add_scenario_parsers(subparsers)
+        from dev_lane import add_lane_parsers
+        add_lane_parsers(subparsers)
 
         status = subparsers.add_parser("status", help="summarize local feature-work state")
         status.add_argument("--bead")
@@ -422,6 +425,19 @@ class DarlingDev(WestCommand):
             try:
                 run_scenario_action(self, args, _west_argv())
             except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
+                self.die(str(error))
+            return
+        if args.action == "lane":
+            from dev_lane import run_lane_action
+            from lane import LaneError
+            try:
+                run_lane_action(
+                    self,
+                    args,
+                    topdir=Path(self.topdir).resolve(),
+                    environ=dict(os.environ),
+                )
+            except (OSError, LaneError, RuntimeError, ValueError) as error:
                 self.die(str(error))
             return
         manifest_repo = Path(self.manifest.repo_abspath).resolve()

@@ -51,21 +51,25 @@
 # ISOLATION (enforced)
 #   * refuses a prefix matching prefix-verify14 (shared with the active Xcode workload)
 #   * refuses the canonical shared prefix-ios
-#   * prints the prefix identity and the deployed darlingserver sha256 in the verdict
+#   * prints the raw guest prefix and installed R/bin/darlingserver sha256 in the verdict
 #   * never deploys; boots only the named prefix/lane and uses the harness's prefix-scoped
 #     cleanup
 #
 # USAGE
-#   run-plane-deferred-arm-contract.sh --prefix P [--build-dir B] [--fixture F]
+#   run-plane-deferred-arm-contract.sh --runtime-root R --prefix P [--fixture F]
 #       [--expect red|green] [--oracle existing|product] [--repeat N]
 #       [--expected-server-sha SHA] [--run-dir D] [--wait S]
+#   Without --fixture, compiles the retained C source inside Darling using the
+#   explicitly provisioned darling-command-line-tools prerequisite, never a host
+#   cross compiler. --fixture accepts an already built Mach-O workload input.
 #   run-plane-deferred-arm-contract.sh --analyse FILE --pid N --expect red|green
 #       [--oracle existing|product]
 
 set -uo pipefail
 
+original_args=("$@")
 prefix=""
-build_dir=""
+runtime_root=""
 fixture=""
 run_dir=""
 expect="red"
@@ -80,7 +84,7 @@ name="plane_deferred_arm_guest"
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--prefix) prefix="$2"; shift 2 ;;
-	--build-dir) build_dir="$2"; shift 2 ;;
+	--runtime-root) runtime_root="$2"; shift 2 ;;
 	--fixture) fixture="$2"; shift 2 ;;
 	--run-dir) run_dir="$2"; shift 2 ;;
 	--expect) expect="$2"; shift 2 ;;
@@ -90,7 +94,22 @@ while [ $# -gt 0 ]; do
 	--wait) wait_seconds="$2"; shift 2 ;;
 	--analyse) analyse="$2"; shift 2 ;;
 	--pid) analyse_pid="$2"; shift 2 ;;
-	-h|--help) sed -n '2,60p' "$0"; exit 0 ;;
+	-h|--help)
+		cat <<'HELP'
+Usage: run-plane-deferred-arm-contract.sh --runtime-root R --prefix RAW_P
+       [--fixture MACH_O] [--expect red|green] [--oracle existing|product]
+       [--repeat N] [--expected-server-sha SHA] [--run-dir D] [--wait S]
+       run-plane-deferred-arm-contract.sh --analyse FILE --pid N
+       [--expect red|green] [--oracle existing|product]
+
+R is one ordinary immutable installation, P is separate prepared guest state.
+Without --fixture, guest compilation requires darling-command-line-tools;
+provision it explicitly with west darling-bootstrap --build-dir B --runtime-root R
+--prefix P --no-build --guest-toolchain darling-command-line-tools.
+Evidence is retained outside /tmp; --run-dir must be absent or empty.
+The same phase/request-identity oracle serves independent RED and GREEN images.
+HELP
+		exit 0 ;;
 	*) echo "plane-deferred-arm: unknown argument: $1" >&2; exit 2 ;;
 	esac
 done
@@ -116,12 +135,23 @@ analyse_delta() { # <delta-file> <pid> <oracle>
 	local delta="$1" pid="$2" orc="$3"
 	local who="tid=$pid"
 	[ -f "$delta" ] || return 1
-	P1=$(grep -acE "call-deferred site=setPendingCall-parked .*${who} number=16 .*pending=0" "$delta" || true)
-	P4=$(grep -acE "call-deferred site=setPendingCall-parked .*${who} number=16 .*pending=1" "$delta" || true)
+	# Normal product diagnostics include their bounded per-thread n= ordinal.
+	# Saved deltas without the ordinal retain the identical phase/PID semantics.
+	P1=$(grep -acE "call-deferred (n=[0-9]+ )?site=setPendingCall-parked .*${who} number=16 .*pending=0" "$delta" || true)
+	P4=$(grep -acE "call-deferred (n=[0-9]+ )?site=setPendingCall-parked .*${who} number=16 .*pending=1" "$delta" || true)
 	REJECT=$(grep -acE 'setPendingCall rejected call \(number 16\)' "$delta" || true)
-	P5=$(grep -acE "call-deferred site=doWork-parked .*${who} number=16" "$delta" || true)
+	P5=$(grep -acE "call-deferred (n=[0-9]+ )?site=doWork-parked .*${who} number=16" "$delta" || true)
 	PDEFERDONE=$(grep -acE 'plane-deferred-completion' "$delta" || true)
 	DISARMED=$(grep -acE "plane-call-disarmed .*${who} .*call=16" "$delta" || true)
+	# Request-sequence correlation (server side). A disarm names the plane sequence it refused; a
+	# completion names the sequence it executed. A refused sequence that later appears as an execution
+	# is a Call that ran after being refused -- the defect this gate exists to catch.
+	DISARM_SEQS=$(sed -nE "s/.*plane-call-disarmed .*${who} .*seq=([0-9]+).*call=16.*/\1/p" "$delta" | sort -un | tr '\n' ' ')
+	EXEC_SEQS=$(sed -nE 's/.*plane-deferred-completion .*seq=([0-9]+).*/\1/p' "$delta" | sort -un | tr '\n' ' ')
+	EXEC_AFTER_REFUSAL=0
+	for sq in $DISARM_SEQS; do
+		case " $EXEC_SEQS " in *" $sq "*) EXEC_AFTER_REFUSAL=$((EXEC_AFTER_REFUSAL + 1)) ;; esac
+	done
 	UNOWNED=$(grep -acE 'plane-call-unowned .*call=16' "$delta" || true)
 	if [ "$orc" = product ]; then
 		# the product oracle requires the diagnostics to be present in the build:
@@ -135,7 +165,8 @@ analyse_delta() { # <delta-file> <pid> <oracle>
 report_phases() {
 	echo "PLANE-DEFERRED-ARM: phases pid=$1 P1_arm_pending0=$P1 P4_retained_pending1=$P4" \
 	     "refused_rejections=$REJECT P5_deferred_insert=$P5" \
-	     "P7_deferred_completion=$PDEFERDONE disarmed=$DISARMED unowned=$UNOWNED"
+	     "P7_deferred_completion=$PDEFERDONE disarmed=$DISARMED unowned=$UNOWNED" \
+	     "disarmed_seqs=[$DISARM_SEQS] executed_seqs=[$EXEC_SEQS] executed_after_refusal=$EXEC_AFTER_REFUSAL"
 }
 
 # Signature verdict for one analysed run. Sets VERDICT (PASS|FAIL) and WHY.
@@ -169,6 +200,10 @@ judge() { # <expect> <oracle>
 			VERDICT=FAIL; WHY="a deferred completion was published for a refused Call"
 		elif [ "$orc" = product ] && [ "$DISARMED" -lt 1 ]; then
 			VERDICT=INVALID; WHY="product oracle requested but the deployed build has no plane-call-disarmed record: the GREEN ownership assertion cannot be evaluated"
+		elif [ "$orc" = product ] && [ -z "$DISARM_SEQS" ]; then
+			VERDICT=INVALID; WHY="product oracle: no disarmed request sequence was recorded for callnum 16, so server-side exactly-once cannot be correlated"
+		elif [ "$EXEC_AFTER_REFUSAL" -ne 0 ]; then
+			VERDICT=FAIL; WHY="a refused request sequence later executed (disarmed_seqs=[$DISARM_SEQS] executed_seqs=[$EXEC_SEQS]): the refused Call ran out of band"
 		elif [ "$orc" = product ] && [ "$UNOWNED" -ne 0 ]; then
 			VERDICT=FAIL; WHY="a reply-suppressed Call completed without a completion owner (plane-call-unowned): completion ownership is wrong"
 		else
@@ -199,8 +234,24 @@ fi
 boot_run="$workspace/scripts/darling-boot-run.sh"
 src="$here/plane_deferred_arm_guest.c"
 [ -x "$boot_run" ] || { echo "plane-deferred-arm: INVALID: missing $boot_run" >&2; exit 2; }
-[ -n "$prefix" ] && [ -x "$prefix/bin/darling" ] || {
-	echo "plane-deferred-arm: INVALID: --prefix must name a booted Darling prefix" >&2; exit 2; }
+[ -n "$prefix" ] && [ -d "$prefix" ] || {
+	echo "plane-deferred-arm: INVALID: --prefix must name separately bootstrapped guest state" >&2; exit 2; }
+DARLING_WORKSPACE_ROOT="$workspace"
+. "$workspace/scripts/darling-runtime.sh"
+darling_resolve_runtime "$runtime_root" "$prefix" || exit $?
+# Canonicalize inherited ownership to FD 8 as well as acquiring absent ownership.
+# Runtime children close this descriptor; nested managed helpers may borrow it.
+if [ -z "${WEST_TEST_PREFIX_LEASE:-}" ] || [ "${WEST_TEST_PREFIX_LEASE_FD:-8}" != 8 ]; then
+	exec python3 -B "$workspace/west_commands/test_prefix.py" \
+		--prefix "$prefix" -- "$workspace/tests/run-plane-deferred-arm-contract.sh" "${original_args[@]}"
+fi
+python3 -B "$workspace/west_commands/test_prefix.py" \
+	--prefix "$prefix" --validate-lease || exit $?
+owned="$(darling_prefix_owned_pids "$prefix")" || exit $?
+[ -z "$owned" ] || {
+	echo "plane-deferred-arm: INVALID: selected prefix already has an owned runtime; stop its owner or select an isolated lane" >&2
+	exit 2
+}
 case "$prefix" in
 	*prefix-verify14*)
 		echo "plane-deferred-arm: INVALID: refusing prefix-verify14: it is shared with the active Xcode workload (the previous gate run interfered with it)" >&2
@@ -211,15 +262,56 @@ case "$prefix" in
 esac
 [ -f "$src" ] || { echo "plane-deferred-arm: INVALID: missing fixture source $src" >&2; exit 2; }
 
-if [ -z "$run_dir" ]; then
-	run_dir="$(mktemp -d "${TMPDIR:-/tmp}/plane-deferred-arm.XXXXXX")"
-fi
-mkdir -p "$run_dir"
+run_dir="$(python3 -B - "$workspace" "$run_dir" "$DARLING_RUNTIME_ROOT" "$prefix" <<'PY'
+import os
+import sys
+import tempfile
+from pathlib import Path
 
-deployed_sha="$(sha256sum "$prefix/bin/darlingserver" 2>/dev/null | cut -d' ' -f1)"
+workspace, supplied, runtime, prefix = sys.argv[1:]
+root = Path(supplied).absolute() if supplied else Path(
+    os.environ.get("DW_STATE_ROOT", str(Path(workspace).parent / ".west-state"))
+) / "diagnostics"
+resolved = root.resolve()
+if not root.is_absolute() or resolved.is_relative_to(Path("/tmp")):
+    raise SystemExit("plane-deferred-arm: INVALID: evidence needs an absolute durable root outside /tmp")
+if any(resolved.is_relative_to(Path(value).resolve()) for value in (runtime, prefix)):
+    raise SystemExit("plane-deferred-arm: INVALID: evidence must be outside runtime and guest state")
+if supplied:
+    root.mkdir(parents=True, exist_ok=True)
+    if any(root.iterdir()):
+        raise SystemExit("plane-deferred-arm: INVALID: --run-dir must be absent or empty")
+else:
+    root.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix="plane-deferred-arm-", dir=root))
+print(root)
+PY
+)" || exit 2
+runtime_started=0
+finish_runtime() {
+	local rc=$?
+	trap - EXIT INT TERM
+	if [ "$runtime_started" = 1 ]; then
+		"$workspace/scripts/prefix-cleanup.sh" --runtime-root "$DARLING_RUNTIME_ROOT" \
+			--prefix "$prefix" > "$run_dir/failure-cleanup.log" 2>&1
+		local cleanup_rc=$?
+		if [ "$cleanup_rc" -ne 0 ]; then
+			echo "PLANE-DEFERRED-ARM: INVALID: failed normal shutdown/rescue (rc=$cleanup_rc); see $run_dir/failure-cleanup.log" >&2
+			[ "$rc" -ne 0 ] || rc=2
+		fi
+	fi
+	exit "$rc"
+}
+trap finish_runtime EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+deployed_sha="$(sha256sum "$DARLING_RUNTIME_ROOT/bin/darlingserver" | cut -d' ' -f1)" || exit 2
+printf 'runtime-root=%s\nprefix=%s\nserver-sha256=%s\n' \
+	"$DARLING_RUNTIME_ROOT" "$prefix" "$deployed_sha" > "$run_dir/selection.txt"
 if [ "$oracle" = product ]; then
 	for witness in plane-call-disarmed plane-call-unowned; do
-		if ! strings -a "$prefix/bin/darlingserver" 2>/dev/null | grep -q "$witness"; then
+		if ! grep -aqF -- "$witness" "$DARLING_RUNTIME_ROOT/bin/darlingserver"; then
 			echo "PLANE-DEFERRED-ARM: INVALID: the deployed darlingserver carries no '$witness' literal: the product oracle cannot be evaluated, and an absent instrument is not a zero" >&2
 			exit 2
 		fi
@@ -231,32 +323,112 @@ if [ -n "$expected_sha" ] && [ "$deployed_sha" != "$expected_sha" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Build the guest fixture without adding a product target.
+# Materialize only workload inputs; compilation itself executes in the guest.
 # ---------------------------------------------------------------------------
-if [ -z "$fixture" ]; then
-	[ -n "$build_dir" ] || { echo "plane-deferred-arm: INVALID: need --fixture or --build-dir" >&2; exit 2; }
-	[ -f "$build_dir/build.ninja" ] || { echo "plane-deferred-arm: INVALID: $build_dir is not a ninja build dir" >&2; exit 2; }
-	obj="$run_dir/$name.o"; out="$run_dir/$name"
-	cc_line="$(ninja -C "$build_dir" -t commands ring_mach_msg_test 2>/dev/null | grep 'ring_mach_msg_test.c.o' | head -1)"
-	link_line="$(ninja -C "$build_dir" -t commands ring_mach_msg_test 2>/dev/null | tail -1)"
-	[ -n "$cc_line" ] && [ -n "$link_line" ] || {
-		echo "plane-deferred-arm: INVALID: cannot extract the guest toolchain commands from $build_dir" >&2; exit 2; }
-	cc_new="$(printf '%s' "$cc_line" \
-		| sed -e 's#-MD -MT [^ ]*\.o -MF [^ ]*\.o\.d ##' \
-		      -e "s#-o [^ ]*ring_mach_msg_test\.c\.o#-o $obj#" \
-		      -e "s#-c .*ring_mach_msg_test\.c#-c $src#")"
-	link_new="$(printf '%s' "$link_line" \
-		| sed -e "s#[^ ]*ring_mach_msg_test\.c\.o#$obj#" \
-		      -e "s#-o [^ ]*ring_mach_msg_test#-o $out#")"
-	( cd "$build_dir" && eval "$cc_new" ) || { echo "plane-deferred-arm: INVALID: fixture compile failed" >&2; exit 2; }
-	( cd "$build_dir" && eval "$link_new" ) || { echo "plane-deferred-arm: INVALID: fixture link failed" >&2; exit 2; }
-	fixture="$out"
-fi
-[ -x "$fixture" ] || { echo "plane-deferred-arm: INVALID: fixture not executable: $fixture" >&2; exit 2; }
-
 guest_path="/private/var/tmp/$name"
-install -m755 "$fixture" "$prefix$guest_path" || {
-	echo "plane-deferred-arm: INVALID: cannot install the fixture into $prefix" >&2; exit 2; }
+check_bundle() { # <tag> -- complete evidence, actual image and clean product teardown
+	local tag="$1" bundle="$run_dir/$1.log.bundle"
+	[ ! -e "$bundle/INCOMPLETE" ] || return 1
+	python3 "$workspace/scripts/darling-evidence.py" cat "$bundle/MANIFEST" \
+		| grep -a '^BUNDLE-COMPLETE ' >/dev/null || return 1
+	python3 "$workspace/scripts/darling-evidence.py" cat "$bundle/cleanup.json" \
+		| python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("state")=="clean" and d.get("shutdown_rc")==0 and d.get("processes")==0 and d.get("mounts")==0 else 1)' || return 1
+	python3 "$workspace/scripts/darling-evidence.py" cat "$bundle/run-env.txt" \
+		> "$run_dir/$tag.run-env" || return 1
+	grep -aqF -- "RUN-ENV runtime-root=$DARLING_RUNTIME_ROOT prefix=$prefix " \
+		"$run_dir/$tag.run-env" || return 1
+	[ "$(sha256sum "$DARLING_RUNTIME_ROOT/bin/darlingserver" | cut -d' ' -f1)" = "$deployed_sha" ] || return 1
+}
+
+if [ -z "$fixture" ]; then
+	cp "$src" "$run_dir/$name.c" || exit 2
+	compile_body="$(python3 -B - "$workspace" "$prefix" "$DARLING_SYSTEM_ROOT" "$run_dir/$name.c" "$guest_path" <<'PY'
+import hashlib
+import shlex
+import sys
+from pathlib import Path
+
+workspace, prefix, system_root, source, output = sys.argv[1:]
+sys.path.insert(0, str(Path(workspace) / "west_commands"))
+from guest_toolchain import DEFAULT_GUEST_CC, DEFAULT_GUEST_CFLAGS, SELECTED_COMMAND_LINE_TOOLS_CLANG
+from prefix_repair import guest_c_fixture_prerequisite_problems
+
+problems = guest_c_fixture_prerequisite_problems(
+    Path(prefix), DEFAULT_GUEST_CC, DEFAULT_GUEST_CFLAGS, system_root=Path(system_root),
+)
+if problems:
+    raise SystemExit("plane-deferred-arm: INVALID: prerequisite darling-command-line-tools: "
+                     + "; ".join(problems)
+                     + ". Provision with west darling-bootstrap --build-dir B --runtime-root R "
+                       "--prefix P --no-build --guest-toolchain darling-command-line-tools")
+payload = Path(source).read_text()
+delimiter = "WEST_PLANE_SOURCE_" + hashlib.sha256(payload.encode()).hexdigest()
+while delimiter in payload.splitlines():
+    delimiter += "_"
+guest_source = output + ".c"
+print("mkdir -p /private/var/tmp || exit $?")
+print(f"cat > {shlex.quote(guest_source)} <<'{delimiter}'")
+print(payload, end="" if payload.endswith("\n") else "\n")
+print(delimiter)
+print("upload_rc=$?; [ \"$upload_rc\" -eq 0 ] || exit \"$upload_rc\"")
+print("guest_cc=" + shlex.quote(DEFAULT_GUEST_CC))
+print('compiler_version="$("$guest_cc" --version 2>&1)"; version_rc=$?')
+print('printf "%s\\n" "$compiler_version"')
+print('[ "$version_rc" -eq 0 ] || exit "$version_rc"')
+print('case "$compiler_version" in *' + shlex.quote(SELECTED_COMMAND_LINE_TOOLS_CLANG)
+      + '*) ;; *) printf "prerequisite darling-command-line-tools: unexpected guest compiler\\n" >&2; exit 127 ;; esac')
+print(shlex.join([DEFAULT_GUEST_CC, *shlex.split(DEFAULT_GUEST_CFLAGS), "-std=gnu11",
+                  "-o", output, guest_source, "-lpthread"]))
+print('compile_rc=$?; printf "PDA_COMPILE_RC=%s\\n" "$compile_rc"')
+print('[ "$compile_rc" -eq 0 ] || exit "$compile_rc"')
+print('printf "PDA_COMPILE_DONE=1\\n"')
+PY
+	)" || exit 2
+	printf '%s\n' "$compile_body" > "$run_dir/compile.guest-command.sh"
+	runtime_started=1
+	"$boot_run" --runtime-root "$DARLING_RUNTIME_ROOT" --prefix "$prefix" --wait "$wait_seconds" \
+		--status-marker 'PDA_COMPILE_RC=' --poll 'PDA_COMPILE_DONE=1' \
+		--log "$run_dir/compile.log" --bundle "$run_dir/compile.log.bundle" \
+		--cmd "$compile_body" > "$run_dir/compile.harness" 2>&1
+	compile_rc=$?
+	printf '%s\n' "$compile_rc" > "$run_dir/compile.harness-rc"
+	if [ "$compile_rc" -ne 0 ] || ! check_bundle compile; then
+		echo "PLANE-DEFERRED-ARM: INVALID: guest compilation or normal teardown failed; see $run_dir/compile.harness" >&2
+		exit 2
+	fi
+	runtime_started=0
+else
+	# Supplied binaries are inputs, not runtime pieces or host-executed fixtures.
+	python3 -B - "$fixture" "$run_dir/fixture-input.txt" "$run_dir/fixture.input" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = path.read_bytes()
+if payload[:4] not in (b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xce",
+                       b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",
+                       b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"):
+    raise SystemExit("plane-deferred-arm: INVALID: --fixture must be a Mach-O workload")
+Path(sys.argv[2]).write_text(f"path={path.absolute()}\nsha256={hashlib.sha256(payload).hexdigest()}\n")
+Path(sys.argv[3]).write_bytes(payload)
+PY
+	[ "$?" -eq 0 ] || exit 2
+	. "$workspace/testkit/scripts/darling-guest-shell.sh"
+	runtime_started=1
+	darling_guest_shell "$DARLING_LAUNCHER" "$prefix" "$wait_seconds" \
+		"mkdir -p /private/var/tmp && cat > '$guest_path' && chmod 755 '$guest_path'" \
+		< "$run_dir/fixture.input" > "$run_dir/upload.log" 2>&1 8<&-
+	upload_rc=$?
+	"$workspace/scripts/prefix-cleanup.sh" --runtime-root "$DARLING_RUNTIME_ROOT" \
+		--prefix "$prefix" > "$run_dir/upload-cleanup.log" 2>&1
+	cleanup_rc=$?
+	if [ "$upload_rc" -ne 0 ] || [ "$cleanup_rc" -ne 0 ]; then
+		echo "PLANE-DEFERRED-ARM: INVALID: fixture upload rc=$upload_rc shutdown rc=$cleanup_rc; see $run_dir/upload.log and upload-cleanup.log" >&2
+		exit 2
+	fi
+	runtime_started=0
+fi
 
 # ---------------------------------------------------------------------------
 # One live arm. Records statuses; classifies infrastructure failure as INVALID.
@@ -264,14 +436,21 @@ install -m755 "$fixture" "$prefix$guest_path" || {
 arm_status=""; arm_invalid=""
 run_arm() { # <mode> <tag>
 	local mode="$1" tag="$2"
-	local log="$run_dir/$tag.log" bundle="$log.bundle"
+	local log="$run_dir/$tag.log"
+	local bundle="$log.bundle"
 	local rc=0
-	"$boot_run" --prefix "$prefix" --wait "$wait_seconds" \
-		--marker 'PDA result' --status-marker 'PDA status=' --poll 'PDA end' \
+	runtime_started=1
+	"$boot_run" --runtime-root "$DARLING_RUNTIME_ROOT" --prefix "$prefix" --wait "$wait_seconds" \
+		--env DSERVER_LOG_LEVEL=debug \
+		--marker 'PDA result' --status-marker 'PDA_STATUS=' --poll 'PDA end' \
 		--log "$log" --bundle "$bundle" --cmd "$guest_path $mode" \
 		> "$run_dir/$tag.harness" 2>&1 || rc=$?
 	echo "$rc" > "$run_dir/$tag.harness-rc"
 	arm_status="rc=$rc"; arm_invalid=""
+	if [ "$rc" -ne 0 ]; then
+		arm_invalid="the harness exited rc=$rc (a VERDICT marker alone is not a successful harness exit; see $run_dir/$tag.harness)"
+		return 0
+	fi
 
 	local harness_ok=0
 	grep -aq 'VERDICT: PASS' "$run_dir/$tag.harness" && harness_ok=1
@@ -284,14 +463,15 @@ run_arm() { # <mode> <tag>
 		return 0
 	fi
 
-	# Provenance: the run must be served by the prefix we named.
-	if ! grep -aq "RUN-ENV prefix=$prefix" "$run_dir/$tag.harness"; then
-		arm_invalid="per-run server provenance: the harness did not name $prefix in RUN-ENV"
+	# The completed bundle binds this arm to its installed image and raw prefix.
+	if ! check_bundle "$tag"; then
+		arm_invalid="per-run installed provenance, bundle completion or clean product shutdown missing"
 		return 0
 	fi
-	grep -a 'RUN-ENV' "$run_dir/$tag.harness" | head -1 > "$run_dir/$tag.run-env" 2>/dev/null || true
-	if [ ! -s "$run_dir/$tag.run-env" ]; then
-		arm_invalid="per-run provenance: the arm has no RUN-ENV record of its own"
+	runtime_started=0
+	log="$run_dir/$tag.guest.log"
+	if ! python3 "$workspace/scripts/darling-evidence.py" cat "$bundle/harness.log" > "$log"; then
+		arm_invalid="unreadable guest output in the completed bundle"
 		return 0
 	fi
 	if ! python3 "$workspace/scripts/darling-evidence.py" cat "$bundle/server.log" > "$run_dir/$tag.server-delta.log"; then
@@ -313,7 +493,7 @@ run_arm() { # <mode> <tag>
 	echo "$pid" > "$run_dir/$tag.pid"
 
 	local status
-	status="$(sed -n 's/.*PDA status=\([0-9-]*\).*/\1/p' "$log" | tail -1)"
+	status="$(sed -n 's/.*PDA_STATUS=\([0-9-]*\).*/\1/p' "$log" | tail -1)"
 	if [ -z "$status" ]; then
 		if grep -aqE 'dserver-CRASH|duct-tape panic|dserver-TERMINATE|panic backtrace' "$log" "$run_dir/$tag.server-delta.log"; then
 			arm_invalid="the server crashed or panicked during the run (unrelated defect); the workload produced no status"
@@ -339,7 +519,7 @@ run_arm control control
 if [ -n "$arm_invalid" ]; then
 	echo "PLANE-DEFERRED-ARM: INVALID: control arm: $arm_invalid" >&2; exit 2
 fi
-ctl_status="$(sed -n 's/.*PDA status=\([0-9-]*\).*/\1/p' "$run_dir/control.log" | tail -1)"
+ctl_status="$(sed -n 's/.*PDA_STATUS=\([0-9-]*\).*/\1/p' "$run_dir/control.guest.log" | tail -1)"
 if [ "$ctl_status" != "0" ]; then
 	echo "PLANE-DEFERRED-ARM: INVALID: control arm guest status=${ctl_status:-absent} ($arm_status): the environment cannot serve the control, so no RED/GREEN claim is possible" >&2
 	exit 2
@@ -355,13 +535,13 @@ for i in $(seq 1 "$repeats"); do
 	if [ -n "$arm_invalid" ]; then
 		echo "PLANE-DEFERRED-ARM: INVALID: $tag: $arm_invalid" >&2; exit 2
 	fi
-	status="$(sed -n 's/.*PDA status=\([0-9-]*\).*/\1/p' "$run_dir/$tag.log" | tail -1)"
+	status="$(sed -n 's/.*PDA_STATUS=\([0-9-]*\).*/\1/p' "$run_dir/$tag.guest.log" | tail -1)"
 	if [ "$status" != "0" ]; then
 		echo "PLANE-DEFERRED-ARM: FAIL: $tag guest status=${status:-absent} ($arm_status): the fixture did not complete with both opens succeeding" >&2
 		exit 1
 	fi
-	opens1="$(grep -acE '^PDA open1 fd=' "$run_dir/$tag.log" || true)"
-	opens2="$(grep -acE '^PDA open2 fd=' "$run_dir/$tag.log" || true)"
+	opens1="$(grep -acE '^PDA open1 fd=' "$run_dir/$tag.guest.log" || true)"
+	opens2="$(grep -acE '^PDA open2 fd=' "$run_dir/$tag.guest.log" || true)"
 	if [ "${opens1:-0}" -ne 1 ] || [ "${opens2:-0}" -ne 1 ]; then
 		echo "PLANE-DEFERRED-ARM: FAIL: $tag: the two requests did not each produce exactly one outcome (open1=$opens1 open2=$opens2): exactly-once is not established" >&2
 		exit 1
@@ -379,12 +559,12 @@ for i in $(seq 1 "$repeats"); do
 done
 
 if [ "$INVALID" -ne 0 ]; then
-	echo "PLANE-DEFERRED-ARM: VERDICT INVALID (expect=$expect, oracle=$oracle, prefix=$prefix, server_sha=$deployed_sha, run-dir=$run_dir)" >&2
+	echo "PLANE-DEFERRED-ARM: VERDICT INVALID (expect=$expect, oracle=$oracle, runtime_root=$DARLING_RUNTIME_ROOT, prefix=$prefix, server_sha=$deployed_sha, run-dir=$run_dir)" >&2
 	exit 2
 fi
 if [ "$FAILED" -ne 0 ]; then
-	echo "PLANE-DEFERRED-ARM: VERDICT FAIL (expect=$expect, oracle=$oracle, prefix=$prefix, server_sha=$deployed_sha, run-dir=$run_dir)" >&2
+	echo "PLANE-DEFERRED-ARM: VERDICT FAIL (expect=$expect, oracle=$oracle, runtime_root=$DARLING_RUNTIME_ROOT, prefix=$prefix, server_sha=$deployed_sha, run-dir=$run_dir)" >&2
 	exit 1
 fi
-echo "PLANE-DEFERRED-ARM: VERDICT PASS (expect=$expect, oracle=$oracle, prefix=$prefix, server_sha=$deployed_sha, run-dir=$run_dir)"
+echo "PLANE-DEFERRED-ARM: VERDICT PASS (expect=$expect, oracle=$oracle, runtime_root=$DARLING_RUNTIME_ROOT, prefix=$prefix, server_sha=$deployed_sha, run-dir=$run_dir)"
 exit 0

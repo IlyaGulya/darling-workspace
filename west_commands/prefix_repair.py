@@ -14,6 +14,10 @@ from enum import Enum
 from pathlib import Path
 
 
+#: The filesystem type of a prefix's own root-layer mount. An isolation lane
+#: serves its prefix through `fuse-overlayfs`; that mount is the lens a run
+#: looks through, never residue a run left behind (see `west_commands/lane.py`).
+PREFIX_LAYER_FSTYPE = "fuse.fuse-overlayfs"
 TMP_RELS = ("private/var/tmp",)
 PRIVATE_TMP_RELS = ("private/tmp",)
 ROOT_TMP_RELS = ("tmp",)
@@ -221,10 +225,31 @@ def prefix_mount_targets(
         fields = line.split()
         if len(fields) < 5:
             continue
-        target = Path(_decode_mountinfo_path(fields[4])).resolve()
+        try:
+            target = Path(_decode_mountinfo_path(fields[4])).resolve()
+        except OSError:
+            continue
+        if target == prefix and _mount_fstype(fields) == PREFIX_LAYER_FSTYPE:
+            # The prefix's OWN isolation layer is not a mount under the prefix. An isolation lane's
+            # prefix IS a `fuse-overlayfs` view of a read-only base (see `west_commands/lane.py`), and
+            # reporting or unmounting that view as runtime residue detaches the prefix from the
+            # experiment that owns it: every later command in the lane then fails with ENOTCONN.
+            # MEASURED 2026-10-18. A kernel `overlay` at the prefix path is NOT excluded: in the
+            # privileged runtime that is the server's own bring-up mount and belongs to cleanup.
+            continue
         if target == prefix or prefix in target.parents:
             targets.append(target)
     return targets
+
+
+def _mount_fstype(fields: list[str]) -> str:
+    """The filesystem type of one ``/proc/self/mountinfo`` line, after the separator."""
+
+    try:
+        separator = fields.index("-")
+    except ValueError:
+        return ""
+    return fields[separator + 1] if len(fields) > separator + 1 else ""
 
 
 def _parse_fuser_pids(output: str) -> set[int]:
