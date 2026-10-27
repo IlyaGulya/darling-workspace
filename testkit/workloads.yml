@@ -6357,6 +6357,27 @@ workloads:
   env: darling
   note: EV_ADD on an existing EVFILT_MACHPORT knote must complete through the
     server modify request and microthread route, not only generic kqueue setup.
+- id: backtrace-async
+  name: backtrace-async
+  module: darling
+  repo: darling
+  bead: dar-production-runtime-cutover-gtci.5
+  runner: guest-c-fixture
+  script: tests/src/backtrace_async.c
+  env: darling
+  coverage-tier: runtime
+  diag: bare
+  ok-marker: DARLING_BACKTRACE_ASYNC_OK
+  requires:
+  - darling-prefix
+  timeout-seconds: 30
+  compile-flags:
+  - -std=gnu11
+  - -m64
+  - -fno-omit-frame-pointer
+  - -Wall
+  - -Wextra
+  - -Werror
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke

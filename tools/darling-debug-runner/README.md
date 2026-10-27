@@ -118,6 +118,14 @@ pidfd; group mode retains process-group semantics. Prove target ownership first
 and check its actual exit afterwards. This mode creates no evidence bundle and
 does not turn rescue cleanup into a production PASS.
 
+For an identity already verified through a pinned Linux process handle, use
+`signal --pidfd FD --signal TERM`. Pin first, verify that process's identity,
+then inherit the same open descriptor into the helper (for example with
+Python's `subprocess` `pass_fds`). A descriptor number in another process is not
+enough. The helper duplicates that handle with close-on-exec and never reopens
+the PID; an exited handle fails rather than selecting a replacement process.
+This option is mutually exclusive with PID, pattern and process-group selection.
+
 ## Diagnostics: `diag`
 
 Diagnostics return **0** for success/PASS, **1** for a finding or acceptance

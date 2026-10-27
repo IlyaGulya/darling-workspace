@@ -723,14 +723,24 @@ tier. `tests/run-ci-test-tiers-contract.sh` implements that pattern.
 
 ### Test metadata and runners
 
-Guest
-E-UNION cases use `guest-c-fixture` metadata because their lower and
-upper trees must be staged inside an isolated Darling prefix by the typed
-`darling-eunion-prefix` resource. Flat workload fixture fields keep
-that setup declarative:
+Shipping runtime API regressions use `guest-c-fixture`: the reviewed guest CLT
+compiles the selected source, and the ordinary installed launcher executes it
+under the shared prefix owner. `backtrace-async` exercises the real libc and
+libpthread against x86_64 Swift extended-frame inputs, including bounded writes,
+continuation addresses and task identity:
 
-- `template-files`, `template-symlinks`, and `upper-files` describe the lower
-  template and any pre-existing upper entries;
+```sh
+mise run west -- test --source-root "$S" --runtime-root "$R" --prefix "$P" \
+  --env darling --workload backtrace-async
+```
+
+E-UNION cases validate immutable lower inputs from the optional product
+`tests-data` component in `R`. The typed `darling-eunion-prefix` resource stages
+only per-case upper state in `P`; it never installs or replaces runtime files.
+Flat workload fixture fields keep those assertions and upper inputs declarative:
+
+- `template-files` and `template-symlinks` assert the already installed lower
+  inputs; `upper-files` describes per-case entries to create in `P`;
 - `cleanup-dirs` bounds per-test state to `/private/var/tmp/west-*` paths;
 - `forbid-template-paths` asserts that a mutating guest operation did not write
   into the immutable template;

@@ -234,6 +234,10 @@ struct SignalArgs {
     pid: Option<u32>,
     #[arg(long, conflicts_with = "pid")]
     pattern: Option<String>,
+    /// Linux: inherited, caller-verified pidfd; never resolve its PID again.
+    #[arg(long, value_parser = clap::value_parser!(i32).range(0..),
+        conflicts_with_all = ["pid", "pattern", "group"])]
+    pidfd: Option<i32>,
     #[arg(long)]
     group: bool,
     #[arg(long, default_value = "TERM")]
@@ -1679,6 +1683,20 @@ fn echo_essentials(path: &std::path::Path) {
     say(&format!("ESSENTIALS {printed} line(s) from {}", path.display()));
 }
 
+#[cfg(target_os = "linux")]
+fn signal_pidfd(descriptor: &std::os::fd::OwnedFd, signal: Signal) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    if unsafe {
+        nix::libc::syscall(nix::libc::SYS_pidfd_send_signal,
+            descriptor.as_raw_fd(), signal as i32,
+            std::ptr::null::<nix::libc::siginfo_t>(), 0)
+    } < 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("signal pinned process descriptor");
+    }
+    Ok(())
+}
+
 fn main() -> Result<ExitCode> {
     // MEASURED defect: `dwdiag progress ... | head -4` panicked with `failed printing to stdout: Broken pipe (os error
     // 32)`, because Rust starts every process with SIGPIPE ignored. A diagnostic whose output is paged or truncated is
@@ -1872,7 +1890,6 @@ fn main() -> Result<ExitCode> {
         // unreachable: the diagnostics are dispatched before this match, and they own their exit codes
         RunnerCommand::Diag(_) => unreachable!("diag dispatched before the bundle machinery"),
         RunnerCommand::Signal(args) => {
-            let pid = find_pid(args.pid, args.pattern.as_deref())?;
             let signal_name = if args.signal.starts_with("SIG") {
                 args.signal
             } else {
@@ -1881,34 +1898,47 @@ fn main() -> Result<ExitCode> {
             let signal: Signal = signal_name
                 .parse()
                 .map_err(|_| anyhow::anyhow!("invalid signal: {signal_name}"))?;
-            if args.group {
-                let pgid = getpgid(Some(Pid::from_raw(pid as i32)))?;
-                killpg(pgid, signal)?;
-            } else {
+            if let Some(pidfd) = args.pidfd {
                 #[cfg(target_os = "linux")]
                 {
-                    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+                    use std::os::fd::{FromRawFd, OwnedFd};
                     let descriptor = unsafe {
-                        nix::libc::syscall(nix::libc::SYS_pidfd_open, pid as i32, 0)
-                    } as i32;
+                        nix::libc::fcntl(pidfd, nix::libc::F_DUPFD_CLOEXEC, 0)
+                    };
                     if descriptor < 0 {
                         return Err(std::io::Error::last_os_error())
-                            .context(format!("pin signal target pid={pid}"));
+                            .context(format!("duplicate inherited pidfd={pidfd}"));
                     }
                     let descriptor = unsafe { OwnedFd::from_raw_fd(descriptor) };
-                    if unsafe {
-                        nix::libc::syscall(nix::libc::SYS_pidfd_send_signal,
-                            descriptor.as_raw_fd(), signal as i32,
-                            std::ptr::null::<nix::libc::siginfo_t>(), 0)
-                    } < 0 {
-                        return Err(std::io::Error::last_os_error())
-                            .context(format!("signal pinned target pid={pid}"));
-                    }
+                    signal_pidfd(&descriptor, signal)?;
+                    println!("SIGNAL pidfd={pidfd} signal={signal:?} group=false");
                 }
                 #[cfg(not(target_os = "linux"))]
-                nix::sys::signal::kill(Pid::from_raw(pid as i32), signal)?;
+                bail!("--pidfd requires Linux");
+            } else {
+                let pid = find_pid(args.pid, args.pattern.as_deref())?;
+                if args.group {
+                    let pgid = getpgid(Some(Pid::from_raw(pid as i32)))?;
+                    killpg(pgid, signal)?;
+                } else {
+                    #[cfg(target_os = "linux")]
+                    {
+                        use std::os::fd::{FromRawFd, OwnedFd};
+                        let descriptor = unsafe {
+                            nix::libc::syscall(nix::libc::SYS_pidfd_open, pid as i32, 0)
+                        } as i32;
+                        if descriptor < 0 {
+                            return Err(std::io::Error::last_os_error())
+                                .context(format!("pin signal target pid={pid}"));
+                        }
+                        let descriptor = unsafe { OwnedFd::from_raw_fd(descriptor) };
+                        signal_pidfd(&descriptor, signal)?;
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    nix::sys::signal::kill(Pid::from_raw(pid as i32), signal)?;
+                }
+                println!("SIGNAL pid={pid} signal={signal:?} group={}", args.group);
             }
-            println!("SIGNAL pid={pid} signal={signal:?} group={}", args.group);
             (PathBuf::from("."), "signaled")
         }
     };

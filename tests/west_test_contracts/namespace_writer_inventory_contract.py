@@ -2739,11 +2739,19 @@ def _negative_contract(registry: dict, owners: dict[str, dict[str, str]]) -> Non
         raise InventoryError("missing per-path candidate audit unexpectedly passed")
 
     foreign_entry_audit = json.loads(json.dumps(audit))
-    owner_key = "darling-workspace:west_commands/darling_build.py"
-    assert owner_key in owners
-    owner_repository, owner_path = owner_key.split(":", 1)
+    for owner_key in sorted(owners):
+        owner_repository, owner_path = owner_key.split(":", 1)
+        if owner_repository != "darling-workspace":
+            continue
+        owner_absolute = _repository_root(owner_repository) / owner_path
+        mutation_operators = _audit_mutation_operators(
+            owner_absolute.read_text(encoding="utf-8", errors="replace")
+        )
+        if mutation_operators:
+            break
+    else:
+        raise InventoryError("negative fixture requires a typed workspace mutator")
     foreign = json.loads(json.dumps(foreign_entry_audit["entries"][0]))
-    owner_absolute = _repository_root(owner_repository) / owner_path
     foreign.update(
         {
             "repository": owner_repository,
@@ -2752,9 +2760,7 @@ def _negative_contract(registry: dict, owners: dict[str, dict[str, str]]) -> Non
             "reason": f"negative foreign entry for {owner_path}",
         }
     )
-    foreign["evidence"]["mutation_operators"] = _audit_mutation_operators(
-        owner_absolute.read_text(encoding="utf-8", errors="replace")
-    )
+    foreign["evidence"]["mutation_operators"] = mutation_operators
     foreign["evidence"]["build_anchor"] = {
         "repository": owner_repository,
         "path": owner_path,

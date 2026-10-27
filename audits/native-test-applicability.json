@@ -1536,6 +1536,12 @@
       "policy": "split_semantic_reference_and_internal_gate",
       "reason": "Source-reviewed tests/kqchan_modify_guest.c: repeated bare EV_ADD on the same EVFILT_MACHPORT receive-right registration must complete with zero exit. This public Mach/kevent behavior needs an independent Darwin reference for the declared ABI. The two fixed server-log phrases additionally gate Darling's modification-request/microthread route after the DTAPE ambient-requester refactor; that internal route has no native equivalent. Native behavior remains unverified; no native execution or approval is claimed.",
       "identity_sha256": "df041c551f377a556faff53c480a6c07c526286ae1e8ea3dda40d28dc7501f73"
+    },
+    "backtrace-async": {
+      "name": "backtrace-async",
+      "policy": "abi_toolchain_reference_review",
+      "reason": "Source-reviewed darling/tests/src/backtrace_async.c: calls the installed backtrace_async and pthread_stack_frame_decode_np against real x86_64 extended stack frames and Swift ABI continuation/TSD task records. Checks caller PC, continuation order and +1 symbolication offset, task ID, optional task-ID output, bounded writes and frame-tag stripping. A native reference requires x86_64 macOS 12 or newer and review of the reserved Swift TSD/task-header ABI; this declaration and synthetic ABI input are not native execution or approval.",
+      "identity_sha256": "45344dac12d030a8c779f9e48370bc49cc06666bf53255e5a6c4df7dc4331d65"
     }
   }
 }

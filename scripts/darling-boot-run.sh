@@ -239,7 +239,7 @@ trap 'witness "HARNESS-SIGNAL sig=2 stage=$STAGE elapsed=${SECONDS}s self=$$"; e
 caller_id() { # pid ppid pgid sid cmd
 	local p=$1 st
 	st=$(sed 's/.*) //' "/proc/$p/stat" 2>/dev/null)
-	echo "$p $(echo "$st" | awk '{print $2}') $(echo "$st" | awk '{print $3}') $(echo "$st" | awk '{print $4}') $(tr "\0" " " < "/proc/$p/cmdline" 2>/dev/null | cut -c1-120)"
+	printf '%s\n' "$p $(echo "$st" | awk '{print $2}') $(echo "$st" | awk '{print $3}') $(echo "$st" | awk '{print $4}') $(tr '\0\n\r' '   ' < "/proc/$p/cmdline" 2>/dev/null | cut -c1-120)"
 }
 
 owned_pids() {

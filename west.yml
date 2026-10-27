@@ -16,34 +16,10 @@ manifest:
     repo-path: darling
     path: darling
     remote: darling-next
-    # 7fc37b693 adds the dar-dles regression oracle: ring_mach_msg_test mode pthread_live
-    # <threads> [stack_kib], N simultaneously-live pthreads created sequentially and parked on one
-    # release barrier, which reproduces the >~50-live-thread create/start stall and prints the exact
-    # attempt that stopped. Test-only; no product source changed. Published on the canonical
-    # fix/truthful-nofile line (parent 060fc61c5).
-    # dar-dles fairness slice (partial, darlingserver a384108): the ring spin is bounded by the work
-    # quantum so the management plane is serviced even while ring work is continuous. Measured:
-    # pthread_live 32 PASS, 64 5/6 PASS; the remaining failure and the 128 failure are a server abort
-    # (dserver-TERMINATE after rpc-socket-DENIED), a separate open defect. Diagnostic-only commits are
-    # NOT part of this pin.
-    # iOS toolchain ABI slice (2026-10-07): libc++ gains the libc++ >= 16 verbose-termination
-    # entry point that Apple's Xcode 26.3 clang references from /usr/lib/libc++.1.dylib
-    # (current version 2000.66.0) and now builds its filesystem sources so std::__fs::filesystem
-    # is exported, which the same toolchain's ld references. Measured: clang --version rc=0 and
-    # ld -v rc=0 under Darling, and a real arm64 iPhoneOS object compiled against the real
-    # iPhoneOS 26.2 SDK. Parent is the dar-dles pin 0dbb35182.
-    # iOS T4 slice (2026-10-08): mldr uses arch-appropriate ucontext register indices
-    # (FW_UCTX_REG_IP/FW_UCTX_REG_SP), without which the 32-bit mldr32 target does not compile
-    # and a consistent bootchain (mldr carries its own copy of the RPC structs) cannot be
-    # rebuilt and redeployed next to a changed darlingserver. This revision also vendors the
-    # component gitlinks for the iOS T4 slice (see the darlingserver and xnu entries).
-    # Checkpoint (2026-10-10): replay the accepted rootless-default slice
-    # (privileged launcher retired) on the 585ad737 base, then bridge the accepted
-    # child gitlink (src/external/darlingserver -> 26c07780, per-call BSD retval).
-    # This is a scoped source checkpoint: later semantic candidates (signal
-    # 6f6f1fb, raw-ulock 572ecca, darlingserver 1081c82/fa203ed/21f8a0ca) stay OUT
-    # of the pin until a focused implementation regression passes.
-    revision: 69cf1035f043eb51bdb78e165c23cdfedd1e05e1
+    # Product source authority: this committed tree and its exact child gitlinks.
+    # Build the normal stock ALL target and complete installation.
+    # Workloads, writable guest prefixes and evidence are selected separately.
+    revision: 985794f7ea55eaf9c18e7eef18f8a0adf26a3fc3
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -83,7 +59,7 @@ manifest:
     repo-path: darling-DirectoryService
     path: darling/src/external/DirectoryService
     remote: darling
-    revision: feb9742f574ab812a210634fd3997f19b645095f
+    revision: 6a8528b0b86a657308300cf98ee0080c6819f9aa
     userdata:
       kind: darling-source
       upstream-repository: darling-DirectoryService
@@ -714,7 +690,7 @@ manifest:
     repo-path: darling-Libc
     path: darling/src/external/libc
     remote: darling
-    revision: 417a8e6f9ff3550c03202b32316aa7e5da041e3a
+    revision: 26bc5a0b5beb3875a149595cdfd75514c776e3b3
     userdata:
       kind: darling-source
       upstream-repository: darling-Libc
@@ -838,7 +814,7 @@ manifest:
     repo-path: darling-libpthread
     path: darling/src/external/libpthread
     remote: darling-next
-    revision: 1ba926feb613018484633830530cade6947dca29
+    revision: 4230e91447ef26fa9681462b3a135895e7106ab3
     userdata:
       kind: darling-source
       upstream-repository: darling-libpthread
