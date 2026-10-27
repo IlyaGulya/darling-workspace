@@ -2345,9 +2345,6 @@ class DarlingTest(
     ) -> RootlessRuntimeSocketCleanupResult:
         return cleanup_rootless_runtime_sockets(prefix)
 
-    def _kill_dserver_for_prefix(self, prefix: Path) -> None:
-        self._prefix_lifecycle_owner()._kill_server(prefix)
-
     @contextmanager
     def _prefix_resource_context(self, enabled: bool):
         prefix = getattr(self, "_prefix", None)

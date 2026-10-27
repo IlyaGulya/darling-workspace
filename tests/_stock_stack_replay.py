@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -66,13 +67,10 @@ shutil.copyfile(wget_archive, work / "cache/downloads" / (
     hashlib.sha256(wget_url.encode()).hexdigest() + "--wget-1.25.0.tar.gz"))
 state = os.environ.get("WEST_JOB_STATE_DIR")
 if state:
-    directory = Path(state) / "activity-logs.d"
-    directory.mkdir(exist_ok=True)
-    descriptor, name = tempfile.mkstemp(prefix="stock-", suffix=".tmp", dir=directory)
-    with os.fdopen(descriptor, "wb") as output:
-        for formula in ("cmake", "wget", "openssl@3", "libunistring", "gettext", "libidn2", "libpsl", "json-c", "pkgconf", "ca-certificates"):
-            output.write(b"directory\0" + os.fsencode(work / "logs" / formula) + b"\0")
-    Path(name).replace(Path(name).with_suffix(".logs"))
+    command = [str(workspace / "scripts/west-job.sh"), "register", "--state-dir", state, "--"]
+    for formula in ("cmake", "wget", "openssl@3", "libunistring", "gettext", "libidn2", "libpsl", "json-c", "pkgconf", "ca-certificates"):
+        command += ["directory", str(work / "logs" / formula)]
+    subprocess.run(command, check=True)
 program = r'''
 set -euo pipefail
 work=$1

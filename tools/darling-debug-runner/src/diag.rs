@@ -3305,9 +3305,9 @@ fn run_suite(args: SuiteArgs) -> Result<ExitCode> {
 
 #[derive(Args, Debug)]
 pub struct ProgressArgs {
-    /// The run log the boot harness wrote (`--log`).
-    #[arg(long)]
-    log: PathBuf,
+    /// The standalone run log the boot harness wrote; managed jobs use --state-dir instead.
+    #[arg(long, required_unless_present = "state_dir")]
+    log: Option<PathBuf>,
     /// The guest loader diagnostic file (`MLDR_DIAG_LOG`), when the run enabled one.
     #[arg(long)]
     guest_log: Option<PathBuf>,
@@ -3333,6 +3333,9 @@ pub struct ProgressArgs {
     /// Without either, server evidence is unavailable; ambient/default prefixes are never read.
     #[arg(long)]
     server_log: Option<PathBuf>,
+    /// Select finalized managed-job evidence and its persisted identity; never read mutable prefix history.
+    #[arg(long, conflicts_with_all = ["log", "guest_log", "server_log"])]
+    state_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Default)]
@@ -3572,14 +3575,12 @@ pub struct LoopsArgs {
     /// A pattern is "at the tail" when its LAST occurrence is inside the final fraction of the file.
     #[arg(long, default_value_t = 0.25)]
     tail_frac: f64,
-    /// How many lines at the end of the log are examined for variety. This is the deciding measurement: a spinning
-    /// process ends in the same handful of lines over and over, a working one keeps producing new lines.
+    /// How many lines at the end of the log are examined for repetition and variety. Low variety is a spin
+    /// finding only when a reported repeating pattern and repeated tail lines are both present.
     #[arg(long, default_value_t = 30)]
     tail_len: usize,
-    /// The tail is called a SPIN when it holds at most this many DISTINCT lines. The default is measured, not
-    /// chosen: of the two available run logs, the spinning one ended with 6 distinct lines in its last 30 and the
-    /// one where the process exited kept producing NEW lines (14 distinct, including shellspawn-step stages it had
-    /// not printed before). Raise it if a workload legitimately ends in a tight, repetitive finish.
+    /// A repeating tail is called a SPIN when it holds at most this many DISTINCT lines. The default is measured:
+    /// the spinning log ended with 6 distinct lines in its last 30, while the exited process's tail had 14.
     #[arg(long, default_value_t = 8)]
     spin_max_distinct: usize,
     #[arg(long)]
@@ -6525,16 +6526,12 @@ fn run_loops(args: LoopsArgs) -> Result<ExitCode> {
     // over and over, while a working log's tail keeps producing lines it has not produced before.
     let tail_len = args.tail_len.min(total);
     let tail_distinct = lines[total - tail_len..].iter().collect::<std::collections::HashSet<_>>().len();
-    let spinning = tail_distinct <= args.spin_max_distinct;
-    // "varied", not "progressing": this command reads a log, so it can rule a spin OUT but cannot claim the
-    // process went anywhere -- the run where the linker EXITED also has a varied tail. Saying "progressing" would
-    // be the same mistake this session made three times: inferring a process's state from a log's contents.
-    let kind = if spinning { "spin" } else { "varied" };
+    let kind = loop_tail_kind(rows.len(), tail_len, tail_distinct, args.spin_max_distinct);
 
     if args.json {
         println!("{{\"lines\":{total},\"tail_from\":{tail_start},\"tail_len\":{tail_len},\"tail_distinct\":{tail_distinct},\"kind\":\"{kind}\",\"patterns\":[{}]}}",
             distinct_cache.iter().map(|(c, f, l, t, d)| format!(
-                "{{\"count\":{c},\"first\":{f},\"last\":{l},\"distinct_in_span\":{d},\"pattern\":{}}}", jesc(t))).collect::<Vec<_>>().join(","));
+                "{{\"count\":{c},\"first\":{f},\"last\":{l},\"distinct_in_span\":{d},\"pattern\":{}}}", jstr(t))).collect::<Vec<_>>().join(","));
         return Ok(ExitCode::SUCCESS);
     }
     crate::say(&format!("LOOPS log={} lines={} tail_from={} min={} tail_frac={}",
@@ -6547,12 +6544,26 @@ fn run_loops(args: LoopsArgs) -> Result<ExitCode> {
     crate::say(&format!("LOOPS-VERDICT patterns={} tail_lines={} tail_distinct={} tail={kind}",
         rows.len(), tail_len, tail_distinct));
     if rows.is_empty() {
-        crate::say("LOOPS-NOTE no pattern repeats at the tail: whatever stopped this run did not leave a loop, so read the end of the log for a single event rather than a cycle");
+        crate::say("LOOPS-NOTE no pattern meets the repetition threshold near the tail; this is not a spin finding and does not establish the process's state");
     }
-    if !spinning {
-        crate::say("LOOPS-NOTE a varied tail RULES OUT a spin and says nothing else: ask the process, not the log, whether it is still working (dwdiag waits' proc= field, the run's own exit line)");
+    if kind != "spin" {
+        crate::say("LOOPS-NOTE the selected log tail does not establish a spin or forward progress: correlate with the process's identity, wait state and exit evidence");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn loop_tail_kind(patterns: usize, tail_len: usize, tail_distinct: usize, max_distinct: usize) -> &'static str {
+    if tail_len == 0 {
+        "unmeasured"
+    } else if tail_distinct == tail_len {
+        "nonrepeating"
+    } else if patterns == 0 {
+        "insufficient-repetition"
+    } else if tail_distinct <= max_distinct {
+        "spin"
+    } else {
+        "varied"
+    }
 }
 
 /// A line with its variable parts erased, so repetitions become the SAME string. Without this every line differs
@@ -6560,18 +6571,23 @@ fn run_loops(args: LoopsArgs) -> Result<ExitCode> {
 /// unique ones -- which is exactly how a spin is missed by eye and by grep.
 fn normalize_line(l: &str) -> String {
     let mut out = String::with_capacity(l.len());
-    let mut in_num = false;
-    for c in l.chars() {
-        // A number STARTS at a digit and CONTINUES through hex digits. Starting at any hex digit was the bug:
-        // `c`, `e`, `a` and `f` are hex, so a marker like "pc-entry" came out as "p#-#ntry" and two different
-        // markers could normalize to the same string. Continuation must still accept letters -- a stack word
-        // like `786c0` is hex -- which the start rule alone would truncate at the `c`.
-        let is_digit = c.is_ascii_digit();
-        let cont = in_num && c.is_ascii_hexdigit();
-        if is_digit || cont {
-            if !in_num { out.push('#'); in_num = true; }
+    let mut characters = l.chars().peekable();
+    while let Some(c) = characters.next() {
+        // Start at a digit, never a hex letter in a marker such as pc-entry.
+        if c.is_ascii_digit() {
+            out.push('#');
+            if c == '0' {
+                let mut prefix = characters.clone();
+                if matches!(prefix.next(), Some('x' | 'X'))
+                    && prefix.next().is_some_and(|next| next.is_ascii_hexdigit())
+                {
+                    characters.next();
+                }
+            }
+            while characters.peek().is_some_and(|next| next.is_ascii_hexdigit()) {
+                characters.next();
+            }
         } else {
-            in_num = false;
             out.push(c);
         }
     }
@@ -7063,12 +7079,107 @@ fn run_witness(args: WitnessArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+// Keep process identity and server-log discovery on the same run-owned prefix,
+// never an ambient DWDIAG_PREFIX/DPREFIX or a parent inferred from --server-log.
+fn progress_prefix_from_run(run: &str) -> Option<PathBuf> {
+    let mut prefix = None;
+    for line in run.lines() {
+        let mut rest = line;
+        while let Some(i) = rest.find("prefix=") {
+            rest = &rest[i + "prefix=".len()..];
+            let end = rest.find(|c: char| c.is_whitespace() || c == ']').unwrap_or(rest.len());
+            if end > 0 {
+                let candidate = PathBuf::from(&rest[..end]);
+                if candidate.is_absolute() {
+                    prefix = Some(candidate);
+                }
+            }
+            rest = &rest[end..];
+        }
+    }
+    prefix
+}
+
+fn progress_runtime_exe_matches(actual: &Path, expected: &Path) -> bool {
+    let raw = actual.as_os_str().as_bytes();
+    Path::new(std::ffi::OsStr::from_bytes(raw.strip_suffix(b" (deleted)").unwrap_or(raw))) == expected
+}
+
+fn progress_prefix_marker_matches(environment: &[u8], prefix: &Path) -> bool {
+    environment.split(|byte| *byte == 0).any(|value| {
+        value.strip_prefix(b"DPREFIX=").or_else(|| value.strip_prefix(b"DARLING_PREFIX="))
+            .map(|raw| Path::new(std::ffi::OsStr::from_bytes(raw)) == prefix).unwrap_or(false)
+    })
+}
+
+#[cfg(test)]
+mod progress_scope_tests {
+    use super::*;
+
+    #[test]
+    fn recorded_prefix_selection_keeps_the_server_log_contract() {
+        assert_eq!(progress_prefix_from_run("wrapper started\nwrapper finished\n"), None);
+        assert_eq!(progress_prefix_from_run("[dwdiag-env prefix=/owned/guest runtime-root=/image]\n"),
+            Some(PathBuf::from("/owned/guest")));
+        assert_eq!(progress_prefix_from_run("prefix=/earlier\nprefix=relative\nprefix=/current]\n"),
+            Some(PathBuf::from("/current")));
+    }
+
+    #[test]
+    fn runtime_identity_rejects_other_images_and_name_matches() {
+        let server = Path::new("/image/bin/darlingserver");
+        assert!(progress_runtime_exe_matches(server, server));
+        assert!(progress_runtime_exe_matches(Path::new("/image/bin/darlingserver (deleted)"), server));
+        assert!(!progress_runtime_exe_matches(Path::new("/other-image/bin/darlingserver"), server));
+        assert!(!progress_runtime_exe_matches(Path::new("/image/bin/darlingserver-helper"), server));
+    }
+
+    #[test]
+    fn prefix_candidates_require_an_exact_environment_marker() {
+        let prefix = Path::new("/owned/guest");
+        assert!(progress_prefix_marker_matches(b"OTHER=1\0DPREFIX=/owned/guest\0", prefix));
+        assert!(progress_prefix_marker_matches(b"DARLING_PREFIX=/owned/guest\0", prefix));
+        assert!(!progress_prefix_marker_matches(b"DPREFIX=/owned/guest-other\0", prefix));
+        assert!(!progress_prefix_marker_matches(b"COMMAND=DPREFIX=/owned/guest\0", prefix));
+        assert!(!progress_prefix_marker_matches(b"DWDIAG_PREFIX=/owned/guest\0", prefix));
+    }
+
+    #[test]
+    fn a_short_nonrepeating_tail_is_not_a_spin_finding() {
+        assert_eq!(loop_tail_kind(0, 2, 2, 8), "nonrepeating");
+        assert_eq!(loop_tail_kind(2, 30, 4, 8), "spin");
+        assert_eq!(loop_tail_kind(2, 30, 14, 8), "varied");
+        assert_eq!(loop_tail_kind(0, 6, 2, 8), "insufficient-repetition");
+        assert_eq!(loop_tail_kind(2, 0, 0, 8), "unmeasured");
+    }
+
+    #[test]
+    fn progress_cli_requires_one_owned_evidence_selection() {
+        let parse = |args: &[&str]| <crate::Cli as clap::Parser>::try_parse_from(args.iter().copied());
+        assert!(parse(&["runner", "diag", "progress", "--log", "/run.log"]).is_ok());
+        assert!(parse(&["runner", "diag", "progress", "--state-dir", "/job"]).is_ok());
+        assert!(parse(&["runner", "diag", "progress"]).is_err());
+        assert!(parse(&["runner", "diag", "progress", "--state-dir", "/job", "--log", "/other.log"]).is_err());
+        assert!(parse(&["runner", "diag", "progress", "--state-dir", "/job", "--server-log", "/mutable.log"]).is_err());
+    }
+}
+
 fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
     // Name the log that was actually read (user directive: never withhold a fact that changes the reading). MEASURED
     // need: a `--log`-less invocation silently picked a different run's log and the wake census described THAT run --
     // a reader comparing two runs would have attributed the numbers to the wrong one.
-    eprintln!("PROGRESS-LOG {}", args.log.display());
-    let run = read_log_lossy(&args.log).unwrap_or_default();
+    let selected = args.state_dir.as_deref().map(select_evidence);
+    if let Some(report) = &selected {
+        if !report.state.has_census() {
+            if args.json { println!("{}", evidence_report_json(report)); } else { print_evidence_report(report); }
+            return Ok(ExitCode::from(2));
+        }
+    }
+    let log = selected.as_ref().map(|report| report.instruments_log.as_path()).or(args.log.as_deref())
+        .context("progress needs --log or --state-dir")?;
+    eprintln!("PROGRESS-LOG {}", log.display());
+    let run = read_log_lossy(log).with_context(|| format!("reading {}", log.display()))?;
+    let managed = args.state_dir.as_deref().and_then(evidence_manifest);
     let guest = args
         .guest_log
         .as_ref()
@@ -7226,65 +7337,86 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
                 "COURIER-MISSES none visible in this log (the receive-side instrument is env-gated; absence here is not evidence that no bundle was lost)"
             );
         }
-        // SERVER IDENTITY (user directive: the tool must not let an assumption stand in for evidence). MEASURED need:
-        // a whole series of experiments appeared to have "no effect" after a deploy because the RUNS WERE SERVED BY A
-        // STALE darlingserver -- the project's own documented trap -- and nothing in the report said which binary was
-        // actually running. This prints, for every live darlingserver, its executable, its sha256 and its start time,
-        // and compares that hash with the deployed prefix binary: MATCH is the only state in which "the deploy took
-        // effect" is a fact.
-        {
-            let prefix = resolve_prefix(args.prefix.clone(), Some(&args.log));
-            let deployed_path = crate::installed_runtime_root().ok().map(|root| root.join("bin/darlingserver"));
-            let deployed_hash = match &deployed_path {
-                Some(p) => match sha256_of(p) {
-                    Ok(h) => Some(h),
-                    Err(e) => {
-                        println!("SERVER-IDENTITY deployed={} UNMEASURED ({e})", p.display());
-                        None
-                    }
-                },
-                None => {
-                    println!(
-                        "SERVER-IDENTITY installed=UNMEASURED (no ordinary runtime selected; pass --runtime-root)"
-                    );
+        let prefix_from_log = progress_prefix_from_run(&run);
+        let selected_prefix = if args.state_dir.is_some() {
+            managed.as_ref().and_then(EvidenceManifest::scoped_prefix)
+                .filter(|recorded| args.prefix.as_deref().map(|explicit| explicit == *recorded).unwrap_or(true))
+        } else {
+            args.prefix.as_deref().or(prefix_from_log.as_deref())
+        };
+        // Compare only a positively scoped process with the selected runtime.
+        // A shared installed executable cannot identify the guest prefix.
+        'server_identity: {
+            use std::os::unix::fs::MetadataExt;
+            let Some(prefix) = selected_prefix else {
+                println!("SERVER-IDENTITY unavailable scope=unavailable (no explicit or recorded run prefix; --server-log alone does not identify live processes)");
+                break 'server_identity;
+            };
+            let source = if args.state_dir.is_some() { "managed-manifest" }
+                else if args.prefix.is_some() { "explicit-prefix" } else { "recorded-run-prefix" };
+            let selected_runtime = if args.state_dir.is_some() {
+                managed.as_ref().and_then(EvidenceManifest::scoped_runtime)
+            } else {
+                crate::installed_runtime_root().ok()
+            };
+            let Some(root) = selected_runtime else {
+                println!("SERVER-IDENTITY unavailable scope=unavailable prefix={} source={source} (ordinary runtime scope is absent or ambiguous)", prefix.display());
+                break 'server_identity;
+            };
+            let prefix_handle = match fs::File::open(prefix) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    println!("SERVER-IDENTITY unavailable scope=unavailable prefix={} source={source} ({error})", prefix.display());
+                    break 'server_identity;
+                }
+            };
+            let expected = match prefix_handle.metadata() {
+                Ok(metadata) if metadata.is_dir() => metadata,
+                _ => {
+                    println!("SERVER-IDENTITY unavailable scope=unavailable prefix={} source={source} (prefix directory identity unreadable)", prefix.display());
+                    break 'server_identity;
+                }
+            };
+            println!("SERVER-IDENTITY-SCOPE prefix={} source={source} runtime-root={} prefix_dev={} prefix_ino={} observation=current-point-in-time signal-authority=false",
+                prefix.display(), root.display(), expected.dev(), expected.ino());
+            let deployed_path = root.join("bin/darlingserver");
+            let deployed_hash = match sha256_of(&deployed_path) {
+                Ok(hash) => Some(hash),
+                Err(error) => {
+                    println!("SERVER-IDENTITY deployed={} UNMEASURED ({error})", deployed_path.display());
                     None
                 }
             };
-            let deployed_size = deployed_path
-                .as_ref()
-                .and_then(|p| fs::metadata(p).ok())
-                .map(|m| m.len())
-                .unwrap_or(0);
-            if let Some(h) = &deployed_hash {
-                println!(
-                    "SERVER-IDENTITY deployed={} sha256={} size={deployed_size}",
-                    deployed_path
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default(),
-                    h
-                );
+            let deployed_size = fs::metadata(&deployed_path).map(|metadata| metadata.len()).unwrap_or(0);
+            if let Some(hash) = &deployed_hash {
+                println!("SERVER-IDENTITY deployed={} sha256={hash} size={deployed_size}", deployed_path.display());
             }
             let mut found = 0usize;
-            if let Ok(entries) = fs::read_dir("/proc") {
-                for e in entries.flatten() {
+            let mut candidates = 0usize;
+            match fs::read_dir("/proc") {
+                Ok(entries) => for e in entries.flatten() {
                     let name = e.file_name().to_string_lossy().to_string();
-                    if name.is_empty() || !name.chars().all(|c| c.is_ascii_digit()) {
+                    let Ok(_pid) = name.parse::<u32>() else { continue };
+                    // Retain and compare the prefix directory identity, as the
+                    // lifecycle census does. Environment-only matches remain
+                    // read-only candidates, never signal authority.
+                    let retained = fs::read_dir(format!("/proc/{name}/fd")).map(|fds| fds.flatten().any(|fd|
+                        fs::metadata(fd.path()).map(|actual| actual.is_dir()
+                            && actual.dev() == expected.dev() && actual.ino() == expected.ino()).unwrap_or(false)
+                    )).unwrap_or(false);
+                    if !retained && !fs::read(format!("/proc/{name}/environ"))
+                        .map(|environment| progress_prefix_marker_matches(&environment, prefix)).unwrap_or(false) {
                         continue;
-                    }
-                    if let Some(prefix) = &prefix {
-                        if !process_owns_prefix(name.parse().unwrap_or(0), prefix) { continue; }
                     }
                     let exe = match fs::read_link(format!("/proc/{name}/exe")) {
-                        Ok(x) => x,
+                        Ok(path) => path,
                         Err(_) => continue,
                     };
-                    let exe_s = exe.to_string_lossy().to_string();
-                    if !exe_s.contains("darlingserver") {
-                        continue;
-                    }
-                    found += 1;
-                    let size = fs::metadata(&exe).map(|m| m.len()).unwrap_or(0);
+                    if !progress_runtime_exe_matches(&exe, &deployed_path) { continue; }
+                    let exe_s = exe.to_string_lossy();
+                    if retained { found += 1; } else { candidates += 1; }
+                    let running_exe = PathBuf::from(format!("/proc/{name}/exe"));
+                    let size = fs::metadata(&running_exe).map(|m| m.len()).unwrap_or(0);
                     // Start time: /proc/<pid>/stat field 22 (starttime in clock ticks) plus btime is more than this
                     // needs -- the uptime-relative value is enough to say WHICH incarnation is running.
                     let stat = std::fs::read_to_string(format!("/proc/{name}/stat")).unwrap_or_default();
@@ -7302,7 +7434,7 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
                     let started_ago = start_ticks
                         .map(|ticks| up - (ticks as f64 / 100.0))
                         .unwrap_or(-1.0);
-                    let running_hash = sha256_of(&exe).ok();
+                    let running_hash = sha256_of(&running_exe).ok();
                     let sum: String = running_hash
                         .as_deref()
                         .map(|h| h.chars().take(16).collect())
@@ -7326,14 +7458,20 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
                             "UNMEASURED (no deployed binary was resolved to compare against)".to_string()
                         }
                     };
+                    let label = if retained { "SERVER-IDENTITY" } else { "SERVER-IDENTITY-CANDIDATE" };
+                    let proof = if retained { "retained-prefix-directory" } else { "prefix-census-marker-only" };
                     println!(
-                        "SERVER-IDENTITY pid={name} exe={exe_s} sha256={sum} started_ago={started_ago:.1}s -- {verdict}"
+                        "{label} pid={name} exe={exe_s} sha256={sum} started_ago={started_ago:.1}s proof={proof} signal-authority=false -- {verdict}"
                     );
+                },
+                Err(error) => {
+                    println!("SERVER-IDENTITY unavailable scope=selected (cannot enumerate processes: {error})");
+                    break 'server_identity;
                 }
             }
             if found == 0 {
                 println!(
-                    "SERVER-IDENTITY no darlingserver process is running (the harness may stop it between runs)"
+                    "SERVER-IDENTITY observed=0 marker_candidates={candidates} scope=selected (no retained-prefix server identity observed; inaccessible processes and marker-only candidates do not establish absence)"
                 );
             }
         }
@@ -7342,22 +7480,16 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
         'server_evidence: {
             // Only an explicit log or this run's recorded prefix can supply
             // server facts. Ambient/default prefixes may belong to another run.
-            let mut prefix_from_log: Option<PathBuf> = None;
-            for line in run.lines() {
-                let mut rest = line;
-                while let Some(i) = rest.find("prefix=") {
-                    rest = &rest[i + "prefix=".len()..];
-                    let end = rest.find(|c: char| c.is_whitespace() || c == ']').unwrap_or(rest.len());
-                    if end > 0 {
-                        let cand = PathBuf::from(&rest[..end]);
-                        if cand.is_absolute() {
-                            prefix_from_log = Some(cand);
-                        }
+            // The same explicit/recorded scope selected for process identity.
+            let (server_log_path, server_log_source): (Cow<'_, Path>, &str) = if args.state_dir.is_some() {
+                match managed.as_ref().and_then(EvidenceManifest::captured_server_log) {
+                    Some(path) => (Cow::Borrowed(path), "managed finite server capture"),
+                    None => {
+                        println!("SERVER-LOG unavailable: managed manifest has no finalized scoped server capture; mutable prefix history is NOT included");
+                        break 'server_evidence;
                     }
-                    rest = &rest[end..];
                 }
-            }
-            let (server_log_path, server_log_source): (Cow<'_, Path>, &str) =
+            } else {
                 match args.server_log.as_deref() {
                     Some(path) => (Cow::Borrowed(path), "explicit --server-log"),
                     None => match args.prefix.as_ref().or(prefix_from_log.as_ref()) {
@@ -7370,7 +7502,8 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
                             break 'server_evidence;
                         }
                     },
-                };
+                }
+            };
             eprintln!("SERVER-LOG-PATH {} (from {})", server_log_path.display(), server_log_source);
             let server_text = read_log_lossy(&server_log_path).unwrap_or_default();
             if server_text.is_empty() {
@@ -7497,7 +7630,7 @@ fn run_progress(args: ProgressArgs) -> Result<ExitCode> {
             }
             println!(
                 "  decode: dwdiag crash --binary <server binary> --log {}",
-                args.log.display()
+                log.display()
             );
         }
     }
@@ -7976,10 +8109,10 @@ pub enum DiagCommand {
     /// half of the run manifest `west-job.sh` writes at start, and it exists so an unreadable log is reported as
     /// `unavailable`/`partial` rather than as an instrument that stayed silent.
     Evidence(EvidenceArgs),
-    /// Diagnose one finished run as a whole: census the instruments, say where it stopped, join the wait/wake
-    /// vocabulary, look for a loop, then read a core or the kernel's report -- and report what the processes are
-    /// doing now, per thread, with the kernel stacks when root is available. This exists so a job owner never has
-    /// to know which of the other commands answers which question, which is how evidence gets missed.
+    /// Diagnose a finished managed job using its persisted scope and finite captured logs: show actual failure
+    /// bytes, instrument activity, progress, waits and repetition. A core requires an unambiguous registered
+    /// capture; ambient cores and boot-wide kernel logs are never attributed. Current process observations
+    /// are scoped separately to the selected prefix/runtime, not evidence of the past run.
     Job(JobArgs),
     /// Read a stopped guest's stacks: per-thread rsp from the debugger, then the words above it,
     /// filtered to guest images and symbolized. Host gdb cannot walk a Darwin-ABI frame, so this
@@ -9128,11 +9261,9 @@ mod macho_vmaddr_tests {
 
 /// A job's own diagnosis, as one command.
 ///
-/// WHY THIS EXISTS. Every investigation re-derived the same sequence by hand -- census the instruments, ask where the
-/// run stopped, join the wait/wake vocabulary, look for a loop, then read a core or the kernel's report -- and each
-/// time the *choice* of tool was the caller's, so evidence was routinely missed (a job log read for instruments that
-/// only the boot log carries reports zeros, which reads like "nothing happened"). A job owner that already knows the
-/// run should not make its caller guess any of it.
+/// Uses the finalized manifest's scope and finite captured sources. Missing ownership or capture boundaries
+/// remain unavailable; neither ambient logs nor a boot-wide kernel row can fill them in. Current scoped
+/// process observations are explicitly distinct from the completed run's captured evidence.
 ///
 /// It DELEGATES: each step is the existing subcommand, invoked with arguments this code builds. Nothing here parses a
 /// log itself, so there is still exactly one implementation of every question.
@@ -9141,7 +9272,7 @@ pub struct JobArgs {
     /// State directory of a finished west job (`west-job.sh start|status|follow` print it).
     #[arg(long)]
     pub state_dir: PathBuf,
-    /// Prefix whose images resolve symbols. Defaults to DWDIAG_PREFIX, then DPREFIX, then `DPREFIX=` in the recorded command.
+    /// Require this prefix to match the managed run's persisted unambiguous scope; never infer scope from observer environment.
     #[arg(long)]
     pub prefix: Option<PathBuf>,
     /// One JSON object instead of the human block.
@@ -9169,12 +9300,12 @@ struct JobStep {
 
 fn job_step(
     exe: &Path,
+    root: Option<&Path>,
     label: &str,
     argv: &[String],
     lines: usize,
     timeout_seconds: u64,
 ) -> JobStep {
-    let root = crate::RUNTIME_ROOT.get();
     let command = match root {
         Some(root) => format!("{} --runtime-root {} {}", exe.display(), root.display(), argv.join(" ")),
         None => format!("{} {}", exe.display(), argv.join(" ")),
@@ -9182,6 +9313,8 @@ fn job_step(
     let mut child = Command::new("timeout");
     child.arg(timeout_seconds.to_string()).arg(exe);
     if let Some(root) = root { child.arg("--runtime-root").arg(root); }
+    child.env_remove("DWDIAG_PREFIX").env_remove("DPREFIX").env_remove("DARLING_PREFIX")
+        .env_remove("DARLING_RUNTIME_ROOT").env_remove("DARLING_LAUNCHER");
     let out = child.args(argv).output();
     let mut step = JobStep {
         label: label.to_string(),
@@ -9264,25 +9397,12 @@ fn sudo_available() -> bool {
 }
 
 fn job_prefix(args: &JobArgs, state_dir: &Path) -> Option<PathBuf> {
-    if let Some(p) = &args.prefix {
-        return Some(p.clone());
+    let manifest = evidence_manifest(state_dir)?;
+    let prefix = manifest.scoped_prefix()?;
+    if args.prefix.as_deref().is_some_and(|explicit| explicit != prefix) {
+        return None;
     }
-    for key in ["DWDIAG_PREFIX", "DPREFIX"] {
-        if let Ok(v) = std::env::var(key) {
-            if !v.is_empty() {
-                return Some(PathBuf::from(v));
-            }
-        }
-    }
-    // The run's own manifest names the prefix it used; that beats parsing the recorded command line, and it
-    // exists exactly so a diagnostic cannot decide a prefix by guessing.
-    if let Some(p) = evidence_manifest(state_dir).and_then(|m| m.prefix) {
-        return Some(p);
-    }
-    let recorded = fs::read_to_string(state_dir.join("command")).ok()?;
-    recorded
-        .split_whitespace()
-        .find_map(|w| w.strip_prefix("DPREFIX=").map(PathBuf::from))
+    Some(prefix.to_path_buf())
 }
 
 /// Say what a finished run's instrument evidence IS, before any census reads it.
@@ -9318,12 +9438,20 @@ fn run_evidence(args: EvidenceArgs) -> Result<ExitCode> {
 /// The run manifest `west-job.sh` writes at job start: the prefix, the run's start time, and every log that existed
 /// with the size it had.
 ///
-/// WHY THE START IS A FIELD AND THE END IS DERIVED. The launcher records `start=` before the command runs; it does not
-/// write an end field, so the end of the window comes from the `rc` file the job writes when it stops (`end=` is parsed
-/// when a writer does record it, so a later launcher can tighten this without a reader change). Nothing here invents a
-/// second copy of state the job already owns.
+/// Finalization publishes `end=` only after registered source boundaries have
+/// become finite captured copies. A live/legacy manifest is not permission to
+/// read mutable originals or discover logs by timestamps.
 #[derive(Debug, Default)]
 struct EvidenceManifest {
+    scope: Option<String>,
+    runtime_root: Option<PathBuf>,
+    prefix_source: Option<String>,
+    runtime_source: Option<String>,
+    prefix_unavailable: Option<String>,
+    runtime_unavailable: Option<String>,
+    unavailable: Vec<String>,
+    /// Finite captured copy -> original source path, never discovery authority.
+    sources: Vec<(PathBuf, PathBuf)>,
     prefix: Option<PathBuf>,
     /// Unix seconds when the job started, as the launcher recorded it.
     start: Option<u64>,
@@ -9333,13 +9461,77 @@ struct EvidenceManifest {
     files: Vec<(PathBuf, u64)>,
 }
 
+impl EvidenceManifest {
+    fn scoped_prefix(&self) -> Option<&Path> {
+        (self.scope.as_deref() == Some("explicit") && self.prefix_unavailable.is_none())
+            .then_some(self.prefix.as_deref()).flatten().filter(|path| path.is_absolute())
+    }
+
+    fn scoped_runtime(&self) -> Option<&Path> {
+        (self.scope.as_deref() == Some("explicit") && self.runtime_unavailable.is_none())
+            .then_some(self.runtime_root.as_deref()).flatten().filter(|path| path.is_absolute())
+    }
+
+    fn captured_server_log(&self) -> Option<&Path> {
+        let prefix = self.scoped_prefix()?;
+        self.end?;
+        let expected = prefix.join("private/var/log/dserver.log");
+        let mut matches = self.sources.iter().filter(|(copy, original)| original == &expected
+            && self.files.iter().any(|(path, offset)| path == copy && *offset == 0));
+        let (copy, _) = matches.next()?;
+        if matches.next().is_some() { return None; }
+        Some(copy)
+    }
+
+    fn captured_core(&self) -> Option<&Path> {
+        self.scoped_runtime()?;
+        self.end?;
+        let mut matches = self.sources.iter().filter(|(copy, original)| original.file_name()
+            .is_some_and(|name| name.as_bytes().starts_with(b"core."))
+            && self.files.iter().any(|(path, offset)| path == copy && *offset == 0));
+        let (copy, _) = matches.next()?;
+        if matches.next().is_some() { return None; }
+        Some(copy)
+    }
+}
+
 fn parse_evidence_manifest(text: &str) -> EvidenceManifest {
     let mut out = EvidenceManifest::default();
     for line in text.lines() {
-        if let Some(v) = line.strip_prefix("prefix=") {
-            if !v.is_empty() {
-                out.prefix = Some(PathBuf::from(v));
+        if let Some(v) = line.strip_prefix("scope=") {
+            if out.scope.as_deref().is_some_and(|previous| previous != v) {
+                out.scope = Some("ambiguous".to_string());
+            } else {
+                out.scope = Some(v.to_string());
             }
+        } else if let Some(v) = line.strip_prefix("prefix-source=") {
+            out.prefix_source = Some(v.to_string());
+        } else if let Some(v) = line.strip_prefix("runtime-root-source=") {
+            out.runtime_source = Some(v.to_string());
+        } else if let Some(v) = line.strip_prefix("prefix-unavailable=") {
+            out.prefix_unavailable = Some(v.to_string());
+        } else if let Some(v) = line.strip_prefix("runtime-root-unavailable=") {
+            out.runtime_unavailable = Some(v.to_string());
+        } else if let Some(v) = line.strip_prefix("unavailable=") {
+            out.unavailable.push(v.to_string());
+        } else if let Some(v) = line.strip_prefix("source=") {
+            if let Some((copy, original)) = v.split_once('\t') {
+                out.sources.push((PathBuf::from(copy), PathBuf::from(original)));
+            } else {
+                out.unavailable.push(format!("invalid captured-source mapping: {v}"));
+            }
+        } else if let Some(v) = line.strip_prefix("runtime-root=") {
+            let path = PathBuf::from(v);
+            if out.runtime_root.as_ref().is_some_and(|previous| previous != &path) || !path.is_absolute() {
+                out.runtime_unavailable = Some("invalid or ambiguous recorded runtime root".to_string());
+            }
+            out.runtime_root = Some(path);
+        } else if let Some(v) = line.strip_prefix("prefix=") {
+            let path = PathBuf::from(v);
+            if out.prefix.as_ref().is_some_and(|previous| previous != &path) || !path.is_absolute() {
+                out.prefix_unavailable = Some("invalid or ambiguous recorded prefix".to_string());
+            }
+            out.prefix = Some(path);
         } else if let Some(v) = line.strip_prefix("start=") {
             out.start = v.trim().parse::<u64>().ok();
         } else if let Some(v) = line.strip_prefix("end=") {
@@ -9350,6 +9542,8 @@ fn parse_evidence_manifest(text: &str) -> EvidenceManifest {
             let path = it.next();
             if let (Some(p), Some(sz)) = (path, size) {
                 out.files.push((PathBuf::from(p), sz));
+            } else {
+                out.unavailable.push(format!("invalid registered window: {rest}"));
             }
         }
     }
@@ -9374,7 +9568,7 @@ enum EvidenceState {
     Partial,
     /// A registered log is missing or unreadable, so its window cannot be read at all.
     Unavailable,
-    /// Instrument lines exist, but every one of them is from another run: nothing may contribute rows.
+    /// No finalized runtime log was registered; the job wrapper alone is not runtime instrument evidence.
     NoEvidence,
     /// No run manifest: the evidence cannot be attributed to any run, so nothing is guessed and no row is produced.
     Unscoped,
@@ -9414,12 +9608,100 @@ impl EvidenceState {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct FailureExcerpt {
+    /// One-based line numbers within this selected finite window, not a mutable original.
+    rows: Vec<(usize, String)>,
+    source_lines: usize,
+    matches: usize,
+    omitted: bool,
+}
+
+fn is_failure_record(line: &str) -> bool {
+    let line = line.trim_start();
+    // CTest may prefix captured producer output with its numeric test index.
+    let line = line.split_once(": ").filter(|(index, _)| !index.is_empty()
+        && index.bytes().all(|byte| byte.is_ascii_digit())).map(|(_, rest)| rest).unwrap_or(line);
+    if line.starts_with("Assertion failed:") || line.starts_with("assertion failed:")
+        || (line.contains(": Assertion ") && line.ends_with(" failed."))
+        || (line.starts_with("thread '") && line.contains(" panicked at "))
+        || line.starts_with("panic: ") || line.starts_with("PANIC: ") || line.starts_with("panic(cpu ")
+        || line.starts_with("dserver-CRASH") || line.starts_with("[dserver-CRASH")
+        || line.starts_with("fatal error:")
+        || (line.contains(" mismatch: expected ") && line.contains(", actual ")) {
+        return true;
+    }
+    let dyld = line.strip_prefix("dyld: ").or_else(|| line.strip_prefix("dyld[")
+        .and_then(|rest| rest.split_once("]: ").map(|(_, message)| message)));
+    if dyld.is_some_and(|message| ["Library not loaded:", "Symbol not found:", "lazy symbol binding failed:"]
+        .iter().any(|prefix| message.starts_with(prefix))) {
+        return true;
+    }
+    // Compiler/linker diagnostics and the shell's terminal signal report have
+    // concrete grammars. An Error-level server trace alone is not a failure.
+    static FAILURE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(concat!(
+        r"^(?:.+:[0-9]+(?::[0-9]+)?:[ \t]+(?:fatal )?error:",
+        r"|(?:clang(?:\+\+)?(?:-[0-9.]+)?|gcc|g\+\+|cc|c\+\+|ld):[ \t]+(?:fatal )?error:",
+        r"|ld: (?:library not found|framework not found|symbol\(s\) not found)",
+        r"|Undefined symbols for architecture ",
+        r"|(?:/[^: ]+/)?(?:bash|sh): line [0-9]+: [0-9]+ (?:Illegal instruction|Abort trap|Aborted|Segmentation fault|Bus error)(?::|[ \t]))"
+    )).expect("fixed failure-record grammar"));
+    FAILURE.is_match(line)
+}
+
+fn failure_excerpt(text: &str) -> FailureExcerpt {
+    let mut rows: Vec<(usize, String)> = Vec::new();
+    let (mut bytes, mut omitted) = (0usize, false);
+    let (mut source_lines, mut matches, mut after) = (0usize, 0usize, 0usize);
+    let mut previous = [(0usize, ""); 2];
+    {
+        let mut add = |number: usize, line: &str| {
+            if number == 0 || rows.last().is_some_and(|(last, _)| *last >= number) { return; }
+            let available = (16 * 1024usize).saturating_sub(bytes).min(2048);
+            if rows.len() == 24 || available == 0 { omitted = true; return; }
+            let rendered = if line.len() <= available {
+                line.to_string()
+            } else {
+                const MARKER: &str = "... [excerpt line truncated]";
+                omitted = true;
+                if available < MARKER.len() { return; }
+                let mut end = available - MARKER.len();
+                while !line.is_char_boundary(end) { end -= 1; }
+                format!("{}{MARKER}", &line[..end])
+            };
+            bytes += rendered.len();
+            rows.push((number, rendered));
+        };
+        for (index, line) in text.lines().enumerate() {
+            let number = index + 1;
+            source_lines = number;
+            if is_failure_record(line) {
+                matches += 1;
+                for (number, line) in previous { add(number, line); }
+                add(number, line);
+                after = 2;
+            } else if after > 0 {
+                add(number, line);
+                after -= 1;
+            }
+            previous[0] = previous[1];
+            previous[1] = (number, line);
+        }
+    }
+    FailureExcerpt { rows, source_lines, matches, omitted }
+}
+
+fn failure_excerpt_output(excerpt: &FailureExcerpt, tail_lines: usize, limit: usize) -> Vec<String> {
+    let tail_first = excerpt.source_lines.saturating_sub(tail_lines) + 1;
+    excerpt.rows.iter().filter(|(number, _)| *number < tail_first).take(limit)
+        .map(|(number, line)| format!("line={number} {line}")).collect()
+}
+
 /// One file the selection considered, and what happened to it.
 #[derive(Debug, Clone)]
 struct EvidenceSource {
     path: PathBuf,
-    /// `registered` (a manifest line) or `created-during-run` (the job's own log, or a file whose timestamp is inside
-    /// the run's window).
+    /// `registered` finite capture or this job's own wrapper log.
     kind: &'static str,
     offset: u64,
     /// Size now, when the file could be stated at all.
@@ -9428,6 +9710,9 @@ struct EvidenceSource {
     /// `ok`, `truncated`, `missing` or `unreadable`.
     status: &'static str,
     reason: Option<String>,
+    /// Last at most 64 decoded lines, retained during the already-required read.
+    tail: Vec<String>,
+    failure: FailureExcerpt,
 }
 
 /// What a run's instrument evidence IS, decided before anything censuses it.
@@ -9441,81 +9726,9 @@ struct EvidenceReport {
     reasons: Vec<String>,
 }
 
-/// The run's window, from the manifest's `start=` and the `rc` the job writes when it stops. A file that is not
-/// registered is this run's only when its own timestamp falls inside this window; that, not presence, is what keeps a
-/// later run's or another prefix's log out of the slice.
-fn run_window(
-    state_dir: &Path,
-    manifest: &EvidenceManifest,
-) -> (Option<std::time::SystemTime>, Option<std::time::SystemTime>) {
-    let at = |secs: u64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
-    let start = manifest.start.map(at);
-    let end = manifest
-        .end
-        .map(at)
-        .or_else(|| fs::metadata(state_dir.join("rc")).and_then(|m| m.modified()).ok());
-    (start, end)
-}
-
-/// The files a run's launcher registers from: the harness boot logs and the prefix's own tmp. Only the second set is
-/// ever scanned for another run's evidence -- the `/tmp` boot logs are shared by every run, and the manifest already
-/// records each one that existed at start.
-fn discovery_candidates(prefix: Option<&Path>) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Ok(dir) = fs::read_dir("/tmp") {
-        for e in dir.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with("darling-boot-") && name.ends_with(".log") {
-                out.push(e.path());
-            }
-        }
-    }
-    if let Some(prefix) = prefix {
-        if let Ok(dir) = fs::read_dir(prefix.join("private/var/tmp")) {
-            for e in dir.flatten() {
-                if e.metadata().map(|m| m.is_file()).unwrap_or(false) {
-                    out.push(e.path());
-                }
-            }
-        }
-    }
-    out
-}
-
-fn mtime_of(path: &Path) -> Option<std::time::SystemTime> {
-    fs::metadata(stored_evidence::resolve(path)).and_then(|m| m.modified()).ok()
-}
-
-/// Whether a file's own timestamp places it inside the run's window. With no recorded start, time cannot scope a file
-/// from below; with no recorded end the window is still open.
-fn inside_window(
-    t: Option<std::time::SystemTime>,
-    start: Option<std::time::SystemTime>,
-    end: Option<std::time::SystemTime>,
-) -> bool {
-    let Some(t) = t else { return false };
-    start.map(|s| t >= s).unwrap_or(true) && end.map(|e| t <= e).unwrap_or(true)
-}
-
-/// Whether a file's bytes hold at least one registered instrument line. Used ONLY to say that evidence exists
-/// somewhere other than this run's window -- never to contribute rows.
-fn holds_instrument_lines(path: &Path) -> bool {
-    match stored_evidence::read(path) {
-        Ok(bytes) => {
-            let text = String::from_utf8_lossy(&bytes).replace('\u{0}', "\n");
-            witness_census(&text).iter().any(|(_, n, _)| *n > 0)
-        }
-        Err(_) => false,
-    }
-}
-
-/// Decide which of this run's logs may contribute rows, concatenate the windows that may, and report the state.
-///
-/// This replaces two discovery paths that attributed other runs' output to the current one: the job log's final mtime
-/// plus a hardcoded tag list, and a scan of unregistered files by presence alone. Selection is now the manifest's job:
-/// a registered file contributes from its recorded pre-run offset; a file that is not registered contributes only when
-/// its timestamp is inside the run's window; a registered file whose offset no longer fits is `partial` and contributes
-/// nothing rather than being read from zero.
+/// Read only explicitly registered finite windows and the job's owned wrapper log.
+/// Activity registration and timestamps are observation hints, not authority to
+/// discover additional logs or attribute another run's bytes.
 fn select_evidence(state_dir: &Path) -> EvidenceReport {
     let out_path = state_dir.join("instruments-sliced.log");
     let mut report = EvidenceReport {
@@ -9535,29 +9748,34 @@ fn select_evidence(state_dir: &Path) -> EvidenceReport {
         fs::write(&out_path, "").ok();
         return report;
     };
-    let (start, end) = run_window(state_dir, &manifest);
-    // The job's OWN log is known by construction (it lives in the state dir the run owns) and is created after the
-    // manifest, so it is always read from zero and never time-scoped.
-    let mut entries: Vec<(PathBuf, u64, &'static str)> =
-        vec![(state_dir.join("log"), 0, "created-during-run")];
-    entries.extend(manifest.files.iter().map(|(p, o)| (p.clone(), *o, "registered")));
-    let mut foreign: Vec<PathBuf> = Vec::new();
-    for path in discovery_candidates(manifest.prefix.as_deref()) {
-        if entries.iter().any(|(p, _, _)| *p == path) {
-            continue;
+    if manifest.scope.as_deref() != Some("explicit") || manifest.end.is_none() {
+        report.state = EvidenceState::Unavailable;
+        report.reasons.push("managed manifest scope is absent/ambiguous or its finite capture is not finalized; no discovery or legacy fallback is permitted".to_string());
+        if let Err(error) = fs::write(&out_path, "") {
+            report.reasons.push(format!("cannot clear selected evidence {}: {error}", out_path.display()));
         }
-        if inside_window(mtime_of(&path), start, end) {
-            entries.push((path, 0, "created-during-run"));
-        } else if manifest.prefix.as_deref().map(|p| path.starts_with(p)).unwrap_or(false)
-            && holds_instrument_lines(&path)
-        {
-            foreign.push(path);
-        }
+        return report;
     }
+    let mut entries: Vec<(PathBuf, u64, &'static str)> =
+        vec![(state_dir.join("log"), 0, "job-owned")];
+    entries.extend(manifest.files.iter().filter(|(path, _)| !manifest.sources.iter().any(|(copy, original)|
+        copy == path && original.file_name().is_some_and(|name| name.as_bytes().starts_with(b"core."))))
+        .map(|(p, o)| (p.clone(), *o, "registered")));
+    report.reasons.extend(manifest.unavailable.iter().map(|reason| format!("registered evidence unavailable: {reason}")));
     let (mut missing, mut unreadable, mut truncated) = (false, false, false);
     let mut out = String::new();
     for (path, offset, kind) in &entries {
         let (path, offset) = (path, *offset);
+        if *kind == "registered" && manifest.sources.iter().filter(|(copy, _)| copy == path).count() != 1 {
+            unreadable = true;
+            report.reasons.push(format!("registered source {} has no unambiguous finite capture mapping; no original or discovery fallback is read", path.display()));
+            report.sources.push(EvidenceSource {
+                path: path.clone(), kind, offset, size: None, read: 0, status: "unscoped",
+                reason: Some("missing or ambiguous finite capture mapping".to_string()), tail: Vec::new(),
+                failure: FailureExcerpt::default(),
+            });
+            continue;
+        }
         match stored_evidence::read(path) {
             Ok(bytes) => {
                 if *kind == "registered" && offset as usize > bytes.len() {
@@ -9575,12 +9793,19 @@ fn select_evidence(state_dir: &Path) -> EvidenceReport {
                         read: 0,
                         status: "truncated",
                         reason: Some(format!("recorded pre-run offset {offset} > current size {}", bytes.len())),
+                        tail: Vec::new(),
+                        failure: FailureExcerpt::default(),
                     });
                     continue;
                 }
                 let from = (offset as usize).min(bytes.len());
+                if !out.is_empty() && !out.ends_with('\n') { out.push('\n'); }
                 let slice = &bytes[from..];
-                out.push_str(&String::from_utf8_lossy(slice).replace('\u{0}', "\n"));
+                let decoded = String::from_utf8_lossy(slice).replace('\u{0}', "\n");
+                let mut tail: Vec<String> = decoded.lines().rev().take(64).map(str::to_string).collect();
+                tail.reverse();
+                let failure = failure_excerpt(&decoded);
+                out.push_str(&decoded);
                 report.rows_bytes += slice.len() as u64;
                 report.sources.push(EvidenceSource {
                     path: path.clone(),
@@ -9590,6 +9815,8 @@ fn select_evidence(state_dir: &Path) -> EvidenceReport {
                     read: slice.len() as u64,
                     status: "ok",
                     reason: None,
+                    tail,
+                    failure,
                 });
             }
             Err(e) => {
@@ -9609,26 +9836,26 @@ fn select_evidence(state_dir: &Path) -> EvidenceReport {
                     read: 0,
                     status,
                     reason: Some(e.to_string()),
+                    tail: Vec::new(),
+                    failure: FailureExcerpt::default(),
                 });
             }
         }
     }
-    for path in &foreign {
-        report.reasons.push(format!(
-            "instrument lines exist only in {}, which is outside this run's window: they belong to another run",
-            path.display()
-        ));
-    }
-    report.state = if missing || unreadable {
+    report.state = if missing || unreadable || !manifest.unavailable.is_empty() {
         EvidenceState::Unavailable
     } else if truncated {
         EvidenceState::Partial
-    } else if report.rows_bytes == 0 && !foreign.is_empty() {
+    } else if !entries.iter().any(|(_, _, kind)| *kind == "registered") {
+        report.reasons.push("no finalized runtime log was registered; the wrapper log alone is not runtime instrument evidence".to_string());
         EvidenceState::NoEvidence
     } else {
         EvidenceState::Measured
     };
-    fs::write(&out_path, out).ok();
+    if let Err(error) = fs::write(&out_path, out) {
+        report.state = EvidenceState::Unavailable;
+        report.reasons.push(format!("cannot publish selected evidence {}: {error}", out_path.display()));
+    }
     report
 }
 
@@ -9701,35 +9928,13 @@ fn evidence_report_json(r: &EvidenceReport) -> String {
     obj
 }
 
-/// The newest core written inside the run's window. It is scoped by the window the manifest records, not by the job
-/// log's final mtime: an earlier run's core sits in the same directory and can be newer than a later job's log, which
-/// is how another run's core became this run's evidence.
-fn newest_core_since(dir: &Path, since: Option<std::time::SystemTime>) -> Option<PathBuf> {
-    let since = since?;
-    let mut cores: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
-    for e in fs::read_dir(dir).ok()?.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        if !name.starts_with("core.") {
-            continue;
-        }
-        if let Ok(m) = e.metadata().and_then(|m| m.modified()) {
-            cores.push((m, e.path()));
-        }
-    }
-    cores.sort_by(|a, b| b.0.cmp(&a.0));
-    cores
-        .into_iter()
-        .find(|(m, _)| *m >= since)
-        .map(|(_, p)| p)
-}
-
 fn run_job(args: JobArgs) -> Result<ExitCode> {
     let state_dir = args.state_dir.clone();
     if !state_dir.is_dir() {
         bail!("no state directory: {}", state_dir.display());
     }
     let job_log = state_dir.join("log");
-    if !job_log.is_file() {
+    if !stored_evidence::resolve(&job_log).is_file() {
         bail!("no run log: {}", job_log.display());
     }
     let exe = std::env::current_exe().context("resolving this binary")?;
@@ -9738,19 +9943,34 @@ fn run_job(args: JobArgs) -> Result<ExitCode> {
     let evidence = select_evidence(&state_dir);
     let instr_log = evidence.instruments_log.clone();
     let manifest = evidence_manifest(&state_dir);
-    let manifest_start = manifest.as_ref().and_then(|m| run_window(&state_dir, m).0);
-    let core_since = manifest_start.or_else(|| fs::metadata(&job_log).and_then(|m| m.modified()).ok());
-    let core_window_note = if manifest_start.is_none() {
-        Some("core window scoped by the job log's mtime: the manifest records no run start".to_string())
-    } else {
-        None
-    };
-    let cores_dir = std::env::var("DWDIAG_CORES_DIR").unwrap_or_else(|_| "/tmp/t4cores".to_string());
-    let cores_dir = PathBuf::from(cores_dir);
+    let runtime = manifest.as_ref().and_then(EvidenceManifest::scoped_runtime);
+    let mut scope_reasons = Vec::new();
+    match &manifest {
+        Some(manifest) => {
+            if manifest.scope.as_deref() != Some("explicit") {
+                scope_reasons.push("managed scope is absent or ambiguous".to_string());
+            }
+            if let Some(reason) = &manifest.prefix_unavailable {
+                scope_reasons.push(format!("prefix unavailable: {reason}"));
+            } else if manifest.scoped_prefix().is_none() {
+                scope_reasons.push("prefix unavailable: no unambiguous absolute persisted prefix".to_string());
+            }
+            if let Some(reason) = &manifest.runtime_unavailable {
+                scope_reasons.push(format!("runtime unavailable: {reason}"));
+            } else if runtime.is_none() {
+                scope_reasons.push("runtime unavailable: no unambiguous absolute persisted installation".to_string());
+            }
+            if args.prefix.as_deref().is_some_and(|explicit| Some(explicit) != manifest.scoped_prefix()) {
+                scope_reasons.push("--prefix conflicts with persisted run scope".to_string());
+            }
+        }
+        None => scope_reasons.push("managed evidence manifest unavailable; no observer or command-text fallback".to_string()),
+    }
+    let core_window_note = Some("managed core evidence requires a finalized registered capture; timestamps, ambient core directories and boot-wide kernel logs are not ownership proof".to_string());
 
     let mut steps: Vec<JobStep> = Vec::new();
     let step = |label: &str, argv: Vec<String>| {
-        job_step(&exe, label, &argv, args.lines, args.step_timeout_seconds)
+        job_step(&exe, runtime, label, &argv, args.lines, args.step_timeout_seconds)
     };
 
     // A census over a log this run does not own prints zeros, and a zero cannot be told from an instrument standing
@@ -9773,73 +9993,67 @@ fn run_job(args: JobArgs) -> Result<ExitCode> {
             evidence.reasons.first().map(|s| s.as_str()).unwrap_or("no reason recorded")
         ));
     }
-    steps.push(step("progress", vec!["diag".into(), "progress".into(), "--log".into(), job_log.display().to_string()]));
-    steps.push(step("loops", vec!["diag".into(), "loops".into(), "--log".into(), job_log.display().to_string()]));
-
-    let mut core_note;
-    if let Some(core) = newest_core_since(&cores_dir, core_since) {
-        core_note = None;
-        steps.push(step(
-            "core",
-            vec!["diag".into(), "core".into(), "--core".into(), core.display().to_string(), "--traces".into()],
-        ));
-    } else {
-        core_note = Some(format!(
-            "no core newer than this job under {}; reading the kernel log instead",
-            cores_dir.display()
-        ));
-        let mut argv = vec!["diag".into(), "trap".into()];
-        if let Some(p) = &prefix {
-            argv.push("--prefix".into());
-            argv.push(p.display().to_string());
+    if evidence.state.has_census() {
+        let mut progress = vec!["diag".into(), "progress".into(), "--state-dir".into(), state_dir.display().to_string()];
+        if let Some(prefix) = args.prefix.as_ref().or(prefix.as_ref()) {
+            progress.extend(["--prefix".into(), prefix.display().to_string()]);
         }
-        let mut trap_step = step("trap", argv);
-        // A kernel log spans the whole boot, so its rows include crashes of earlier runs: reporting
-        // them as this job's evidence is worse than reporting nothing. Linux hands pids out in
-        // increasing order, and the job's own command pid is recorded, so a row with a smaller pid
-        // belongs to an older run and is dropped -- with the count stated, so the reader can see the
-        // filter rather than trust it.
-        let job_pid = fs::read_to_string(state_dir.join("command-pid"))
-            .ok()
-            .and_then(|v| v.trim().parse::<u32>().ok());
-        if let Some(job_pid) = job_pid {
-            let mut kept = Vec::new();
-            let mut dropped = 0usize;
-            for line in trap_step.output.iter() {
-                let pid = line
-                    .split_whitespace()
-                    .find_map(|w| w.strip_prefix("pid="))
-                    .and_then(|v| v.parse::<u32>().ok());
-                match pid {
-                    Some(p) if p < job_pid => dropped += 1,
-                    _ => kept.push(line.clone()),
-                }
-            }
-            if dropped > 0 {
-                trap_step.output = kept;
-                trap_step.output.push(format!(
-                    "DIAG-NOTE {dropped} kernel-log row(s) with pid < {job_pid} (the job's own command pid) were dropped: they are older runs, not this failure"
-                ));
-            }
-        } else {
-            // Without this run's command pid, a kernel-log row cannot be attributed to it: the log spans the whole
-            // boot, so earlier runs' rows would be reported as this failure's. Refuse the rows rather than attribute
-            // them, exactly as the instrument census refuses an unowned log.
-            trap_step.output = vec![
-                "DIAG-NOTE kernel-log rows are NOT scoped: this job state records no command-pid, so a row's pid cannot be compared with this run's; no row is shown rather than another run's being attributed to this one".to_string(),
-            ];
-        }
-        steps.push(trap_step);
+        steps.push(step("progress", progress));
+        steps.push(step("loops", vec!["diag".into(), "loops".into(), "--log".into(), instr_log.display().to_string()]));
     }
-    let _ = &mut core_note;
+    // Preserve actual failure bytes (compiler/loader errors included), rather
+    // than reporting only instrument counters over the wrapper's two lines.
+    for source in &evidence.sources {
+        if source.tail.is_empty() { continue; }
+        let original = manifest.as_ref().and_then(|manifest| manifest.sources.iter()
+            .find(|(copy, _)| copy == &source.path).map(|(_, original)| original.as_path()))
+            .unwrap_or(&source.path);
+        let keep = args.lines.min(source.tail.len());
+        let excerpt = failure_excerpt_output(&source.failure, keep, args.lines);
+        if !excerpt.is_empty() {
+            let earlier = source.failure.rows.iter().filter(|(number, _)|
+                *number <= source.failure.source_lines.saturating_sub(keep)).count();
+            let limited = source.failure.omitted || earlier > excerpt.len();
+            steps.push(JobStep {
+                label: "log-failure".to_string(),
+                command: format!("selected finite failure excerpt {}", source.path.display()),
+                note: Some(format!("source={} captured={} offset={} status={}; one-based selected-window lines; recognized_records={} selection_limited={limited}; at most 24 lines/16KiB, two context lines either side; overlapping windows and tail lines are not repeated; a recognized record is not a workload verdict",
+                    original.display(), source.path.display(), source.offset, source.status, source.failure.matches)),
+                output: excerpt,
+                ..Default::default()
+            });
+        }
+        steps.push(JobStep {
+            label: "log-tail".to_string(),
+            command: format!("selected finite evidence {}", source.path.display()),
+            output: source.tail[source.tail.len() - keep..].to_vec(),
+            note: Some(format!("source={} captured={} offset={} status={}; selected-window lines {}-{} (last at most {}); recognized_failure_records={}{}; not mutable source history",
+                original.display(), source.path.display(), source.offset, source.status,
+                source.failure.source_lines.saturating_sub(keep) + 1, source.failure.source_lines, args.lines.min(64),
+                source.failure.matches, if source.failure.matches == 0 { " (cause unrecognized; tail retained without inferring success)" } else { "" })),
+            ..Default::default()
+        });
+    }
+
+    let core_note = if runtime.is_none() {
+        Some("core diagnosis unavailable: managed runtime scope is absent or ambiguous; no observer runtime fallback".to_string())
+    } else if let Some(core) = manifest.as_ref().and_then(EvidenceManifest::captured_core) {
+        let mut argv = vec!["diag".into(), "core".into(), "--core".into(), core.display().to_string(), "--traces".into()];
+        if let Some(prefix) = &prefix { argv.extend(["--prefix".into(), prefix.display().to_string()]); }
+        steps.push(step("core", argv));
+        None
+    } else {
+        Some("core/kernel evidence unavailable: no unambiguous finite registered core; unrelated ambient cores and boot-wide kernel rows are NOT attributed to this job".to_string())
+    };
 
     // Process state: what the processes are DOING, not what they wrote.
     let mut process_lines: Vec<String> = Vec::new();
     let mut process_note: Option<String> = None;
-    if let Some(p) = &prefix {
+    if let (Some(p), Some(runtime)) = (&prefix, runtime) {
         let mut pids = args.pids.clone();
         let census = job_step(
             &exe,
+            Some(runtime),
             "processes",
             &["diag".into(), "processes".into(), "--prefix".into(), p.display().to_string(), "--list".into()],
             args.lines,
@@ -9848,17 +10062,22 @@ fn run_job(args: JobArgs) -> Result<ExitCode> {
         let census_text = census.output.join("\n");
         if pids.is_empty() {
             for line in census_text.lines() {
-                if let Some(first) = line.split_whitespace().next() {
-                    if let Ok(pid) = first.parse::<u32>() {
+                if let Some(rest) = line.strip_prefix("PREFIX-PROCESS ") {
+                    if let Some(pid) = rest.split_whitespace().find_map(|word| word.strip_prefix("pid="))
+                        .and_then(|value| value.parse::<u32>().ok()) {
                         pids.push(pid);
                     }
                 }
             }
-            pids.truncate(4);
         }
+        pids.retain(|pid| process_owns_prefix(*pid, p) && fs::read_link(format!("/proc/{pid}/exe"))
+            .map(|exe| exe.starts_with(runtime)).unwrap_or(false));
+        if args.pids.is_empty() { pids.truncate(4); }
+        process_lines.push(format!("DIAG-CURRENT-PROCESSES prefix={} runtime-root={} observed={} observation=current-point-in-time signal-authority=false",
+            p.display(), runtime.display(), pids.len()));
         if pids.is_empty() {
             process_note = Some(format!(
-                "no guest process of {} is running now; process state cannot be read after exit",
+                "no selected-prefix/runtime process was observed for {}; exit or inaccessible process evidence cannot establish a globally empty process set",
                 p.display()
             ));
         } else {
@@ -9901,7 +10120,7 @@ fn run_job(args: JobArgs) -> Result<ExitCode> {
         }
     } else {
         process_note = Some(
-            "no prefix known (DWDIAG_PREFIX or DPREFIX), so process state cannot be censused".to_string(),
+            "managed prefix/runtime scope is absent, ambiguous or conflicts with --prefix; observer environment and opaque command text are not scope authority".to_string(),
         );
     }
 
@@ -9915,6 +10134,15 @@ fn run_job(args: JobArgs) -> Result<ExitCode> {
         obj.push_str(&format!("\"evidence_note\":{},", evidence_note.as_ref().map(|n| format!("\"{}\"", jesc(n))).unwrap_or_else(|| "null".into())));
         obj.push_str(&format!("\"evidence_report\":{},", evidence_report_json(&evidence)));
         obj.push_str(&format!("\"core_window_note\":{},", core_window_note.as_ref().map(|n| format!("\"{}\"", jesc(n))).unwrap_or_else(|| "null".into())));
+        obj.push_str(&format!("\"runtime_root\":{},\"scope_source\":\"managed-manifest\",\"scope_reasons\":[{}],",
+            runtime.map(|path| jstr(&path.display().to_string())).unwrap_or_else(|| "null".to_string()),
+            scope_reasons.iter().map(|reason| jstr(reason)).collect::<Vec<_>>().join(",")));
+        obj.push_str(&format!("\"prefix_source\":{},\"runtime_root_source\":{},",
+            manifest.as_ref().and_then(|manifest| manifest.prefix_source.as_deref()).map(jstr).unwrap_or_else(|| "null".to_string()),
+            manifest.as_ref().and_then(|manifest| manifest.runtime_source.as_deref()).map(jstr).unwrap_or_else(|| "null".to_string())));
+        obj.push_str(&format!("\"core_note\":{},\"process_note\":{},",
+            core_note.as_ref().map(|note| jstr(note)).unwrap_or_else(|| "null".to_string()),
+            process_note.as_ref().map(|note| jstr(note)).unwrap_or_else(|| "null".to_string())));
         match &prefix {
             Some(p) => obj.push_str(&format!("\"prefix\":\"{}\",", jesc(&p.display().to_string()))),
             None => obj.push_str("\"prefix\":null,"),
@@ -9936,7 +10164,7 @@ fn run_job(args: JobArgs) -> Result<ExitCode> {
                 }
                 obj.push_str(&format!("\"{}\"", jesc(line)));
             }
-            obj.push_str("]}");
+            obj.push_str(&format!("],\"note\":{}}}", s.note.as_ref().map(|note| jstr(note)).unwrap_or_else(|| "null".to_string())));
         }
         obj.push_str("],\"process_state\":[");
         for (i, line) in process_lines.iter().enumerate() {
@@ -9955,6 +10183,12 @@ fn run_job(args: JobArgs) -> Result<ExitCode> {
         println!("DIAG-RC rc={rc}");
     }
     println!("DIAG-LOGS job={} instruments={}", job_log.display(), instr_log.display());
+    println!("DIAG-SCOPE source=managed-manifest prefix={} runtime-root={} prefix-source={} runtime-root-source={}",
+        prefix.as_ref().map(|path| path.display().to_string()).unwrap_or_else(|| "UNAVAILABLE".to_string()),
+        runtime.map(|path| path.display().to_string()).unwrap_or_else(|| "UNAVAILABLE".to_string()),
+        manifest.as_ref().and_then(|manifest| manifest.prefix_source.as_deref()).unwrap_or("UNAVAILABLE"),
+        manifest.as_ref().and_then(|manifest| manifest.runtime_source.as_deref()).unwrap_or("UNAVAILABLE"));
+    for reason in &scope_reasons { println!("DIAG-SCOPE-UNAVAILABLE {reason}"); }
     print_evidence_report(&evidence);
     if let Some(note) = &evidence_note {
         println!("DIAG-NOTE {note}");
@@ -11787,8 +12021,8 @@ mod evidence_manifest_tests {
     /// and not by a second hand-written tag list.
     const INSTRUMENT_LINE: &str = "[ulock-wait-park] obj=0x1000 op=wait owner_tid=2 waiter_tid=3\n";
 
-    /// A fixture state dir whose manifest window is fixed in the year 2000, so every real `/tmp/darling-boot-*.log`
-    /// on this host is outside the window and cannot silently enter the slice.
+    /// Registered capture fixtures; ambient files must never enter their slices,
+    /// regardless of a coinciding timestamp.
     fn fixture(name: &str) -> (PathBuf, PathBuf) {
         let root = std::env::temp_dir().join(format!("dwdiag-evidence-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -11799,11 +12033,72 @@ mod evidence_manifest_tests {
         (state, prefix)
     }
 
+    #[test]
+    fn early_failure_data_survives_summary_noise_without_overlap_or_foreign_sources() {
+        let (state, prefix) = fixture("early-failure-excerpt");
+        let capture = state.join("producer.log");
+        let mismatch = "arbitrary producer mismatch: expected <α: q|beta>, actual <δ: dynamic-value>";
+        let assertion = "Assertion failed: (payload == arbitrary_token), function check, file /input.c, line 19.";
+        let mut text = format!("setup one\nsetup two\n{mismatch}\n{assertion}\nabort detail\n");
+        for index in 0..120 { text.push_str(&format!("CTest summary row {index}\n")); }
+        fs::write(&capture, text).unwrap();
+        manifest(&state, &prefix, &[(&capture, 0)]);
+        job_log(&state, "wrapper completed\n");
+        let foreign = prefix.join("private/var/tmp/unowned.log");
+        fs::write(&foreign, "foreign.c:1: error: unrelated failure\n").unwrap();
+
+        let report = select_evidence(&state);
+        let source = report.sources.iter().find(|source| source.path == capture).unwrap();
+        assert!(!source.tail.iter().any(|line| line == mismatch || line == assertion));
+        assert_eq!(source.failure.matches, 2);
+        assert!(source.failure.rows.contains(&(3, mismatch.to_string())));
+        assert!(source.failure.rows.contains(&(4, assertion.to_string())));
+        assert!(source.failure.rows.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        let output = failure_excerpt_output(&source.failure, 24, 24);
+        assert_eq!(output.iter().filter(|line| line.contains(mismatch)).count(), 1);
+        assert_eq!(output.iter().filter(|line| line.contains(assertion)).count(), 1);
+        assert!(report.sources.iter().all(|source| source.failure.rows.iter()
+            .all(|(_, line)| !line.contains("unrelated failure"))));
+    }
+
+    #[test]
+    fn failure_excerpt_does_not_repeat_lines_already_shown_in_the_tail() {
+        let excerpt = failure_excerpt("before\ndyld: Library not loaded: /arbitrary/image\n  Referenced from: /arbitrary/program\n  Reason: image not found\nafter\n");
+        assert_eq!(excerpt.matches, 1);
+        assert!(failure_excerpt_output(&excerpt, 5, 24).is_empty());
+        let earlier = failure_excerpt_output(&excerpt, 2, 24);
+        assert_eq!(earlier.len(), 3);
+        assert!(earlier.iter().any(|line| line.contains("/arbitrary/image")));
+        assert!(!earlier.iter().any(|line| line.contains("Reason: image not found")));
+    }
+
+    #[test]
+    fn failure_excerpt_is_bounded_and_keeps_unknown_error_level_traces_unclassified() {
+        let traces = "[1793085587.252126](ring, Error) [NOTICE] shared-memory transport ACTIVE\n\
+            [1793085587.254192](process-control-complete, Error) status=0\n\
+            an unfamiliar producer stopped without a known diagnostic\n";
+        let unknown = failure_excerpt(traces);
+        assert_eq!(unknown.matches, 0);
+        assert!(unknown.rows.is_empty());
+
+        let mut errors = String::new();
+        for index in 0..100 {
+            errors.push_str(&format!("input.c:{index}: error: {}\n", "α".repeat(3000)));
+        }
+        let bounded = failure_excerpt(&errors);
+        assert_eq!(bounded.matches, 100);
+        assert!(bounded.omitted);
+        assert!(bounded.rows.len() <= 24);
+        assert!(bounded.rows.iter().map(|(_, line)| line.len()).sum::<usize>() <= 16 * 1024);
+    }
+
     fn manifest(state: &Path, prefix: &Path, entries: &[(&Path, u64)]) {
-        let mut text = String::from("version=1\nstart=946684800\nend=946771200\n");
+        let mut text = String::from("version=1\nscope=explicit\nruntime-root=/image\nstart=946684800\nend=946771200\n");
         text.push_str(&format!("prefix={}\n", prefix.display()));
         for (p, off) in entries {
             text.push_str(&format!("file={} {off}\n", p.display()));
+            text.push_str(&format!("source={}\t{}\n", p.display(),
+                prefix.join("registered").join(p.file_name().unwrap()).display()));
         }
         fs::write(state.join("evidence-manifest"), text).unwrap();
     }
@@ -11923,24 +12218,24 @@ mod evidence_manifest_tests {
     }
 
     #[test]
-    fn evidence_only_from_another_run_is_no_evidence_not_a_zero() {
+    fn unregistered_foreign_logs_do_not_change_the_registered_measurement() {
         let (state, prefix) = fixture("foreign");
         let reg = state.join("reg.log");
         fs::write(&reg, "").unwrap();
         manifest(&state, &prefix, &[(&reg, 0)]);
         job_log(&state, "");
-        // The prefix's own tmp holds a log written outside this run's window (its mtime is now, the window is 2000).
+        // Another source is not authority merely because it is under this prefix.
         let foreign = prefix.join("private/var/tmp/other-run.log");
         fs::write(&foreign, INSTRUMENT_LINE).unwrap();
         let r = select_evidence(&state);
-        assert_eq!(r.state, EvidenceState::NoEvidence);
+        assert_eq!(r.state, EvidenceState::Measured);
         assert_eq!(r.rows_bytes, 0, "the other run's rows must not contribute");
-        assert!(!r.state.zero_is_measured());
-        assert!(r.reasons.iter().any(|x| x.contains("another run")), "{:?}", r.reasons);
+        assert!(r.state.zero_is_measured());
+        assert!(!r.sources.iter().any(|source| source.path == foreign));
     }
 
     #[test]
-    fn a_log_created_inside_the_run_window_does_contribute() {
+    fn even_an_in_window_unregistered_log_cannot_contribute() {
         let (state, prefix) = fixture("in-window");
         let reg = state.join("reg.log");
         fs::write(&reg, "").unwrap();
@@ -11957,8 +12252,8 @@ mod evidence_manifest_tests {
             .unwrap();
         let r = select_evidence(&state);
         assert_eq!(r.state, EvidenceState::Measured);
-        assert!(r.rows_bytes > 0);
-        assert!(r.sources.iter().any(|s| s.kind == "created-during-run" && s.read > 0));
+        assert_eq!(r.rows_bytes, 0);
+        assert!(!r.sources.iter().any(|source| source.path == fresh));
     }
 
     #[test]
@@ -11969,6 +12264,91 @@ mod evidence_manifest_tests {
         assert_eq!(r.state, EvidenceState::Unscoped);
         assert_eq!(r.rows_bytes, 0, "without a manifest nothing is guessed");
         assert_eq!(fs::read_to_string(&r.instruments_log).unwrap(), "");
+    }
+
+    #[test]
+    fn a_missing_final_boundary_cannot_admit_a_live_original_log() {
+        let (state, prefix) = fixture("unfinalized");
+        let live = state.join("compile.log");
+        fs::write(&live, "clang: error: this is not finalized\n").unwrap();
+        fs::write(state.join("evidence-manifest"), format!(
+            "scope=explicit\nprefix={}\nruntime-root=/image\nfile={} 0\n", prefix.display(), live.display())).unwrap();
+        job_log(&state, "wrapper\n");
+        let report = select_evidence(&state);
+        assert_eq!(report.state, EvidenceState::Unavailable);
+        assert_eq!(report.rows_bytes, 0);
+        assert!(report.sources.is_empty());
+    }
+
+    #[test]
+    fn unavailable_registration_is_not_hidden_by_other_readable_logs() {
+        let (state, prefix) = fixture("boundary-gap");
+        let captured = state.join("compile.log");
+        fs::write(&captured, "clang: error: missing declaration\n").unwrap();
+        manifest(&state, &prefix, &[(&captured, 0)]);
+        let path = state.join("evidence-manifest");
+        let mut text = fs::read_to_string(&path).unwrap();
+        text.push_str("unavailable=/owned/guest/compile.harness missing source boundary\n");
+        fs::write(path, text).unwrap();
+        job_log(&state, "wrapper\n");
+        let report = select_evidence(&state);
+        assert_eq!(report.state, EvidenceState::Unavailable);
+        assert!(!report.state.zero_is_measured());
+        assert!(report.sources.iter().any(|source| source.tail.iter()
+            .any(|line| line == "clang: error: missing declaration")));
+    }
+
+    #[test]
+    fn persisted_scope_and_unavailable_status_beat_command_text() {
+        let (state, prefix) = fixture("scope");
+        manifest(&state, &prefix, &[]);
+        fs::write(state.join("command"), "DPREFIX=/unrelated/runtime --prefix /another").unwrap();
+        let args = JobArgs { state_dir: state.clone(), prefix: None, json: false, lines: 24,
+            step_timeout_seconds: 60, pids: Vec::new() };
+        assert_eq!(job_prefix(&args, &state), Some(prefix));
+        let path = state.join("evidence-manifest");
+        let mut text = fs::read_to_string(&path).unwrap();
+        text.push_str("prefix-unavailable=ambiguous argv\nruntime-root-unavailable=ambiguous argv\n");
+        fs::write(path, text).unwrap();
+        assert_eq!(job_prefix(&args, &state), None);
+        assert_eq!(evidence_manifest(&state).unwrap().scoped_runtime(), None);
+    }
+
+    #[test]
+    fn only_a_finalized_registered_server_copy_supplies_server_history() {
+        let mut manifest = parse_evidence_manifest(
+            "scope=explicit\nprefix=/owned/guest\nruntime-root=/image\nend=1\nfile=/job/server-copy.log 0\nsource=/job/server-copy.log\t/owned/guest/private/var/log/dserver.log\n");
+        assert_eq!(manifest.captured_server_log(), Some(Path::new("/job/server-copy.log")));
+        manifest.end = None;
+        assert_eq!(manifest.captured_server_log(), None);
+        manifest.end = Some(1);
+        manifest.prefix_unavailable = Some("ambiguous argv".to_string());
+        assert_eq!(manifest.captured_server_log(), None);
+    }
+
+    #[test]
+    fn a_finalized_manifest_without_a_capture_mapping_cannot_read_the_original() {
+        let (state, prefix) = fixture("missing-copy-proof");
+        let original = prefix.join("compile.log");
+        fs::write(&original, "foreign compiler error\n").unwrap();
+        fs::write(state.join("evidence-manifest"), format!(
+            "scope=explicit\nend=1\nprefix={}\nruntime-root=/image\nfile={} 0\n",
+            prefix.display(), original.display())).unwrap();
+        job_log(&state, "");
+        let report = select_evidence(&state);
+        assert_eq!(report.state, EvidenceState::Unavailable);
+        assert_eq!(report.rows_bytes, 0);
+        assert!(report.sources.iter().all(|source| source.tail.is_empty()));
+    }
+
+    #[test]
+    fn captured_core_selection_requires_a_registered_finite_copy_and_rejects_ambiguity() {
+        let mut manifest = parse_evidence_manifest(
+            "scope=explicit\nruntime-root=/image\nend=1\nfile=/job/core-copy 0\nsource=/job/core-copy\t/owned/core.123\n");
+        assert_eq!(manifest.captured_core(), Some(Path::new("/job/core-copy")));
+        manifest.sources.push((PathBuf::from("/job/second-core"), PathBuf::from("/owned/core.456")));
+        manifest.files.push((PathBuf::from("/job/second-core"), 0));
+        assert_eq!(manifest.captured_core(), None);
     }
 
     #[test]

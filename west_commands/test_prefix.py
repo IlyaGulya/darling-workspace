@@ -228,43 +228,51 @@ def _prefix_marked_runtime_snapshot(prefix: Path) -> list[str]:
 
 
 
-def cleanup_rootless_prefix_processes(
-    prefix: Path,
-    *,
-    proc_root: Path = Path("/proc"),
-    current_pid: int | None = None,
-    kill_func=os.kill,
-    sleep_func=time.sleep,
-) -> RootlessPrefixCleanupResult:
-    """Terminate only rootless processes with this prefix's ownership evidence."""
 
+
+def cleanup_verified_prefix_processes(prefix: Path) -> RootlessPrefixCleanupResult:
+    """Rescue the shared census through pinned, revalidated process handles."""
     result = RootlessPrefixCleanupResult()
     for sig in (signal.SIGTERM, signal.SIGKILL):
-        entries = rootless_prefix_process_snapshot(
-            prefix, proc_root=proc_root, current_pid=current_pid
-        )
-        pids = [int(entry.split(" ", 1)[0]) for entry in entries]
-        if not pids:
+        entries = prefix_process_ownership_snapshot(prefix)
+        if not entries:
             return result
-        for pid in pids:
+        if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+            result.problems.append("verified prefix rescue unavailable: Python/Linux pidfd signaling unsupported")
+            return result
+        for entry in entries:
+            pid = int(entry.split(" ", 1)[0])
+            descriptor = None
             try:
-                kill_func(pid, sig)
-            except ProcessLookupError:
-                continue
-            except PermissionError as error:
-                result.problems.append(
-                    f"cannot stop rootless Darling prefix process {pid}: {error}"
+                process = Path("/proc") / str(pid)
+                before = (process / "stat").read_bytes().rsplit(b")", 1)[1].split()[19]
+                descriptor = os.pidfd_open(pid)
+                # The pidfd is acquired before revalidation. If this PID exited
+                # and was reused at either boundary, never authorize the handle.
+                after = (process / "stat").read_bytes().rsplit(b")", 1)[1].split()[19]
+                if before != after:
+                    continue
+                if not _runtime_retains_prefix(process, prefix):
+                    result.problems.append(
+                        f"verified prefix rescue refused pid={pid}: no retained runtime prefix capability after pin"
+                    )
+                    continue
+                signal.pidfd_send_signal(descriptor, sig)
+                result.changed.append(
+                    f"sent {signal.Signals(sig).name} through verified pidfd to prefix process {pid}"
                 )
-        result.changed.append(
-            f"sent {signal.Signals(sig).name} to rootless Darling prefix process(es): "
-            f"{', '.join(str(pid) for pid in pids)}"
-        )
-        sleep_func(1)
-    leftovers = rootless_prefix_process_snapshot(
-        prefix, proc_root=proc_root, current_pid=current_pid
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            except (OSError, ValueError, IndexError) as error:
+                result.problems.append(f"verified prefix rescue pid={pid} unavailable: {error}")
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+        time.sleep(1)
+    result.problems.extend(
+        f"prefix process survived verified rescue: {entry}"
+        for entry in prefix_process_ownership_snapshot(prefix)
     )
-    if leftovers:
-        result.problems.extend(f"rootless Darling prefix process survived: {entry}" for entry in leftovers)
     return result
 
 
@@ -486,31 +494,6 @@ class PrefixLifecycleOwner:
     def process_snapshot(self, prefix: Path) -> list[str]:
         return prefix_process_ownership_snapshot(prefix, self.ps_entries())
 
-    def _kill_server(self, prefix: Path) -> None:
-        pids = darlingserver_pids_for_prefix(prefix, self.ps_entries())
-        if not pids:
-            return
-        self.wrn(f"stopping live darlingserver for {prefix}: pids={pids}")
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            live = []
-            for pid in pids:
-                try:
-                    os.kill(pid, 0)
-                    live.append(pid)
-                except ProcessLookupError:
-                    continue
-                except PermissionError:
-                    continue
-            if not live:
-                return
-            for pid in live:
-                try:
-                    os.kill(pid, sig)
-                except ProcessLookupError:
-                    continue
-                except PermissionError as error:
-                    self.err(f"cannot stop darlingserver {pid} for {prefix}: {error}")
-            time.sleep(1)
 
     def finalize(self, prefix: Path) -> bool:
         if not prefix_path_is_safe(prefix):
@@ -520,8 +503,10 @@ class PrefixLifecycleOwner:
         rescued = bool(self.process_snapshot(prefix))
         if rescued:
             self.err(f"product shutdown left live prefix process(es) for {prefix}; external cleanup is rescue, not PASS")
-        self._kill_server(prefix)
-        rootless_cleanup = cleanup_rootless_prefix_processes(prefix)
+        rootless_cleanup = cleanup_verified_prefix_processes(prefix)
+        if rootless_cleanup.changed:
+            rescued = True
+            self.err(f"external prefix rescue signalled process(es) for {prefix}; cleanup is not a product PASS")
         for message in rootless_cleanup.changed:
             self.inf(f"cleanup rootless Darling prefix: {message}")
         for message in rootless_cleanup.problems:
@@ -1291,15 +1276,29 @@ def _lease_exec() -> None:
         help="read-only residual PID census, including unverified markers; not signal authority",
     )
     parser.add_argument("--validate-lease", action="store_true")
+    parser.add_argument("--rescue", action="store_true",
+                        help="verified pidfd rescue: 0=no action, 3=rescued, 2=unavailable, 4=rescue incomplete")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command
     if command and command[0] == "--":
         command = command[1:]
-    if not command and not args.list_owned and not args.list_residual and not args.validate_lease:
+    if not command and not args.list_owned and not args.list_residual and not args.validate_lease and not args.rescue:
         parser.error("a command is required after --")
     if not prefix_path_is_safe(args.prefix):
         parser.error(f"unsafe Darling prefix path: {args.prefix}")
+    if args.rescue:
+        if command or args.list_owned or args.list_residual or args.validate_lease:
+            parser.error("--rescue cannot execute a command or select another operation")
+        try:
+            with prefix_lease(args.prefix):
+                result = cleanup_verified_prefix_processes(Path(args.prefix))
+            for message in result.changed + result.problems:
+                print(f"PREFIX-RESCUE {message}", file=sys.stderr)
+            raise SystemExit((4 if result.changed else 2) if not result.success else 3 if result.changed else 0)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            print(f"prefix rescue unavailable: {error}", file=sys.stderr)
+            raise SystemExit(2)
     if args.list_owned or args.list_residual:
         if command or (args.list_owned and args.list_residual):
             parser.error("select one process census without a command")

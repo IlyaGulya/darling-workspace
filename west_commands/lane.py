@@ -984,7 +984,6 @@ def destroy_lane(
     runner: Callable[..., Any] = subprocess.run,
     mountinfo_path: Path = Path("/proc/self/mountinfo"),
     kill_func: Callable[[int, int], None] = os.kill,
-    sleep_func: Callable[[float], None] = time.sleep,
 ) -> LaneResult:
     """Stop and remove exactly one lane.
 
@@ -994,7 +993,7 @@ def destroy_lane(
     directory is never removed while it is still mounted or still owned.
     """
 
-    from test_prefix import cleanup_rootless_prefix_processes, prefix_process_ownership_snapshot
+    from test_prefix import cleanup_verified_prefix_processes, prefix_process_ownership_snapshot
 
     result = LaneResult()
     lane = Path(lane)
@@ -1015,12 +1014,9 @@ def destroy_lane(
     result.changed.extend(stopped.changed)
     result.problems.extend(stopped.problems)
 
-    # Not guarded by `merged.is_dir()`: a disconnected FUSE mount reports False
-    # for every stat, and the ownership evidence that still works there is the
-    # process environment, which must not be skipped for that reason.
-    cleanup = cleanup_rootless_prefix_processes(
-        merged, kill_func=kill_func, sleep_func=sleep_func
-    )
+    # A disconnected FUSE mount may report False for is_dir(); still attempt
+    # the capability-backed census rather than skipping process cleanup.
+    cleanup = cleanup_verified_prefix_processes(merged)
     result.changed.extend(cleanup.changed)
     result.problems.extend(cleanup.problems)
     leftover = prefix_process_ownership_snapshot(merged)

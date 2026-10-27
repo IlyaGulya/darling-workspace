@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 import posixpath
 import shutil
 import stat
+import subprocess
 import tarfile
 import tempfile
 from typing import Iterator
@@ -218,19 +219,11 @@ def _register_build_logs(environment: dict[str, str], work: Path) -> None:
     state = environment.get("WEST_JOB_STATE_DIR")
     if not state:
         return
-    directory = Path(state) / "activity-logs.d"
-    directory.mkdir(exist_ok=True)
-    # Immutable NUL-delimited kind/path pairs; only the atomic .logs rename
-    # makes a record visible. Register future formula logs before guest launch.
-    descriptor, name = tempfile.mkstemp(prefix="homebrew-", suffix=".tmp", dir=directory)
-    temporary = Path(name)
-    try:
-        with os.fdopen(descriptor, "wb") as output:
-            for path in (work / "logs", work / "logs/lz4"):
-                output.write(b"directory\0" + os.fsencode(path.absolute()) + b"\0")
-        temporary.replace(temporary.with_suffix(".logs"))
-    finally:
-        temporary.unlink(missing_ok=True)
+    command = [str(Path(__file__).resolve().parents[1] / "scripts/west-job.sh"),
+               "register", "--state-dir", state, "--"]
+    for path in (work / "logs", work / "logs/lz4"):
+        command += ["directory", str(path.absolute())]
+    subprocess.run(command, check=True)
 
 
 def conflicting_homebrew(prefix: Path, system_root: Path) -> Path | None:

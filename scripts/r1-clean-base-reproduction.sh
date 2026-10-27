@@ -118,6 +118,10 @@ run_step() {
 	printf '\n' >>"$EVID/$name.command"
 	printf 'r1 phase start: %s (stdout=%s stderr=%s)\n' \
 		"$name" "$EVID/$name.stdout" "$EVID/$name.stderr"
+	if [ -n "${WEST_JOB_STATE_DIR:-}" ]; then
+		"$WS/scripts/west-job.sh" register --state-dir "$WEST_JOB_STATE_DIR" -- \
+			file "$EVID/$name.stdout" file "$EVID/$name.stderr"
+	fi
 	if "$@" >"$EVID/$name.stdout" 2>"$EVID/$name.stderr"; then
 		rc=0
 	else
@@ -165,10 +169,8 @@ PREFIX="$(rootless_prefix_create r1-reproduction R1_PREFIX_REQUEST)"
 python3 -B - "$EVID" "$SOURCE" "$REVISION" "$BASELINE" "$CLEAN" "$BUILD" \
 	"$RUNTIME" "$PREFIX" "$EXECUTOR" "${WORKLOADS[@]}" <<'PY'
 import json
-import os
 from pathlib import Path
 import sys
-import tempfile
 
 evidence = Path(sys.argv[1])
 record = dict(zip(("source_repository", "revision", "comparison_baseline", "source_root",
@@ -177,18 +179,6 @@ record["workloads"] = sys.argv[10:]
 with (evidence / "selection.json").open("x", encoding="utf-8") as output:
     json.dump(record, output, indent=2, sort_keys=True)
     output.write("\n")
-state = os.environ.get("WEST_JOB_STATE_DIR")
-if state:
-    directory = Path(state) / "activity-logs.d"
-    directory.mkdir(exist_ok=True)
-    descriptor, name = tempfile.mkstemp(prefix="r1-reproduction-", suffix=".tmp", dir=directory)
-    temporary = Path(name)
-    try:
-        with os.fdopen(descriptor, "wb") as output:
-            output.write(b"directory\0" + os.fsencode(evidence) + b"\0")
-        temporary.replace(temporary.with_suffix(".logs"))
-    finally:
-        temporary.unlink(missing_ok=True)
 PY
 
 # The baseline diff is review evidence only. All build inputs come from the selected commit.

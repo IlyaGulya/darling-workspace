@@ -12,11 +12,8 @@ the one set a rung has to close, with the identity needed to fix it:
   * the count of the other non-exported classes, so a census can be compared before and after a
     change without a second tool.
 
-This exists because the rung before it produced the same tables with an ad-hoc script kept only in
-an untracked `state/` directory, so the acceptance ("the same instrument, before and after") had no
-tracked way to be re-run.  The classifier is deliberately tiny: it adds no resolution logic of its
-own -- every label comes from the cover run -- so a census is reproducible from the cover artifact
-alone.
+The census adds no resolution logic: every label comes from the pure JSON cover
+artifact. Raw and indexed zstd evidence use the same logical-payload reader.
 
 Usage:
     closure_missing.py COVER_OUT [--json OUT] [--order N]
@@ -24,8 +21,11 @@ Usage:
 import argparse
 import hashlib
 import json
-import os
+from pathlib import Path
 import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "west_commands"))
+from evidence_storage import EvidenceError, open_payload  # noqa: E402
 
 XCODE_MARK = "/Xcode.app/"
 # The classes that are NOT a resolution; printed as context, never as the census itself.
@@ -33,12 +33,12 @@ CONTEXT = ("field-image-absent", "absent-weak", "absent-lazy", "flat-lookup")
 
 
 def load(path):
-    raw = open(path, encoding="utf-8", errors="replace").read()
     try:
-        i = raw.index("\n{\n")
-    except ValueError:
-        sys.exit(f"{path}: no JSON payload (not a --cover --json output?)")
-    return json.loads(raw[i:])
+        with open_payload(Path(path)) as payload:
+            return json.load(payload)
+    except (EvidenceError, OSError, ValueError) as error:
+        print(f"closure-missing: cannot read cover graph {path}: {error}", file=sys.stderr)
+        raise SystemExit(2)
 
 
 def sha256(path):

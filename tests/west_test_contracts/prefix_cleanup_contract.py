@@ -26,7 +26,7 @@ sys.modules.setdefault("west.commands", west_commands_module)
 
 from west_commands.test import DarlingTest
 from test_prefix import (
-    cleanup_rootless_prefix_processes,
+    cleanup_verified_prefix_processes,
     cleanup_rootless_runtime_sockets,
     darlingserver_pids_for_prefix,
     remove_stale_init_pid,
@@ -74,7 +74,7 @@ with tempfile.TemporaryDirectory() as temp:
             time.sleep(0.05)
         else:
             raise AssertionError("tagged rootless process was not discovered")
-        result = cleanup_rootless_prefix_processes(prefix)
+        result = cleanup_verified_prefix_processes(prefix)
         assert result.success and result.changed, result
         tagged.wait(timeout=3)
         assert unrelated.poll() is None, "cleanup matched an untagged prefix process"
@@ -93,7 +93,7 @@ with tempfile.TemporaryDirectory() as temp:
     try:
         assert not any(entry.startswith(f"{orphaned_shellspawn.pid} ")
                        for entry in rootless_prefix_process_snapshot(prefix))
-        result = cleanup_rootless_prefix_processes(prefix)
+        result = cleanup_verified_prefix_processes(prefix)
         assert result.success and not result.changed, result
         assert orphaned_shellspawn.poll() is None, "cwd alone is not runtime ownership"
     finally:
@@ -164,7 +164,7 @@ with tempfile.TemporaryDirectory() as temp:
         server_entries = [(server_pid, 1, "darlingserver 60")]
         assert darlingserver_pids_for_prefix(prefix, server_entries) == [server_pid]
         assert darlingserver_pids_for_prefix(other_prefix, server_entries) == []
-        result = cleanup_rootless_prefix_processes(prefix)
+        result = cleanup_verified_prefix_processes(prefix)
         assert result.success and result.changed, result
         for name in owned_names:
             processes[name].wait(timeout=3)

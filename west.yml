@@ -19,7 +19,7 @@ manifest:
     # Product source authority: this committed tree and its exact child gitlinks.
     # Build the normal stock ALL target and complete installation.
     # Workloads, writable guest prefixes and evidence are selected separately.
-    revision: 985794f7ea55eaf9c18e7eef18f8a0adf26a3fc3
+    revision: c695fd8410895f2a67a5d57a3843b5998ded48bf
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -895,7 +895,7 @@ manifest:
     repo-path: darling-libtrace
     path: darling/src/external/libtrace
     remote: darling
-    revision: d0da814fbf3d6df272c106fd050a9ce092072eab
+    revision: c953eed779bb30240b28ee81cab44bf37aa24241
     userdata:
       kind: darling-source
       upstream-repository: darling-libtrace

@@ -134,10 +134,14 @@ Keep diagnostics default-off. See the
 2. Separate workload output from instrument streams. Prefer an owned result file
    under the prefix when transport descriptors are shared. Do not grep away
    mixed lines; if filtering verified whole-line noise, report removed records.
-3. For a West job, use `dwdiag evidence --state-dir JOB`; census the selected
-   log with `dwdiag witness --log LOG`. They inventory available evidence and
-   registered instruments, not complete runtime coverage. Missing/partial logs,
-   disabled probes and exhausted record budgets are not measured zeros.
+3. For a finished West job, start with `dwdiag job --state-dir JOB`; use
+   `progress --state-dir JOB` and `evidence --state-dir JOB` for focused views.
+   They use persisted runtime/prefix selection and finite registered captures,
+   not the observer's environment or mutable prefix history. Producers register
+   known log paths before writing via `west-job.sh register`; discovery alone
+   supplies no source boundary. Missing/partial captures and disabled probes
+   are unavailable, not measured zeros; ambient cores/kernel history are not
+   attributable replacements. Current process observations are a separate instant.
 4. Log growth/flatness, phase and last-write age do not show whether YOUR process
    is alive or blocked. Ask `dwdiag processes`, `waits` or the workload's exit;
    `loops` diagnoses repetition, not successful execution.

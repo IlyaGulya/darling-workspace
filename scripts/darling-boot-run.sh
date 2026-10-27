@@ -96,6 +96,15 @@ CLEANUP_PROCESSES=null
 CLEANUP_MOUNTS=null
 CLEANUP_LAYER_MOUNTS=null
 CLEANUP_SHUTDOWN_RC=null
+LAUNCHER_RC=null
+LAUNCHER_PID=
+CLEANUP_RESCUE_RC=null
+CLEANUP_RESCUE_PROCESSES=null
+CLEANUP_EXTERNAL_RESCUE=false
+
+rescue_owned() {
+	python3 -B "$DARLING_WORKSPACE_ROOT/west_commands/test_prefix.py" --prefix "$PREFIX" --rescue
+}
 
 parse_args() {
 while [ $# -gt 0 ]; do
@@ -141,6 +150,23 @@ $2"; shift 2 ;;
 done
 }
 parse_args "$@"
+
+register_harness_output() {
+	[ -n "${WEST_JOB_STATE_DIR:-}" ] || return 0
+	[ "$LIST_OWNED" != 1 ] || return 0
+	set --
+	for _fd in 1 2; do
+		_output=$(readlink "/proc/$$/fd/$_fd" 2>/dev/null)
+		case "$_output" in
+			/*) [ ! -f "$_output" ] || set -- "$@" file "$_output" ;;
+		esac
+	done
+	[ "$#" -ne 0 ] || return 0
+	"$SCRIPT_DIR/west-job.sh" register --state-dir "$WEST_JOB_STATE_DIR" -- "$@"
+}
+# Register the real caller-owned console before preflight can fail. A printed
+# path is not a registration channel, and no ambient directory is consulted.
+register_harness_output || exit $?
 
 [ -n "$PREFIX" ] || { echo "usage: $0 --prefix PATH --wait SECONDS [--marker NAME]..." >&2; exit 2; }
 [ -n "$WAIT" ] || [ "$LIST_OWNED" = 1 ] || { echo "usage: $0 --prefix PATH --wait SECONDS [--marker NAME]..." >&2; exit 2; }
@@ -675,9 +701,9 @@ bundle_server_count() {
 # Only bundle-owned copies are eligible; the ongoing external $LOG and prefix logs are never passed here.
 bundle_finalize() {
 	[ "$BUNDLE" = 1 ] || return 0
-	if printf '{"state":"%s","processes":%s,"mounts":%s,"layer_mounts":%s,"shutdown_rc":%s}\n' \
+	if printf '{"state":"%s","processes":%s,"mounts":%s,"layer_mounts":%s,"shutdown_rc":%s,"launcher_rc":%s,"rescue_rc":%s,"rescue_processes":%s,"external_rescue":%s}\n' \
 		"$CLEANUP_STATE" "$CLEANUP_PROCESSES" "$CLEANUP_MOUNTS" "$CLEANUP_LAYER_MOUNTS" \
-		"$CLEANUP_SHUTDOWN_RC" > "$BUNDLE_DIR/cleanup.json"; then
+		"$CLEANUP_SHUTDOWN_RC" "$LAUNCHER_RC" "$CLEANUP_RESCUE_RC" "$CLEANUP_RESCUE_PROCESSES" "$CLEANUP_EXTERNAL_RESCUE" > "$BUNDLE_DIR/cleanup.json"; then
 		bundle_present cleanup "$BUNDLE_DIR/cleanup.json" "final prefix teardown observations; retained runtimes have null measurements, not measured zeros"
 	else
 		BUNDLE_FAILED=1
@@ -769,35 +795,22 @@ fi
 witness "TEARDOWN stage=shutdown-exit rc=$start_shutdown_rc self=$$"
 sleep 3
 start_rescue=$(count_owned) || exit $?
-# Rescue only makes the lane safe; it cannot establish production shutdown.
-# Kill, then SETTLE: a process that has just been signalled is still enumerable for a moment (and a zombie whose
-# parent has not reaped it stays visible). Declaring failure on the first count produced a false failure the first
-# time this script was used -- so re-check in bounded rounds instead of racing the kernel.
-owned_pids | while read -r pid; do
-	anc=$(own_ancestors | tr '\n' ' ')
-	case " $anc " in *" $pid "*) witness "SKIP-KILL pid=$pid reason=ancestor"; continue ;; esac
-	witness "KILL pid=$pid sig=9 reason=owned"; kill -9 "$pid" 2>/dev/null
-done
-left=1
-i=0
-while [ "$i" -lt 10 ]; do
-	sleep 2
-	left=$(count_owned) || exit $?
-	[ "$left" -eq 0 ] && break
-	owned_pids | while read -r pid; do
-	anc=$(own_ancestors | tr '\n' ' ')
-	case " $anc " in *" $pid "*) witness "SKIP-KILL pid=$pid reason=ancestor"; continue ;; esac
-	witness "KILL pid=$pid sig=9 reason=owned"; kill -9 "$pid" 2>/dev/null
-done
-	i=$((i + 1))
-done
-if [ "$start_shutdown_rc" -ne 0 ] || [ "$start_rescue" -ne 0 ]; then
-	echo "clean start FAILED: product shutdown rc=$start_shutdown_rc, rescue processes=$start_rescue; refusing acceptance after rescue" >&2
+# Only the shared owner census and pinned/revalidated signal API authorize rescue.
+rescue_owned
+start_rescue_rc=$?
+left=$(count_owned) || exit $?
+if [ "$start_shutdown_rc" -ne 0 ] || [ "$start_rescue" -ne 0 ] || [ "$start_rescue_rc" -ne 0 ]; then
+	echo "clean start FAILED: product shutdown rc=$start_shutdown_rc, rescue processes=$start_rescue rc=$start_rescue_rc; refusing acceptance after rescue" >&2
 	exit 1
 fi
 if [ "$left" -gt 0 ]; then
-	echo "clean start FAILED: $left prefix-owned processes remain after $i settle rounds" >&2
+	echo "clean start FAILED: $left prefix-owned processes remain after verified rescue" >&2
 	owned_pids | head -5 >&2
+	exit 1
+fi
+start_residual=$(darling_prefix_residual_pids "$PREFIX") || exit $?
+if [ -n "$start_residual" ]; then
+	echo "clean start FAILED: unverified prefix runtime residue remains; markers do not authorize rescue: $start_residual" >&2
 	exit 1
 fi
 echo "clean: 0 prefix-owned processes, starting"
@@ -837,6 +850,13 @@ else
 	HATCH_ENV=""
 fi
 : > "$LOG"
+if [ -n "${WEST_JOB_STATE_DIR:-}" ]; then
+	# The log was just reset; snapshot its zero boundary before the first byte.
+	"$SCRIPT_DIR/west-job.sh" register --state-dir "$WEST_JOB_STATE_DIR" -- file "$LOG" || {
+		echo "run evidence registration failed" >&2
+		exit 2
+	}
+fi
 # A RUN'S LOG MUST SAY WHICH PREFIX IT BELONGS TO. `dwdiag` resolves the SERVER log from a `prefix=` field in the
 # run log itself (resolve_prefix in tools/darling-debug-runner reads the first `prefix=` token and trims `]`), and
 # a `--prefix` on the command line does NOT override it for that purpose. Without this line every log-only tool fell
@@ -865,6 +885,16 @@ echo "[dwdiag-env prefix=$PREFIX runtime-root=$DARLING_RUNTIME_ROOT launcher=$DA
 env $HATCH_ENV $EXTRA_ENV \
 	timeout "$((WAIT + 60))" \
 	"$DARLING_LAUNCHER" shell /bin/bash -c "$CMD" >> "$LOG" 2>&1 8<&- 9<&- &
+LAUNCHER_PID=$!
+observe_launcher() {
+	[ "$LAUNCHER_RC" = null ] || return 0
+	if ! jobs -pr | grep -Fxq -- "$LAUNCHER_PID"; then
+		jobs -ps | grep -Fxq -- "$LAUNCHER_PID" && return 0
+		wait "$LAUNCHER_PID"
+		LAUNCHER_RC=$?
+		printf 'LAUNCHER-EXIT rc=%s\n' "$LAUNCHER_RC" | tee -a "$LOG"
+	fi
+}
 
 # Wait for explicit --poll, or every explicit status field when no poll was supplied.
 # Ordinary presence markers are not completion: they may open an observation window before the result.
@@ -876,6 +906,10 @@ else
 fi
 _waited=0
 while [ "$_waited" -lt "$WAIT" ]; do
+	observe_launcher
+	if [ "$LAUNCHER_RC" != null ] && [ "$LAUNCHER_RC" -ne 0 ]; then
+		break
+	fi
 	if [ "$POLL_STATUS" = 1 ]; then
 		_complete=1
 		_poll_ifs=$IFS; IFS='|'
@@ -897,6 +931,7 @@ while [ "$_waited" -lt "$WAIT" ]; do
 	sleep 1
 	_waited=$((_waited + 1))
 done
+observe_launcher
 # The boundary reached is part of the LOG, not just of this console: a verdict rule that has to tell "the workload
 # failed" from "we stopped measuring" reads the log, and a line that only ever reached a terminal cannot be judged
 # later (MEASURED: the offline verdict could not see this and kept calling a watchdog stop a CRASH).
@@ -904,6 +939,10 @@ echo "waited ${_waited}s of at most ${WAIT}s" | tee -a "$LOG"
 
 STAGE=verdict; echo "== verdict =="
 verdict=0
+if [ "$LAUNCHER_RC" != null ] && [ "$LAUNCHER_RC" -ne 0 ]; then
+	verdict=1
+	echo "producer failed: launcher rc=$LAUNCHER_RC (see $LOG)"
+fi
 # The workload's own status, kept for the STOP-REASON classifier below: 132 is a SIGILL, not a number to read.
 LAST_STATUS_VALUE=""
 # THE WORKLOAD'S OWN STATUS (dar-u4mk). A declaration that names a VALUE -- `--status-marker FIELD=`, a `--marker`
@@ -1000,6 +1039,7 @@ bundle_finish
 # and the cause was still found by hand-grepping 27 KB -- because the bundle was reported, not read. The
 # classifier reads the log plus the bundle's captures/abort text; a passing run prints kind=none, which is a
 # statement about the evidence, never about the verdict.
+report_stop_reason() {
 STAGE=stop-reason
 if [ -x "$SCRIPT_DIR/darling-stop-reason.sh" ]; then
 	_sr_extra=""
@@ -1031,6 +1071,7 @@ if [ -x "$SCRIPT_DIR/darling-stop-reason.sh" ]; then
 else
 	echo "STOP-REASON kind=unknown note=no $SCRIPT_DIR/darling-stop-reason.sh"
 fi
+}
 
 if [ "${FREEZE_ON_FAIL:-0}" -eq 1 ] && [ "$verdict" -ne 0 ]; then
 	STAGE=freeze; echo "== freeze-on-fail (diagnostic) =="
@@ -1038,7 +1079,9 @@ if [ "${FREEZE_ON_FAIL:-0}" -eq 1 ] && [ "$verdict" -ne 0 ]; then
 	echo "FREEZE-ON-FAIL inspect now, then clean up with: west darling-prefix-repair --prefix $PREFIX --cleanup-mounts"
 	echo "FREEZE-ON-FAIL or: DPREFIX=$PREFIX DARLING_RUNTIME_ROOT=$DARLING_RUNTIME_ROOT $DARLING_LAUNCHER shutdown"
 	CLEANUP_STATE=retained
+	report_stop_reason
 	bundle_finalize
+	if [ "$LAUNCHER_RC" != null ] && [ "$LAUNCHER_RC" -ne 0 ]; then exit "$LAUNCHER_RC"; fi
 	exit 1
 fi
 
@@ -1053,24 +1096,14 @@ if [ "$CLEANUP_SHUTDOWN_RC" -ne 0 ] || [ "$rescue_processes" -ne 0 ]; then
 	echo "cleanup FAILED: product shutdown rc=$CLEANUP_SHUTDOWN_RC, rescue processes=$rescue_processes" >&2
 	verdict=1
 fi
-owned_pids | while read -r pid; do
-	anc=$(own_ancestors | tr '\n' ' ')
-	case " $anc " in *" $pid "*) witness "SKIP-KILL pid=$pid reason=ancestor"; continue ;; esac
-	witness "KILL pid=$pid sig=9 reason=owned"; kill -9 "$pid" 2>/dev/null
-done
-final=1
-i=0
-while [ "$i" -lt 10 ]; do
-	sleep 2
-	final=$(count_owned) || exit $?
-	[ "$final" -eq 0 ] && break
-	owned_pids | while read -r pid; do
-	anc=$(own_ancestors | tr '\n' ' ')
-	case " $anc " in *" $pid "*) witness "SKIP-KILL pid=$pid reason=ancestor"; continue ;; esac
-	witness "KILL pid=$pid sig=9 reason=owned"; kill -9 "$pid" 2>/dev/null
-done
-	i=$((i + 1))
-done
+rescue_owned
+CLEANUP_RESCUE_RC=$?
+CLEANUP_RESCUE_PROCESSES=$rescue_processes
+if [ "$CLEANUP_RESCUE_RC" -ne 0 ] || [ "$rescue_processes" -ne 0 ]; then
+	verdict=1
+fi
+case "$CLEANUP_RESCUE_RC" in 3|4) CLEANUP_EXTERNAL_RESCUE=true ;; esac
+final=$(count_owned) || exit $?
 # A runtime with only a matching environment marker cannot be signalled, but
 # it is still residue. Do not publish zero merely because kill authority is absent.
 residual=$(darling_prefix_residual_pids "$PREFIX") || exit $?
@@ -1094,8 +1127,12 @@ if [ "$final" -eq 0 ] && [ "$mounts" -eq 0 ]; then
 fi
 echo "prefix processes after: $final, mounts: $mounts (plus $layer_mounts prefix layer mount(s))"
 CLEANUP_STATE=clean
-if [ "$CLEANUP_SHUTDOWN_RC" -ne 0 ] || [ "$rescue_processes" -ne 0 ]; then
+if [ "$CLEANUP_EXTERNAL_RESCUE" = true ]; then
 	CLEANUP_STATE=rescued
+elif [ "$CLEANUP_RESCUE_RC" -ne 0 ]; then
+	CLEANUP_STATE=unavailable
+elif [ "$CLEANUP_SHUTDOWN_RC" -ne 0 ]; then
+	CLEANUP_STATE=failed-shutdown
 fi
 CLEANUP_PROCESSES=$final
 CLEANUP_MOUNTS=$mounts
@@ -1105,11 +1142,19 @@ if [ "$final" -gt 0 ] || [ "$mounts" -gt 0 ]; then
 	CLEANUP_STATE=residue
 	verdict=1
 fi
+observe_launcher
+if [ "$LAUNCHER_RC" != null ] && [ "$LAUNCHER_RC" -ne 0 ]; then
+	verdict=1
+fi
+report_stop_reason
 bundle_finalize
 
 if [ "$verdict" = 0 ]; then
 	echo "VERDICT: PASS"
 else
 	echo "VERDICT: FAIL"
+fi
+if [ "$LAUNCHER_RC" != null ] && [ "$LAUNCHER_RC" -ne 0 ]; then
+	exit "$LAUNCHER_RC"
 fi
 exit "$verdict"

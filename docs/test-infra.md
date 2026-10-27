@@ -734,6 +734,13 @@ mise run west -- test --source-root "$S" --runtime-root "$R" --prefix "$P" \
   --env darling --workload backtrace-async
 ```
 
+`--workload os-log-enablement` exercises the installed logging API with real
+Clang Blocks and encoded `os_log` emissions: type ordering, hook filtering,
+reentrancy and replacement ownership, private/public and immutable/writable
+string handling, stable message snapshots, caller-owned copies and invalid-input
+traps. Its failure diagnostics print the actual and expected message values.
+Native semantic references and guest execution are independent evidence.
+
 E-UNION cases validate immutable lower inputs from the optional product
 `tests-data` component in `R`. The typed `darling-eunion-prefix` resource stages
 only per-case upper state in `P`; it never installs or replaces runtime files.

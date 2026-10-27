@@ -5,6 +5,7 @@ usage() {
 	cat >&2 <<'USAGE'
 usage:
   west-job.sh start --state-dir DIR [--activity-log PATH ...] -- west test ...
+  west-job.sh register --state-dir DIR -- file ABS_PATH [directory ABS_DIR ...]
   west-job.sh status --state-dir DIR
   west-job.sh follow --state-dir DIR [--timeout-seconds N] [--activity-log PATH ...] [--quiet]
   west-job.sh wait --state-dir DIR
@@ -17,10 +18,13 @@ inspect directly.
 
 Follow reports the latest phase marker and log-change age for each log. Optional
 activity logs are host paths; start remembers them, while follow adds paths only
-for that observer. Children atomically publish NUL-delimited kind/path pairs in
-WEST_JOB_STATE_DIR/activity-logs.d/*.logs (file or directory, absolute host path).
-Directory registrations follow immediate regular files, not recursive trees.
-Missing logs may appear later. Silence is not a hang verdict.
+for that observer. Producers call register before writing known file paths; it
+snapshots boundaries and atomically publishes the existing NUL kind/path records
+in WEST_JOB_STATE_DIR/activity-logs.d. Directory registrations follow immediate
+regular files, not recursive trees. Unknown future directory members remain
+observational only and are explicitly unavailable to failure analysis without
+a registered source boundary. Missing explicitly registered files may appear
+later. Silence is not a hang verdict.
 --quiet drops the observer's own heartbeat and keeps everything else: job output,
 phase markers and the final rc. `west dev follow` uses it by default.
 
@@ -30,13 +34,14 @@ triggers the identity-checked descendant and process-group fallback.
 
 A failed job explains itself. start records the effective core-size limit and
 core pattern (and raises the limit for the job and its children), and follow and
-wait run `dwdiag job` when the job's rc is non-zero: witness,
-progress, waits, loops, then a core written by this job or, failing that, the
-kernel's report of the fault. Output is bounded to 24 lines per step and 60
+wait run `dwdiag job` when the job's rc is non-zero: captured log tails,
+instrument activity, progress, waits and repetition. A core requires a finite
+registered capture; ambient cores/kernel history are not attributed. Output is bounded to 24 lines per step and 60
 seconds per step; a step that cannot read something says so instead of printing
 a zero. Set WEST_JOB_NO_AUTODIAG=1 to skip it, WEST_JOB_DIAG_LINES and
-WEST_JOB_DIAG_TIMEOUT_SECONDS to widen it, and DWDIAG_PREFIX (or DPREFIX) to
-give it a prefix to symbolize against.
+WEST_JOB_DIAG_TIMEOUT_SECONDS to widen it. Runtime/prefix selections come from
+the job's actual argv (or inherited selectors only for transparent commands),
+not the observer's environment or opaque shell text.
 USAGE
 	exit 2
 }
@@ -51,35 +56,223 @@ write_command_record() {
 	printf '\n' >>"$target"
 }
 
-# A run's evidence belongs to the run, not to whatever file happens to be newest. This records, at job
-# start, the prefix and every log that exists with the size it had: a later reader slices each file from
-# that offset, so an instrument census cannot pick up another run's lines or miss this run's earlier
-# ones. An absent manifest means the reader must say it guessed.
-write_evidence_manifest() {
-	local target="$1" prefix f
-	{
-		printf 'version=1\n'
-		printf 'start=%s\n' "$(date +%s)"
-		prefix="${DPREFIX:-${DARLING_PREFIX:-}}"
-		if [[ -n "$prefix" ]]; then
-			printf 'prefix=%s\n' "$prefix"
-			printf 'file=%s %s\n' "$prefix/private/var/log/dserver.log" "$(stat -c %s -- "$prefix/private/var/log/dserver.log" 2>/dev/null || echo 0)"
-		fi
-		for f in /tmp/darling-boot-*.log; do
-			[[ -f "$f" ]] || continue
-			printf 'file=%s %s\n' "$f" "$(stat -c %s -- "$f" 2>/dev/null || echo 0)"
-		done
-		if [[ -d "$state_dir/activity-logs.d" ]]; then
-			local entry
-			for entry in "$state_dir"/activity-logs.d/*; do
-				[[ -f "$entry" ]] || continue
-				while IFS= read -r f; do
-					[[ -n "$f" ]] || continue
-					printf 'file=%s %s\n' "$f" "$(stat -c %s -- "$f" 2>/dev/null || echo 0)"
-				done <"$entry"
-			done
-		fi
-	} >"$target"
+# Persist scope from argv, never from the shell-escaped display record. Registration
+# snapshots and final reconciliation use the existing manifest and kind/path protocol.
+evidence_record() {
+	python3 -B - "$(dirname "${BASH_SOURCE[0]}")/.." "$state_dir" "$@" <<'PY'
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+import tempfile
+import time
+
+workspace, state, action, *arguments = sys.argv[1:]
+state = Path(state)
+sys.path.insert(0, str(Path(workspace) / "west_commands"))
+from evidence_storage import (
+    log_start, open_payload, payload_metadata, PayloadNotFoundError,
+    _snapshot, _same_inode, _boundary_matches, _copy_slice,
+)
+
+def safe(path):
+    return path.startswith("/") and not any(c in path for c in "\n\r\t")
+
+def files(kind, path):
+    if kind == "file":
+        return [path]
+    try:
+        return [str(p) for p in Path(path).iterdir() if p.is_file() and not p.is_symlink()]
+    except FileNotFoundError:
+        return []
+
+def boundary(path):
+    digest = hashlib.sha256(os.fsencode(path)).hexdigest()
+    return state / "evidence-boundaries" / (digest + ".json")
+
+def snapshot(path):
+    target = boundary(path)
+    target.parent.mkdir(exist_ok=True)
+    if target.exists():
+        return json.loads(target.read_text())
+    descriptor = None
+    try:
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            try:
+                payload_metadata(Path(path))
+            except PayloadNotFoundError:
+                pass
+            else:
+                raise ValueError("existing compressed source has no retained append boundary")
+        original = Path(f"/proc/{os.getpid()}/fd/{descriptor if descriptor is not None else 2147483647}")
+        return log_start(Path(path), target, original)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+def capture(path):
+    start = json.loads(boundary(path).read_text())
+    if start.get("gap"):
+        raise ValueError(start.get("reason", "invalid start boundary"))
+    output = state / "evidence-logs" / (boundary(path).stem + "-" + Path(path).name)
+    output.parent.mkdir(exist_ok=True)
+    prior = start["original"]
+    with output.open("xb") as destination:
+        if prior is None and not Path(path).exists():
+            remaining = payload_metadata(Path(path))["bytes"]
+            with open_payload(Path(path)) as source:
+                while remaining:
+                    chunk = source.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        raise ValueError("logical source shortened during finite capture")
+                    destination.write(chunk)
+                    remaining -= len(chunk)
+        else:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise ValueError("source is no longer a regular file")
+                current = _snapshot(descriptor)
+                if prior is not None and (
+                    not _same_inode(prior, current) or current["size"] < prior["size"]
+                    or not _boundary_matches(descriptor, prior)
+                ):
+                    raise ValueError("source inode or start boundary changed; no retained original handle")
+                _copy_slice(descriptor, destination, 0 if prior is None else prior["size"], current["size"], "registered")
+                if not _boundary_matches(descriptor, current):
+                    raise ValueError("source changed during finite capture")
+            finally:
+                os.close(descriptor)
+    return str(output)
+
+with (state / "evidence.lock").open("a") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    manifest = state / "evidence-manifest"
+    if action == "start":
+        argv = arguments
+        (state / "command-argv").write_bytes(b"\0".join(os.fsencode(a) for a in argv) + b"\0")
+        selected = {"prefix": [], "runtime-root": []}
+        opaque = False
+        index = 0
+        while index < len(argv):
+            arg = argv[index]
+            if Path(arg).name == "env":
+                opaque = True
+            # These payloads are opaque; their text is not an argv selection.
+            if arg in ("-c", "-lc", "-ic", "--command"):
+                opaque = True
+                break
+            if arg == "--cmd":
+                index += 2
+                continue
+            key = arg.split("=", 1)[0]
+            if key in ("--prefix", "--dprefix", "--runtime-root"):
+                field = "runtime-root" if key == "--runtime-root" else "prefix"
+                if "=" in arg:
+                    value = arg.split("=", 1)[1]
+                else:
+                    index += 1
+                    value = argv[index] if index < len(argv) else ""
+                selected[field].append(value)
+            index += 1
+        lines = ["version=1", f"start={int(time.time())}", "scope=explicit"]
+        for key, env_keys in (("prefix", ("DPREFIX",)), ("runtime-root", ("DARLING_RUNTIME_ROOT",))):
+            values = set(selected[key])
+            source = "argv"
+            if not values and not opaque:
+                values = {os.environ[k] for k in env_keys if os.environ.get(k)}
+                source = "environment"
+            if len(values) == 1 and safe(next(iter(values))):
+                value = next(iter(values))
+                lines += [f"{key}={value}", f"{key}-source={source}"]
+            else:
+                lines.append(f"{key}-unavailable=" + ("ambiguous argv" if len(values) > 1 else "opaque or absent selection"))
+        manifest.write_text("\n".join(lines) + "\n")
+    text = manifest.read_text()
+    if any(line.startswith("end=") for line in text.splitlines()):
+        if action == "finish":
+            raise SystemExit(0)
+        raise ValueError("cannot register evidence after job finalization")
+    known = {line[5:].rsplit(" ", 1)[0] for line in text.splitlines() if line.startswith("file=")}
+    additions = []
+    def record(path, offset):
+        if safe(path) and path not in known:
+            additions.append(f"file={path} {offset}")
+            known.add(path)
+    if action in ("initial", "register"):
+        pairs = list(zip(arguments[::2], arguments[1::2]))
+        if len(arguments) % 2 or any(k not in ("file", "directory") or not safe(p) for k, p in pairs):
+            raise ValueError("expected absolute kind/path pairs")
+        for kind, path in pairs:
+            for item in files(kind, path):
+                try:
+                    start = snapshot(item)
+                    if start.get("gap"):
+                        raise ValueError(start.get("reason", "invalid source boundary"))
+                    record(item, start["original"]["size"] if start["original"] else 0)
+                except (OSError, RuntimeError, ValueError) as error:
+                    additions.append(f"unavailable={item} {error}")
+        if action == "register":
+            directory = state / "activity-logs.d"
+            descriptor, name = tempfile.mkstemp(prefix="activity-", suffix=".tmp", dir=directory)
+            with os.fdopen(descriptor, "wb") as output:
+                for kind, path in pairs:
+                    output.write(os.fsencode(kind) + b"\0" + os.fsencode(path) + b"\0")
+            Path(name).replace(Path(name).with_suffix(".logs"))
+    elif action == "finish":
+        # Discovery is not boundary authority. Every contributing source must
+        # have been snapshotted by this registrar before its producer wrote.
+        for registration in sorted((state / "activity-logs.d").glob("*.logs")):
+            try:
+                descriptor = os.open(registration, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+                with os.fdopen(descriptor, "rb") as source:
+                    if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                        raise ValueError("registration is not a regular file")
+                    data = source.read(65537)
+                fields = data.split(b"\0")
+            except (OSError, ValueError) as error:
+                additions.append(f"unavailable={registration} {error}")
+                continue
+            if len(data) > 65536 or fields[-1] or len(fields) % 2 != 1:
+                additions.append(f"unavailable={registration} invalid registration")
+                continue
+            for raw_kind, raw_path in zip(fields[:-1:2], fields[1::2]):
+                kind, path = os.fsdecode(raw_kind), os.fsdecode(raw_path)
+                if kind not in ("file", "directory") or not safe(path):
+                    additions.append(f"unavailable={registration} invalid registration")
+                    continue
+                for item in files(kind, path):
+                    if item in known:
+                        continue
+                    additions.append(f"unavailable={item} no registered source boundary")
+        rows = []
+        for path in sorted(known):
+            try:
+                output = capture(path)
+                rows += [f"file={output} 0", f"source={output}\t{path}"]
+            except (OSError, RuntimeError, ValueError) as error:
+                rows.append(f"unavailable={path} {error}")
+        text = "\n".join(line for line in text.splitlines() if not line.startswith("file=")) + "\n"
+        manifest.write_text(text)
+        additions.extend(rows)
+        additions.append(f"end={int(time.time())}")
+    if additions:
+        with manifest.open("a") as output:
+            output.write("\n".join(additions) + "\n")
+PY
+}
+
+register_job() {
+	evidence_record register "${STATE_REST[@]}"
+}
+
+finish_evidence_job() {
+	evidence_record finish
 }
 
 registry_dir_for_state_root() {
@@ -372,10 +565,24 @@ diagnose_if_failed() {
 	# The diagnosis is a subcommand of the shared tool, not a script beside this one: one place to
 	# learn it from (`dwdiag diag --help`), one implementation, one JSON mode. If the tool is missing
 	# that is said here, because a failure with no diagnosis must not look like a failure with none.
-	local diag_tool
+	local diag_tool line prefix= runtime=
+	local -a scope_args=() job_args=()
 	diag_tool="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dwdiag"
+	if [[ -f "$state_dir/evidence-manifest" ]]; then
+		while IFS= read -r line; do
+			case "$line" in
+				prefix=*) prefix="${line#prefix=}" ;;
+				runtime-root=*) runtime="${line#runtime-root=}" ;;
+				*-unavailable=*|unavailable=*) printf 'DIAG-UNAVAILABLE %s\n' "$line" ;;
+			esac
+		done <"$state_dir/evidence-manifest"
+	fi
+	[[ -z "$runtime" ]] || scope_args=(--runtime-root "$runtime")
+	[[ -z "$prefix" ]] || job_args=(--prefix "$prefix")
 	if [ -x "$diag_tool" ]; then
-		"$diag_tool" job --state-dir "$state_dir" || true
+		env -u DWDIAG_PREFIX -u DPREFIX -u DARLING_PREFIX -u DARLING_RUNTIME_ROOT \
+			-u DARLING_LAUNCHER -u DARLING_SYSTEM_ROOT \
+			"$diag_tool" "${scope_args[@]}" job --state-dir "$state_dir" "${job_args[@]}" || true
 	else
 		printf 'DIAG-SKIP %s is not executable, so the automatic diagnosis cannot run\n' "$diag_tool"
 	fi
@@ -448,14 +655,24 @@ start_job() {
 	mkdir "$state_dir/activity-logs.d"
 	REGISTRY_STATE_CREATED=1
 	write_command_record "$state_dir/command"
-	write_evidence_manifest "$state_dir/evidence-manifest"
+	evidence_record start "${STATE_REST[@]}"
+	local -a initial_logs=()
+	local log prefix_line
+	for log in "${activity_logs[@]}"; do initial_logs+=(file "$log"); done
+	while IFS= read -r prefix_line; do
+		case "$prefix_line" in
+			prefix=*) initial_logs+=(file "${prefix_line#prefix=}/private/var/log/dserver.log") ;;
+		esac
+	done <"$state_dir/evidence-manifest"
+	evidence_record initial "${initial_logs[@]}"
 	if ((${#activity_logs[@]})); then
 		printf '%s\0' "${activity_logs[@]}" >"$state_dir/activity-logs"
 	fi
 
 	nohup setsid --wait bash -c '
 		state_dir="$1"
-		shift
+		job_script="$2"
+		shift 2
 		export WEST_JOB_ACTIVE=1
 		export WEST_JOB_STATE_DIR="$state_dir"
 		printf "%s\\n" "$$" >"$state_dir/runner-pid"
@@ -465,6 +682,7 @@ start_job() {
 			if [[ -e "$state_dir/cancel-requested" ]]; then
 				rc=143
 			fi
+			"$job_script" finish-evidence --state-dir "$state_dir" || printf "DIAG-UNAVAILABLE evidence finalization failed\n"
 			printf "%s\\n" "$rc" >"$state_dir/rc.tmp"
 			mv "$state_dir/rc.tmp" "$state_dir/rc"
 			exit "$rc"
@@ -497,8 +715,8 @@ start_job() {
 		awk "{print \$22}" "/proc/$command_pid/stat" >"$state_dir/command-start-time"
 		wait "$command_pid"
 		finish "$?"
-	' bash "$state_dir" "${STATE_REST[@]}" \
-		>"$state_dir/log" 2>&1 < /dev/null &
+	' bash "$state_dir" "$(realpath -- "${BASH_SOURCE[0]}")" "${STATE_REST[@]}" \
+		{REGISTRY_LOCK_FD}>&- >"$state_dir/log" 2>&1 < /dev/null &
 	REGISTRY_LAUNCHED_PID=$!
 	local pid="$REGISTRY_LAUNCHED_PID"
 	printf '%s\n' "$pid" >"$state_dir/pid"
@@ -896,9 +1114,13 @@ command="${1:-}"
 shift
 
 case "$command" in
-	start|status|wait|cancel)
+	start|status|wait|cancel|register)
 		parse_state_dir "$@"
 		"${command}_job"
+		;;
+	finish-evidence)
+		parse_state_dir "$@"
+		finish_evidence_job
 		;;
 	follow)
 		parse_follow "$@"

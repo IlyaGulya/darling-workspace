@@ -29,6 +29,7 @@ import importlib.util
 import contextlib
 import io
 import json
+import hashlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -1000,6 +1001,59 @@ def test_cover_json_cli(tmp):
     print("PASS cover CLI: selected bundle/Contents, machine-readable stops, and incomplete input")
 
 
+def test_missing_census_storage(tmp):
+    referrer = write(tmp / "runtime/libClient.dylib", "selected referrer bytes\n")
+    field = "/usr/lib/libSystem.B.dylib"
+    graph = {
+        "entries": [{"entry": "/usr/lib/libClient.dylib"}],
+        "counts": {"missing": 1, "absent-weak": 1, "absent-lazy": 1},
+        "images": {
+            "/usr/lib/libClient.dylib": {
+                "path": str(referrer),
+                "imports": [
+                    {"name": "_needed", "label": "missing", "field": field,
+                     "lib_ordinal": 1, "weak": False, "eager": True},
+                    {"name": "_optional", "label": "absent-weak", "field": field,
+                     "lib_ordinal": 1, "weak": True, "eager": True},
+                    {"name": "_deferred", "label": "absent-lazy", "field": field,
+                     "lib_ordinal": 1, "weak": False, "eager": False},
+                ],
+            },
+        },
+    }
+    source = write(tmp / "cover.json", json.dumps(graph, indent=2) + "\n")
+    report = tmp / "missing.json"
+    command = [sys.executable, "-B", str(SCRIPTS / "closure_missing.py"),
+               str(source), "--json", str(report)]
+    raw = subprocess.run(command, capture_output=True, text=True)
+    check(raw.returncode == 1, f"strong eager demand must remain a finding: {raw}")
+    baseline = json.loads(report.read_text())
+    check([row["symbol"] for row in baseline["missing"]] == ["_needed"],
+          f"weak and lazy imports must not become eager symbol stops: {baseline}")
+    row = baseline["missing"][0]
+    check(row["field"] == field and row["weak"] is False and row["eager"] is True
+          and row["referrer_sha256"] == hashlib.sha256(referrer.read_bytes()).hexdigest(),
+          f"the stop must retain its supplying field and actual referrer identity: {row}")
+    zstd = shutil.which("zstd")
+    if zstd is None:
+        print("SKIP archived missing-census contract: zstd is not installed")
+        return
+    stored = source.with_name(source.name + ".zst")
+    with stored.open("wb") as output:
+        subprocess.run([zstd, "-q", "-c", str(source)], stdout=output, check=True)
+    source.unlink()
+    archived = subprocess.run(command, capture_output=True, text=True)
+    check(archived.returncode == 1, f"archival must not erase the eager stop: {archived}")
+    check(json.loads(report.read_text())["missing"] == baseline["missing"],
+          "raw and archived graphs must retain the same unresolved demands and identities")
+    report.unlink()
+    stored.write_bytes(b"not a zstd frame")
+    corrupt = subprocess.run(command, capture_output=True, text=True)
+    check(corrupt.returncode == 2 and not report.exists(),
+          f"corrupt archived input must not publish a successful or empty census: {corrupt}")
+    print("PASS missing census: pure JSON and archived graphs preserve eager stops; corruption fails closed")
+
+
 def test_cli(tmp):
     tmp.mkdir(parents=True, exist_ok=True)
     for script in ("closure_analyze.py", "rung-driver.py", "west-pin-sync.py"):
@@ -1040,6 +1094,7 @@ def main():
         test_pin_worktree(tmp / "pin-worktree")
         test_pin_selection(tmp / "pin-selection")
         test_cover_json_cli(tmp / "cover-cli")
+        test_missing_census_storage(tmp / "missing-census")
         test_cli(tmp / "cli")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

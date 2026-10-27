@@ -90,6 +90,112 @@ test "$follow_failure_rc" = 7
 grep -F -x -q 'FOLLOW_FAILURE' "$tmp/follow-failure.out"
 grep -F -x -q "completed rc=7 state=$tmp/follow-failure" "$tmp/follow-failure.out"
 
+# A finite real argv producer registers its own logs before writing. Neither
+# ambient scope nor an unregistered decoy may become this job's evidence.
+python3 - "$job" "$tmp" <<'PY'
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+job, root = sys.argv[1], Path(sys.argv[2])
+producer = root / "producer.py"
+producer.write_text("""
+import fcntl, os, sys, subprocess
+from pathlib import Path
+state = Path(os.environ["WEST_JOB_STATE_DIR"])
+for entry in Path("/proc/self/fd").iterdir():
+    try:
+        target = os.readlink(entry)
+    except FileNotFoundError:
+        continue
+    assert not target.endswith("/.west-job-registry/.lock"), target
+child = state / "compile.log"
+subprocess.run([sys.argv[1], "register", "--state-dir", str(state),
+                "--", "file", str(child)], check=True)
+child.write_text("ACTUAL_COMPILER_FAILURE: undeclared identifier\\n")
+with Path(sys.argv[2]).open("a") as output:
+    output.write("THIS_RUN_ACTIVITY\\n")
+rotated = Path(sys.argv[2]).with_name("rotated.log")
+replacement = rotated.with_suffix(".replacement")
+replacement.write_text("UNATTRIBUTABLE_REPLACEMENT_BYTES\\n")
+replacement.replace(rotated)
+raise SystemExit(7)
+""")
+initial = root / "initial-activity.log"
+initial.write_text("PREVIOUS_RUN_ACTIVITY\n")
+rotated = root / "rotated.log"
+rotated.write_text("PREVIOUS_INODE_BYTES\n")
+decoy = root / "unregistered-decoy.log"
+decoy.write_text("UNRELATED_DECOY_FAILURE\n")
+prefix, runtime = root / "argv-prefix", root / "argv-runtime"
+prefix.mkdir()
+runtime.mkdir()
+state = root / "argv-failure"
+environment = dict(os.environ, DPREFIX=str(root / "ambient-prefix"),
+                   DARLING_RUNTIME_ROOT=str(root / "ambient-runtime"))
+argv = [sys.executable, str(producer), job, str(initial),
+        "--runtime-root", str(runtime), "--prefix", str(prefix)]
+subprocess.run([job, "start", "--state-dir", str(state),
+                "--activity-log", str(initial), "--activity-log", str(rotated), "--", *argv],
+               env=environment, check=True)
+result = subprocess.run([job, "wait", "--state-dir", str(state)],
+                        env={key: value for key, value in os.environ.items() if key != "CODEX_CI"},
+                        capture_output=True, text=True, timeout=180)
+assert result.returncode == 7, (result.stdout, result.stderr)
+manifest = (state / "evidence-manifest").read_text()
+assert f"prefix={prefix}\n" in manifest, manifest
+assert f"runtime-root={runtime}\n" in manifest, manifest
+assert (state / "command-argv").read_bytes() == b"\0".join(os.fsencode(a) for a in argv) + b"\0"
+copies = dict((original, copy) for copy, original in
+              (line[7:].split("\t", 1) for line in manifest.splitlines() if line.startswith("source=")))
+assert "ACTUAL_COMPILER_FAILURE" in Path(copies[str(state / "compile.log")]).read_text()
+activity = Path(copies[str(initial)]).read_text()
+assert "THIS_RUN_ACTIVITY" in activity and "PREVIOUS_RUN_ACTIVITY" not in activity, activity
+assert str(decoy) not in manifest and "/tmp/darling-boot-" not in manifest, manifest
+assert str(rotated) not in copies, copies
+assert f"unavailable={rotated} " in manifest, manifest
+assert "ACTUAL_COMPILER_FAILURE" in result.stdout, result.stdout
+
+# Scope text inside an opaque shell payload cannot override unavailable scope,
+# even if the observer has plausible environment selectors.
+opaque = root / "opaque-failure"
+subprocess.run([job, "start", "--state-dir", str(opaque), "--", "/bin/sh", "-c",
+                "printf '%s\\n' '--prefix /wrong --runtime-root /wrong'; exit 9"],
+               env=environment, check=True)
+result = subprocess.run([job, "follow", "--quiet", "--state-dir", str(opaque)],
+                        capture_output=True, text=True, timeout=180)
+assert result.returncode == 9, (result.stdout, result.stderr)
+manifest = (opaque / "evidence-manifest").read_text()
+assert "prefix-unavailable=" in manifest and "runtime-root-unavailable=" in manifest, manifest
+assert not any(line.startswith(("prefix=", "runtime-root=")) for line in manifest.splitlines()), manifest
+
+selector = root / "selector.py"
+selector.write_text("""
+import argparse
+p = argparse.ArgumentParser()
+p.add_argument("--prefix", "--dprefix", action="append")
+p.add_argument("--runtime-root")
+p.parse_args()
+""")
+for name, selections, expected in (
+    ("alias-scope", ["--dprefix", str(prefix)], str(prefix)),
+    ("ambiguous-scope", ["--prefix", str(prefix), "--dprefix", str(root / "other-prefix")], None),
+):
+    state = root / name
+    subprocess.run([job, "start", "--state-dir", str(state), "--",
+                    sys.executable, str(selector), "--runtime-root", str(runtime), *selections],
+                   env=environment, check=True)
+    subprocess.run([job, "follow", "--quiet", "--state-dir", str(state)],
+                   capture_output=True, text=True, timeout=30, check=True)
+    manifest = (state / "evidence-manifest").read_text()
+    if expected is None:
+        assert "prefix-unavailable=ambiguous argv" in manifest, manifest
+        assert not any(line.startswith("prefix=") for line in manifest.splitlines()), manifest
+    else:
+        assert f"prefix={expected}\n" in manifest, manifest
+PY
+
 "$job" start --state-dir "$tmp/follow-resume" -- /usr/bin/python3 -c '
 import time
 print("FOLLOW_RESUME_READY", flush=True)

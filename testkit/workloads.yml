@@ -6378,6 +6378,27 @@ workloads:
   - -Wall
   - -Wextra
   - -Werror
+- id: os-log-enablement
+  name: os-log-enablement
+  module: darling
+  repo: darling
+  bead: dar-production-runtime-cutover-gtci.5
+  runner: guest-c-fixture
+  script: tests/src/os_log_enablement.c
+  env: darling
+  coverage-tier: runtime
+  diag: bare
+  ok-marker: DARLING_OS_LOG_ENABLEMENT_OK
+  requires:
+  - darling-prefix
+  timeout-seconds: 30
+  compile-flags:
+  - -std=gnu11
+  - -m64
+  - -fblocks
+  - -Wall
+  - -Wextra
+  - -Werror
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke

@@ -1542,6 +1542,12 @@
       "policy": "abi_toolchain_reference_review",
       "reason": "Source-reviewed darling/tests/src/backtrace_async.c: calls the installed backtrace_async and pthread_stack_frame_decode_np against real x86_64 extended stack frames and Swift ABI continuation/TSD task records. Checks caller PC, continuation order and +1 symbolication offset, task ID, optional task-ID output, bounded writes and frame-tag stripping. A native reference requires x86_64 macOS 12 or newer and review of the reserved Swift TSD/task-header ABI; this declaration and synthetic ABI input are not native execution or approval.",
       "identity_sha256": "45344dac12d030a8c779f9e48370bc49cc06666bf53255e5a6c4df7dc4331d65"
+    },
+    "os-log-enablement": {
+      "name": "os-log-enablement",
+      "policy": "abi_toolchain_reference_review",
+      "reason": "Source-reviewed darling/tests/src/os_log_enablement.c: exercises real libSystem logging exports, type ordering and raw type access, invalid-input traps, Block hook threshold/reset and ownership, synchronous reentrancy suppression, and independently owned explicit-public/private message copies. Uses x86_64 Clang Blocks and private modern Darwin logging ABI; independent macOS 26.6.2 reference probes establish individual contracts. Whole-fixture native and installed-runtime execution are separate evidence, not implied by this policy.",
+      "identity_sha256": "076dd8e2e22cb7767f4cd12dc3d442d1c03d70d366ad5dedea715389b1bf4f46"
     }
   }
 }

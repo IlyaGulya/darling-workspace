@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from prefix_repair import cleanup_prefix_mounts
-from test_prefix import cleanup_rootless_prefix_processes, cleanup_rootless_runtime_sockets, prefix_process_ownership_snapshot
+from test_prefix import cleanup_verified_prefix_processes, cleanup_rootless_runtime_sockets, prefix_process_ownership_snapshot
 
 try:
     from .runtime_install import InstalledRuntime, RuntimeInstallationError, prefix_path_is_safe, resolve_runtime
@@ -299,7 +299,7 @@ def remove_fresh_prefix(path: Path, *, temp_root: Path) -> FreshPrefixResult:
     if not target.is_dir():
         return FreshPrefixResult(problems=[f"fresh prefix is not a directory: {target}"])
     result = FreshPrefixResult(path=target)
-    process_cleanup = cleanup_rootless_prefix_processes(target)
+    process_cleanup = cleanup_verified_prefix_processes(target)
     result.changed.extend(process_cleanup.changed)
     result.problems.extend(process_cleanup.problems)
     mount_cleanup = cleanup_prefix_mounts(target)

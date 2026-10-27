@@ -100,7 +100,7 @@ illustrations are examples, never defaults or proof about another run.
 | `scripts/guest-probe.h` | the probe contract | single literal tag, one syscall, registers preserved, and the Linux syscall-numbering rule |
 | `scripts/closure_analyze.py` | the Xcode load closure and the evidence for each supplying route | ordinary CMake `install_manifest.txt` records expanded installation paths; `--declarations` reports missing recorded files or a missing install prerequisite, not complete source/install reconciliation. `--sweep` classifies routes with evidence. CMake target-name and bounded source searches are heuristics, not installed-file or runtime proof. `STATIC_CALLING`, `STATIC_NONCALLING` and `STATIC_UNATTRIBUTED` are static code-shape classifications; JSON retains `evidence_tier=static`, `runtime_status=unverified` |
 | `scripts/closure_analyze.py --cover --runtime-root R --prefix P` | the load closure at SYMBOL granularity and the first modeled loader stop | resolves the writable `P` upper and installed `R/libexec/darling` lower, then permitted Xcode paths; follows nested re-exports, aliases, flat/weak lookup and loader-chain `LC_RPATH`s. `--order N` predicts absent eager demands; `--without`/`--without-symbol` model a past state; `--json` writes the graph. This is static structure, not observed runtime success |
-| `scripts/closure_missing.py` | the missing census of a retained `--cover` graph | adds no resolution of its own; prints labels, strong eager demands, binding flags and referrer hashes/routes. A PREFIX image can come from the selected upper or installed lower; the other route is XCODE. Nonzero while demands remain |
+| `scripts/closure_missing.py COVER_JSON [--json REPORT] [--order N]` | the missing census of a retained `--cover --json` graph | reads the pure JSON graph through its raw or indexed `.zst` logical path; adds no resolution of its own. Reports labels, strong eager demands, binding flags and referrer hashes/routes. Exit 1 means modeled loader demands remain; exit 2 means unreadable, corrupt or invalid input, never an empty census. A PREFIX image can come from the selected upper or installed lower; the other route is XCODE |
 | `scripts/rung-driver.py` | the current loader rung and structural verification | `stop --log LOGICAL_RUN_LOG --runtime-root R --prefix P` reads raw/indexed `.zst` evidence. Unknown observed referrers fail, not `NO-REFERRER`. `verify --component X --runtime-root R --prefix P` checks selected-image exports/re-exports and payload == installed reference == selected guest image; `--fail-on-installed-miss` additionally gates the installed reference's own export surface. Source routing, static loader structure and file identity are not consumer-visible runtime proof |
 | `scripts/west-pin-sync.py` | whether `west.yml`'s revisions match the darling superproject's gitlinks | `check` prints the before/after table and fails when a pin is behind its gitlink; `sync` rewrites only the `revision:` values of named projects (comments and formatting survive); a pin **ahead** of its gitlink is refused unless `--allow-downgrade` says so |
 
@@ -261,7 +261,7 @@ The roster is generated from the tool's own `--help` and a contract fails when i
 | `dwdiag ring` | Decode the server's lock-free event ring: the fixed six-word records a dump prints, their schema, and what the dump CANNOT show. The ring exists so a diagnostic event never prints or syscalls on the path it observes (`dtape_test_ring_record` reserves one slot with a single atomic RMW and then stores, so a torn record is possible by design and overwritten records are simply absent). A reader that skips those two facts reports half-written events as measurements and silence as evidence, which is why this is a command and not a grep |
 | `dwdiag witness` | Report which INSTRUMENTS fired in a run log, and which stayed SILENT. A registered instrument with zero hits is the failure this exists to catch: a guard that silently does nothing cannot be told from no guard at all, and a hand-written grep over one log finds a line but cannot tell you which of the other instruments never spoke |
 | `dwdiag evidence` | Say what a finished run's instrument evidence IS before anything censuses it: which registered windows belong to this run, what was truncated, rotated or unreadable, and which state the census below is in. It is the read half of the run manifest `west-job.sh` writes at start, and it exists so an unreadable log is reported as `unavailable`/`partial` rather than as an instrument that stayed silent |
-| `dwdiag job` | Diagnose one finished run as a whole: census the instruments, say where it stopped, join the wait/wake vocabulary, look for a loop, then read a core or the kernel's report -- and report what the processes are doing now, per thread, with the kernel stacks when root is available. This exists so a job owner never has to know which of the other commands answers which question, which is how evidence gets missed |
+| `dwdiag job` | Diagnose a finished managed job using its persisted scope and finite captured logs: show actual failure bytes, instrument activity, progress, waits and repetition. A core requires an unambiguous registered capture; ambient cores and boot-wide kernel logs are never attributed. Current process observations are scoped separately to the selected prefix/runtime, not evidence of the past run |
 | `dwdiag unwind` | Read a stopped guest's stacks: per-thread rsp from the debugger, then the words above it, filtered to guest images and symbolized. Host gdb cannot walk a Darwin-ABI frame, so this is how a stuck guest gets function names instead of a plausible story. With --catch SIGNAL it instead attaches, arms a stop on that signal, resumes the target and reports the trap |
 | `dwdiag waits` | Join the server's whole wait/wake vocabulary per ulock object: who waits, who owns, and whether a wake was ever issued for it. A stall is not diagnosed by the last log line, and this table was re-derived by hand in every investigation until it became a command |
 | `dwdiag trace` | The chronologically ordered story of ONE process in a run log: every line that names its pid or tid, plus the plane/urgent refusals around it. This is the question of this whole stage -- "what happened to this child?" -- and it was reconstructed by hand with grep/sed/python six times, each time risking the wrong slice of a two-million-line log |
@@ -534,10 +534,16 @@ unexecuted guest or a claim that candidate stack words form a backtrace.
 
 ### `dwdiag progress` -- where a run stopped
 
-`scripts/dwdiag progress --log RUN_LOG [--guest-log MLDR_LOG] [--prefix P] [--mode M] [--json]`
-combines the workload result, enabled loader stages and available server-log
-events. Preserve the distinction between published requests, server servicing
-and completion observed by the guest.
+`scripts/dwdiag progress --state-dir JOB [--mode M] [--json]` reads a
+finished managed job's finite registered captures and persisted runtime/prefix
+selection. It never fills missing capture boundaries from mutable prefix logs,
+the observer's environment or ambient processes.
+
+For a standalone run, use `scripts/dwdiag progress --log RUN_LOG
+[--guest-log MLDR_LOG] [--prefix P] [--server-log SERVER_LOG] [--mode M] [--json]`.
+This combines the workload result, enabled loader stages and selected server
+events. Process identity needs an explicit/recorded prefix and selected runtime;
+current process observations are not proof about the captured past run.
 
 Name the actual run/server-log paths and observation window. An absent log or
 disabled receive-side instrument is unavailable evidence, not zero activity.

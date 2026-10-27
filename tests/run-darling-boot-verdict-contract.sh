@@ -7,11 +7,8 @@
 # exited 0 for a workload that died. A declaration that names a VALUE must be parsed as an integer and may pass
 # only on zero.
 #
-# No prefix, no guest and no Darling build is involved. The harness reads the workload's status out of the LOG --
-# it backgrounds the launcher with nohup and never waits for it, so the workload's wait status is not even
-# observable -- which is exactly why the log line is the whole subject here. The contract therefore drives the
-# harness offline against a stub `<prefix>/bin/darling` that runs the `--cmd` payload on the HOST, and the arms
-# below are the harness's own console plus its exit status.
+# No guest or Darling build is involved. Only the installed launcher is replaced
+# by a host payload executor; lifecycle, polling, bundles and verdicts run unchanged.
 #
 # RED ARM (reproducible against the source-base harness, which is what the rule was fixed from):
 #   mkdir -p /tmp/verdict-red/scripts
@@ -35,7 +32,14 @@ harness="$workspace_root/scripts/darling-boot-run.sh"
 [ -x "$harness" ] || { echo "contract: no executable harness at $harness" >&2; exit 2; }
 
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+cleanup_contract() {
+	if [ -n "${prefix:-}" ] && [ -d "$prefix" ]; then
+		python3 -B "$(dirname "$0")/../west_commands/test_prefix.py" \
+			--prefix "$prefix" --rescue >/dev/null 2>&1 || true
+	fi
+	rm -rf "$tmp"
+}
+trap cleanup_contract EXIT
 prefix="$tmp/prefix-verdict"
 runtime="$tmp/runtime with space"
 mkdir -p "$prefix" "$runtime/bin" "$runtime/libexec/darling"
@@ -192,6 +196,70 @@ check "arm 15: product report retains the missing oracle failure" yes "$(contain
 out="$(run_harness --wait 15 --poll 'WORK-DONE' --status-marker 'COMPILE_RC=' --marker 'WORK-DONE' --cmd 'echo COMPILE_RC=0; sleep 2; echo WORK-DONE')"; rc=$?
 check "arm 16: explicit completion poll takes precedence" PASS "$(verdict_of "$out")"
 check "arm 16: explicit completion poll exits zero" 0 "$rc"
+
+# A definite producer failure ends oracle polling promptly, preserving its status
+# and cause in a finalized bundle instead of sleeping the full oracle deadline.
+started=$SECONDS
+out="$("$harness" --runtime-root "$runtime" --prefix "$prefix" \
+	--log "$tmp/early.log" --bundle "$tmp/early.bundle" --wait 30 \
+	--status-marker 'BUILD_RC=' --cmd 'echo ACTUAL_EARLY_COMPILER_ERROR >&2; exit 23' 2>&1)"; rc=$?
+check "early producer exit is preserved" 23 "$rc"
+check "early producer failure is FAIL" FAIL "$(verdict_of "$out")"
+check "early failure does not consume oracle deadline" yes "$([ $((SECONDS - started)) -lt 25 ] && echo yes || echo no)"
+python3 - "$tmp/early.bundle/cleanup.json" <<'PY'
+import json, sys
+from pathlib import Path
+record = json.loads(Path(sys.argv[1]).read_text())
+assert record["launcher_rc"] == 23 and record["shutdown_rc"] == 0, record
+assert record["processes"] == 0 and record["external_rescue"] is False, record
+PY
+check "early failure cleanup is recorded" 0 "$?"
+check "actual producer cause is retained" yes "$(grep -q ACTUAL_EARLY_COMPILER_ERROR "$tmp/early.log" && echo yes || echo no)"
+
+# A real host process retains the prefix capability beyond a successful producer.
+# Its pidfd rescue may make the prefix idle, never make the product verdict PASS.
+cp /bin/sleep "$runtime/bin/mldr"
+out="$("$harness" --runtime-root "$runtime" --prefix "$prefix" \
+	--log "$tmp/rescue.log" --bundle "$tmp/rescue.bundle" --wait 5 \
+	--status-marker 'BUILD_RC=' \
+	--cmd '"$DARLING_RUNTIME_ROOT/bin/mldr" 60 3<"$DPREFIX" >/dev/null 2>&1 & echo BUILD_RC=0' 2>&1)"; rc=$?
+check_nonzero "forced rescue exits nonzero" "$rc"
+check "forced rescue is FAIL" FAIL "$(verdict_of "$out")"
+python3 - "$tmp/rescue.bundle/cleanup.json" <<'PY'
+import json, sys
+from pathlib import Path
+record = json.loads(Path(sys.argv[1]).read_text())
+assert record["shutdown_rc"] == 0, record
+assert record["state"] == "rescued" and record["external_rescue"] is True, record
+assert record["processes"] == 0 and record["rescue_rc"] == 3, record
+PY
+check "forced rescue remains classified after zero residue" 0 "$?"
+check "forced rescue never announces product PASS" no "$(contains "$out" "PRODUCT_VERDICT=PASS")"
+
+# Marker-only residue blocks boot, but cannot grant authority to signal it.
+python3 - "$harness" "$runtime" "$prefix" "$tmp" <<'PY'
+import os
+from pathlib import Path
+import subprocess
+import sys
+harness, runtime, prefix, root = sys.argv[1:]
+process = subprocess.Popen([str(Path(runtime) / "bin/mldr"), "60"],
+                           env=dict(os.environ, DPREFIX=prefix, DARLING_PREFIX=prefix))
+try:
+    result = subprocess.run(
+        [harness, "--runtime-root", runtime, "--prefix", prefix,
+         "--log", str(Path(root) / "marker-refusal.log"), "--no-bundle",
+         "--wait", "1", "--cmd", "echo MUST_NOT_RUN"],
+        capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode != 0, result.stdout
+    assert "== run ==" not in result.stdout, result.stdout
+    assert process.poll() is None, "marker-only residue was signalled"
+finally:
+    process.terminate()
+    process.wait(timeout=5)
+PY
+check "marker-only candidate blocks boot without being killed" 0 "$?"
 
 if [ "$fail" -eq 0 ]; then
 	echo "darling-boot-verdict: PASS"
