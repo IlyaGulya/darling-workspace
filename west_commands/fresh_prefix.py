@@ -56,9 +56,21 @@ def bind_prefix_clone(
     )
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
+        metadata_details = []
+        for label, path in (("base", base), ("clone", destination)):
+            try:
+                metadata = Path(path).lstat()
+                metadata_details.append(
+                    f"{label}: dev={metadata.st_dev} inode={metadata.st_ino} "
+                    f"uid={metadata.st_uid} gid={metadata.st_gid} "
+                    f"mode={stat.S_IMODE(metadata.st_mode):04o}"
+                )
+            except OSError as error:
+                metadata_details.append(f"{label}: metadata unavailable ({error})")
         raise PrefixCloneError(
             f"{runtime.launcher} bind-clone {base} -> {destination} failed "
-            f"(rc={completed.returncode}): {detail or 'no diagnostic output'}"
+            f"(rc={completed.returncode}): {detail or 'no diagnostic output'}; "
+            f"post-failure root metadata: {'; '.join(metadata_details)}"
         )
 
 

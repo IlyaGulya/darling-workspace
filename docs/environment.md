@@ -78,6 +78,8 @@ Two concurrent experiments use `west dev lane create NAME --base PREFIX
 TMPDIR, XDG_RUNTIME_DIR and process scope; the inert base is never written.
 Use `lane verify` and `lane destroy`. Fresh state identity is published by the
 product: `DPREFIX=DEST R/bin/darling bind-clone BASE`, not by copying identity files.
+Clone admission checks root identity, ownership and permissions. Lanes preserve
+the base root's mode instead of inheriting the caller's umask.
 Workspace lifecycle ownership uses a persistent external sibling lease file,
 distinct from `P/.lifecycle.lock`; never delete the lease file. Preserve raw
 prefix spelling for the product's retained-FD/no-follow/`..` safety checks.

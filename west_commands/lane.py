@@ -901,6 +901,9 @@ def create_lane(
     merged = lane_prefix(lane)
     work = lane / WORK_DIRNAME
     upper = lane / UPPER_DIRNAME
+    # FUSE exposes the upper root's mode, not the lower root's. Preserve the
+    # base permissions so product clone admission is independent of our umask.
+    os.chmod(upper, base_path.stat().st_mode & 0o7777)
     # The daemon must not inherit our stdout/stderr pipes: `capture_output=True`
     # leaves it holding a write end whose reader exits with this process, and its
     # first log write then kills it with SIGPIPE, leaving a disconnected mount.

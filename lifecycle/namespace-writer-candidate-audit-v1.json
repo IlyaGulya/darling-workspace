@@ -3,7 +3,7 @@
   "kind": "rootless-namespace-writer-candidate-audit",
   "coverage_tier": "source",
   "count": 1621,
-  "entries_digest": "d99602347650de927f89f4622a3d06aebbd5c07bea1939148bef73b29121ded3",
+  "entries_digest": "40af34c3f35c9e98efa4899f65e7b8a789bd43f6d3cb1eb1228f0a2da6cc69a7",
   "entries": [
     {
       "repository": "darling",
@@ -31505,7 +31505,7 @@
     {
       "repository": "darling-workspace",
       "path": "west_commands/lane.py",
-      "sha256": "9353abfae85f363d4eb824d5a671be45143747201c3ee22c4187cae3303387f5",
+      "sha256": "54520489d1f79d0463f36f4292be9cd3c098580ffa3bbec64a4055b94e1d64de",
       "classification": "workspace-task-owned-tooling",
       "reason": "west_commands/lane.py creates and removes its explicitly owned disposable lane directories, overlay mount and receipt/log resources without modifying the base or immutable runtime installation; guest lifecycle-state binding is delegated through fresh_prefix.bind_prefix_clone to the typed product owner, not hidden runtime-image deployment.",
       "evidence": {
@@ -31517,7 +31517,7 @@
         "build_anchor": {
           "repository": "darling-workspace",
           "path": "west_commands/lane.py",
-          "sha256": "9353abfae85f363d4eb824d5a671be45143747201c3ee22c4187cae3303387f5",
+          "sha256": "54520489d1f79d0463f36f4292be9cd3c098580ffa3bbec64a4055b94e1d64de",
           "relation": "workspace-runtime-source"
         }
       }
