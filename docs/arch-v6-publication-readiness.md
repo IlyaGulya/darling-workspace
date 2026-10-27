@@ -1,5 +1,9 @@
 # Arch v6 publication readiness
 
+> Historical patch-packaging evidence, not an active publication or authoring
+> procedure. That packaging layer is retired. Use the [workspace README](../README.md)
+> and [environment](environment.md) for current canonical West source ownership.
+
 The historical v5 authoring object closure was unavailable after disposable
 authoring cleanup.  Exact recovery was attempted only with preserved mbox
 content, base/tree/message/author metadata, and documented committer-date

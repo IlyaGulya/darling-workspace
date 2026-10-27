@@ -19,7 +19,7 @@ manifest:
     # Product source authority: this committed tree and its exact child gitlinks.
     # Build the normal stock ALL target and complete installation.
     # Workloads, writable guest prefixes and evidence are selected separately.
-    revision: c695fd8410895f2a67a5d57a3843b5998ded48bf
+    revision: 2ef0b04ba1ab76a0f576e01ca795fa53dafdc448
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -450,50 +450,14 @@ manifest:
   - name: darling-src-external-darlingserver
     repo-path: darlingserver
     path: darling/src/external/darlingserver
-    # dar-dtape-explicit-context-6to3.5: the reviewed DTAPE slice pin is
-    # fix/dtape-explicit-context-fill-read (the kqchan Mach-port read/fill path carries the
-    # requester explicitly; the impersonate() hidden transport is gone). The .4a slice
-    # fix/dtape-kqchan-modify-impersonation (e46d5c3) is its parent and remains published.
-    # The 6to3.6 candidate (receive-copyout knote/message address) was investigated and NOT
-    # taken: its turnstile prepare requires the kevent-processing knote state, so the ambient
-    # skip is correct on the kqchan path; see bead dar-dtape-explicit-context-6to3.6.
-    # The upstream repository stays recorded in userdata.
     remote: darling-next
-    # dar-dles fairness slice: bound the ring spin by the work quantum (see the darling pin above).
-    # iOS T4 slice (2026-10-08): fix/ulock-turnstile-queue -- the kernel side of the ulock
-    # primitive in duct-tape (queue keyed by task+address, thread-death dequeue, exact
-    # Darwin depth accounting) over the turnstile machinery, its lock-order/double-decrement
-    # fixes, and mach_port_get_attributes plus the mk_timer family on the process management
-    # plane. Measured: tests/ios_ulock_contract_guest.c VERDICT PASS with exact {0..K-1}
-    # depth, the fork fixture PASS, and the real Xcode 26.3 clang --version and arm64 iPhoneOS
-    # compiles run in the guest (T1/T2). Parent is the dar-dles pin a384108.
-    # iOS T4 psynch slice (2026-10-08): route the nine psynch ops on the ring. They were
-    # classified in DSERVER_RING_OP_CLASS but absent from DSERVER_RING_C2S_OPCODES and from
-    # RING_GENERATED_SIMPLE, so sys_psynch_mutexwait/mutexdrop reached the retired socket, were
-    # denied, and called __simple_abort() -- measured on the real ld as 'psynch_mutexdrop failed
-    # internally: -32' then rc=139. Parent is the ulock/plane pin 955e5d4.
-    # iOS T4 slice (2026-10-08): give every dispatched call a fresh BSD return value.
-    # _bsdReturnValue is Darwin's per-syscall `int32_t retval` (fresh 0 for each call,
-    # syscalls.master); it was a persistent per-thread field with no per-call reset, so
-    # duct-tape's ulock_wake -- which by Darwin's ULF_NO_ERRNO convention writes the
-    # out-param ONLY on an error -- handed the guest the previous call's value on success.
-    # Measured on the real Xcode 26.3 ld: libplatform's _os_unfair_lock_unlock_slow got a
-    # stale -1 outside {0, -ENOENT, -EINTR} and executed its ud2 ("ulock_wake failure"),
-    # so the linker died of SIGILL and clang reported "linker command failed due to
-    # signal". Fix: reset the field when a call becomes active. RED/GREEN: with the
-    # pre-fix server tests/ios_call_retval_guest.c produces no verdict; with this revision
-    # it reports pass=1 reason=call_retval_freshness (VERDICT PASS). T4 then advances to a
-    # SIGSEGV with two threads queued in ulock_wait -- a separate, still-open defect.
-    # Parent is the psynch ring-classification pin bce5bf9.
-    revision: 9eadaae480be3926319ddc05f1f951a7ea3e1040
+    # Production server matches Darling's gitlink: ownership-safe management
+    # and courier delivery to the authenticated process incarnation.
+    revision: 7f869ce1fef972654807b10b69c43b94e8db324d
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
 
-# RESOLVED by evidence: the manifest pin 89751e64 contains no dserver_ring_shm_t at all
-# (0 files) while the top-level darling product commit's gitlink a693e31a does (11 files),
-# so the pin now matches the product's own gitlink. The live working checkout is 176 commits
-# further; those are NOT part of the accepted product unless the owner says so.
   - name: darling-src-external-dbuskit
     repo-path: darling-dbuskit
     path: darling/src/external/dbuskit
@@ -1347,7 +1311,7 @@ manifest:
     # part is the first event `clang --version` needed: without it the trap hit the retired
     # per-thread socket, was denied and aborted the guest. Parent is the pin f3e71f3; bcc5595
     # is the same guest-side change on that parent, replayed here on top of the ulock commits.
-    revision: d24025fbca3f4ca4f6aba49a75de5123adfadb06
+    revision: a424b85c620623824cdd8b02b426ea5a5ad11727
     userdata:
       kind: darling-source
       upstream-repository: darling-xnu

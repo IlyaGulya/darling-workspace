@@ -76,16 +76,17 @@ fi
 sleep "$SETTLE"
 snapshot
 rescue=$OWNED_COUNT
-for pid in $OWNED_PIDS; do kill -TERM "$pid" 2>/dev/null; done
 if [ "$OWNED_COUNT" -gt 0 ]; then
-	sleep "$SETTLE"
-	snapshot
-	for pid in $OWNED_PIDS; do kill -KILL "$pid" 2>/dev/null; done
-	sleep "$SETTLE"
+	python3 -B "$DARLING_WORKSPACE_ROOT/west_commands/test_prefix.py" \
+		--prefix "$PREFIX" --rescue
+	rescue_rc=$?
+	[ "$rescue_rc" -eq 0 ] || exit "$rescue_rc"
 fi
 snapshot
-mounts=$(mount 2>/dev/null | awk -v p="$PREFIX" 'index($3, p "/") == 1 || ($3 == p && $5 != "fuse.fuse-overlayfs")' | wc -l)
-layer_mounts=$(mount 2>/dev/null | awk -v p="$PREFIX" '$3 == p && $5 == "fuse.fuse-overlayfs"' | wc -l)
+mount_counts=$(darling_prefix_mount_counts "$PREFIX") || exit $?
+read mounts layer_mounts <<EOF
+$mount_counts
+EOF
 echo "prefix-owned processes after: $OWNED_COUNT"
 echo "mounts under prefix: $mounts (plus $layer_mounts prefix layer mount(s))"
 if [ "$OWNED_COUNT" -gt 0 ] || [ "$mounts" -gt 0 ]; then

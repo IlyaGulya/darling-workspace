@@ -26,11 +26,12 @@ correct stale instructions rather than following copied paths or hashes.
   prefix/process identity, not names alone. Each concurrent experiment needs its
   own lane: [state ownership and lane safety](../../../docs/environment.md#durable-state-and-cleanup).
   Never write the inert base; a job supervisor is not a prefix-ownership lock.
-- Rootless is the launcher default and needs host support for unprivileged user,
-  mount and PID namespaces. A namespace denial is a host prerequisite failure,
-  not evidence of prefix corruption. Privileged/rootfull mode is retired and
-  gated by `DARLING_FORCE_ROOTFULL_MODE=1`; do not change setuid permissions to
-  repair an ordinary rootless installation.
+- Rootless is the launcher default. Its current launch path does not create
+  Linux user, mount or PID namespaces;
+  unprivileged namespace creation is not an ordinary rootless prerequisite.
+  Privileged/rootfull mode is gated by `DARLING_FORCE_ROOTFULL_MODE=1`; do not
+  change setuid permissions or select that mode to repair a rootless launch.
+  Attribute namespace denials only to the path that actually requested them.
 - Managed commands export the selected guest prefix. On a necessary direct
   launcher invocation, set `DPREFIX` explicitly: the path to `bin/darling` alone
   does not select its guest prefix, and the launcher otherwise defaults to

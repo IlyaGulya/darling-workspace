@@ -1,5 +1,11 @@
 # Direct-transport descriptor architecture: investigation
 
+> Historical investigation, not an operator runbook. Source forests, profile
+> paths and rerun commands below describe their recorded runs, including retired
+> workflows. Current installation and lifecycle procedures are in
+> [environment](environment.md), [test infrastructure](test-infra.md) and
+> [tooling](tooling.md); this record does not restore source/runtime profiles.
+
 Status: investigation complete for the source-audit half; standalone proofs and product
 census are recorded in section 8 with their exact commands. No production source was
 changed and no production patch was applied.

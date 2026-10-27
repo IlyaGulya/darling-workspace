@@ -6399,6 +6399,48 @@ workloads:
   - -Wall
   - -Wextra
   - -Werror
+- id: kprintf-logging
+  name: kprintf-logging
+  module: darling
+  repo: darling
+  bead: dar-production-runtime-cutover-gtci.5
+  runner: guest-c-fixture
+  script: tests/src/kprintf_logging.c
+  env: darling
+  coverage-tier: runtime
+  diag: bare
+  env-vars:
+    DSERVER_LOG_LEVEL: info
+  ok-marker: DARLING_KPRINTF_LOGGING_OK
+  requires:
+  - darling-prefix
+  timeout-seconds: 30
+  compile-flags:
+  - -std=gnu11
+  - -m64
+  - -Wall
+  - -Wextra
+  - -Werror
+- id: unix-sockaddr-boundary
+  name: unix-sockaddr-boundary
+  module: darling
+  repo: darling
+  bead: dar-production-runtime-cutover-gtci.5
+  runner: guest-c-fixture
+  script: tests/src/unix_sockaddr_boundary.c
+  env: darling
+  coverage-tier: runtime
+  diag: bare
+  ok-marker: DARLING_UNIX_SOCKADDR_BOUNDARY_OK
+  requires:
+  - darling-prefix
+  timeout-seconds: 30
+  compile-flags:
+  - -std=gnu11
+  - -m64
+  - -Wall
+  - -Wextra
+  - -Werror
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke

@@ -888,12 +888,13 @@ env $HATCH_ENV $EXTRA_ENV \
 LAUNCHER_PID=$!
 observe_launcher() {
 	[ "$LAUNCHER_RC" = null ] || return 0
-	if ! jobs -pr | grep -Fxq -- "$LAUNCHER_PID"; then
-		jobs -ps | grep -Fxq -- "$LAUNCHER_PID" && return 0
-		wait "$LAUNCHER_PID"
-		LAUNCHER_RC=$?
-		printf 'LAUNCHER-EXIT rc=%s\n' "$LAUNCHER_RC" | tee -a "$LOG"
-	fi
+	# Observe existence without signaling or consuming the shell's saved status.
+	# Running and stopped children both remain present; only wait after exit.
+	# jobs filters are not POSIX, and reporting completed jobs can discard their rc.
+	ps -p "$LAUNCHER_PID" -o pid= >/dev/null 2>&1 && return 0
+	wait "$LAUNCHER_PID"
+	LAUNCHER_RC=$?
+	printf 'LAUNCHER-EXIT rc=%s\n' "$LAUNCHER_RC" | tee -a "$LOG"
 }
 
 # Wait for explicit --poll, or every explicit status field when no poll was supplied.
@@ -1119,8 +1120,10 @@ fi
 # MEASURED 2026-10-18: counting it made every lane run report "mounts: 1" and VERDICT: FAIL with a PASSing
 # guest. A kernel `overlay` at the prefix stays counted: in the privileged runtime THAT is the server's own
 # bring-up mount, and leaving one behind after shutdown is real residue.
-mounts=$(mount 2>/dev/null | awk -v p="$PREFIX" 'index($3, p "/") == 1 || ($3 == p && $5 != "fuse.fuse-overlayfs")' | wc -l)
-layer_mounts=$(mount 2>/dev/null | awk -v p="$PREFIX" '$3 == p && $5 == "fuse.fuse-overlayfs"' | wc -l)
+mount_counts=$(darling_prefix_mount_counts "$PREFIX") || exit $?
+read mounts layer_mounts <<EOF
+$mount_counts
+EOF
 # Same rule after the run: leave the prefix as a *bootable* clean state, not merely a process-free one.
 if [ "$final" -eq 0 ] && [ "$mounts" -eq 0 ]; then
 	clear_stale_runtime_files

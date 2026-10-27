@@ -1,5 +1,9 @@
 # Canonical immutable patch-stack migration inventory
 
+> Historical migration and publication evidence. The patch-stack packaging layer
+> and commands described below are retired; they are not an alternative source
+> authority or current setup. Use the [workspace README](../README.md).
+
 The frozen inventory records 100 patch series across `arch` (19),
 `homebrew` (74), and `perf` (7). It is machine-readable in
 `locks/patch-stack/migration-inventory-v1.yml` and deliberately excludes

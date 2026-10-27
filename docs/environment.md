@@ -44,6 +44,18 @@ Create isolated Python environments with `mise exec -- uv venv PATH` and
 `python3 -m venv` or ensurepip. For an isolated West install use the version
 pinned by `mise.toml` (currently `west==1.5.0`).
 
+Rootless COW lanes use the `fuse-overlayfs` revision pinned by `mise.toml`,
+plus host `fusermount3`, `/dev/fuse` and the user systemd manager. Building the
+pinned tool requires Cargo/Rust 1.85 or newer. This is a host development/test
+dependency, not a requirement of an ordinary product launch. The pin currently
+selects an unreleased Rust 2.0 revision: stable 1.18 still fails copy-up of lower
+Unix sockets during unlink. The upstream implementation
+[creates special nodes rather than copying their contents](https://github.com/containers/fuse-overlayfs/blob/9afb0e41dae1d5ea782ff1aa2806729f746d60fc/src/copyup.rs#L322-L363).
+Run lane commands through the Mise environment, not a system 1.x binary.
+If Cargo's embedded Git client cannot reuse working host SSH authentication,
+use `CARGO_NET_GIT_FETCH_WITH_CLI=true mise install`; do not rewrite user Git
+configuration or weaken transport checks.
+
 Portable skills live in `.agents/skills/`; `.claude/skills` is the relative
 compatibility symlink `../.agents/skills`. `mise run dw setup-local` exposes that
 same source to the product checkout and installs its instruction template and

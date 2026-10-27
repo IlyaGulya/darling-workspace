@@ -2,6 +2,10 @@
 
 Date: 2026-06-12
 
+> Historical review findings and workflow snapshot. Its patch-profile and PR
+> commands are retired, not current enforcement or publication instructions.
+> Individual findings are not evidence that today's source has been retested.
+
 ## Decision
 
 The current 20-patch Homebrew profile is a useful local integration profile,

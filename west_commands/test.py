@@ -3042,6 +3042,7 @@ class DarlingTest(
                 if runtime_env is not None:
                     runtime_env["WEST_TEST_PREFIX_LEASE"] = str(self._prefix)
                     runtime_env["WEST_TEST_PREFIX_LEASE_FD"] = str(lease_descriptor)
+                    runtime_env["WEST_TEST_KEEP_PREFIX_RUNNING"] = "1" if self._keep_prefix_running else "0"
                 if self._source_root:
                     runtime_env = dict(os.environ if runtime_env is None else runtime_env)
                     runtime_env["DARLING_SOURCE_ROOT"] = str(self._source_root)

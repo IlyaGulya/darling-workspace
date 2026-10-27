@@ -1,5 +1,9 @@
 # Ring transition status (reconciled)
 
+> Historical Ring-transition coordination snapshot. Its acceptance counts and
+> backlog are not current run evidence or operating gates; patch/runtime profiles
+> have since been retired. Use [test infrastructure](test-infra.md) for current runs.
+
 This is a coordination record, not product source. It corrects the impression left by older
 migration docs and stale open Beads. Source authority remains the component Git commits plus the
 `darling-workspace` manifest commit.

@@ -29,6 +29,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -223,8 +224,6 @@ def pure_contract(root: Path) -> None:
     # choosing one name must not end up claiming one unit and stopping each other's experiments.
     assert scope_unit(root / "other-root" / "laneA") != unit
 
-    # A lane's prefix must sit in its own directory: `west test` serializes concurrent prefix
-    # runs by flocking the prefix's PARENT directory, so a shared parent re-serializes lanes.
     first = lane_path(root, "one")
     second = lane_path(root, "two")
     assert lane_prefix(first).parent == first
@@ -303,6 +302,10 @@ def pure_contract(root: Path) -> None:
     deep = prefix / "private" / "var" / "tmp"
     assert prefix_mount_targets(prefix, mountinfo_path=mountinfo) == [deep]
     assert mount_targets(prefix, mountinfo_path=mountinfo) == [deep, prefix]
+    mountinfo.write_text(f"42 30 0:44 / {prefix} rw,relatime - fuse fuse-overlayfs rw\n")
+    assert prefix_mount_targets(prefix, mountinfo_path=mountinfo) == []
+    mountinfo.write_text(f"42 30 0:44 / {prefix} rw,relatime - fuse unrelated-source rw\n")
+    assert prefix_mount_targets(prefix, mountinfo_path=mountinfo) == [prefix]
     mountinfo.write_text(f"42 30 0:44 / {prefix} rw,relatime - overlay overlay rw\n")
     assert prefix_mount_targets(prefix, mountinfo_path=mountinfo) == [prefix]
 
@@ -311,6 +314,9 @@ def mounted_contract(root: Path) -> None:
     lanes = root / "lanes"
     base = make_base(root)
     runtime = make_runtime(root)
+    lower_socket = base / "s"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as endpoint:
+        endpoint.bind(str(lower_socket))
     before = tree_identity(base)
     runtime_before = tree_identity(runtime.root)
     state_before = (base / PREFIX_STATE).read_bytes()
@@ -324,6 +330,8 @@ def mounted_contract(root: Path) -> None:
     assert read_record(first)["runtime"]["root"] == str(runtime.root)
 
     merged = lane_prefix(first)
+    assert prefix_mount_targets(merged) == []
+    assert mount_targets(merged) == [merged]
     assert (merged / "payload.txt").read_text() == "base payload\n"
     assert (merged / PREFIX_STATE).read_text().startswith("DARLING_PREFIX_STATE_V2\n")
     assert "provenance=test-bind-clone" in (merged / PREFIX_STATE).read_text()
@@ -383,6 +391,12 @@ def mounted_contract(root: Path) -> None:
     _, second = create_lane(base, lanes, "two", runtime=runtime)
     assert second is not None
     assert (lane_prefix(second) / "payload.txt").read_text() == "base payload\n"
+    # Removing a copied runtime socket must create only this lane's whiteout.
+    # Reading a socket as a regular file during copyup fails with ENXIO.
+    (merged / "s").unlink()
+    assert not os.path.lexists(merged / "s")
+    assert lower_socket.is_socket(), "socket removal reached the inert base"
+    assert (lane_prefix(second) / "s").is_socket(), "socket removal reached another lane"
     assert (second / "upper" / PREFIX_STATE).is_file(), (
         "the product bind-clone record must land in the lane's own upper layer"
     )
@@ -485,7 +499,7 @@ def main() -> None:
     finally:
         # Discover rather than remember: a failure inside the mounted contract must not leave a
         # mount behind, and `rmtree` of a still-mounted lane would delete through the layer.
-        for lane in list_lanes(temp):
+        for lane in list_lanes(temp / "lanes"):
             try:
                 cleanup = destroy_lane(lane)
                 if not cleanup.success:

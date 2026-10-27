@@ -1,5 +1,9 @@
 # cvstorm2 flood progress: profile ownership
 
+> Historical patch-profile ownership record. Profiles, compositions and hosted
+> patch-stack publication below are retired, not current operating instructions.
+> Product source is selected by the canonical West manifest; see [environment](environment.md).
+
 ## Decision
 
 `darlingserver/standard-signal-coalescing-flood-progress.patch` is owned by

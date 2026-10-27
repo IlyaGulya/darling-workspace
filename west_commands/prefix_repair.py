@@ -210,17 +210,18 @@ def _decode_mountinfo_path(path: str) -> str:
     return "".join(out)
 
 
-def prefix_mount_targets(
+def prefix_mount_groups(
     prefix: Path,
     *,
     mountinfo_path: Path = Path("/proc/self/mountinfo"),
-) -> list[Path]:
+) -> tuple[list[Path], list[Path]]:
     prefix = prefix.resolve()
     targets = []
+    layers = []
     try:
         lines = mountinfo_path.read_text().splitlines()
     except FileNotFoundError:
-        return targets
+        return targets, layers
     for line in lines:
         fields = line.split()
         if len(fields) < 5:
@@ -229,27 +230,39 @@ def prefix_mount_targets(
             target = Path(_decode_mountinfo_path(fields[4])).resolve()
         except OSError:
             continue
-        if target == prefix and _mount_fstype(fields) == PREFIX_LAYER_FSTYPE:
+        if target == prefix and _is_prefix_layer_mount(fields):
             # The prefix's OWN isolation layer is not a mount under the prefix. An isolation lane's
             # prefix IS a `fuse-overlayfs` view of a read-only base (see `west_commands/lane.py`), and
             # reporting or unmounting that view as runtime residue detaches the prefix from the
             # experiment that owns it: every later command in the lane then fails with ENOTCONN.
             # MEASURED 2026-10-18. A kernel `overlay` at the prefix path is NOT excluded: in the
             # privileged runtime that is the server's own bring-up mount and belongs to cleanup.
+            layers.append(target)
             continue
         if target == prefix or prefix in target.parents:
             targets.append(target)
-    return targets
+    return targets, layers
 
 
-def _mount_fstype(fields: list[str]) -> str:
-    """The filesystem type of one ``/proc/self/mountinfo`` line, after the separator."""
+def prefix_mount_targets(
+    prefix: Path,
+    *,
+    mountinfo_path: Path = Path("/proc/self/mountinfo"),
+) -> list[Path]:
+    return prefix_mount_groups(prefix, mountinfo_path=mountinfo_path)[0]
 
+
+def _is_prefix_layer_mount(fields: list[str]) -> bool:
+    """Recognize both the C/libfuse and Rust/fuser overlay mount identities."""
     try:
         separator = fields.index("-")
     except ValueError:
-        return ""
-    return fields[separator + 1] if len(fields) > separator + 1 else ""
+        return False
+    return (
+        len(fields) > separator + 2
+        and fields[separator + 1] in (PREFIX_LAYER_FSTYPE, "fuse")
+        and _decode_mountinfo_path(fields[separator + 2]) == "fuse-overlayfs"
+    )
 
 
 def _parse_fuser_pids(output: str) -> set[int]:

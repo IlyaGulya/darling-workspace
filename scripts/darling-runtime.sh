@@ -41,3 +41,16 @@ darling_prefix_residual_pids() {
 	python3 -B "$DARLING_WORKSPACE_ROOT/west_commands/test_prefix.py" \
 		--prefix "$1" --list-residual
 }
+
+darling_prefix_mount_counts() {
+	python3 -B - "$DARLING_WORKSPACE_ROOT" "$1" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "west_commands"))
+from prefix_repair import prefix_mount_groups
+
+runtime, layers = prefix_mount_groups(Path(sys.argv[2]))
+print(len(runtime), len(layers))
+PY
+}

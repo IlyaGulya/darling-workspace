@@ -151,9 +151,10 @@ output and actual CMake manifest hashes; verification rejects extras and does
 not depend on later contents of the original build directory.
 
 Bootstrap smoke is not the workload oracle and does not imply doctor or native
-acceptance. Run scoped doctor explicitly when needed. Rootless execution requires
-host unprivileged user/mount/PID namespace support; host denial is a prerequisite
-failure, not proof of guest-state corruption. Read [boot guidance](../.agents/skills/darling-boot/SKILL.md).
+acceptance. Run scoped doctor explicitly when needed. The default rootless path
+does not create Linux user, mount or PID namespaces; do not treat their denial
+as an ordinary rootless prerequisite failure. Attribute it to the operation that
+actually requests one. Read [boot guidance](../.agents/skills/darling-boot/SKILL.md).
 
 
 ## CI execution contract
@@ -741,6 +742,18 @@ string handling, stable message snapshots, caller-owned copies and invalid-input
 traps. Its failure diagnostics print the actual and expected message values.
 Native semantic references and guest execution are independent evidence.
 
+`--workload kprintf-logging` checks actual delivery of the private kernel
+diagnostic payload into the fresh server-log suffix, including whitespace
+trimming. Its declaration sets the existing host `DSERVER_LOG_LEVEL=info`
+before server startup; ordinary production logging defaults are unchanged.
+Do not reuse a running server with a different logging configuration.
+
+`--workload unix-sockaddr-boundary` uses the launcher-published prefix to test
+104/107-byte Linux-expanded socket names, rejection at 108 without truncation,
+stream/datagram roundtrips and caller-capacity guards. It needs an owned writable
+guest prefix short enough to construct those boundary inputs. This is a
+Darling host-expansion gate, not a native macOS pathname-capacity claim.
+
 E-UNION cases validate immutable lower inputs from the optional product
 `tests-data` component in `R`. The typed `darling-eunion-prefix` resource stages
 only per-case upper state in `P`; it never installs or replaces runtime files.
@@ -1154,6 +1167,12 @@ descriptor; `WEST_TEST_PREFIX_LEASE` by itself grants no ownership. The shared
 owner validates the raw prefix, lease-file inode and current-user exclusive
 `flock`. CTest forwards the descriptor explicitly; actual runtime children do
 not inherit it. Never synthesize lease markers to bypass acquisition.
+
+The CTest workload bridge borrows exclusion, not a previous workload's running
+server. Each structured guest workload resets and shuts down its runtime even
+under a suite lease; its declared server environment therefore applies before
+startup. Only an explicit `--keep-prefix-running` preserves the warm runtime,
+including its original startup configuration, for a manual debug loop.
 
 Cleanup rescue can make a failed run safe, but never converts it into a clean
 PASS. Acceptance requires normal product shutdown plus zero owned processes

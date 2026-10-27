@@ -3,7 +3,7 @@
   "kind": "rootless-namespace-writer-candidate-audit",
   "coverage_tier": "source",
   "count": 1621,
-  "entries_digest": "40af34c3f35c9e98efa4899f65e7b8a789bd43f6d3cb1eb1228f0a2da6cc69a7",
+  "entries_digest": "8087319bbbda1a19b35ade86269d039a76d76703a85debcb3c884ca530970d78",
   "entries": [
     {
       "repository": "darling",
@@ -31243,7 +31243,7 @@
     {
       "repository": "darling",
       "path": "src/startup/mldr/elfcalls/threads.c",
-      "sha256": "aac6de2f6f990f7e86581478f842de8539aaa1c1f7818824faa6e6dad26c4fb6",
+      "sha256": "ec9cb2317c8abd8d85d3a8bc0caa9a3a325555bfd9e431ac32c50201b3e42fe3",
       "classification": "caller-selected-library-output",
       "reason": "src/startup/mldr/elfcalls/threads.c opens only an explicitly selected MLDR_DIAG_LOG path for diagnostic output (otherwise stderr); this diagnostic sink is not a fixed prefix lifecycle endpoint.",
       "evidence": {
@@ -31262,7 +31262,7 @@
     {
       "repository": "darling",
       "path": "src/startup/mldr/mldr.c",
-      "sha256": "e107de00b4f755a51be87b842999a11c42af5bdf47c28936f283a002284efa8d",
+      "sha256": "3590fcd64404af09926717ec534941dc5087ec152fa452addbeac0dfc5e16a4c",
       "classification": "caller-selected-library-output",
       "reason": "src/startup/mldr/mldr.c creates diagnostic output only at explicitly selected MLDR_DIAG_LOG and MLDR_PAGE_HINT paths; neither is a fixed shared prefix endpoint.",
       "evidence": {

@@ -9628,6 +9628,8 @@ fn is_failure_record(line: &str) -> bool {
         || line.starts_with("panic: ") || line.starts_with("PANIC: ") || line.starts_with("panic(cpu ")
         || line.starts_with("dserver-CRASH") || line.starts_with("[dserver-CRASH")
         || line.starts_with("fatal error:")
+        || line.starts_with("Binding the unix socket:")
+        || line.starts_with("Cannot remove prefix state entry ")
         || (line.contains(" mismatch: expected ") && line.contains(", actual ")) {
         return true;
     }
@@ -12039,7 +12041,9 @@ mod evidence_manifest_tests {
         let capture = state.join("producer.log");
         let mismatch = "arbitrary producer mismatch: expected <α: q|beta>, actual <δ: dynamic-value>";
         let assertion = "Assertion failed: (payload == arbitrary_token), function check, file /input.c, line 19.";
-        let mut text = format!("setup one\nsetup two\n{mismatch}\n{assertion}\nabort detail\n");
+        let bind_error = "Binding the unix socket: File name too long";
+        let prefix_state_error = "Cannot remove prefix state entry old.sock: No such device or address";
+        let mut text = format!("setup one\nsetup two\n{mismatch}\n{assertion}\n{bind_error}\n{prefix_state_error}\nabort detail\n");
         for index in 0..120 { text.push_str(&format!("CTest summary row {index}\n")); }
         fs::write(&capture, text).unwrap();
         manifest(&state, &prefix, &[(&capture, 0)]);
@@ -12049,14 +12053,19 @@ mod evidence_manifest_tests {
 
         let report = select_evidence(&state);
         let source = report.sources.iter().find(|source| source.path == capture).unwrap();
-        assert!(!source.tail.iter().any(|line| line == mismatch || line == assertion));
-        assert_eq!(source.failure.matches, 2);
+        assert!(!source.tail.iter().any(|line|
+            [mismatch, assertion, bind_error, prefix_state_error].contains(&line.as_str())));
+        assert_eq!(source.failure.matches, 4);
         assert!(source.failure.rows.contains(&(3, mismatch.to_string())));
         assert!(source.failure.rows.contains(&(4, assertion.to_string())));
+        assert!(source.failure.rows.contains(&(5, bind_error.to_string())));
+        assert!(source.failure.rows.contains(&(6, prefix_state_error.to_string())));
         assert!(source.failure.rows.windows(2).all(|pair| pair[0].0 < pair[1].0));
         let output = failure_excerpt_output(&source.failure, 24, 24);
         assert_eq!(output.iter().filter(|line| line.contains(mismatch)).count(), 1);
         assert_eq!(output.iter().filter(|line| line.contains(assertion)).count(), 1);
+        assert_eq!(output.iter().filter(|line| line.contains(bind_error)).count(), 1);
+        assert_eq!(output.iter().filter(|line| line.contains(prefix_state_error)).count(), 1);
         assert!(report.sources.iter().all(|source| source.failure.rows.iter()
             .all(|(_, line)| !line.contains("unrelated failure"))));
     }

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import nullcontext
 import os
 from pathlib import Path
 import sys
@@ -106,7 +105,7 @@ def run_workload(args: argparse.Namespace) -> int:
     state = Path(manifest.repo_abspath).parent / ".west-test"
     runner._bundle_root = args.bundle_root or str(state / "bundles")
     runner._runtime_evidence_root = state / "runtime-evidence"
-    runner._keep_prefix_running = False
+    runner._keep_prefix_running = os.environ.get("WEST_TEST_KEEP_PREFIX_RUNNING") == "1"
     runner._prefix_cleanup_failed = False
     selection = select_workload_tests(catalog, workload=args.workload,
                                       resolved_diag=runner._resolved_diag)
@@ -139,8 +138,9 @@ def run_workload(args: argparse.Namespace) -> int:
         if not runner._prefix:
             runner.die("guest workload requires DPREFIX and an installed Darling runtime")
         runner._installed_runtime()
-    context = nullcontext() if not guest or borrowed is not None else runner._prefix_resource_context(True)
-    with context:
+    # Borrowing the suite lease preserves exclusion, not a previous case's server.
+    # Only the suite's explicit warm-prefix option skips ordinary reset/shutdown.
+    with runner._prefix_resource_context(guest):
         rc = runner._run_metadata_tests(selection.selected, False, [])
     return 1 if getattr(runner, "_prefix_cleanup_failed", False) else rc
 

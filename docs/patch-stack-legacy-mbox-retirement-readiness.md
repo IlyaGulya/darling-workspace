@@ -1,5 +1,10 @@
 # Legacy mbox operational retirement
 
+> Historical packaging-retirement checkpoint. The patch commands, profile
+> materializers and lock/composition machinery inventoried below are now retired.
+> Do not execute those recipes; use the [workspace README](../README.md) and
+> [test infrastructure](test-infra.md) for current installed-runtime workflows.
+
 Historical `patches/**/*.patch` files are provenance, review, and recovery
 records. They are not executable materialization inputs. Canonical profile
 state is the typed schema-v2 immutable lock graph plus its schema-v3 profile
