@@ -7214,6 +7214,26 @@ workloads:
   - darling-prefix
   ok-marker: PROC_PIDPATH_GUEST_OK
   timeout-seconds: 30
+- id: supplementary_groups_guest
+  name: supplementary_groups_guest
+  module: darling/src/external/darlingserver
+  bead: dar-xcodebuild-futex-stall-jy3y
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/supplementary_groups_guest.c
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -Werror
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: SUPPLEMENTARY_GROUPS_GUEST_OK
+  timeout-seconds: 30
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke
