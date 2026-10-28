@@ -7146,6 +7146,30 @@ workloads:
   note: 'Real fixture-preparer refusal and owned-reset transitions: unknown and differently owned roots,
     symlink roots, entire-state-root selection and missing source prerequisites cannot destroy existing
     data. No guest runtime or native macOS API claim.'
+- id: file_coordination_roundtrip_guest
+  name: file_coordination_roundtrip_guest
+  module: darling/src/external/foundation
+  bead: dar-xcodebuild-futex-stall-jy3y
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/file_coordination_roundtrip_guest.m
+  compile-flags:
+  - -x
+  - objective-c
+  - -fblocks
+  - -Wall
+  - -Wextra
+  - -Werror
+  - -framework
+  - Foundation
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: FILE_COORDINATION_ROUNDTRIP_OK
+  timeout-seconds: 30
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke
