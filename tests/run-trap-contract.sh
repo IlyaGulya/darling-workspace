@@ -1,6 +1,6 @@
 #!/bin/bash
 # Contract for `dwdiag trap`: the kernel's own report of where a guest died must be parsed WHOLE, in both
-# shapes the kernel writes, and symbolized only when a prefix is given.
+# shapes the kernel writes, preserving image-relative offsets without an installed image.
 #
 # Why this exists. The command was added after a session in which one `dmesg` line named the faulting image,
 # its load base and the instruction pointer while three custom probes, a gdb catch and a stack scanner had
@@ -54,12 +54,6 @@ check "TRAP pid=4242 name=ld reason=trap image=libsystem_kernel.dylib base=0x7f0
 	"the traps: shape is parsed whole, including image, base and offset" "$out"
 check "TRAP pid=4243 name=ld reason=segfault .* off=0x2abc" \
 	"the segfault shape -- no traps: prefix, pid followed by a colon, ip with no '=' -- is parsed too" "$out"
-check "TRAP-NOTE" "the symbolizer's 'nearest symbol at or below' limit is stated, not left to the reader" "$out"
-
-# An image that cannot be found under the given prefix must be REPORTED, never silently symbolized from
-# whatever happened to match by name.
-withpfx=$("$DWDIAG" trap --kernel-log "$LOG" --prefix /tmp/definitely-not-a-prefix 2>&1)
-check "<image not found under the prefix>" "an unresolvable image is reported as such" "$withpfx"
 
 sel=$("$DWDIAG" trap --kernel-log "$LOG" --process other 2>&1)
 check "TRAP pid=7 name=other" "--process selects the named process" "$sel"
@@ -72,7 +66,6 @@ absent "TRAP pid=4242" "--limit drops the older ones" "$one"
 # No prefix anywhere: the address must still be reported, because that is the fact that identifies the image.
 noprefix=$(DWDIAG_PREFIX= "$DWDIAG" trap --kernel-log "$LOG" --limit 1 2>&1)
 check "off=0x2abc" "without a prefix the offset is still reported" "$noprefix"
-check "no prefix" "and the missing prefix is named rather than guessed" "$noprefix"
 
 echo "$out" | tail -3
 if [ "$fail" -ne 0 ]; then

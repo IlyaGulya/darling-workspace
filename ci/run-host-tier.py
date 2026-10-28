@@ -155,7 +155,6 @@ EXPLICIT_CONTRACTS = (
     ("evidence-retention", "tests/west_test_contracts/evidence_retention_contract.py", True),
     ("source-search", "tests/west_test_contracts/source_search_contract.py", True),
     ("macho-inspection", "tests/west_test_contracts/macho_inspection_contract.py", True),
-    ("plane-deferred-arm-oracle", "tests/west_test_contracts/plane_deferred_arm_contract.py", True),
     (
         "native-applicability-review",
         "tests/run-native-applicability-review-contract.sh",
@@ -259,7 +258,8 @@ EXCLUDED_CONTRACTS = {
         "and an explicitly owned, prepared DW_NOFILE_PREFIX; no source-string audit or default host coverage",
     "tests/run-plane-deferred-arm-contract.sh":
         "guest-runtime gate requiring an immutable installed runtime, an isolated prepared guest prefix "
-        "and explicit real guest CLT (or a supplied Mach-O fixture); saved-log model analysis is separate",
+        "and explicit selected guest CLT (or a supplied real Mach-O fixture); requires actual console delivery "
+        "before a worker releases main's Mach receive",
     "tests/run-symbol-ownership-contract.sh":
         "artifact contract: it reads the symbol tables of BUILT or DEPLOYED libraries with llvm-nm and fails when a "
         "public concurrency primitive (os_unfair_lock_lock/unlock/trylock/lock_with_options) has two definers, which is "

@@ -7170,6 +7170,30 @@ workloads:
   - darling-prefix
   ok-marker: FILE_COORDINATION_ROUNDTRIP_OK
   timeout-seconds: 30
+- id: foundation_file_io_guest
+  name: foundation_file_io_guest
+  module: darling/src/external/foundation
+  bead: dar-xcodebuild-futex-stall-jy3y
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: src/external/foundation/test/file-io-guest.m
+  compile-flags:
+  - -x
+  - objective-c
+  - -fblocks
+  - -Wall
+  - -Wextra
+  - -Werror
+  - -framework
+  - Foundation
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: FOUNDATION_FILE_IO_OK
+  timeout-seconds: 30
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke
