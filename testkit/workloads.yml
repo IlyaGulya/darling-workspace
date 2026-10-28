@@ -7234,6 +7234,26 @@ workloads:
   - darling-prefix
   ok-marker: SUPPLEMENTARY_GROUPS_GUEST_OK
   timeout-seconds: 30
+- id: xtrace_exec_environment_guest
+  name: xtrace_exec_environment_guest
+  module: darling/src/xtrace
+  bead: dar-xcodebuild-futex-stall-jy3y
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/xtrace_exec_environment_guest.c
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -Werror
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: XTRACE_EXEC_ENVIRONMENT_OK
+  timeout-seconds: 30
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke
