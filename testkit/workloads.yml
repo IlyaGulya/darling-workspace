@@ -7278,6 +7278,52 @@ workloads:
   - darling-prefix
   ok-marker: SECURITY_REQUIREMENT_GUEST_OK
   timeout-seconds: 30
+- id: security_static_validation_guest
+  name: security_static_validation_guest
+  module: darling/src/external/security
+  bead: dar-xcodebuild-futex-stall-jy3y
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/security_static_validation_guest.c
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -Werror
+  - -framework
+  - CoreFoundation
+  - -framework
+  - Security
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: SECURITY_STATIC_VALIDATION_GUEST_OK
+  timeout-seconds: 30
+- id: plane_mach_port_open_guest
+  name: plane_mach_port_open_guest
+  module: darling/src/external/darlingserver
+  bead: dar-xcodebuild-futex-stall-jy3y
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/plane_mach_port_open_guest.c
+  compile-flags:
+  - -std=gnu11
+  - -D_DARWIN_C_SOURCE
+  - -Wall
+  - -Wextra
+  - -Werror
+  - -pthread
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: PLANE_MACH_PORT_OPEN_GUEST_OK
+  timeout-seconds: 30
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke
