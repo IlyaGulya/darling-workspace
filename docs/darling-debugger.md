@@ -80,6 +80,17 @@ For operational capture:
   process; failure to read registers/memory is unavailable evidence, not an
   empty successful stack.
 
+`darling-bootstrap` buffers its guest smoke output until that child finishes.
+A marker in that buffered output is too late to trigger a live failure capture.
+For live boot diagnosis, keep one managed lifecycle owner and use
+`darling-boot-run.sh --log OWNED_PATH` for the streaming guest log. Select the
+observed host PID from that run, then use `capture --pid` or `unwind --pid`.
+Generic `run` descendant selection is not the prefix-owned process census;
+do not assume a managed daemon remains in the wrapper's descendant tree.
+Run GDB-backed observers sequentially for a PID: competing ptrace attachments
+make one capture unavailable. Wait for the lifecycle owner's final cleanup
+before reusing the prefix.
+
 ## Enable the debug ABI
 
 The implemented listener is **opt-in and absent by default**. Only the exact

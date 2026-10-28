@@ -19,7 +19,7 @@ manifest:
     # Product source authority: this committed tree and its exact child gitlinks.
     # Build the normal stock ALL target and complete installation.
     # Workloads, writable guest prefixes and evidence are selected separately.
-    revision: 2ef0b04ba1ab76a0f576e01ca795fa53dafdc448
+    revision: 549d6c8fbf5b7aaa9d389620d65a89407cf242e3
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -453,7 +453,7 @@ manifest:
     remote: darling-next
     # Production server matches Darling's gitlink: ownership-safe management
     # and courier delivery to the authenticated process incarnation.
-    revision: 7f869ce1fef972654807b10b69c43b94e8db324d
+    revision: 7a73c38e45862fb4d6dfa11b37fe86bf963cefd4
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
@@ -1304,14 +1304,9 @@ manifest:
     repo-path: darling-xnu
     path: darling/src/external/xnu
     remote: darling-next
-    # iOS T4 slice (2026-10-08): fix/ulock-turnstile-queue -- libsystem_kernel routes the
-    # ulock primitive to the server-side queue (lane-less wake reaches it, a fork child stays
-    # on the host futex), and mach_port_get_attributes/mach_port_destroy/mk_timer_* publish on
-    # the process management plane reading planeStatus rather than reply_payload[0]. That last
-    # part is the first event `clang --version` needed: without it the trap hit the retired
-    # per-thread socket, was denied and aborted the guest. Parent is the pin f3e71f3; bcc5595
-    # is the same guest-side change on that parent, replayed here on top of the ulock commits.
-    revision: a424b85c620623824cdd8b02b426ea5a5ad11727
+    # Production E-UNION mutation/descriptor state machines and native signal
+    # authority. This revision must match darling's exact XNU gitlink.
+    revision: 73101faa0352cf0e9327971b57b65de0b7312e59
     userdata:
       kind: darling-source
       upstream-repository: darling-xnu
@@ -1339,6 +1334,13 @@ manifest:
     userdata:
       kind: darling-source
       upstream-repository: darling-zsh
+  - name: fuse-overlayfs
+    path: fuse-overlayfs
+    url: https://github.com/containers/fuse-overlayfs
+    revision: d2a240d4e60b60fe001f6039844c711856508e78
+    userdata:
+      kind: workspace-tool
+      owner: local-hard-fork
   - name: darling-debug-runner
     path: darling-debug-runner
     remote: darling-next

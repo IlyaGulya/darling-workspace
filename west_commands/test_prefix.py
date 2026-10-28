@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import errno
 import os
 import hashlib
 import fcntl
@@ -1124,23 +1126,47 @@ class PrefixLifecycleMixin:
                         f"{path} got {actual_mode:o} want {expected_mode:o}"
                     )
             for name, expected_value in assertion.get("xattrs", {}).items():
+                if isinstance(expected_value, str):
+                    expected_bytes = expected_value.encode()
+                elif (
+                    isinstance(expected_value, dict)
+                    and set(expected_value) == {"base64"}
+                    and isinstance(expected_value["base64"], str)
+                ):
+                    try:
+                        expected_bytes = base64.b64decode(expected_value["base64"], validate=True)
+                    except ValueError as exc:
+                        self.die(
+                            f"{invocation['name']}: invalid E-UNION fixture xattr encoding "
+                            f"{name} on {path}: {exc}"
+                        )
+                else:
+                    self.die(
+                        f"{invocation['name']}: E-UNION fixture xattr {name} on {path} "
+                        "must be text or a mapping containing only base64"
+                    )
                 try:
-                    got_value = os.getxattr(path, name.encode()).decode()
+                    got_value = os.getxattr(path, name.encode())
                 except OSError as exc:
                     self.die(
                         f"{invocation['name']}: E-UNION template fixture xattr missing "
                         f"{name} on {path}: {exc}"
                     )
-                if got_value != expected_value:
+                if got_value != expected_bytes:
                     self.die(
                         f"{invocation['name']}: E-UNION template fixture xattr changed: "
-                        f"{path} {name} got {got_value!r} want {expected_value!r}"
+                        f"{path} {name} got {got_value!r} want {expected_bytes!r}"
                     )
             for name in assertion.get("absent_xattrs", []):
                 try:
                     got_value = os.getxattr(path, name.encode())
-                except OSError:
-                    continue
+                except OSError as exc:
+                    if exc.errno in (errno.ENODATA, getattr(errno, "ENOATTR", errno.ENODATA)):
+                        continue
+                    self.die(
+                        f"{invocation['name']}: cannot verify absent E-UNION template xattr "
+                        f"{name} on {path}: {exc}"
+                    )
                 self.die(
                     f"{invocation['name']}: E-UNION template fixture xattr was added: "
                     f"{path} {name}={got_value!r}"

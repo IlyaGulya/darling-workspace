@@ -21,7 +21,6 @@
 
 #define LINUX_EEXIST EEXIST
 #define LINUX_EPERM EPERM
-#define LINUX_AT_FDCWD AT_FDCWD
 #define LINUX_ENOTDIR ENOTDIR
 #define LINUX_EIO EIO
 #define LINUX_EMFILE EMFILE
@@ -44,6 +43,13 @@ int __simple_printf(const char* format, ...)
 #define main vchroot_unit_main
 #include "vchroot_userspace.c"
 #undef main
+
+/* Native ABI transport only; signal policy remains the production helper. */
+long linux_syscall(long a, long b, long c, long d, long e, long f, int number)
+{
+	long result = syscall(number, a, b, c, d, e, f);
+	return result < 0 ? -errno : result;
+}
 
 #include <darling/emulation/xnu_syscall/bsd/helper/network/duct.h>
 

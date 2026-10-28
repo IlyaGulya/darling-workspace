@@ -735,15 +735,15 @@
     },
     "eunion_mutation_guest": {
       "name": "eunion_mutation_guest",
-      "identity_sha256": "afd4c644af473baab0a04eb418fcf92b1609fe59cdea2730e2d2f3888e567599",
-      "policy": "darling_internal_gate",
-      "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
+      "identity_sha256": "3282d54e0e6b7933c3258416c4ec53f80a59f59fd5e65453febe1c2f1a542216",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "Mixed contract: public mutation semantics retain native macOS reference obligations. The cwd-relative bind now uses an explicitly materialized upper parent and verifies that anchor and socket never appear in lower; these overlay/isolation checks are Darling internal gates, not native conformance."
     },
     "eunion_metadata_guest": {
       "name": "eunion_metadata_guest",
-      "identity_sha256": "e150c17c0c511c0439e106483dd62376744c571b9dd59fd97ab8a0dd840e4962",
-      "policy": "darling_internal_gate",
-      "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
+      "identity_sha256": "4c7ac6a71c1b0c163716f3883046a47ec96e60b19c28a3df62946b18799d87a4",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "Mixed contract: public fd/path metadata, microsecond timestamp precision, NULL-time updates and file truncation retain native macOS reference obligations. Immutable lower, copy-up, setid policy and reserved xattr-marker isolation are separate Darling internal gates; no native execution is claimed."
     },
     "eunion_relative_at_guest": {
       "name": "eunion_relative_at_guest",
@@ -771,9 +771,9 @@
     },
     "eunion_path_errors_guest": {
       "name": "eunion_path_errors_guest",
-      "identity_sha256": "1364e95c516cfe833eb13ef9d92425d03a50954c70845faef92da22259b142a4",
-      "policy": "darling_internal_gate",
-      "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
+      "identity_sha256": "1da2352b3bb2ea8fe599ff7e845f5dd7a4c0728ba41ed726437a4b726fb82df3",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "Mixed contract: ENOTDIR precedence, absolute-root symlink identity, coherent writes through aliases and exclusive-create collision retain native macOS reference obligations. Canonical guest-root confinement, upper-only publication and immutable hidden lower inputs are Darling internal gates; no native execution is claimed."
     },
     "eunion_mkdir_opaque_guest": {
       "name": "eunion_mkdir_opaque_guest",
@@ -1560,6 +1560,36 @@
       "policy": "darling_internal_gate",
       "reason": "Source-reviewed darling/tests/src/unix_sockaddr_boundary.c: uses the actual launcher-published prefix to exercise Darwin-to-Linux Unix-socket expansion at host lengths 104, 107 and 108, non-truncating rejection, stream/datagram roundtrips and caller-capacity guards. Its combined oracle depends on Darling's host-prefix and /Volumes/SystemRoot boundary; this is not a native macOS pathname-capacity reference or proof of all socket API compatibility.",
       "identity_sha256": "611d379b0a42c97d11a6c78e7a08ad448c495be89e1330fd696794de726a240b"
+    },
+    "eunion_state_guest": {
+      "name": "eunion_state_guest",
+      "identity_sha256": "ba407a91f287a773ac4e3a7450041f57ecec4bc73dc4da7a074476a083000a9e",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "Mixed contract: public directory, descriptor and rename semantics retain native macOS reference obligations; copy-up publication, private namespace protection, whiteouts and immutable lower checks are Darling internal gates. Host or Darling execution does not establish native conformance."
+    },
+    "eunion_mutation_state_guest": {
+      "name": "eunion_mutation_state_guest",
+      "identity_sha256": "5bb9729cd0c656047f87667baeeb27d88efe85bf9f13e4ef6c32e41abcc9367e",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "Mixed contract: public path/dirfd, follow/nofollow, creation, link, timestamp and attribute-list behavior retains native macOS reference obligations. Upper routing, immutable lower state and private copy-up policy are separate Darling internal gates; no native execution is claimed."
+    },
+    "eunion_xattr_state_guest": {
+      "name": "eunion_xattr_state_guest",
+      "identity_sha256": "a4ae808e34b4d98352475212f5f967a656c9e0c638a012913851cdac893fe51a",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "Mixed contract: public xattr lengths, names, flags, errors, nofollow and open-descriptor lifetime retain native macOS reference obligations. Reserved union markers, lower immutability and copy-up alias transitions are Darling internal gates; no native execution is claimed."
+    },
+    "eunion_fd_lifetime_guest": {
+      "name": "eunion_fd_lifetime_guest",
+      "identity_sha256": "97237e7e13f72148672c07b362cd910c5855e77ceef897c041f52d4e61fa08e0",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "Mixed contract: open-file identity after unlink, replacement and rename, dup offsets and access modes retain native macOS reference obligations. First metadata promotion from an immutable lower inode into detached upper storage is a Darling internal gate; no native execution is claimed."
+    },
+    "eunion_fixture_state_host": {
+      "name": "eunion_fixture_state_host",
+      "identity_sha256": "751f40477240a507716ce854d7e9e7d3d8e0de88d0c79ce1cd637ac24524451e",
+      "policy": "internal_proof_exemption",
+      "reason": "Host-only tool ownership contract: executes the real fixture preparer and proves unknown, foreign-owner, symlink and whole-state-root refusal, plus same-owner reset. It tests workspace filesystem safety, not a public Darwin API or native conformance."
     }
   }
 }

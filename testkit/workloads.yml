@@ -2851,8 +2851,10 @@ workloads:
   eunion-verify-template-files-after: true
   eunion-forbid-template-paths:
   - /usr/share/darling/tests/eunion/mutation/bind_parent/sock
+  - /usr/share/darling/tests/eunion/mutation/bind_parent/anchor
   eunion-require-upper-paths:
   - /usr/share/darling/tests/eunion/mutation/bind_parent/sock
+  - /usr/share/darling/tests/eunion/mutation/bind_parent/anchor
   eunion-template-files:
   - guest-path: /usr/share/darling/tests/eunion/mutation/copy.txt
     contents: 'LOWER_COPY
@@ -2945,8 +2947,8 @@ workloads:
     contents: 'FTRUNC_CONTENT_LONG
 
       '
-  note: Guest behavior for setid/capability policy, fd/path metadata copy-up, xattr marker isolation and
-    ftruncate content protection.
+  note: Guest behavior for setid/capability policy, fd/path metadata copy-up, xattr marker isolation,
+    microsecond timestamps, NULL-time fd updates and ftruncate content protection.
 - id: eunion_relative_at_guest
   requires-installed-paths:
   - libexec/darling/usr/share/darling/tests/eunion/probe/lower.txt
@@ -3142,7 +3144,6 @@ workloads:
   - libexec/darling/usr/share/darling/tests/eunion/probe/lower.txt
   - libexec/darling/usr/share/darling/tests/eunion/probe/shadow.txt
   - libexec/darling/usr/share/darling/tests/eunion/path-errors/shadow_dir/lower.txt
-  - libexec/darling/usr/share/darling/tests/eunion/path-errors/escape_link
   module: darling/src/external/xnu
   bead: dar-7zvt.2
   kind: guest
@@ -3167,23 +3168,23 @@ workloads:
   - /usr/share/darling/tests/eunion/path-errors
   eunion-verify-template-files-after: true
   eunion-forbid-template-paths:
-  - /usr/share/darling/tests/eunion/path-errors/escape_link/new.txt
+  - /usr/share/darling/tests/eunion/path-errors/guest-root
+  - /usr/share/darling/tests/eunion/path-errors/root-created.txt
+  eunion-require-upper-paths:
+  - /usr/share/darling/tests/eunion/path-errors/guest-root
+  - /usr/share/darling/tests/eunion/path-errors/root-created.txt
   eunion-template-files:
   - guest-path: /usr/share/darling/tests/eunion/path-errors/shadow_dir/lower.txt
     contents: 'LOWER_SHADOW_CHILD
 
       '
-  eunion-template-symlinks:
-  - guest-path: /usr/share/darling/tests/eunion/path-errors/escape_link
-    target: ../../../../../../../escape-target
-    allow-parent-target: true
   eunion-upper-files:
   - guest-path: /usr/share/darling/tests/eunion/path-errors/shadow_dir
     contents: 'UPPER_NON_DIRECTORY
 
       '
-  note: Guest error policy for upper non-directory shadowing, symlink containment and rejected escape
-    writes.
+  note: Exact ENOTDIR for upper non-directory shadowing and rejected writes; absolute symlink
+    guest-root identity, coherent canonical writes confined to upper, and unchanged hidden lower data.
 - id: eunion_mkdir_opaque_guest
   requires-installed-paths:
   - libexec/darling/usr/share/darling/tests/eunion/probe/lower.txt
@@ -6441,6 +6442,710 @@ workloads:
   - -Wall
   - -Wextra
   - -Werror
+- id: eunion_state_guest
+  name: eunion_state_guest
+  module: darling/src/external/xnu
+  repo: darling
+  bead: dar-eunion-integrity-tdd-cvec.3
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  script: tests/src/eunion_state_guest.c
+  ok-marker: WEST_EUNION_STATE_OK
+  env: darling
+  timeout-seconds: 60
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -Werror
+  requires:
+  - darling-eunion-prefix
+  - darling-prefix
+  requires-installed-paths:
+  - libexec/darling/usr/share/darling/tests/eunion/state/large-xattr
+  - libexec/darling/usr/share/darling/tests/eunion/state/create-abort
+  - libexec/darling/usr/share/darling/tests/eunion/state/regular-fd
+  - libexec/darling/usr/share/darling/tests/eunion/state/rename-source
+  - libexec/darling/usr/share/darling/tests/eunion/state/rmdir-file
+  - libexec/darling/usr/share/darling/tests/eunion/state/stream/n11
+  - libexec/darling/usr/share/darling/tests/eunion/state/stream/n10
+  - libexec/darling/usr/share/darling/tests/eunion/state/stream/n09
+  - libexec/darling/usr/share/darling/tests/eunion/state/stream/n07
+  - libexec/darling/usr/share/darling/tests/eunion/state/stream/n08
+  - libexec/darling/usr/share/darling/tests/eunion/state/stream/n06
+  - libexec/darling/usr/share/darling/tests/eunion/state/stream/n04
+  - libexec/darling/usr/share/darling/tests/eunion/state/stream/n05
+  - libexec/darling/usr/share/darling/tests/eunion/state/stream/n03
+  - libexec/darling/usr/share/darling/tests/eunion/state/stream/n02
+  - libexec/darling/usr/share/darling/tests/eunion/state/stream/n01
+  - libexec/darling/usr/share/darling/tests/eunion/state/stream/n00
+  - libexec/darling/usr/share/darling/tests/eunion/state/rename-directory/child
+  - libexec/darling/usr/share/darling/tests/eunion/state/identity/original
+  - libexec/darling/usr/share/darling/tests/eunion/state/opaque/seed
+  - libexec/darling/usr/share/darling/tests/eunion/state/merged/seed
+  - libexec/darling/usr/share/darling/tests/eunion/state/empty/seed
+  - libexec/darling/usr/share/darling/tests/eunion/state/nonempty/child
+  eunion-cleanup-dirs:
+  - /usr/share/darling/tests/eunion/state
+  eunion-verify-template-files-after: true
+  eunion-template-files:
+  - guest-path: /usr/share/darling/tests/eunion/state/large-xattr
+    contents: 'LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.large:
+        base64: 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
+  - guest-path: /usr/share/darling/tests/eunion/state/create-abort
+    contents: 'LOWER
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/regular-fd
+    contents: 'REGULAR
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/rename-source
+    contents: 'SOURCE
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/rmdir-file
+    contents: 'KEEP
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/stream/n11
+    contents: 'N
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/stream/n10
+    contents: 'N
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/stream/n09
+    contents: 'N
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/stream/n07
+    contents: 'N
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/stream/n08
+    contents: 'N
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/stream/n06
+    contents: 'N
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/stream/n04
+    contents: 'N
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/stream/n05
+    contents: 'N
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/stream/n03
+    contents: 'N
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/stream/n02
+    contents: 'N
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/stream/n01
+    contents: 'N
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/stream/n00
+    contents: 'N
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/rename-directory/child
+    contents: 'CHILD
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/identity/original
+    contents: 'ORIGINAL
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/opaque/seed
+    contents: 'SEED
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/merged/seed
+    contents: 'SEED
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/empty/seed
+    contents: 'SEED
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/state/nonempty/child
+    contents: 'CHILD
+
+      '
+    mode: '0644'
+  eunion-forbid-template-paths:
+  - /usr/share/darling/tests/eunion/state/upper-empty
+  - /usr/share/darling/tests/eunion/state/dup-target
+  - /usr/share/darling/tests/eunion/state/moved
+  - /usr/share/darling/tests/eunion/state/merged/upper
+  - /usr/share/darling/tests/eunion/state/identity/replacement
+  eunion-require-upper-paths:
+  - /usr/share/darling/tests/eunion/state/large-xattr
+  note: Production copy-up metadata, remove/abort and directory descriptor state transitions; public syscall
+    behavior and unchanged installed lower inputs, not a model.
+- id: eunion_mutation_state_guest
+  name: eunion_mutation_state_guest
+  module: darling/src/external/xnu
+  repo: darling
+  bead: dar-eunion-integrity-tdd-cvec.2
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  script: tests/src/eunion_mutation_state_guest.c
+  ok-marker: WEST_EUNION_MUTATION_STATE_OK
+  env: darling
+  timeout-seconds: 60
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -Werror
+  requires:
+  - darling-eunion-prefix
+  - darling-prefix
+  requires-installed-paths:
+  - libexec/darling/usr/share/darling/tests/eunion/routing/chmod-dirfd
+  - libexec/darling/usr/share/darling/tests/eunion/routing/chmod-cwd
+  - libexec/darling/usr/share/darling/tests/eunion/routing/utimes-cwd
+  - libexec/darling/usr/share/darling/tests/eunion/routing/extended-cwd
+  - libexec/darling/usr/share/darling/tests/eunion/routing/truncate-cwd
+  - libexec/darling/usr/share/darling/tests/eunion/routing/hardlink-src
+  - libexec/darling/usr/share/darling/tests/eunion/routing/failure
+  - libexec/darling/usr/share/darling/tests/eunion/routing/meta-follow-target
+  - libexec/darling/usr/share/darling/tests/eunion/routing/meta-nofollow-target
+  - libexec/darling/usr/share/darling/tests/eunion/routing/follow-target
+  - libexec/darling/usr/share/darling/tests/eunion/routing/create-follow-target
+  - libexec/darling/usr/share/darling/tests/eunion/routing/exclusive-target
+  - libexec/darling/usr/share/darling/tests/eunion/routing/nofollow-target
+  - libexec/darling/usr/share/darling/tests/eunion/routing/create-nofollow-target
+  - libexec/darling/usr/share/darling/tests/eunion/routing/fifo/.keep
+  - libexec/darling/usr/share/darling/tests/eunion/routing/node/.keep
+  - libexec/darling/usr/share/darling/tests/eunion/routing/slink/.keep
+  - libexec/darling/usr/share/darling/tests/eunion/routing/socket/.keep
+  - libexec/darling/usr/share/darling/tests/eunion/routing/hardlink/.keep
+  - libexec/darling/usr/share/darling/tests/eunion/routing/alist-path
+  - libexec/darling/usr/share/darling/tests/eunion/routing/alist-fd
+  - libexec/darling/usr/share/darling/tests/eunion/routing/alist-invalid
+  - libexec/darling/usr/share/darling/tests/eunion/routing/follow-link
+  - libexec/darling/usr/share/darling/tests/eunion/routing/create-follow-link
+  - libexec/darling/usr/share/darling/tests/eunion/routing/exclusive-link
+  - libexec/darling/usr/share/darling/tests/eunion/routing/nofollow-link
+  - libexec/darling/usr/share/darling/tests/eunion/routing/create-nofollow-link
+  - libexec/darling/usr/share/darling/tests/eunion/routing/dangling-create-link
+  - libexec/darling/usr/share/darling/tests/eunion/routing/dangling-exclusive-link
+  - libexec/darling/usr/share/darling/tests/eunion/routing/dangling-missing-link
+  - libexec/darling/usr/share/darling/tests/eunion/routing/meta-follow-link
+  - libexec/darling/usr/share/darling/tests/eunion/routing/meta-nofollow-link
+  eunion-cleanup-dirs:
+  - /usr/share/darling/tests/eunion/routing
+  eunion-verify-template-files-after: true
+  eunion-template-files:
+  - guest-path: /usr/share/darling/tests/eunion/routing/chmod-dirfd
+    contents: 'ROUTING_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.routing: routing-tag
+  - guest-path: /usr/share/darling/tests/eunion/routing/chmod-cwd
+    contents: 'ROUTING_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.routing: routing-tag
+  - guest-path: /usr/share/darling/tests/eunion/routing/utimes-cwd
+    contents: 'ROUTING_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.routing: routing-tag
+  - guest-path: /usr/share/darling/tests/eunion/routing/extended-cwd
+    contents: 'ROUTING_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.routing: routing-tag
+  - guest-path: /usr/share/darling/tests/eunion/routing/truncate-cwd
+    contents: 'ROUTING_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.routing: routing-tag
+  - guest-path: /usr/share/darling/tests/eunion/routing/hardlink-src
+    contents: 'ROUTING_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.routing: routing-tag
+  - guest-path: /usr/share/darling/tests/eunion/routing/failure
+    contents: 'ROUTING_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.routing: routing-tag
+  - guest-path: /usr/share/darling/tests/eunion/routing/meta-follow-target
+    contents: 'ROUTING_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.routing: routing-tag
+  - guest-path: /usr/share/darling/tests/eunion/routing/meta-nofollow-target
+    contents: 'ROUTING_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.routing: routing-tag
+  - guest-path: /usr/share/darling/tests/eunion/routing/follow-target
+    contents: 'ROUTING_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.routing: routing-tag
+  - guest-path: /usr/share/darling/tests/eunion/routing/create-follow-target
+    contents: 'ROUTING_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.routing: routing-tag
+  - guest-path: /usr/share/darling/tests/eunion/routing/exclusive-target
+    contents: 'ROUTING_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.routing: routing-tag
+  - guest-path: /usr/share/darling/tests/eunion/routing/nofollow-target
+    contents: 'ROUTING_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.routing: routing-tag
+  - guest-path: /usr/share/darling/tests/eunion/routing/create-nofollow-target
+    contents: 'ROUTING_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.routing: routing-tag
+  - guest-path: /usr/share/darling/tests/eunion/routing/fifo/.keep
+    contents: 'keep
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/routing/node/.keep
+    contents: 'keep
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/routing/slink/.keep
+    contents: 'keep
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/routing/socket/.keep
+    contents: 'keep
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/routing/hardlink/.keep
+    contents: 'keep
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/routing/alist-path
+    contents: "ROUTING_LOWER\n"
+    mode: '0644'
+    xattrs:
+      user.test.routing: routing-tag
+  - guest-path: /usr/share/darling/tests/eunion/routing/alist-fd
+    contents: "ROUTING_LOWER\n"
+    mode: '0644'
+    xattrs:
+      user.test.routing: routing-tag
+  - guest-path: /usr/share/darling/tests/eunion/routing/alist-invalid
+    contents: "ROUTING_LOWER\n"
+    mode: '0644'
+    xattrs:
+      user.test.routing: routing-tag
+  eunion-template-symlinks:
+  - guest-path: /usr/share/darling/tests/eunion/routing/follow-link
+    target: follow-target
+  - guest-path: /usr/share/darling/tests/eunion/routing/create-follow-link
+    target: create-follow-target
+  - guest-path: /usr/share/darling/tests/eunion/routing/exclusive-link
+    target: exclusive-target
+  - guest-path: /usr/share/darling/tests/eunion/routing/nofollow-link
+    target: nofollow-target
+  - guest-path: /usr/share/darling/tests/eunion/routing/create-nofollow-link
+    target: create-nofollow-target
+  - guest-path: /usr/share/darling/tests/eunion/routing/dangling-create-link
+    target: dangling-create-target
+  - guest-path: /usr/share/darling/tests/eunion/routing/dangling-exclusive-link
+    target: dangling-exclusive-target
+  - guest-path: /usr/share/darling/tests/eunion/routing/dangling-missing-link
+    target: dangling-missing-target
+  - guest-path: /usr/share/darling/tests/eunion/routing/meta-follow-link
+    target: meta-follow-target
+  - guest-path: /usr/share/darling/tests/eunion/routing/meta-nofollow-link
+    target: meta-nofollow-target
+  eunion-forbid-template-paths:
+  - /usr/share/darling/tests/eunion/routing/fifo/new
+  - /usr/share/darling/tests/eunion/routing/node/new
+  - /usr/share/darling/tests/eunion/routing/slink/new
+  - /usr/share/darling/tests/eunion/routing/socket/new
+  - /usr/share/darling/tests/eunion/routing/hardlink/new
+  - /usr/share/darling/tests/eunion/routing/dangling-create-target
+  - /usr/share/darling/tests/eunion/routing/dangling-exclusive-target
+  - /usr/share/darling/tests/eunion/routing/dangling-missing-target
+  eunion-require-upper-paths:
+  - /usr/share/darling/tests/eunion/routing/chmod-dirfd
+  - /usr/share/darling/tests/eunion/routing/chmod-cwd
+  - /usr/share/darling/tests/eunion/routing/utimes-cwd
+  - /usr/share/darling/tests/eunion/routing/extended-cwd
+  - /usr/share/darling/tests/eunion/routing/truncate-cwd
+  - /usr/share/darling/tests/eunion/routing/hardlink-src
+  - /usr/share/darling/tests/eunion/routing/follow-target
+  - /usr/share/darling/tests/eunion/routing/create-follow-target
+  - /usr/share/darling/tests/eunion/routing/dangling-create-target
+  - /usr/share/darling/tests/eunion/routing/meta-follow-target
+  - /usr/share/darling/tests/eunion/routing/meta-nofollow-link
+  - /usr/share/darling/tests/eunion/routing/fifo/new
+  - /usr/share/darling/tests/eunion/routing/node/new
+  - /usr/share/darling/tests/eunion/routing/slink/new
+  - /usr/share/darling/tests/eunion/routing/socket/new
+  - /usr/share/darling/tests/eunion/routing/hardlink/new
+  - /usr/share/darling/tests/eunion/routing/alist-path
+  - /usr/share/darling/tests/eunion/routing/alist-fd
+  note: Real relative/dirfd/final-symlink metadata, content, creator and hardlink transitions; lower bytes/modes/xattrs
+    and upper effects verified independently.
+- id: eunion_xattr_state_guest
+  name: eunion_xattr_state_guest
+  module: darling/src/external/xnu
+  repo: darling
+  bead: dar-eunion-integrity-tdd-cvec.1
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  script: tests/src/eunion_xattr_state_guest.c
+  ok-marker: WEST_EUNION_XATTR_STATE_OK
+  env: darling
+  timeout-seconds: 60
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -Werror
+  requires:
+  - darling-eunion-prefix
+  - darling-prefix
+  requires-installed-paths:
+  - libexec/darling/usr/share/darling/tests/eunion/xattr-state/absolute
+  - libexec/darling/usr/share/darling/tests/eunion/xattr-state/fd
+  - libexec/darling/usr/share/darling/tests/eunion/xattr-state/cwd-remove
+  - libexec/darling/usr/share/darling/tests/eunion/xattr-state/thread-remove
+  - libexec/darling/usr/share/darling/tests/eunion/xattr-state/cwd-set
+  - libexec/darling/usr/share/darling/tests/eunion/xattr-state/thread-set
+  - libexec/darling/usr/share/darling/tests/eunion/xattr-state/follow-set
+  - libexec/darling/usr/share/darling/tests/eunion/xattr-state/follow-remove
+  - libexec/darling/usr/share/darling/tests/eunion/xattr-state/nofollow
+  - libexec/darling/usr/share/darling/tests/eunion/xattr-state/whiteout
+  - libexec/darling/usr/share/darling/tests/eunion/xattr-state/opaque/.lower
+  - libexec/darling/usr/share/darling/tests/eunion/xattr-state/set-link
+  - libexec/darling/usr/share/darling/tests/eunion/xattr-state/remove-link
+  - libexec/darling/usr/share/darling/tests/eunion/xattr-state/nofollow-link
+  eunion-cleanup-dirs:
+  - /usr/share/darling/tests/eunion/xattr-state
+  eunion-verify-template-files-after: true
+  eunion-template-files:
+  - guest-path: /usr/share/darling/tests/eunion/xattr-state/absolute
+    contents: 'XATTR_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.remove: REMOVE_ME
+      user.test.keep: KEEP_ME
+    absent-xattrs:
+    - user.com.apple.test
+    - user.union.whiteout
+    - user.union.opaque
+  - guest-path: /usr/share/darling/tests/eunion/xattr-state/fd
+    contents: 'XATTR_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.remove: REMOVE_ME
+      user.test.keep: KEEP_ME
+    absent-xattrs:
+    - user.com.apple.test
+    - user.union.whiteout
+    - user.union.opaque
+  - guest-path: /usr/share/darling/tests/eunion/xattr-state/cwd-remove
+    contents: 'XATTR_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.remove: REMOVE_ME
+      user.test.keep: KEEP_ME
+    absent-xattrs:
+    - user.com.apple.test
+    - user.union.whiteout
+    - user.union.opaque
+  - guest-path: /usr/share/darling/tests/eunion/xattr-state/thread-remove
+    contents: 'XATTR_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.remove: REMOVE_ME
+      user.test.keep: KEEP_ME
+    absent-xattrs:
+    - user.com.apple.test
+    - user.union.whiteout
+    - user.union.opaque
+  - guest-path: /usr/share/darling/tests/eunion/xattr-state/cwd-set
+    contents: 'XATTR_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.remove: REMOVE_ME
+      user.test.keep: KEEP_ME
+    absent-xattrs:
+    - user.com.apple.test
+    - user.union.whiteout
+    - user.union.opaque
+  - guest-path: /usr/share/darling/tests/eunion/xattr-state/thread-set
+    contents: 'XATTR_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.remove: REMOVE_ME
+      user.test.keep: KEEP_ME
+    absent-xattrs:
+    - user.com.apple.test
+    - user.union.whiteout
+    - user.union.opaque
+  - guest-path: /usr/share/darling/tests/eunion/xattr-state/follow-set
+    contents: 'XATTR_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.remove: REMOVE_ME
+      user.test.keep: KEEP_ME
+    absent-xattrs:
+    - user.com.apple.test
+    - user.union.whiteout
+    - user.union.opaque
+  - guest-path: /usr/share/darling/tests/eunion/xattr-state/follow-remove
+    contents: 'XATTR_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.remove: REMOVE_ME
+      user.test.keep: KEEP_ME
+    absent-xattrs:
+    - user.com.apple.test
+    - user.union.whiteout
+    - user.union.opaque
+  - guest-path: /usr/share/darling/tests/eunion/xattr-state/nofollow
+    contents: 'XATTR_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.remove: REMOVE_ME
+      user.test.keep: KEEP_ME
+    absent-xattrs:
+    - user.com.apple.test
+    - user.union.whiteout
+    - user.union.opaque
+  - guest-path: /usr/share/darling/tests/eunion/xattr-state/whiteout
+    contents: 'XATTR_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.remove: REMOVE_ME
+      user.test.keep: KEEP_ME
+    absent-xattrs:
+    - user.com.apple.test
+    - user.union.whiteout
+    - user.union.opaque
+  - guest-path: /usr/share/darling/tests/eunion/xattr-state/opaque/.lower
+    contents: 'XATTR_LOWER
+
+      '
+    mode: '0644'
+    xattrs:
+      user.test.remove: REMOVE_ME
+      user.test.keep: KEEP_ME
+    absent-xattrs:
+    - user.com.apple.test
+    - user.union.whiteout
+    - user.union.opaque
+  eunion-template-symlinks:
+  - guest-path: /usr/share/darling/tests/eunion/xattr-state/set-link
+    target: follow-set
+  - guest-path: /usr/share/darling/tests/eunion/xattr-state/remove-link
+    target: follow-remove
+  - guest-path: /usr/share/darling/tests/eunion/xattr-state/nofollow-link
+    target: nofollow
+  eunion-forbid-template-paths:
+  - /usr/share/darling/tests/eunion/xattr-state/fd-symlink
+  eunion-require-upper-paths:
+  - /usr/share/darling/tests/eunion/xattr-state/absolute
+  - /usr/share/darling/tests/eunion/xattr-state/fd
+  - /usr/share/darling/tests/eunion/xattr-state/cwd-remove
+  - /usr/share/darling/tests/eunion/xattr-state/thread-remove
+  - /usr/share/darling/tests/eunion/xattr-state/cwd-set
+  - /usr/share/darling/tests/eunion/xattr-state/thread-set
+  - /usr/share/darling/tests/eunion/xattr-state/follow-set
+  - /usr/share/darling/tests/eunion/xattr-state/follow-remove
+  - /usr/share/darling/tests/eunion/xattr-state/opaque
+  - /usr/share/darling/tests/eunion/xattr-state/whiteout
+  note: Real path/fd normalized xattr transitions, protected marker isolation, same-process alias and
+    detached-inode identity; no cross-process inherited-lower-FD coherence claim.
+- id: eunion_fd_lifetime_guest
+  requires-installed-paths:
+  - libexec/darling/usr/share/darling/tests/eunion/probe/lower.txt
+  - libexec/darling/usr/share/darling/tests/eunion/probe/shadow.txt
+  - libexec/darling/usr/share/darling/tests/eunion/metadata/fdmeta.txt
+  - libexec/darling/usr/share/darling/tests/eunion/metadata/fdxattr.txt
+  - libexec/darling/usr/share/darling/tests/eunion/metadata/pathxattr.txt
+  - libexec/darling/usr/share/darling/tests/eunion/metadata/ftrunc.txt
+  module: darling/src/external/xnu
+  bead: dar-eunion-integrity-tdd-cvec.3
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -Werror
+  env: darling
+  requires:
+  - darling-eunion-prefix
+  - darling-prefix
+  name: eunion_fd_lifetime_guest
+  script: tests/src/eunion_fd_lifetime_guest.c
+  ok-marker: WEST_EUNION_FD_LIFETIME_OK
+  timeout-seconds: 60
+  eunion-cleanup-dirs:
+  - /usr/share/darling/tests/eunion/metadata
+  eunion-verify-template-files-after: true
+  eunion-template-files:
+  - guest-path: /usr/share/darling/tests/eunion/metadata/fdmeta.txt
+    mode: '0644'
+    contents: 'FDMETA_CONTENT
+
+      '
+    absent-xattrs:
+    - user.test.detached
+  - guest-path: /usr/share/darling/tests/eunion/metadata/fdxattr.txt
+    absent-xattrs:
+    - user.test.fd
+    - user.test.detached
+    contents: 'FDXATTR_CONTENT
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/metadata/pathxattr.txt
+    absent-xattrs:
+    - user.test.path
+    - user.union.whiteout
+    - user.test.detached
+    contents: 'PATHXATTR_CONTENT
+
+      '
+    mode: '0644'
+  - guest-path: /usr/share/darling/tests/eunion/metadata/ftrunc.txt
+    contents: 'FTRUNC_CONTENT_LONG
+
+      '
+    mode: '0644'
+    absent-xattrs:
+    - user.test.detached
+  note: First metadata mutation of a lower descriptor after unlink, unlink/recreate, or rename-over must
+    preserve opened data and same-process aliases without mutating or resurrecting the replacement namespace;
+    immutable installed lower inputs are checked externally.
+  eunion-require-upper-paths:
+  - /usr/share/darling/tests/eunion/metadata/fdmeta.txt
+  - /usr/share/darling/tests/eunion/metadata/fdxattr.txt
+  - /usr/share/darling/tests/eunion/metadata/pathxattr.txt
+  - /usr/share/darling/tests/eunion/metadata/ftrunc.txt
+- id: eunion_fixture_state_host
+  name: eunion_fixture_state_host
+  module: darling/src/external/xnu
+  bead: dar-eunion-integrity-tdd-cvec
+  kind: contract
+  coverage-tier: host
+  diag: bare
+  runner: source-contract-script
+  repo: darling-workspace
+  script: tests/run-eunion-fixture-state-host.sh
+  env: host
+  source-env: XNU_SRC_ROOT
+  note: 'Real fixture-preparer refusal and owned-reset transitions: unknown and differently owned roots,
+    symlink roots, entire-state-root selection and missing source prerequisites cannot destroy existing
+    data. No guest runtime or native macOS API claim.'
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke

@@ -116,7 +116,9 @@ set(_eunion_harness_dir
 set(_eunion_include_root "${CMAKE_CURRENT_BINARY_DIR}/eunion-includes")
 set(_eunion_harness_sources
   "${_workspace_root}/experiments/e-union/runner.c"
-  "${_workspace_root}/experiments/e-union/whiteout_hook_fallback.c"
+  "${_workspace_root}/experiments/e-union/simple_format_host.c"
+  "${_workspace_root}/experiments/e-union/signal_atomic_host.c"
+  "${_eunion_resolver_impl}"
   "${_eunion_harness_dir}/src/xnu_syscall/bsd/helper/misc/common_at.c"
   "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/stat/mkdir.c"
   "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/stat/mkdirat.c"
@@ -127,27 +129,50 @@ set(_eunion_harness_sources
   "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/dup.c"
   "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/ftruncate.c"
   "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/lseek.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/dup2.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/close.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/fchmodat.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/fchmod.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/fchmod_extended.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/fchown.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/chmod_extended.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/truncate.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/linkat.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/fchownat.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/mknod.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/unistd/symlinkat.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/fcntl/fcntl.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/helper/misc/fdpath.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/stat/mkfifo.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/time/utimes.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/time/futimes.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/xattr/setxattr.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/xattr/getxattr.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/xattr/listxattr.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/xattr/removexattr.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/xattr/fsetxattr.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/xattr/fgetxattr.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/xattr/flistxattr.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/xattr/fremovexattr.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/xattr/setattrlistat.c"
+  "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/xattr/fsetattrlist.c"
   "${_eunion_harness_dir}/src/conversion/fcntl/open.c"
   "${_eunion_harness_dir}/src/xnu_syscall/bsd/impl/network/bind.c")
 set(_eunion_harness_include_dirs
   "${_eunion_harness_dir}/src/linux_premigration"
+  "${_eunion_harness_dir}/include"
   "${_workspace_root}/experiments/e-union/shim"
   "${_eunion_include_root}"
   "${_workspace_root}/experiments/e-union"
-  # The emulation's own CMakeLists.txt takes these two headers from the darling
-  # checkout (src/external/darlingserver/include) and from mldr's elfcalls
-  # directory (staged into the darling build tree). The harness builds the same
-  # production sources without a darling build tree, so it must name the same
-  # two source directories: vchroot_userspace.c and openat.c include
-  # <darlingserver/rpc-supplement.h> and <elfcalls.h> UNCONDITIONALLY (not inside
-  # #ifndef TEST), so without them the suite cannot be compiled against the
-  # current tree at all -- it fails in ctest-discovery instead of asserting.
+  # Use the selected product's real RPC and loader ABI declarations. Native
+  # tests adapt syscall transport, not copied production headers or behavior.
   "${DARLING_SRC}/src/external/darlingserver/include"
   "${DARLING_SRC}/src/startup/mldr/elfcalls")
-if(EXISTS "${_eunion_resolver_impl}")
-  list(APPEND _eunion_harness_sources "${_eunion_resolver_impl}")
-  list(APPEND _eunion_harness_include_dirs "${_eunion_harness_dir}/include")
-endif()
+set_source_files_properties(
+  "${_workspace_root}/experiments/e-union/simple_format_host.c"
+  PROPERTIES
+    INCLUDE_DIRECTORIES "${_eunion_harness_dir}/src"
+    COMPILE_OPTIONS "-ffunction-sections;-fdata-sections")
 set(_eunion_harness_ready TRUE)
 foreach(_source IN LISTS _eunion_harness_sources)
   if(NOT EXISTS "${_source}")
@@ -175,11 +200,15 @@ if(_eunion_host_sources_available
       _GNU_SOURCE=1
       EUNION
       EFAULT=14
+      # Darwin-only fcntl selectors and the host-native missing-xattr errno.
+      F_CHECK_LV=98 F_GETPATH=50 F_FULLFSYNC=51 ENOATTR=ENODATA
       "EUNION_LIBEXEC_PATH=\"${libexec_path}\"")
     target_compile_options("${target}" PRIVATE
-      -Wall -Wno-format-truncation -Wno-unused-function)
+      -Ulinux -Wall -Wno-format-truncation -Wno-unused-function)
     target_include_directories("${target}" PRIVATE
       ${_eunion_harness_include_dirs})
+    target_link_libraries("${target}" PRIVATE Threads::Threads)
+    target_link_options("${target}" PRIVATE -Wl,--gc-sections)
 
     add_test(NAME "${test_name}" COMMAND "${target}")
     set_property(TEST "${test_name}" PROPERTY
@@ -191,13 +220,30 @@ if(_eunion_host_sources_available
     set_property(TEST "${test_name}" PROPERTY TIMEOUT 60)
   endfunction()
 
-  set(_eunion_fixture_root
-    "${CMAKE_CURRENT_BINARY_DIR}/eunion-harness-fixture")
+  if(DEFINED ENV{DW_STATE_ROOT} AND NOT "$ENV{DW_STATE_ROOT}" STREQUAL "")
+    set(_eunion_state_root "$ENV{DW_STATE_ROOT}")
+  else()
+    get_filename_component(_eunion_state_root
+      "${_workspace_root}/../.west-state" ABSOLUTE)
+  endif()
+  if(NOT IS_ABSOLUTE "${_eunion_state_root}")
+    message(FATAL_ERROR "E-UNION host fixtures require an absolute DW_STATE_ROOT")
+  endif()
+  string(SHA256 _eunion_fixture_key "${CMAKE_CURRENT_BINARY_DIR}")
+  string(SUBSTRING "${_eunion_fixture_key}" 0 8 _eunion_fixture_key)
+  set(_eunion_fixture_root "${_eunion_state_root}/h/${_eunion_fixture_key}")
+  string(LENGTH "${_eunion_fixture_root}/prefix/routing-state/bind-cwd/dest/new"
+    _eunion_host_socket_length)
+  if(_eunion_host_socket_length GREATER 107)
+    message(FATAL_ERROR
+      "E-UNION host fixture socket needs ${_eunion_host_socket_length} bytes; "
+      "select a shorter owned DW_STATE_ROOT (Linux limit is 107)")
+  endif()
   add_test(NAME host/eunion_hardening_fixture
     COMMAND /bin/bash "${_workspace_root}/experiments/e-union/run.sh"
       --prepare-fixture "${_eunion_fixture_root}")
   set_property(TEST host/eunion_hardening_fixture PROPERTY
-    ENVIRONMENT "XNU_SRC_ROOT=${DARLING_XNU_SRC}")
+    ENVIRONMENT "XNU_SRC_ROOT=${DARLING_XNU_SRC};DARLING_SRC=${DARLING_SRC};DW_STATE_ROOT=${_eunion_state_root};EUNION_FIXTURE_OWNER=${CMAKE_CURRENT_BINARY_DIR}")
   set_property(TEST host/eunion_hardening_fixture PROPERTY
     FIXTURES_SETUP eunion_hardening_fixture)
 

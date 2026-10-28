@@ -1,10 +1,11 @@
 # Branch and PR migration
 
-> Historical migration plan. The `repo`/`base.xml` bootstrap commands and old
-> checkout paths below are preserved migration evidence, not today's setup or
-> handoff recipe. Use the [workspace README](../README.md) for current West
-> setup and `mise run west dw handoff` / `restore`. The clean per-fix branch
-> and explicit publication-approval rules remain applicable.
+> Historical migration evidence, not a setup, repair or handoff recipe. All
+> `repo`/`base.xml`, patch-profile/stack and upstream-PR recipes below are retired.
+> Old paths do not identify current source authority. Use the
+> [workspace README](../README.md) for canonical West setup and current handoff
+> tooling. Clean per-fix branches and explicit publication approval still apply;
+> this archive authorizes no push or upstream publication.
 
 `darling-workspace` is the durable source of truth. The existing
 `~/work/darling` checkout is an import source and temporary working copy.

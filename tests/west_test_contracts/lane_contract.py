@@ -182,6 +182,41 @@ def commit(path: Path, message: str) -> str:
 
 
 def pure_contract(root: Path) -> None:
+    import json
+    from lane_provider import ProviderError, digest, resolve_provider, specification
+
+    provider_workspace = root / "provider-workspace"
+    provider_workspace.mkdir()
+    revision = "a" * 40
+    (provider_workspace / "west.yml").write_text(json.dumps({
+        "manifest": {"projects": [{
+            "name": "fuse-overlayfs", "path": "provider-source", "revision": revision,
+        }]},
+    }))
+    source, _, installation = specification(provider_workspace)
+    expect_refusal("missing owned provider", lambda: resolve_provider(provider_workspace), ProviderError)
+    binary = installation / "bin" / "fuse-overlayfs"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"owned provider bytes")
+    binary.chmod(0o755)
+    receipt = installation / "provenance.json"
+    receipt.write_text(json.dumps({
+        "revision": revision, "source": str(source), "sha256": digest(binary),
+    }))
+    assert resolve_provider(provider_workspace) == binary
+    binary.write_bytes(b"replaced provider bytes")
+    expect_refusal("changed provider", lambda: resolve_provider(provider_workspace), ProviderError)
+    binary.write_bytes(b"owned provider bytes")
+    binary.chmod(0o644)
+    expect_refusal("nonexecutable provider", lambda: resolve_provider(provider_workspace), ProviderError)
+    binary.chmod(0o755)
+    (provider_workspace / "west.yml").write_text(json.dumps({
+        "manifest": {"projects": [{
+            "name": "fuse-overlayfs", "path": "provider-source", "revision": "b" * 40,
+        }]},
+    }))
+    expect_refusal("new pin needs new build", lambda: resolve_provider(provider_workspace), ProviderError)
+
     for good in ("laneA", "a", "lane-1.2", "L" * 48):
         assert validate_lane_name(good) == good, good
     for bad in ("", ".", "..", "a/b", "../x", "-lead", "L" * 49, "a b", "/abs"):
@@ -328,6 +363,15 @@ def mounted_contract(root: Path) -> None:
     assert read_record(first) is not None, "create must leave a lane record"
     assert read_record(first)["base"]["identity"] == before
     assert read_record(first)["runtime"]["root"] == str(runtime.root)
+    from lane_provider import resolve_provider
+
+    provider = resolve_provider()
+    assert read_record(first)["provider"]["executable"] == str(provider)
+    daemons = fuse_daemon_pids(first)
+    assert daemons, "the mounted lane must have an owned provider daemon"
+    assert all(Path(f"/proc/{pid}/exe").resolve() == provider for pid in daemons), (
+        "mounted lane is not served by the selected reviewed executable"
+    )
 
     merged = lane_prefix(first)
     assert prefix_mount_targets(merged) == []
@@ -482,12 +526,11 @@ def mounted_contract(root: Path) -> None:
 
 
 def main() -> None:
-    for tool in ("fuse-overlayfs", "fusermount3"):
-        if not shutil.which(tool):
-            raise AssertionError(
-                "this contract mounts real isolation lanes and needs fuse-overlayfs and "
-                f"fusermount3 on PATH; {tool} was not found"
-            )
+    from lane_provider import resolve_provider
+
+    resolve_provider()
+    if not shutil.which("fusermount3"):
+        raise AssertionError("this contract mounts real isolation lanes and needs fusermount3 on PATH")
     if not Path("/dev/fuse").exists():
         raise AssertionError(
             "this contract mounts real isolation lanes and needs /dev/fuse; it is absent"

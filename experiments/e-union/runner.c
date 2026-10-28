@@ -16,6 +16,7 @@
 #define TEST 1
 #define _GNU_SOURCE 1
 #include <stdint.h>
+#include <stdarg.h>
 #include <time.h>
 #include <locale.h>
 #include <errno.h>
@@ -38,17 +39,14 @@
  * TEST mode (the file only defines a few of these in its #ifdef TEST block). */
 #define LINUX_EEXIST EEXIST
 #define LINUX_EPERM  EPERM
-#define LINUX_AT_FDCWD AT_FDCWD
 #define LINUX_ENOTDIR ENOTDIR
 #define LINUX_EIO EIO
 #define LINUX_EMFILE EMFILE
-#define BSD_AT_FDCWD (-2)
 #define BSD_O_WRONLY 1
 #define BSD_O_RDWR 2
 #define BSD_O_CREAT 0x200
 #define BSD_O_TRUNC 0x400
 #define BSD_O_EXCL 0x800
-#define LINUX_AT_SYMLINK_NOFOLLOW AT_SYMLINK_NOFOLLOW
 
 int eunion_test_perthread_wd = -100;
 
@@ -57,13 +55,9 @@ int dserver_rpc_vchroot_path(char* a, unsigned long b, uint64_t* c){(void)a;(voi
 void __simple_abort(void){__builtin_trap();}
 int __simple_printf(const char* f, ...){(void)f;return 0;}
 
-/* The current tree's openat.c console path reaches the loader's elfcalls
- * process-plane publisher (declared in elfcalls_wrapper.h) and the fd-taking
- * simple printf. Neither exists in a host build: -1 is the documented
- * "not published / not completed -> fall back" status the caller already
- * handles, and the diagnostic is swallowed exactly like __simple_printf above.
- * (The 812e6e82/f033c577 arms do not reference them, so these stubs are
- * additive for the fixed tree only.) */
+/* Host console transport boundary only. The harness has no guest console
+ * process, so the actual publisher's not-published status selects its ordinary
+ * fallback. Filesystem and descriptor effects still reach the native kernel. */
 int __dserver_plane_request_ex(uint32_t op, uint64_t p0, uint64_t p1, uint64_t p2,
         uint64_t p3, uint64_t* outReply0, uint64_t* outReply1)
 {
@@ -107,24 +101,39 @@ int sockaddr_fixup_from_bsd(struct sockaddr_fixup* out, const void* address, int
     if (length < (int)offsetof(struct sockaddr_un, sun_path) + 1 ||
         input->sun_family != AF_UNIX)
         return -EINVAL;
+    size_t available = (size_t)length - offsetof(struct sockaddr_un, sun_path);
+    if (available > sizeof(input->sun_path))
+        available = sizeof(input->sun_path);
+    size_t input_length = strnlen(input->sun_path, available);
+    if (input_length == available)
+        return -ENAMETOOLONG;
     memset(out, 0, sizeof(*out));
     out->linux_family = AF_UNIX;
     strcpy(expansion.path, input->sun_path);
     expansion.flags = VCHROOT_FOLLOW;
     expansion.dfd = -100;
-    if (vchroot_expand(&expansion) < 0)
-        return -ENOENT;
-    strncpy(out->sun_path, expansion.path, sizeof(out->sun_path) - 1);
-    return (int)offsetof(struct sockaddr_fixup, sun_path) +
-        (int)strlen(out->sun_path) + 1;
+    int status = vchroot_expand(&expansion);
+    if (status < 0)
+        return status;
+    /* The owned fixture prefix is genuinely short. This synthetic ABI adapter
+     * neither truncates nor publishes a temporary proc-fd socket address. */
+    size_t native_length = strlen(expansion.path);
+    if (native_length >= sizeof(out->sun_path))
+        return -ENAMETOOLONG;
+    memcpy(out->sun_path, expansion.path, native_length + 1);
+    return (int)offsetof(struct sockaddr_fixup, sun_path) + (int)native_length + 1;
 }
 
 int errno_linux_to_bsd(int error) {
     return error;
 }
 
+static void (*eunion_test_after_native_dup2)(int from, int to);
 long linux_syscall(long a1, long a2, long a3, long a4, long a5, long a6, int number) {
     long result = syscall(number, a1, a2, a3, a4, a5, a6);
+    if (result >= 0 && eunion_test_after_native_dup2 &&
+        (number == SYS_dup2 || number == SYS_dup3))
+        eunion_test_after_native_dup2((int)a1, (int)a2);
     return result < 0 ? -errno : result;
 }
 
@@ -137,7 +146,12 @@ long sys_unlinkat(int fd, const char* path, int flag);
 long sys_openat(int fd, const char* path, int flags, unsigned int mode);
 long sys_dup(int fd);
 long sys_ftruncate(int fd, long long length);
+long sys_fchmod(int fd, int mode);
 long long sys_lseek(int fd, long long offset, int whence);
+long sys_dup2(int from, int to);
+long sys_fcntl(int fd, int cmd, long arg);
+long sys_close(int fd);
+void __simple_kprintf(const char* format, ...) { (void)format; }
 void kqueue_dup(int oldfd, int newfd) { (void)oldfd; (void)newfd; }
 
 static int g_tests = 0, g_fail = 0;
@@ -290,6 +304,44 @@ static void expect_resolves_to(const char* guest, const char* want) {
     }
 }
 
+static void relative_directory_self_checks(void) {
+    printf("\n== E-UNION lower directory self-open ==\n");
+    int source = (int)sys_openat(-100, "/System/Library/LaunchDaemons", 0, 0);
+    struct stat original;
+    int valid = source >= 0 && fstat(source, &original) == 0 &&
+                S_ISDIR(original.st_mode);
+    check("SO lower directory opens before libc-style self-open", valid);
+    if (!valid)
+        return;
+    const char* paths[] = {".", "../LaunchDaemons"};
+    const char expected[] = "<<launchd plist>>\n";
+    for (unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i) {
+        int reopened = (int)sys_openat(source, paths[i], 0, 0);
+        struct stat observed;
+        char names[256], content[64], label[160];
+        int count = 0;
+        int same = reopened >= 0 && fstat(reopened, &observed) == 0 &&
+                   observed.st_dev == original.st_dev &&
+                   observed.st_ino == original.st_ino;
+        int listed = same && nameset_merged(reopened, names, sizeof(names), &count) == 0 &&
+                     name_count(names, count, "com.apple.test.plist") == 1;
+        int child = reopened >= 0 ?
+            (int)sys_openat(reopened, "com.apple.test.plist", 0, 0) : -1;
+        long bytes = child >= 0 ? read(child, content, sizeof(content)) : -1;
+        snprintf(label, sizeof(label),
+                 "SO relative %s retains lower directory identity, entries and child bytes", paths[i]);
+        check(label, same && listed && bytes == (long)sizeof(expected) - 1 &&
+                     memcmp(content, expected, sizeof(expected) - 1) == 0);
+        if (child >= 0) sys_close(child);
+        if (reopened >= 0) sys_close(reopened);
+    }
+    char upper[4096];
+    snprintf(upper, sizeof(upper), "%s/System/Library/LaunchDaemons", prefix_path);
+    check("SO read-only self-open leaves the lower-only directory unmaterialized",
+          access(upper, F_OK) < 0 && errno == ENOENT);
+    sys_close(source);
+}
+
 enum { LARGE_NAMES = 640, LARGE_HIDDEN = 96, LARGE_NAME_LEN = 255,
        LARGE_BYTES = (LARGE_NAMES - LARGE_HIDDEN) * (LARGE_NAME_LEN + 1) };
 
@@ -382,8 +434,7 @@ static int large_open(void) {
 
 static void large_close(int fd) {
     if (fd >= 0) {
-        vchroot_dir_closed(fd);
-        close(fd);
+        sys_close(fd);
     }
 }
 
@@ -394,7 +445,7 @@ static void large_directory_checks(void) {
         char name[LARGE_NAME_LEN + 1], guest[4096];
         large_name(i, name);
         snprintf(guest, sizeof(guest), "/largemerge/%s", name);
-        if (vchroot_whiteout(guest) != 0)
+        if (sys_unlinkat(BSD_AT_FDCWD, guest, 0) != 0)
             whiteouts_ok = 0;
     }
     check("GL fixture creates 96 NAME_MAX physical whiteouts", whiteouts_ok);
@@ -479,6 +530,12 @@ static void large_directory_checks(void) {
     large_close(fd);
 }
 
+#include "core_state_cases.h"
+#include "descriptor_transition_cases.h"
+#include "signal_authority_cases.h"
+#include "mutation_cases.h"
+#include "xattr_cases.h"
+
 int main(void) {
     char cwd[4096];
     getcwd(cwd, sizeof(cwd));
@@ -528,12 +585,20 @@ int main(void) {
     set_libexec_path(libexec);
 #endif
 
+    relative_directory_self_checks();
+
     const char* directory_only = getenv("EUNION_DIRECTORY_ONLY");
     if (directory_only && strcmp(directory_only, "1") == 0) {
         large_directory_checks();
         printf("\n%d tests, %d failed\n", g_tests, g_fail);
         return g_fail ? 1 : 0;
     }
+
+    core_state_checks();
+    descriptor_transition_checks();
+    signal_authority_state_checks();
+    routing_state_checks();
+    xattr_state_checks();
 
     printf("== E-UNION resolver tests ==\n");
 
@@ -817,11 +882,10 @@ int main(void) {
 
     printf("\n== E-UNION whiteout + opaque tests ==\n");
 
-    /* W1. whiteout of a lower-only file hides it: resolver reports ENOENT and
-           does NOT fall back to the lower layer. */
+    /* W1. A real guest unlink hides the lower namesake without changing it. */
     {
-        int rv = vchroot_whiteout("/usr/bin/ls");   /* ls exists only in lower */
-        check("W1 whiteout returns 0", rv == 0);
+        int rv = sys_unlinkat(BSD_AT_FDCWD, "/usr/bin/ls", 0);
+        check("W1 unlink hides the lower namesake", rv == 0);
         expect_absent("/usr/bin/ls");
     }
 
@@ -835,35 +899,21 @@ int main(void) {
         expect_absent("/usr/bin/ls"); /* but invisible to the union */
     }
 
-    /* W3. creating the path again (copy-up / write) over a whiteout must clear
-           the marker and make the path live again. Here: write a new upper file
-           at the whiteouted path and confirm it resolves. */
-    {
-        int rv = vchroot_unwhiteout("/usr/bin/ls");
-        check("W3 unwhiteout returns 0", rv == 0);
-        /* now copy it up fresh from lower */
-        vchroot_copyup("/usr/bin/ls");
-        snprintf(p, sizeof(p), "%s/usr/bin/ls", prefix);
-        expect_resolves_to("/usr/bin/ls", p);
-    }
 
-    /* W4. whiteout of a path that exists in BOTH layers hides the lower one
-           even though the upper copy is removed first. */
+    /* W4. Unlink of a name in BOTH layers replaces its upper copy with a
+           whiteout; the lower object must not reappear. */
     {
-        /* /usr/bin/sh is in both; remove upper copy then whiteout */
-        snprintf(p, sizeof(p), "%s/usr/bin/sh", prefix);
-        unlink(p);
-        int rv = vchroot_whiteout("/usr/bin/sh");
-        check("W4 whiteout (both layers) returns 0", rv == 0);
+        int rv = sys_unlinkat(BSD_AT_FDCWD, "/usr/bin/sh", 0);
+        check("W4 unlink (both layers) returns 0", rv == 0);
         expect_absent("/usr/bin/sh");
     }
 
-    /* O1. opaque directory: lower entries are NOT merged in. Mark /opaquedir
-           opaque in the upper; a child that exists only in the lower must be
-           invisible. */
+    /* O1. Raw fixture topology: the production resolver must suppress lower
+           children of an opaque upper directory, not its upper children. */
     {
-        int rv = vchroot_set_opaque("/opaquedir");
-        check("O1 set_opaque returns 0", rv == 0);
+        snprintf(p, sizeof(p), "%s/opaquedir", prefix);
+        int rv = lsetxattr(p, "user.union.opaque", "y", 1, 0);
+        check("O1 fixture installs opaque upper directory", rv == 0);
         /* lowerchild exists only in lower/opaquedir; must be hidden */
         expect_absent("/opaquedir/lowerchild");
         /* but an upper child in the same opaque dir is still visible */
@@ -879,14 +929,10 @@ int main(void) {
     }
 
     printf("\n== E-UNION whiteout/opaque mutation-resistant (dyra #9) ==\n");
-    /* The legacy W1/W2/W4/O1 ran on fixtures (/usr/bin/{ls,sh}, /opaquedir) that
-       the copy-up tests above had already mutated; a no-op vchroot_whiteout /
-       vchroot_set_opaque still left them "absent" for incidental reasons, so the
-       tests could not catch a broken whiteout. These run on DEDICATED pristine
-       lower-only fixtures and assert TWO independent things that a no-op breaks:
-         (a) the merged resolver reports the name ENOENT (semantic hiding), and
-         (b) the upper placeholder physically exists AND carries the marker xattr
-             (so we never mistake a real file for a whiteout). */
+    /* Dedicated pristine deletion fixtures bind a real guest unlink to both
+       resolver hiding and the physical upper marker, while checking that the
+       lower inode survives. Native opacity topology separately exercises the
+       production resolver and marker readback. */
     {
         char got[4096];
 
@@ -902,8 +948,8 @@ int main(void) {
             check("WM1 fixture: no upper object before whiteout",
                   access(p, F_OK) != 0);
 
-            int rv = vchroot_whiteout(g);
-            check("WM1 whiteout returns 0", rv == 0);
+            int rv = sys_unlinkat(BSD_AT_FDCWD, g, 0);
+            check("WM1 unlink returns 0", rv == 0);
             /* (a) semantic: merged view now ENOENT (no fall-through to lower) */
             expect_absent(g);
             /* (b) structural: placeholder exists AND carries the marker xattr.
@@ -928,8 +974,8 @@ int main(void) {
             /* precondition: upper wins before whiteout */
             expand(g, got);
             check("WM2 fixture: upper wins before whiteout", strcmp(got, p) == 0);
-            int rv = vchroot_whiteout(g);
-            check("WM2 whiteout (both layers) returns 0", rv == 0);
+            int rv = sys_unlinkat(BSD_AT_FDCWD, g, 0);
+            check("WM2 unlink (both layers) returns 0", rv == 0);
             expect_absent(g);
             char xv[8];
             ssize_t xn = lgetxattr(p, "user.union.whiteout", xv, sizeof(xv));
@@ -937,24 +983,9 @@ int main(void) {
             check("WM2 template victim untouched", access(l, F_OK) == 0);
         }
 
-        /* WM3. unwhiteout WM1's placeholder removes the marker file so the lower
-                file is visible again (re-creation path). */
-        {
-            const char* g = "/var/log/wh_lower";
-            snprintf(p, sizeof(p), "%s/var/log/wh_lower", prefix);
-            snprintf(l, sizeof(l), "%s/var/log/wh_lower", libexec);
-            int rv = vchroot_unwhiteout(g);
-            check("WM3 unwhiteout returns 0", rv == 0);
-            check("WM3 placeholder removed", access(p, F_OK) != 0);
-            expand(g, got);
-            check("WM3 lower file visible again after unwhiteout",
-                  strcmp(got, l) == 0 && access(l, F_OK) == 0);
-        }
 
-        /* OM1. opaque a pristine dir present in both layers: the lower-only child
-                must vanish from the merged view, the upper-only child must remain,
-                and the dir must carry the opaque marker. A no-op set_opaque leaves
-                the lower child visible -> caught. */
+        /* OM1. Inject opaque topology through native fixture metadata, then
+                exercise the actual merged resolver and marker readback. */
         {
             const char* dir = "/var/opq";
             snprintf(p, sizeof(p), "%s/var/opq/up_child", prefix);
@@ -964,14 +995,14 @@ int main(void) {
             check("OM1 fixture: lower child visible before opaque",
                   strcmp(got, l) == 0 && access(l, F_OK) == 0);
 
-            int rv = vchroot_set_opaque(dir);
-            check("OM1 set_opaque returns 0", rv == 0);
+            char updir[4096]; snprintf(updir, sizeof(updir), "%s%s", prefix, dir);
+            int rv = lsetxattr(updir, "user.union.opaque", "y", 1, 0);
+            check("OM1 fixture installs opaque upper directory", rv == 0);
             /* (a) semantic: lower-only child now hidden */
             expect_absent("/var/opq/lo_child");
             /* upper-only child still visible */
             expect_resolves_to("/var/opq/up_child", p);
             /* (b) structural: the upper dir carries the opaque marker */
-            char updir[4096]; snprintf(updir, sizeof(updir), "%s/var/opq", prefix);
             char xv[8];
             ssize_t xn = lgetxattr(updir, "user.union.opaque", xv, sizeof(xv));
             check("OM1 upper dir carries user.union.opaque marker", xn >= 1);
@@ -1005,6 +1036,10 @@ int main(void) {
             snprintf(lower_child, sizeof(lower_child), "%s/stale_a.txt", lower_dir);
             check("MK3 guest-path lower recreate fixture is present",
                   access(lower_child, F_OK) == 0);
+            check("MK3 remove first visible child",
+                  sys_unlinkat(BSD_AT_FDCWD, "/private/var/tmp/west-eunion-mkdir-opaque/recreate/stale_a.txt", 0) == 0);
+            check("MK3 remove second visible child",
+                  sys_unlinkat(BSD_AT_FDCWD, "/private/var/tmp/west-eunion-mkdir-opaque/recreate/stale_b.txt", 0) == 0);
             check("MK3 sys_rmdir absolute guest path succeeds", sys_rmdir(g) == 0);
             check("MK3 lower recreate fixture remains intact", access(lower_child, F_OK) == 0);
             int mkdir_rv = (int)sys_mkdir(g, 0755);
@@ -1037,7 +1072,8 @@ int main(void) {
 
     /* R2. a whiteout in the upper hides the lower namesake from the listing. */
     {
-        vchroot_whiteout("/mergedir/low_only");   /* delete the lower-only entry */
+        check("R2 real unlink of lower entry succeeds",
+              sys_unlinkat(BSD_AT_FDCWD, "/mergedir/low_only", 0) == 0);
         ncount = vchroot_readdir_merge("/mergedir", names, sizeof(names));
         check("R2 whiteouted lower entry absent from listing",
               !name_in(names, ncount, "low_only"));
@@ -1049,7 +1085,9 @@ int main(void) {
 
     /* R3. an opaque dir lists ONLY upper entries (lower not merged). */
     {
-        vchroot_set_opaque("/mergedir");
+        snprintf(p, sizeof(p), "%s/mergedir", prefix);
+        check("R3 fixture installs opaque directory",
+              lsetxattr(p, "user.union.opaque", "y", 1, 0) == 0);
         ncount = vchroot_readdir_merge("/mergedir", names, sizeof(names));
         check("R3 opaque dir hides remaining lower-only entries",
               !name_in(names, ncount, "low2"));
@@ -1057,23 +1095,23 @@ int main(void) {
               name_in(names, ncount, "up_only"));
     }
 
-    printf("\n== E-UNION write-op wiring helpers ==\n");
+    printf("\n== E-UNION linked write operations ==\n");
 
-    /* These model exactly what an emulation site (openat/unlinkat/...) calls on
-       the GUEST path before/after the real syscall, so the syscall lands in the
-       upper layer and deletions leave a whiteout. The site logic must be a thin
-       call into these helpers -- the union policy lives here, not scattered. */
+    /* Exercise the production syscall consumers against the same two layers.
+       Native effects and transaction completion stay in the linked wrappers. */
 
-    /* P1. prepare_write on a lower-only file copies it up so a subsequent expand
-           resolves to the WRITABLE upper copy (never the shared template). */
+    /* P1. Opening a lower-only file for writing must materialize an upper copy. */
     {
         /* fresh lower-only file for this test */
         snprintf(l, sizeof(l), "%s/usr/local/share/tool.conf", libexec);
         snprintf(p, sizeof(p), "%s/usr/local/share/tool.conf", prefix);
         /* ensure it isn't already upper from an earlier test */
         unlink(p);
-        int rv = vchroot_prepare_write("/usr/local/share/tool.conf");
-        check("P1 prepare_write(lower-only) returns 0", rv == 0);
+        int fd = (int)sys_openat(BSD_AT_FDCWD, "/usr/local/share/tool.conf",
+                                 BSD_O_WRONLY, 0);
+        check("P1 openat(lower-only, write) succeeds", fd >= 0);
+        if (fd >= 0)
+            sys_close(fd);
         check("P1 file now materialized in upper", access(p, F_OK) == 0);
         expect_resolves_to("/usr/local/share/tool.conf", p);
     }
@@ -1093,8 +1131,11 @@ int main(void) {
         unlink(upper_path);
         check("RPATH1 lower relative fixture is pristine", access(lower_path, F_OK) == 0);
         check("RPATH1 chdir to the guest prefix succeeds", chdir(prefix) == 0);
-        int rv = vchroot_prepare_write_at(AT_FDCWD, "var/log/relative_lower");
-        check("RPATH1 relative AT_FDCWD prepare_write returns 0", rv == 0);
+        int fd = (int)sys_openat(BSD_AT_FDCWD, "var/log/relative_lower",
+                                 BSD_O_WRONLY, 0);
+        check("RPATH1 relative AT_FDCWD writable open succeeds", fd >= 0);
+        if (fd >= 0)
+            sys_close(fd);
         check("RPATH1 relative mutation materializes the upper copy",
               access(upper_path, F_OK) == 0);
         check("RPATH1 relative mutation leaves the lower template intact",
@@ -1132,6 +1173,8 @@ int main(void) {
         snprintf(upper_target, sizeof(upper_target), "%s/var/log/syscall_rmdir", prefix);
         int dirfd = open(lower_dir, O_RDONLY | O_DIRECTORY);
         eunion_test_perthread_wd = dirfd;
+        check("RSITE2 unlink visible child before rmdir",
+              sys_unlinkat(dirfd, "syscall_rmdir/child", 0) == 0);
         int rv = dirfd >= 0 ? (int)sys_rmdir("syscall_rmdir") : -1;
         check("RSITE2 rmdir working dir opens", dirfd >= 0);
         check("RSITE2 rmdir(relative) succeeds", rv == 0);
@@ -1213,7 +1256,7 @@ int main(void) {
                                                        BSD_O_WRONLY | BSD_O_TRUNC, 0600) : -1;
         ssize_t written = existing_fd >= 0 ? write(existing_fd, "upper write\n", 12) : -1;
         if (existing_fd >= 0)
-            close(existing_fd);
+            sys_close(existing_fd);
         check("RSITE5 openat lower working dir opens", dirfd >= 0);
         check("RSITE5 openat(relative existing, write/truncate) succeeds", existing_fd >= 0);
         check("RSITE5 openat writes to the upper copy", written == 12 && access(upper_existing, F_OK) == 0);
@@ -1231,7 +1274,7 @@ int main(void) {
                                                       BSD_O_WRONLY | BSD_O_CREAT | BSD_O_EXCL, 0600) : -1;
         written = created_fd >= 0 ? write(created_fd, "new upper\n", 10) : -1;
         if (created_fd >= 0)
-            close(created_fd);
+            sys_close(created_fd);
         check("RSITE5 openat AT_FDCWD working dir opens", dirfd >= 0);
         check("RSITE5 openat(AT_FDCWD, relative O_CREAT) succeeds", created_fd >= 0);
         check("RSITE5 openat creates only in upper", written == 10 && access(upper_created, F_OK) == 0);
@@ -1256,99 +1299,96 @@ int main(void) {
         check("RSITE6 whiteout failure fixture opens", dirfd >= 0);
         check("RSITE6 post-unlink whiteout error reaches caller", rv == -LINUX_EIO);
         check("RSITE6 lower namesake remains intact after marker failure", access(lower_file, F_OK) == 0);
-        check("RSITE6 upper object was deleted before marker failure", access(upper_file, F_OK) != 0);
+        check("RSITE6 failed removal preserves upper object", access(upper_file, F_OK) == 0);
         if (dirfd >= 0)
             close(dirfd);
     }
 
-    /* P2. prepare_write on an already-upper file is a no-op success (no second
-           copy, content preserved). */
+    /* P2. Opening an already-upper file must preserve its contents. */
     {
         snprintf(p, sizeof(p), "%s/usr/bin/myecho", prefix);
-        int rv = vchroot_prepare_write("/usr/bin/myecho");
-        check("P2 prepare_write(upper) returns 0", rv == 0);
-        check("P2 upper file still present", access(p, F_OK) == 0);
+        char before[256], after[256];
+        long before_len = slurp(p, before, sizeof(before));
+        int fd = (int)sys_openat(BSD_AT_FDCWD, "/usr/bin/myecho", BSD_O_WRONLY, 0);
+        check("P2 openat(upper, write) succeeds", fd >= 0);
+        if (fd >= 0)
+            sys_close(fd);
+        long after_len = slurp(p, after, sizeof(after));
+        check("P2 upper contents preserved",
+              before_len >= 0 && after_len == before_len &&
+              memcmp(before, after, (size_t)before_len) == 0);
     }
 
-    /* P3. prepare_write on a path absent in BOTH layers is a no-op success: an
-           O_CREAT-style create will make it fresh in the upper; nothing to copy. */
+    /* P3. O_CREAT on a name absent from both layers creates only in upper. */
     {
-        int rv = vchroot_prepare_write("/usr/bin/brand-new-file");
-        check("P3 prepare_write(absent) returns 0 (create-in-upper later)", rv == 0);
+        const char* guest = "/usr/bin/brand-new-file";
+        int fd = (int)sys_openat(BSD_AT_FDCWD, guest,
+                                 BSD_O_WRONLY | BSD_O_CREAT | BSD_O_EXCL, 0600);
+        check("P3 openat(absent, create) succeeds", fd >= 0);
+        if (fd >= 0)
+            sys_close(fd);
+        snprintf(p, sizeof(p), "%s%s", prefix, guest);
+        snprintf(l, sizeof(l), "%s%s", libexec, guest);
+        check("P3 new file exists in upper only",
+              access(p, F_OK) == 0 && access(l, F_OK) != 0);
     }
 
-    /* P4. post_unlink on a name that still exists in the LOWER layer drops a
-           whiteout so it stays deleted (does not reappear from the template). */
+    /* P4. Removing a lower name must hide it without touching the template. */
     {
-        /* /System/.../com.apple.test.plist exists only in lower */
         const char* g = "/System/Library/LaunchDaemons/com.apple.test.plist";
-        int rv = vchroot_post_unlink(g);
-        check("P4 post_unlink(lower-present) returns 0", rv == 0);
+        int rv = (int)sys_unlinkat(BSD_AT_FDCWD, g, 0);
+        check("P4 unlinkat(lower-present) succeeds", rv == 0);
+        snprintf(l, sizeof(l), "%s%s", libexec, g);
+        check("P4 lower file survives unlink", access(l, F_OK) == 0);
         expect_absent(g);
     }
 
-    /* P5. post_unlink on a name absent from the lower layer must NOT create a
-           spurious whiteout (nothing to hide). */
+    /* P5. Removing an upper-only name leaves no spurious whiteout. */
     {
-        /* myecho is upper-only; after a real unlink it's simply gone */
         const char* g = "/usr/bin/myecho";
         snprintf(p, sizeof(p), "%s/usr/bin/myecho", prefix);
-        unlink(p); /* simulate the real unlink the site already did */
-        int rv = vchroot_post_unlink(g);
-        check("P5 post_unlink(upper-only) returns 0", rv == 0);
-        /* no whiteout placeholder should have been created */
+        int rv = (int)sys_unlinkat(BSD_AT_FDCWD, g, 0);
+        check("P5 unlinkat(upper-only) succeeds", rv == 0);
         check("P5 no spurious whiteout placeholder", access(p, F_OK) != 0);
         expect_absent(g);
     }
 
-    /* P6. pre_mkdir over a whiteouted path clears the marker so the new dir is
-           live (mkdir-over-deleted-name). */
+    /* P6. Recreating a whiteouted name must publish a visible directory. */
     {
         const char* g = "/usr/bin/ls";
-        /* whiteout it first (it's been copied up earlier; whiteout replaces) */
-        vchroot_whiteout(g);
         expect_absent(g);
-        int rv = vchroot_pre_mkdir(g);
-        check("P6 pre_mkdir clears whiteout returns 0", rv == 0);
-        /* after clearing, a fresh upper object at the path would be visible;
-           materialize one to prove the marker is gone */
+        int rv = (int)sys_mkdir(g, 0755);
+        check("P6 mkdir over a whiteout succeeds", rv == 0);
         snprintf(p, sizeof(p), "%s/usr/bin/ls", prefix);
-        check("P6 whiteout placeholder removed", access(p, F_OK) != 0);
+        struct stat created;
+        check("P6 whiteout replaced with upper directory",
+              lstat(p, &created) == 0 && S_ISDIR(created.st_mode));
+        expect_resolves_to(g, p);
     }
 
     printf("\n== E-UNION unlink/rmdir must not touch the template (dyra #1) ==\n");
-    /* CRITICAL: the lower template is a SHARED live directory, not a RO mount.
-       A delete syscall on a lower-only path would physically remove it from the
-       template for ALL prefixes. vchroot_prepare_unlink(guest) decides the
-       policy BEFORE the syscall and tells the site whether to run the host
-       delete: lower-only -> drop a whiteout and SKIP the host delete; upper
-       present -> PROCEED (site deletes upper, then post_unlink whiteouts if the
-       name also exists in the template). Contract codes:
-         VCHROOT_UNLINK_SKIP    (1) -> site must NOT call the host syscall
-         VCHROOT_UNLINK_PROCEED (0) -> site calls the host delete
-         < 0                        -> error */
+    /* These call the real removal wrapper, including its native effect and
+       transaction finish; helper return-code policy is not the oracle. */
     {
-        /* U1. lower-only file: must SKIP the host delete and template stays. */
         const char* g = "/var/log/ulnk_lower";
         snprintf(l, sizeof(l), "%s/var/log/ulnk_lower", libexec);
         struct stat before; int had = (stat(l, &before) == 0);
         check("U1 fixture: lower-only victim present", had);
-        int rv = vchroot_prepare_unlink(g);
-        check("U1 prepare_unlink(lower-only) returns SKIP (1)", rv == 1);
-        check("U1 template file UNTOUCHED after prepare_unlink",
-              stat(l, &before) == 0);
-        expect_absent(g); /* now whited-out in the merged view */
+        int rv = (int)sys_unlinkat(BSD_AT_FDCWD, g, 0);
+        check("U1 unlinkat(lower-only) succeeds", rv == 0);
+        check("U1 template file UNTOUCHED after unlinkat", stat(l, &before) == 0);
+        expect_absent(g);
 
-        /* U2. upper-only file: must PROCEED (site does the real unlink). */
         snprintf(p, sizeof(p), "%s/var/tmp/ulnk_upper", prefix);
         int up_present = (access(p, F_OK) == 0);
         check("U2 fixture: upper-only victim present", up_present);
-        int rv2 = vchroot_prepare_unlink("/var/tmp/ulnk_upper");
-        check("U2 prepare_unlink(upper-only) returns PROCEED (0)", rv2 == 0);
+        int rv2 = (int)sys_unlinkat(BSD_AT_FDCWD, "/var/tmp/ulnk_upper", 0);
+        check("U2 unlinkat(upper-only) succeeds", rv2 == 0);
+        check("U2 upper-only object is removed", access(p, F_OK) != 0);
+        expect_absent("/var/tmp/ulnk_upper");
 
-        /* U3. absent-in-both: nothing to hide, PROCEED (let the syscall ENOENT). */
-        int rv3 = vchroot_prepare_unlink("/usr/bin/nonesuch");
-        check("U3 prepare_unlink(absent) returns PROCEED (0)", rv3 == 0);
+        int rv3 = (int)sys_unlinkat(BSD_AT_FDCWD, "/usr/bin/nonesuch", 0);
+        check("U3 unlinkat(absent) reports ENOENT", rv3 == -ENOENT);
     }
 
     printf("\n== E-UNION paged getdents merge (per-fd state) ==\n");
@@ -1385,8 +1425,7 @@ int main(void) {
                 }                                                              \
                 if (++_guard > 1000) break;                                    \
             }                                                                  \
-            vchroot_dir_closed(_fd); /* emulation's close() must do this */    \
-            close(_fd);                                                        \
+            sys_close(_fd);                                                    \
         }                                                                      \
     } while (0)
 
@@ -1408,15 +1447,17 @@ int main(void) {
         check("G1 paged set == readdir_merge set, no dups", allmatch);
     }
 
-    /* G2. whiteout placeholder in the UPPER dir is never emitted by the pager. */
+    /* G2. WM2's committed unlink created a real production whiteout. It must
+       not be emitted when enumerating that directory through the fd pager. */
     {
         char got[8192]; int gotn;
-        /* low_only was whiteouted earlier (R2); mergedir made opaque (R3). Use a
-           fresh dir to isolate: whiteout an upper name and confirm it's hidden. */
-        vchroot_whiteout("/opaquedir/upperchild"); /* upper file -> whiteout */
-        DRAIN_INTO("/opaquedir", got, gotn);
-        check("G2 whiteouted upper entry absent from paged listing",
-              !name_in(got, gotn, "upperchild"));
+        snprintf(p, sizeof(p), "%s/var/whboth/file", prefix);
+        char marker[8];
+        check("G2 fixture retains real unlink whiteout",
+              lgetxattr(p, "user.union.whiteout", marker, sizeof(marker)) >= 1);
+        DRAIN_INTO("/var/whboth", got, gotn);
+        check("G2 whiteout absent from paged listing",
+              !name_in(got, gotn, "file"));
     }
 
     /* G3. MANY-PAGE merge: 40 lower-only + 40 upper-only + 10 in-both names,
@@ -1472,8 +1513,7 @@ int main(void) {
                 }
                 if (++_guard > 1000) break;
             }
-            vchroot_dir_closed(_fd);
-            close(_fd);
+            sys_close(_fd);
         }
         check("G4 fixture: dtcheck dir opened and drained", _fd >= 0);
         check("G4 subdir entry reports d_type == DT_DIR (4)", ty_sub == DT_DIR);
@@ -1683,12 +1723,8 @@ int main(void) {
                   rv == 0 && tn > 0 && strcmp(tgt, "target_file") == 0);
         }
 
-        /* H2. RELATIVE-path copy-up resolution. The write-op sites gate copy-up
-               on guest[0]=='/'; a dirfd-relative target is silently skipped.
-               vchroot_prepare_write_at(dfd, relpath) must resolve the *at() path
-               to guest-absolute (via the dirfd's guest path) and then copy up.
-               Use a FRESH lower-only target (/usr/lib/target_file) addressed
-               relative to a guest dir fd, so the assertion is uncontaminated. */
+        /* H2. A dirfd-relative writable open must resolve the guest path and
+               materialize the fresh lower-only target before the native open. */
         {
             /* open the guest dir /usr/lib (resolves into the lower template) */
             char dirhost[4096];
@@ -1696,9 +1732,11 @@ int main(void) {
             int dfd = open(dirhost, O_RDONLY | O_DIRECTORY);
             check("H2 guest dir fd opens", dfd >= 0);
             if (dfd >= 0) {
-                int rv = vchroot_prepare_write_at(dfd, "target_file");
+                int fd = (int)sys_openat(dfd, "target_file", BSD_O_WRONLY, 0);
+                check("H2 openat(dirfd, relative write) succeeds", fd >= 0);
+                if (fd >= 0)
+                    sys_close(fd);
                 snprintf(p, sizeof(p), "%s/usr/lib/target_file", prefix);
-                check("H2 prepare_write_at(dirfd, relpath) returns 0", rv == 0);
                 check("H2 relative-path target materialized in upper",
                       access(p, F_OK) == 0);
                 close(dfd);
@@ -1720,10 +1758,12 @@ int main(void) {
             int rdfd = open(root, O_RDONLY | O_DIRECTORY);
             check("H2b fixture: out-of-union dir fd opens", rdfd >= 0);
             if (rdfd >= 0) {
-                int rv = vchroot_prepare_write_at(rdfd, "no_such_union_target");
+                int fd = (int)sys_openat(rdfd, "no_such_union_target", BSD_O_WRONLY, 0);
+                check("H2b escape-hatch relative open preserves native ENOENT",
+                      fd == -ENOENT);
+                if (fd >= 0)
+                    sys_close(fd);
                 snprintf(p, sizeof(p), "%s/Volumes/SystemRoot", prefix);
-                check("H2b prepare_write_at(escape-hatch dirfd, rel) is a no-op success",
-                      rv == 0);
                 check("H2b escape hatch never materialized into the union",
                       access(p, F_OK) != 0);
                 close(rdfd);
@@ -1766,98 +1806,99 @@ int main(void) {
     }
 
     printf("\n== E-UNION rename destination must not touch the template (dyra #2) ==\n");
-    /* rename moves the (copied-up) upper source into the destination. If the
-       destination's PARENT is lower-only, the expanded dest path points into the
-       shared template, so the host rename would move INTO the template. And if
-       the destination NAME already exists only in the lower template, after the
-       rename the old lower namesake must be hidden (whiteout) so it does not
-       resurrect in the merged view. vchroot_prepare_rename_dest(newpath) handles
-       both BEFORE the host rename. */
+    /* Run the real paired rename transaction: destination parents and replaced
+       lower names must remain protected through native rename and finish. */
     {
         /* RN1. dest parent is lower-only: must copy it up so the rename lands in
                 the upper layer, template parent left untouched. */
-        int rv = vchroot_prepare_rename_dest("/var/empty_lowerdir/moved");
-        check("RN1 prepare_rename_dest(into lower-only dir) returns >= 0", rv >= 0);
+        snprintf(p, sizeof(p), "%s/var/tmp/rename_runner_source", prefix);
+        int source = open(p, O_CREAT | O_EXCL | O_WRONLY, 0600);
+        check("RN1 upper source fixture created", source >= 0);
+        ssize_t written = source >= 0 ? write(source, "rename payload\n", 15) : -1;
+        if (source >= 0)
+            close(source);
+        check("RN1 upper source fixture populated", written == 15);
+        int rv = (int)sys_renameat(BSD_AT_FDCWD, "/var/tmp/rename_runner_source",
+                                    BSD_AT_FDCWD, "/var/empty_lowerdir/moved");
+        check("RN1 rename into lower-only dir succeeds", rv == 0);
         snprintf(p, sizeof(p), "%s/var/empty_lowerdir", prefix);
         check("RN1 dest parent materialized in upper", access(p, F_OK) == 0);
         snprintf(l, sizeof(l), "%s/var/empty_lowerdir", libexec);
         check("RN1 template dest parent untouched", access(l, F_OK) == 0);
+        snprintf(p, sizeof(p), "%s/var/empty_lowerdir/moved", prefix);
+        char content[256];
+        check("RN1 upper destination has source contents",
+              slurp(p, content, sizeof(content)) == 15 &&
+              strcmp(content, "rename payload\n") == 0);
+        snprintf(l, sizeof(l), "%s/var/empty_lowerdir/moved", libexec);
+        check("RN1 no destination leaks into lower", access(l, F_OK) != 0);
 
-        /* RN2. dest NAME exists only in lower: prepare must whiteout it so the
-                old template content is hidden once the new object takes its name.
-                Use a fresh lower-only victim. */
+        /* RN2. Replacing a lower destination publishes the source contents,
+                without changing the lower victim, even after later unlink. */
         const char* dst = "/var/log/ren_victim";
-        int rv2 = vchroot_prepare_rename_dest(dst);
-        check("RN2 prepare_rename_dest(over lower dest) returns >= 0", rv2 >= 0);
-        /* after prepare, the lower dest must be hidden in the merged view... */
-        char g[4096]; expand(dst, g);
-        /* upper now carries a whiteout placeholder for the dest name */
-        snprintf(p, sizeof(p), "%s/var/log/ren_victim", prefix);
-        check("RN2 whiteout placeholder created for lower dest",
-              access(p, F_OK) == 0);
-        /* ...and the template victim itself is UNTOUCHED on disk */
+        char before[256], after[256];
         snprintf(l, sizeof(l), "%s/var/log/ren_victim", libexec);
-        check("RN2 template dest victim untouched on disk", access(l, F_OK) == 0);
+        long before_len = slurp(l, before, sizeof(before));
+        int rv2 = (int)sys_renameat(BSD_AT_FDCWD, "/var/empty_lowerdir/moved",
+                                     BSD_AT_FDCWD, dst);
+        check("RN2 rename over lower destination succeeds", rv2 == 0);
+        snprintf(p, sizeof(p), "%s/var/log/ren_victim", prefix);
+        check("RN2 upper destination has replacement contents",
+              slurp(p, content, sizeof(content)) == 15 &&
+              strcmp(content, "rename payload\n") == 0);
+        expect_resolves_to(dst, p);
+        long after_len = slurp(l, after, sizeof(after));
+        check("RN2 template dest victim contents untouched",
+              before_len >= 0 && after_len == before_len &&
+              memcmp(before, after, (size_t)before_len) == 0);
+        check("RN2 unlink replacement succeeds",
+              sys_unlinkat(BSD_AT_FDCWD, dst, 0) == 0);
+        expect_absent(dst);
     }
 
     printf("\n== E-UNION create must copy up a lower-only parent (dyra #3) ==\n");
-    /* mkdirat/mknod/mkfifo/symlinkat create a new entry. If the parent dir is
-       lower-only, the expanded create path points into the shared template and
-       the host syscall would create the entry INSIDE the template. The sites
-       must copy up the parent first (only bind.c did). vchroot_prepare_create
-       (guest) = copy up the parent dir + clear any whiteout at the new name. */
+    /* Exclusive creation must materialize a lower-only parent and publish the
+       child in upper, without leaking a new entry into the shared template. */
     {
-        /* /var/createparent is a DEDICATED lower-only dir that NO other test
-           touches (RN1/RN2 use /var/empty_lowerdir; sharing it made CR1 pass even
-           when prepare_create's copy-up was disabled -- the parent was already
-           upper from RN1). With a pristine parent, "materialized in upper" can
-           only be true if prepare_create itself copied it up. A create of
-           /var/createparent/newfile must materialize the parent in the upper
-           layer without touching the template. */
+        /* This dedicated parent is not touched by the rename tests. */
         const char* g = "/var/createparent/newfile";
         /* guard: parent must NOT pre-exist in the upper layer */
         snprintf(p, sizeof(p), "%s/var/createparent", prefix);
-        check("CR1 fixture: parent absent from upper before prepare",
+        check("CR1 fixture: parent absent from upper before create",
               access(p, F_OK) != 0);
-        int rv = vchroot_prepare_create(g);
-        check("CR1 prepare_create(in lower-only parent) returns >= 0", rv >= 0);
+        int fd = (int)sys_openat(BSD_AT_FDCWD, g,
+                                 BSD_O_WRONLY | BSD_O_CREAT | BSD_O_EXCL, 0644);
+        check("CR1 create in lower-only parent succeeds", fd >= 0);
+        if (fd >= 0)
+            sys_close(fd);
         check("CR1 parent dir materialized in upper", access(p, F_OK) == 0);
-        /* the new name itself must NOT yet exist (create makes it after) */
         snprintf(p, sizeof(p), "%s/var/createparent/newfile", prefix);
-        check("CR1 new name not pre-created by prepare", access(p, F_OK) != 0);
-        /* template parent dir untouched (still empty, still present) */
+        check("CR1 new file materialized in upper", access(p, F_OK) == 0);
         snprintf(l, sizeof(l), "%s/var/createparent", libexec);
         check("CR1 template parent untouched", access(l, F_OK) == 0);
+        snprintf(l, sizeof(l), "%s/var/createparent/newfile", libexec);
+        check("CR1 no new file leaked into template", access(l, F_OK) != 0);
     }
 
-    /* SP1: create through a SYMLINKED lower-only parent. The real-world failure:
-       `touch /tmp/x` inside the guest returned ENOENT under EUNION because /tmp is
-       a symlink (-> private/tmp) and prepare_create copied up the SYMLINK pointing
-       at a NON-materialized target dir, so the later open(O_CREAT) followed the
-       upper symlink into a directory absent from the upper layer.
-       Fixture: /var/sp_link -> sp_real (relative), both lower-only.
-       prepare_create("/var/sp_link/newfile") MUST materialize the symlink's REAL
-       TARGET dir (/var/sp_real) in the upper layer, so a create through the
-       symlink resolves to a real upper directory. */
+    /* SP1. Creating through a lower-only symlinked parent must materialize
+       its real target directory, not follow an upper link to a missing dir.
+       Fixture: /var/sp_link -> sp_real (relative), both lower-only. */
     {
         const char* g = "/var/sp_link/newfile";
         /* guards: neither the symlink target nor the symlink itself is upper yet */
         snprintf(p, sizeof(p), "%s/var/sp_real", prefix);
-        check("SP1 fixture: target dir absent from upper before prepare",
+        check("SP1 fixture: target dir absent from upper before create",
               access(p, F_OK) != 0);
-        int rv = vchroot_prepare_create(g);
-        check("SP1 prepare_create(through symlinked parent) returns >= 0", rv >= 0);
+        int fd = (int)sys_openat(BSD_AT_FDCWD, g,
+                                 BSD_O_WRONLY | BSD_O_CREAT | BSD_O_EXCL, 0644);
+        check("SP1 create through guest symlink succeeds (no ENOENT)", fd >= 0);
+        if (fd >= 0)
+            sys_close(fd);
         /* THE FIX: the symlink's real target dir must be a real upper directory */
         struct stat tst;
         snprintf(p, sizeof(p), "%s/var/sp_real", prefix);
         check("SP1 symlink target dir materialized as a real upper dir",
               stat(p, &tst) == 0 && S_ISDIR(tst.st_mode));
-        /* end-to-end: a create through the upper symlink path must now SUCCEED and
-           land in the upper real target dir (this is what open(O_CREAT) does). */
-        snprintf(p, sizeof(p), "%s/var/sp_link/newfile", prefix);
-        int fd = open(p, O_CREAT | O_WRONLY, 0644);
-        check("SP1 create through upper symlink succeeds (no ENOENT)", fd >= 0);
-        if (fd >= 0) close(fd);
         snprintf(p, sizeof(p), "%s/var/sp_real/newfile", prefix);
         check("SP1 created file landed in upper real target dir",
               access(p, F_OK) == 0);
@@ -1901,20 +1942,15 @@ int main(void) {
                                  BSD_O_WRONLY | BSD_O_CREAT | BSD_O_EXCL, 0600);
         check("SAFE1 symlink .. mutation is rejected", fd < 0);
         if (fd >= 0)
-            close(fd);
+            sys_close(fd);
         check("SAFE1 outside sentinel remains intact", access(outside, F_OK) == 0);
         check("SAFE1 no escaped upper target was created", access(upper_target, F_OK) != 0);
     }
 
     printf("\n== E-UNION mkdir over a removed lower dir must be opaque (.6) ==\n");
-    /* CRITICAL delete-recreate: rmdir of a populated lower-only dir drops a
-       whiteout (prepare_unlink); a subsequent mkdir of the SAME name unwhiteouts
-       + copies up the parent (prepare_create) and creates a fresh upper dir. If
-       that new dir is NOT marked opaque, the resolver/readdir re-merge the OLD
-       lower children -> deleted content resurrects. The site must call
-       vchroot_post_mkdir(guest) AFTER the mkdir to set opaque whenever the name
-       shadows a lower directory. This block models the exact site sequence on a
-       DEDICATED lower-only populated dir, then asserts the merged view is EMPTY. */
+    /* Delete visible children before rmdir. Their lower bytes remain in the
+       immutable template; after removing and recreating the parent, opacity
+       (not invalid rmdir semantics) must keep those stale children hidden. */
     {
         const char* dir = "/var/recreate";
         snprintf(l, sizeof(l), "%s/var/recreate", libexec);
@@ -1932,22 +1968,13 @@ int main(void) {
                   nc >= 0 && name_in(nm, nc, "stale_a") && name_in(nm, nc, "stale_b"));
         }
 
-        /* step 1: rmdir -> lower-only dir, prepare_unlink drops a whiteout + SKIP */
-        int u = vchroot_prepare_unlink(dir);
-        check("MK1 rmdir(lower dir) returns SKIP (whiteout, no host delete)", u == 1);
-        expect_absent(dir); /* now whited-out */
-
-        /* step 2: mkdir of the same name. The site sequence is
-              prepare_create (unwhiteout + copyup parent)
-              -> host mkdir of the upper dir
-              -> post_mkdir (set opaque if it shadows a lower dir). */
-        int c = vchroot_prepare_create(dir);
-        check("MK1 prepare_create returns 0", c == 0);
-        /* the real mkdirat would create the upper dir here; do the same on disk */
-        check("MK1 host mkdir of upper dir succeeds",
-              mkdir(p, 0755) == 0 || access(p, F_OK) == 0);
-        int pm = vchroot_post_mkdir(dir);
-        check("MK1 post_mkdir returns 0", pm == 0);
+        check("MK1 unlink first visible child",
+              sys_unlinkat(BSD_AT_FDCWD, "/var/recreate/stale_a", 0) == 0);
+        check("MK1 unlink second visible child",
+              sys_unlinkat(BSD_AT_FDCWD, "/var/recreate/stale_b", 0) == 0);
+        check("MK1 remove now-empty merged directory", sys_rmdir(dir) == 0);
+        expect_absent(dir);
+        check("MK1 recreate removed directory", sys_mkdir(dir, 0755) == 0);
 
         /* THE ASSERTION: the recreated dir's merged view must be EMPTY -- the old
            lower children must NOT resurrect. With the RED stub (post_mkdir is a
@@ -1982,12 +2009,10 @@ int main(void) {
             const char* fresh = "/var/freshdir";
             snprintf(p, sizeof(p), "%s/var/freshdir", prefix);
             unlink(p); rmdir(p); /* pristine */
-            int c2 = vchroot_prepare_create(fresh);
-            check("MK2 prepare_create(fresh) returns 0", c2 == 0);
-            check("MK2 host mkdir of fresh upper dir",
-                  mkdir(p, 0755) == 0 || access(p, F_OK) == 0);
-            int pm2 = vchroot_post_mkdir(fresh);
-            check("MK2 post_mkdir(fresh, no lower namesake) returns 0", pm2 == 0);
+            check("MK2 mkdir of fresh name succeeds", sys_mkdir(fresh, 0755) == 0);
+            struct stat created;
+            check("MK2 fresh upper directory exists",
+                  stat(p, &created) == 0 && S_ISDIR(created.st_mode));
             char xv[8];
             ssize_t xn = lgetxattr(p, "user.union.opaque", xv, sizeof(xv));
             check("MK2 fresh dir is NOT opaque (no lower namesake to mask)",
@@ -1996,110 +2021,117 @@ int main(void) {
     }
 
     printf("\n== E-UNION fd-metadata copy-up must not touch the template (dyra #4) ==\n");
-    /* fchmod/futimes act on an fd with no path. If the fd was opened O_RDONLY on
-       a lower-only file, the inode is the template's; a metadata change would hit
-       the template. vchroot_prepare_write_fd(fd) recovers the fd's guest path
-       (vchroot_fdpath), copies it up, and returns the guest path so the caller
-       can re-open the upper copy. Returns >=0 on success (0 if unmanaged/escape),
-       writing the guest path into the provided buffer. */
+    /* Metadata mutations must rebind the caller's open description and every
+       preexisting alias to upper, while leaving shared lower metadata intact. */
     {
-        /* open a lower-only file O_RDONLY (template inode), then prepare_write_fd:
-           the file must materialize in the upper layer and the template stay. */
+        /* FD1. The caller keeps using the same read-only descriptor. */
         snprintf(l, sizeof(l), "%s/var/log/fdmeta_lower", libexec);
-        int lfd = open(l, O_RDONLY);
+        struct stat original;
+        int original_ok = stat(l, &original) == 0;
+        int lfd = (int)sys_openat(BSD_AT_FDCWD, "/var/log/fdmeta_lower", 0, 0);
         check("FD1 fixture: lower-only file opens O_RDONLY", lfd >= 0);
         if (lfd >= 0) {
-            char gbuf[4096];
-            int rv = vchroot_prepare_write_fd(lfd, gbuf, sizeof(gbuf));
-            check("FD1 prepare_write_fd returns guest path len > 0", rv > 0);
-            check("FD1 recovered guest path is /var/log/fdmeta_lower",
-                  rv > 0 && strcmp(gbuf, "/var/log/fdmeta_lower") == 0);
+            check("FD1 fchmod on caller fd succeeds", sys_fchmod(lfd, 0640) == 0);
             snprintf(p, sizeof(p), "%s/var/log/fdmeta_lower", prefix);
-            check("FD1 file materialized in upper after prepare_write_fd",
-                  access(p, F_OK) == 0);
-            check("FD1 template file untouched", access(l, F_OK) == 0);
-            close(lfd);
+            struct stat upper, caller, lower;
+            int upper_ok = stat(p, &upper) == 0;
+            check("FD1 file materialized in upper", upper_ok);
+            check("FD1 SAME caller fd observes upper metadata",
+                  upper_ok && fstat(lfd, &caller) == 0 &&
+                  caller.st_dev == upper.st_dev && caller.st_ino == upper.st_ino &&
+                  (caller.st_mode & 0777) == 0640);
+            check("FD1 template metadata untouched",
+                  original_ok && stat(l, &lower) == 0 &&
+                  lower.st_ino == original.st_ino &&
+                  lower.st_mode == original.st_mode);
+            sys_close(lfd);
         }
 
-        /* FD2. END-TO-END high-level helper. This is what the fchmod/futimes/
-           fsetxattr/fremovexattr sites actually call: open a lower-only file,
-           hand the fd to vchroot_fd_for_meta_write(), and apply the metadata op
-           to the RETURNED fd. The helper must copy the file up and return a FRESH
-           fd on the UPPER copy (the original fd still points at the lower inode!).
-           A chmod via the returned fd must change the UPPER mode and leave the
-           TEMPLATE's 0644 untouched. With the stub (returns the original fd) the
-           chmod lands on the lower inode -> template mode changes -> RED. */
+        /* FD2. A duplicate created before copy-up must observe the same new
+           upper inode and metadata as the original caller descriptor. */
         {
             snprintf(l, sizeof(l), "%s/var/log/fdmeta_e2e", libexec);
             snprintf(p, sizeof(p), "%s/var/log/fdmeta_e2e", prefix);
-            unlink(p); /* ensure pristine: not copied up by an earlier test */
-            struct stat lst0; stat(l, &lst0);
+            unlink(p);
+            struct stat lst0;
+            int lower_ok = stat(l, &lst0) == 0;
             check("FD2 fixture: template starts 0644",
-                  (lst0.st_mode & 0777) == 0644);
+                  lower_ok && (lst0.st_mode & 0777) == 0644);
 
-            int fd = open(l, O_RDONLY); /* lower inode */
+            int fd = (int)sys_openat(BSD_AT_FDCWD, "/var/log/fdmeta_e2e", 0, 0);
             check("FD2 fixture: lower file opens O_RDONLY", fd >= 0);
             if (fd >= 0) {
-                int wfd = vchroot_fd_for_meta_write(fd);
-                check("FD2 helper returns a usable fd (>=0)", wfd >= 0);
-                check("FD2 helper re-opened a DIFFERENT fd (upper copy)",
-                      wfd != fd);
-                /* apply the metadata op (chmod 0600) to the returned fd */
-                if (wfd >= 0) {
-                    int cr = fchmod(wfd, 0600);
-                    check("FD2 fchmod via returned fd succeeds", cr == 0);
-                    if (wfd != fd) close(wfd);
-                }
-                close(fd);
-
-                /* the UPPER copy must now be 0600 ... */
-                struct stat ust; int us_ok = (stat(p, &ust) == 0);
-                check("FD2 upper copy materialized", us_ok);
+                int alias = (int)sys_dup(fd);
+                check("FD2 preexisting alias opens", alias >= 0);
+                check("FD2 fchmod on caller fd succeeds", sys_fchmod(fd, 0600) == 0);
+                struct stat upper, caller, duplicate, lower;
+                int upper_ok = stat(p, &upper) == 0;
+                check("FD2 upper copy materialized", upper_ok);
                 check("FD2 upper copy got the new mode (0600)",
-                      us_ok && (ust.st_mode & 0777) == 0600);
-                /* ... and the TEMPLATE must be UNTOUCHED at 0644 */
-                struct stat lst1; stat(l, &lst1);
+                      upper_ok && (upper.st_mode & 0777) == 0600);
+                check("FD2 SAME caller fd observes new upper metadata",
+                      upper_ok && fstat(fd, &caller) == 0 &&
+                      caller.st_dev == upper.st_dev && caller.st_ino == upper.st_ino &&
+                      (caller.st_mode & 0777) == 0600);
+                check("FD2 preexisting alias observes new upper metadata",
+                      upper_ok && alias >= 0 && fstat(alias, &duplicate) == 0 &&
+                      duplicate.st_dev == upper.st_dev && duplicate.st_ino == upper.st_ino &&
+                      (duplicate.st_mode & 0777) == 0600);
                 check("FD2 template mode UNTOUCHED (still 0644)",
-                      (lst1.st_mode & 0777) == 0644);
+                      lower_ok && stat(l, &lower) == 0 &&
+                      lower.st_mode == lst0.st_mode && lower.st_ino == lst0.st_ino);
+                if (alias >= 0)
+                    sys_close(alias);
+                sys_close(fd);
             }
         }
 
-        /* FD3. UPPER-only fd: copy-up is a no-op, but the object IS union-managed,
-           so the helper still hands back a usable fd that targets the upper copy.
-           (It may be a fresh fd -- that is fine; the caller's uniform rule is
-           "apply the op to the returned fd, and close it if it differs from the
-           original".) A mutation via the returned fd must change the upper file. */
+        /* FD3. An already-upper open description and its alias stay coherent. */
         {
             snprintf(p, sizeof(p), "%s/var/tmp/fdmeta_upper", prefix);
-            int fd = open(p, O_RDONLY);
+            int fd = (int)sys_openat(BSD_AT_FDCWD, "/var/tmp/fdmeta_upper", 0, 0);
             check("FD3 fixture: upper-only file opens", fd >= 0);
             if (fd >= 0) {
-                int wfd = vchroot_fd_for_meta_write(fd);
-                check("FD3 helper returns a usable fd for an upper-only object",
-                      wfd >= 0);
-                if (wfd >= 0) {
-                    int cr = fchmod(wfd, 0600);
-                    check("FD3 fchmod via returned fd succeeds", cr == 0);
-                    if (wfd != fd) close(wfd);
-                }
-                struct stat ust; stat(p, &ust);
+                int alias = (int)sys_dup(fd);
+                check("FD3 preexisting alias opens", alias >= 0);
+                check("FD3 fchmod on caller fd succeeds", sys_fchmod(fd, 0600) == 0);
+                struct stat upper, caller, duplicate;
+                int upper_ok = stat(p, &upper) == 0;
                 check("FD3 upper file got the new mode (0600)",
-                      (ust.st_mode & 0777) == 0600);
-                close(fd);
+                      upper_ok && (upper.st_mode & 0777) == 0600);
+                check("FD3 SAME caller fd retains upper identity and mode",
+                      upper_ok && fstat(fd, &caller) == 0 &&
+                      caller.st_dev == upper.st_dev && caller.st_ino == upper.st_ino &&
+                      (caller.st_mode & 0777) == 0600);
+                check("FD3 preexisting alias observes upper metadata",
+                      upper_ok && alias >= 0 && fstat(alias, &duplicate) == 0 &&
+                      duplicate.st_dev == upper.st_dev && duplicate.st_ino == upper.st_ino &&
+                      (duplicate.st_mode & 0777) == 0600);
+                if (alias >= 0)
+                    sys_close(alias);
+                sys_close(fd);
             }
         }
 
-        /* FD4. UNMANAGED fd (escapes the union -- e.g. /dev/null on the host):
-           the helper must return the ORIGINAL fd unchanged so the caller operates
-           on it directly and does NOT close a fd it did not open here. */
+        /* FD4. A host-owned fixture outside both layers must retain native
+           metadata semantics and caller identity, without a union copy. */
         {
-            int fd = open("/dev/null", O_RDONLY);
-            check("FD4 fixture: host /dev/null opens", fd >= 0);
+            const char* host = "fdmeta_unmanaged";
+            int fd = open(host, O_CREAT | O_EXCL | O_RDONLY, 0644);
+            check("FD4 fixture: unmanaged host file opens", fd >= 0);
             if (fd >= 0) {
-                int wfd = vchroot_fd_for_meta_write(fd);
-                check("FD4 unmanaged fd -> helper returns the SAME fd",
-                      wfd == fd);
-                close(fd);
+                check("FD4 unmanaged descriptor registration succeeds",
+                      vchroot_fd_opened(fd) == 0);
+                struct stat before, caller, after;
+                int before_ok = fstat(fd, &before) == 0;
+                check("FD4 native metadata mutation succeeds", sys_fchmod(fd, 0600) == 0);
+                check("FD4 SAME caller fd retains native identity and mode",
+                      before_ok && fstat(fd, &caller) == 0 &&
+                      stat(host, &after) == 0 &&
+                      caller.st_dev == before.st_dev && caller.st_ino == before.st_ino &&
+                      caller.st_ino == after.st_ino && (caller.st_mode & 0777) == 0600);
+                sys_close(fd);
+                unlink(host);
             }
         }
 
@@ -2127,9 +2159,11 @@ int main(void) {
             int fd = open(l, O_RDONLY);
             check("FT read-only lower descriptor opens", fd >= 0);
             if (fd >= 0) {
+                check("FT read-only descriptor registration succeeds",
+                      vchroot_fd_opened(fd) == 0);
                 check("FT read-only descriptor reports EBADF",
                       sys_ftruncate(fd, 0) == -EBADF);
-                close(fd);
+                sys_close(fd);
                 check("FT rejected mutation does not copy up",
                       access(p, F_OK) == -1 && errno == ENOENT);
             }
@@ -2137,9 +2171,11 @@ int main(void) {
             fd = open(l, O_RDWR);
             check("FT writable lower descriptor opens", fd >= 0);
             if (fd >= 0) {
+                check("FT writable descriptor registration succeeds",
+                      vchroot_fd_opened(fd) == 0);
                 check("FT writable descriptor truncates successfully",
                       sys_ftruncate(fd, 0) == 0);
-                close(fd);
+                sys_close(fd);
                 struct stat upper;
                 check("FT upper copy is truncated",
                       stat(p, &upper) == 0 && upper.st_size == 0);
@@ -2196,13 +2232,8 @@ int main(void) {
         check("XM4 empty name is not a marker",
               vchroot_xattr_is_marker("") == 0);
 
-        /* XS1. the copy-up a path-based setxattr/removexattr site performs: on a
-                lower-only target, vchroot_prepare_write copies it up so the
-                expanded path resolves to the WRITABLE upper copy and the real
-                l/setxattr never mutates the shared template. (The site wiring is
-                prepare_write -> expand -> syscall on vc.path; this pins the
-                primitive that makes that correct. Dedicated fixture so no earlier
-                copy-up test contaminates it.) */
+        /* XS1. Exercise the linked setxattr wrapper on a dedicated lower-only
+                target; the attribute must land on upper, never the template. */
         {
             const char* g = "/var/log/xattr_lower";
             snprintf(l, sizeof(l), "%s/var/log/xattr_lower", libexec);
@@ -2210,11 +2241,18 @@ int main(void) {
             unlink(p); /* pristine */
             check("XS1 fixture: lower-only target present", access(l, F_OK) == 0);
             check("XS1 fixture: no upper copy yet", access(p, F_OK) != 0);
-            int rv = vchroot_prepare_write(g);
-            check("XS1 prepare_write(lower-only xattr target) returns 0", rv == 0);
+            int rv = (int)sys_setxattr(g, "test.runner", "upper", 5, 0, 0);
+            check("XS1 setxattr(lower-only target) succeeds", rv == 0);
             check("XS1 target materialized in upper (setxattr lands upper)",
                   access(p, F_OK) == 0);
             expect_resolves_to(g, p);
+            char value[16];
+            ssize_t size = getxattr(p, "user.test.runner", value, sizeof(value));
+            check("XS1 upper copy contains new attribute",
+                  size == 5 && memcmp(value, "upper", 5) == 0);
+            check("XS1 template does not acquire new attribute",
+                  getxattr(l, "user.test.runner", value, sizeof(value)) == -1 &&
+                  errno == ENODATA);
             check("XS1 template target untouched on disk", access(l, F_OK) == 0);
         }
     }

@@ -59,6 +59,11 @@ main(void)
 		return 1;
 	}
 
+	if (unlink(stale_a) != 0 || unlink(stale_b) != 0) {
+		printf("unlink visible children before rmdir: %s\n", strerror(errno));
+		return 1;
+	}
+
 	if (rmdir(dir) != 0) {
 		printf("rmdir %s failed: %s\n", dir, strerror(errno));
 		return 1;

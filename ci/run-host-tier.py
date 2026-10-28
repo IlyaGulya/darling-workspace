@@ -250,6 +250,10 @@ EXPLICIT_CONTRACTS = (
 # and the census below fails the tier if a contract is in neither this mapping
 # nor CONTRACTS: an unaccounted contract silently proves nothing.
 EXCLUDED_CONTRACTS = {
+    "tests/run-eunion-fixture-state-host.sh":
+        "selected-source host filesystem gate requiring explicit XNU_SRC_ROOT and owned "
+        "DW_STATE_ROOT; executed by the eunion_fixture_state_host workload, not implicitly "
+        "against the host tier's unrelated default source checkout",
     "tests/run-truthful-nofile-contract.sh":
         "real guest-runtime inherited-limit measurement requiring an installed DARLING_RUNTIME_ROOT "
         "and an explicitly owned, prepared DW_NOFILE_PREFIX; no source-string audit or default host coverage",

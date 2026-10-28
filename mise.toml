@@ -1,8 +1,6 @@
 [tools]
 uv = "0.8.17"
 "pipx:west" = { version = "1.5.0", depends = ["uv"] }
-# Rootless COW lanes need special-node copy-up; stable fuse-overlayfs 1.18 lacks it.
-"cargo:https://github.com/containers/fuse-overlayfs" = "rev:9afb0e41dae1d5ea782ff1aa2806729f746d60fc"
 
 [tasks.dw]
 description = "Run workspace orchestration"
@@ -18,3 +16,11 @@ dir = "{{cwd}}"
 raw_args = true
 raw = true
 quiet = true
+
+[tasks.lane-provider-build]
+description = "Build the exact West-owned lane provider without replacing active binaries"
+run = "uv run --no-project --with PyYAML==6.0.2 -- python3 west_commands/lane_provider.py build"
+
+[tasks.lane-provider-path]
+description = "Resolve and verify the owned lane provider"
+run = "uv run --no-project --with PyYAML==6.0.2 -- python3 west_commands/lane_provider.py resolve"

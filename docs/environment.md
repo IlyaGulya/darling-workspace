@@ -44,17 +44,34 @@ Create isolated Python environments with `mise exec -- uv venv PATH` and
 `python3 -m venv` or ensurepip. For an isolated West install use the version
 pinned by `mise.toml` (currently `west==1.5.0`).
 
-Rootless COW lanes use the `fuse-overlayfs` revision pinned by `mise.toml`,
-plus host `fusermount3`, `/dev/fuse` and the user systemd manager. Building the
-pinned tool requires Cargo/Rust 1.85 or newer. This is a host development/test
-dependency, not a requirement of an ordinary product launch. The pin currently
-selects an unreleased Rust 2.0 revision: stable 1.18 still fails copy-up of lower
-Unix sockets during unlink. The upstream implementation
-[creates special nodes rather than copying their contents](https://github.com/containers/fuse-overlayfs/blob/9afb0e41dae1d5ea782ff1aa2806729f746d60fc/src/copyup.rs#L322-L363).
-Run lane commands through the Mise environment, not a system 1.x binary.
-If Cargo's embedded Git client cannot reuse working host SSH authentication,
-use `CARGO_NET_GIT_FETCH_WITH_CLI=true mise install`; do not rewrite user Git
-configuration or weaken transport checks.
+Rootless COW lanes use the exact `fuse-overlayfs` workspace-tool revision in
+`west.yml`, plus host `fusermount3`, `/dev/fuse` and the user systemd manager.
+The canonical host-tool source is `<topdir>/fuse-overlayfs`, separate from
+Darling product source. It is a reviewed local hard fork of the Rust provider;
+system 1.x and the unmodified upstream Rust revision are not substitutes.
+Cargo/Rust 1.88 or newer and network access to locked Cargo dependencies are
+build prerequisites. This is a host lane dependency, not an ordinary product
+launch dependency.
+
+After `mise install`, provide the exact reviewed West commit in that checkout,
+then run `mise run lane-provider-build`. For unpublished hard-fork commits a
+clean machine needs the reviewed source Git bundle/commit from its owner;
+the upstream URL alone cannot fetch an unpublished fix. Import that bundle
+into the declared checkout and select the exact `west.yml` revision. Do not
+replace it with upstream HEAD, a Cargo cache checkout or modified upstream
+bytes labelled with the old revision.
+
+The explicit task archives the pinned commit (not working-tree edits), builds
+with `cargo build --locked --release`, and publishes beneath
+`<topdir>/.west-state/workspace-tools/fuse-overlayfs/<revision>/`. Its
+`provenance.json` records source revision/path, lockfile and executable SHA-256,
+and compiler versions. `mise run lane-provider-path` verifies and prints the
+selected absolute executable. Lane creation uses that resolver regardless of
+PATH and fails with the build prerequisite if absent or mismatched. Existing
+installations are never overwritten; an invalid existing installation requires
+owner investigation rather than forced rebuilding over a live provider.
+Use a new pinned revision for changed source. Never rewrite an active provider,
+lane base or published runtime image.
 
 Portable skills live in `.agents/skills/`; `.claude/skills` is the relative
 compatibility symlink `../.agents/skills`. `mise run dw setup-local` exposes that

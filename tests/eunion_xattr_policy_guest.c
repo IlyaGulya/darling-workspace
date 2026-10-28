@@ -132,6 +132,11 @@ main(void)
 	const char* path_remove = "/usr/share/darling/tests/eunion/xattr-policy/path_remove.txt";
 	const char* fd_remove = "/usr/share/darling/tests/eunion/xattr-policy/fd_remove.txt";
 
+	/* The installed directory contains .lower; remove its visible child first. */
+	if (unlink("/usr/share/darling/tests/eunion/xattr-policy/opaque/.lower") != 0) {
+		printf("unlink lower opaque child failed: %s\n", strerror(errno));
+		return 1;
+	}
 	if (rmdir(opaque) != 0) {
 		printf("rmdir lower opaque directory failed: %s\n", strerror(errno));
 		return 1;

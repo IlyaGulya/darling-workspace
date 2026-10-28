@@ -45,6 +45,17 @@ Two more that shape the *process* story:
 
 ## Commands
 
+First provision the exact West-owned host provider with
+`mise run lane-provider-build` (see [host tool prerequisites](environment.md#host-tools-and-agent-activation)).
+`mise install` alone does not build unpublished hard-fork source. Inspect its
+verified absolute path with `mise run lane-provider-path`; creation never
+searches PATH or accepts the system provider. A missing or mismatched build is
+an actionable error, not automatic installation. Each lane records the selected
+executable and its source/binary provenance in `lane.json`. Existing lanes keep
+their original daemon; new source requires a new revision-addressed build,
+never replacing an executable beneath a mounted lane.
+
+
 ```sh
 # Create a lane. The base is stable writable guest state and must be inert: a base with
 # live processes or mounts is refused, because its runtime sockets live in the lower layer

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# E-UNION PoC test loop (dar-test-infra-sp5.8.4.4).
+# Native E-UNION regression harness against an explicitly selected source tree.
 #
 # Compiles the real vchroot_userspace.c in TEST mode together with runner.c
 # and runs the union-resolver assertions against a freshly built two-layer
@@ -12,10 +12,42 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-XNU_SRC_ROOT="${XNU_SRC_ROOT:-/home/ilyagulya/work/darling-dev/darling/src/external/xnu}"
+if [ -z "${XNU_SRC_ROOT:-}" ]; then
+	if [ -z "${DARLING_SRC:-}" ]; then
+		echo "set XNU_SRC_ROOT or DARLING_SRC to the selected production source tree" >&2
+		exit 2
+	fi
+	XNU_SRC_ROOT="$DARLING_SRC/src/external/xnu"
+fi
 XNU="$XNU_SRC_ROOT/darling/src/libsystem_kernel/emulation"
 SRCDIR="$XNU/src/linux_premigration"
 INCDIR="$XNU/include"
+if [ ! -f "$SRCDIR/vchroot_userspace.c" ]; then
+	echo "missing vchroot_userspace.c under XNU_SRC_ROOT=$XNU_SRC_ROOT" >&2
+	exit 1
+fi
+DARLING_SRC="${DARLING_SRC:-$(cd "$XNU_SRC_ROOT/../../.." && pwd)}"
+for _source in "$DARLING_SRC/src/external/darlingserver/include/darlingserver/rpc-supplement.h" \
+               "$DARLING_SRC/src/startup/mldr/elfcalls/elfcalls.h" \
+               "$XNU/src/common/simple.c" \
+               "$INCDIR/common/signal_atomic.h" \
+               "$INCDIR/common/native_signal_atomic.h"; do
+	if [ ! -f "$_source" ]; then
+		echo "missing $_source; set DARLING_SRC to the selected complete Darling source tree" >&2
+		exit 1
+	fi
+done
+STATE_ROOT="${DW_STATE_ROOT:-"$(cd "$HERE/../../.." && pwd)/.west-state"}"
+case "$STATE_ROOT" in
+	/*) ;;
+	*) echo "DW_STATE_ROOT must be absolute: $STATE_ROOT" >&2; exit 2 ;;
+esac
+STATE_ROOT="${STATE_ROOT%/}"
+if [ -z "$STATE_ROOT" ]; then
+	echo "refusing to use the filesystem root as DW_STATE_ROOT" >&2
+	exit 2
+fi
+umask 022
 
 prepare_only=0
 if [ "${1:-}" = "--prepare-fixture" ]; then
@@ -28,21 +60,32 @@ if [ "${1:-}" = "--prepare-fixture" ]; then
 		/*) ;;
 		*) echo "fixture directory must be absolute: $WORK" >&2; exit 2 ;;
 	esac
-	if [ "$WORK" = "/" ]; then
-		echo "refusing to prepare the filesystem root" >&2
-		exit 2
+	case "$WORK" in
+		"$STATE_ROOT"/*) ;;
+		*) echo "fixture directory must be beneath DW_STATE_ROOT=$STATE_ROOT" >&2; exit 2 ;;
+	esac
+	case "$WORK/" in
+		*"//"*|*"/../"*|*"/./"*) echo "fixture directory must not contain empty, . or .. components" >&2; exit 2 ;;
+	esac
+	owner="${EUNION_FIXTURE_OWNER:-$WORK}"
+	if [ -e "$WORK" ] || [ -L "$WORK" ]; then
+		if [ -L "$WORK" ] || [ ! -d "$WORK" ] ||
+		   [ -L "$WORK/.eunion-fixture-owner" ] || [ ! -f "$WORK/.eunion-fixture-owner" ] ||
+		   [ "$(cat "$WORK/.eunion-fixture-owner")" != "$owner" ]; then
+			echo "refusing to replace an unknown or differently owned fixture: $WORK" >&2
+			exit 2
+		fi
+		rm -rf -- "$WORK"
 	fi
+	mkdir -p -- "$(dirname "$WORK")"
+	mkdir -m 700 -- "$WORK"
+	printf '%s\n' "$owner" > "$WORK/.eunion-fixture-owner"
 	prepare_only=1
 	owned_work=0
-	rm -rf -- "$WORK"
 else
-	WORK="$(mktemp -d /tmp/eunion-tdd.XXXXXX)"
+	mkdir -p "$STATE_ROOT/h"
+	WORK="$(mktemp -d "$STATE_ROOT/h/eXXXXXXX")"
 	owned_work=1
-fi
-
-if [ ! -f "$SRCDIR/vchroot_userspace.c" ]; then
-	echo "missing vchroot_userspace.c under XNU_SRC_ROOT=$XNU_SRC_ROOT" >&2
-	exit 1
 fi
 
 cleanup() {
@@ -53,26 +96,7 @@ cleanup() {
 trap cleanup EXIT
 NESTED_LOWER_ROOT="${EUNION_NESTED_LOWER_ROOT:-0}"
 
-# shim so <darling/emulation/linux_premigration/vchroot_expand.h> resolves
-mkdir -p "$WORK/shim/darling/emulation/linux_premigration"
-cp "$INCDIR/linux_premigration/vchroot_expand.h" \
-   "$WORK/shim/darling/emulation/linux_premigration/"
-mkdir -p "$WORK/shim/darling/emulation/common/bsdthread"
-cp "$HERE/shim/darling/emulation/common/bsdthread/per_thread_wd.h" \
-   "$WORK/shim/darling/emulation/common/bsdthread/"
-mkdir -p "$WORK/shim/darling/emulation/common/guarded"
-cp "$HERE/shim/darling/emulation/common/guarded/table.h" \
-   "$WORK/shim/darling/emulation/common/guarded/"
-mkdir -p "$WORK/shim/darling/emulation/other/mach"
-cp "$HERE/shim/darling/emulation/other/mach/lkm.h" \
-   "$WORK/shim/darling/emulation/other/mach/"
-mkdir -p "$WORK/shim/darlingserver"
-cp "$HERE/shim/darlingserver/rpc.h" "$WORK/shim/darlingserver/"
-mkdir -p "$WORK/shim/darling/emulation/xnu_syscall/bsd/helper/bsdthread"
-cp "$HERE/shim/darling/emulation/xnu_syscall/bsd/helper/bsdthread/cancelable.h" \
-   "$WORK/shim/darling/emulation/xnu_syscall/bsd/helper/bsdthread/"
-# Additional production units retain their normal public include prefix. Keep
-# that layout available independently of the one-header vchroot test shim.
+# Keep production headers linked to the selected source, without stale copies.
 mkdir -p "$WORK/include/darling"
 ln -s "$INCDIR" "$WORK/include/darling/emulation"
 
@@ -93,7 +117,7 @@ echo "lower-only conf"        > "$WORK/libexec/usr/local/share/tool.conf"
 chmod 0755 "$WORK/libexec/usr/bin/ls"  # exercise mode preservation on copy-up
 # large lower-only file to widen the copy-up race window (C7)
 mkdir -p "$WORK/libexec/var/db"
-head -c 4194304 /dev/urandom > "$WORK/libexec/var/db/bigfile"
+dd if=/dev/zero bs=65536 count=64 status=none | tr '\0' R > "$WORK/libexec/var/db/bigfile"
 # opaque-dir fixture: dir in both layers, lower-only child + upper-only child
 mkdir -p "$WORK/libexec/opaquedir" "$WORK/prefix/opaquedir"
 echo "from lower" > "$WORK/libexec/opaquedir/lowerchild"
@@ -279,7 +303,7 @@ echo "upper leaf"   > "$WORK/prefix/var/pc/leaf"
 # SP1 symlink-parent create (bug: brew install `touch /tmp/x` fails). A lower-only
 #    directory /var/sp_real and a lower-only SYMLINK /var/sp_link -> sp_real (a
 #    relative target, exactly like the real /tmp -> private/tmp). Creating a NEW
-#    file through the symlinked parent (vchroot_prepare_create("/var/sp_link/new"))
+#    file through the symlinked parent using the shared CREATE intent
 #    must materialize the symlink's REAL TARGET DIR (/var/sp_real) in the upper
 #    layer -- not just copy the symlink up pointing at a non-materialized target,
 #    which leaves a later open(O_CREAT) with ENOENT. Touched ONLY by the SP test.
@@ -292,7 +316,6 @@ echo "outside sentinel" > "$WORK/escape-target"
 
 sources=(
 	"$HERE/runner.c"
-	"$HERE/whiteout_hook_fallback.c"
 	"$XNU/src/xnu_syscall/bsd/helper/misc/common_at.c"
 	"$XNU/src/xnu_syscall/bsd/impl/stat/mkdir.c"
 	"$XNU/src/xnu_syscall/bsd/impl/stat/mkdirat.c"
@@ -302,7 +325,34 @@ sources=(
 	"$XNU/src/xnu_syscall/bsd/impl/fcntl/openat.c"
 	"$XNU/src/xnu_syscall/bsd/impl/unistd/dup.c"
 	"$XNU/src/xnu_syscall/bsd/impl/unistd/ftruncate.c"
+	"$XNU/src/xnu_syscall/bsd/impl/unistd/fchmod.c"
+	"$XNU/src/xnu_syscall/bsd/impl/unistd/fchmod_extended.c"
+	"$XNU/src/xnu_syscall/bsd/impl/unistd/fchown.c"
 	"$XNU/src/xnu_syscall/bsd/impl/unistd/lseek.c"
+	"$XNU/src/xnu_syscall/bsd/impl/unistd/dup2.c"
+	"$XNU/src/xnu_syscall/bsd/impl/unistd/close.c"
+	"$XNU/src/xnu_syscall/bsd/impl/fcntl/fcntl.c"
+	"$XNU/src/xnu_syscall/bsd/helper/misc/fdpath.c"
+	"$XNU/src/xnu_syscall/bsd/impl/unistd/fchmodat.c"
+	"$XNU/src/xnu_syscall/bsd/impl/unistd/chmod_extended.c"
+	"$XNU/src/xnu_syscall/bsd/impl/unistd/truncate.c"
+	"$XNU/src/xnu_syscall/bsd/impl/unistd/linkat.c"
+	"$XNU/src/xnu_syscall/bsd/impl/unistd/fchownat.c"
+	"$XNU/src/xnu_syscall/bsd/impl/unistd/mknod.c"
+	"$XNU/src/xnu_syscall/bsd/impl/unistd/symlinkat.c"
+	"$XNU/src/xnu_syscall/bsd/impl/stat/mkfifo.c"
+	"$XNU/src/xnu_syscall/bsd/impl/time/utimes.c"
+	"$XNU/src/xnu_syscall/bsd/impl/time/futimes.c"
+	"$XNU/src/xnu_syscall/bsd/impl/xattr/setxattr.c"
+	"$XNU/src/xnu_syscall/bsd/impl/xattr/getxattr.c"
+	"$XNU/src/xnu_syscall/bsd/impl/xattr/listxattr.c"
+	"$XNU/src/xnu_syscall/bsd/impl/xattr/removexattr.c"
+	"$XNU/src/xnu_syscall/bsd/impl/xattr/fsetxattr.c"
+	"$XNU/src/xnu_syscall/bsd/impl/xattr/fgetxattr.c"
+	"$XNU/src/xnu_syscall/bsd/impl/xattr/flistxattr.c"
+	"$XNU/src/xnu_syscall/bsd/impl/xattr/fremovexattr.c"
+	"$XNU/src/xnu_syscall/bsd/impl/xattr/setattrlistat.c"
+	"$XNU/src/xnu_syscall/bsd/impl/xattr/fsetattrlist.c"
 	"$XNU/src/conversion/fcntl/open.c"
 	"$XNU/src/xnu_syscall/bsd/impl/network/bind.c"
 )
@@ -319,37 +369,27 @@ if [ "$prepare_only" -eq 1 ]; then
 	exit 0
 fi
 
-include_dirs=("-I$SRCDIR" "-I$WORK/shim" "-I$WORK/include")
+include_dirs=("-I$SRCDIR" "-I$HERE/shim" "-I$WORK/include")
 
-# The current production tree includes <darlingserver/rpc-supplement.h> and
-# <elfcalls.h> unconditionally, and resolves them the same way the emulation's
-# own CMakeLists.txt does: the darlingserver header from the darling checkout,
-# the elfcalls ABI header from mldr's elfcalls directory. Name those two source
-# directories too, or a GREEN arm against the current tree cannot compile at
-# all. Both are absent when XNU_SRC_ROOT is a bad/source-base worktree that
-# predates those includes, which is why this is conditional.
-DARLING_SRC="${DARLING_SRC:-$(cd "$HERE/../../.." && pwd)/darling}"
-for _include in "$DARLING_SRC/src/external/darlingserver/include" \
-                "$DARLING_SRC/src/startup/mldr/elfcalls"; do
-	if [ -d "$_include" ]; then
-		include_dirs+=("-I$_include")
-	fi
-done
+# Use the same selected source closure as the ordinary emulation build.
+include_dirs+=("-I$DARLING_SRC/src/external/darlingserver/include"
+               "-I$DARLING_SRC/src/startup/mldr/elfcalls")
+sources+=("$SRCDIR/eunion_resolver.c")
+include_dirs+=("-I$INCDIR")
 
-# The resolver extraction comes after the historical E-UNION patch under test.
-# Keep the source-base RED arm on its old production closure, but link the
-# extracted resolver whenever the selected GREEN source tree provides it.
-if [ -f "$SRCDIR/eunion_resolver.c" ]; then
-	sources+=("$SRCDIR/eunion_resolver.c")
-	include_dirs+=("-I$INCDIR")
-fi
-
-gcc -Wall -Wno-format-truncation -Wno-unused-function \
-    -DEUNION \
-    -DEFAULT=14 \
-    -DEUNION_LIBEXEC_PATH="\"$WORK/libexec\"" \
-    "${include_dirs[@]}" \
-    -o "$WORK/runner" "${sources[@]}"
+compile_flags=(-Wall -Wno-format-truncation -Wno-unused-function -Ulinux -DTEST=1
+    -DEUNION -DEFAULT=14 -pthread
+    -DF_CHECK_LV=98 -DF_GETPATH=50 -DF_FULLFSYNC=51 -DENOATTR=ENODATA
+    -DEUNION_LIBEXEC_PATH="\"$WORK/libexec\"")
+gcc "${compile_flags[@]}" "${include_dirs[@]}" -I"$XNU/src" \
+    -ffunction-sections -fdata-sections -c "$HERE/simple_format_host.c" \
+    -o "$WORK/simple_format_host.o"
+gcc "${compile_flags[@]}" "${include_dirs[@]}" \
+    -c "$HERE/signal_atomic_host.c" \
+    -o "$WORK/signal_atomic_host.o"
+gcc "${compile_flags[@]}" "${include_dirs[@]}" -Wl,--gc-sections \
+    -o "$WORK/runner" "${sources[@]}" \
+    "$WORK/simple_format_host.o" "$WORK/signal_atomic_host.o"
 
 cd "$WORK"
 ./runner

@@ -688,6 +688,13 @@ source-bound host suite is opt-in through
 separate source build. The default testkit build keeps it off; guest selection
 consumes the explicit installed runtime rather than rebuilding it per test.
 
+The standalone harness requires `XNU_SRC_ROOT` or `DARLING_SRC`. Native fixture
+state lives beneath an absolute `DW_STATE_ROOT`, in short `h/` paths checked
+against the real Linux Unix-socket limit. Fixture preparation refuses unknown,
+symlink, differently owned and whole-state-root destinations before resetting
+anything. CTest records its binary directory as the fixture owner; standalone
+scratch is unique and removed by that invocation.
+
 ### What the contract census credits
 
 Register every `tests/run-*-contract*.sh` in `CONTRACTS` and every
@@ -768,6 +775,11 @@ Flat workload fixture fields keep those assertions and upper inputs declarative:
   the writable upper layer;
 - `verify-template-files-after` checks template contents, modes, and xattrs
   after the runtime is shut down.
+
+Lower-file `xattrs` values are either UTF-8 strings or strict `{base64: "..." }`
+mappings for byte-exact binary values. `absent-xattrs` accepts only a native
+missing-attribute result; permission, unsupported-namespace and other read errors
+fail the oracle rather than being treated as absence.
 
 The first two oracle lists are checked while Darling is still alive, because
 runtime shutdown removes its private sockets and other runtime-created nodes.

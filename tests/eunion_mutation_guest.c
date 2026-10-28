@@ -148,7 +148,24 @@ main(void)
 	if (read_exact("/usr/share/darling/tests/eunion/mutation/sp_real/new-through-symlink.txt", "SYMLINK_PARENT\n") != 0)
 		return 1;
 
-	if (bind_unix_socket("/usr/share/darling/tests/eunion/mutation/bind_parent/sock") != 0)
+	/* Materialize the parent, then bind relative to its upper cwd. An
+	 * absolute expanded prefix path can exceed AF_UNIX's host path budget. */
+	if (create_file("/usr/share/darling/tests/eunion/mutation/bind_parent/anchor",
+	    "BIND_UPPER\n") != 0)
+		return 1;
+	int saved_cwd = open(".", O_RDONLY);
+	if (saved_cwd < 0 || chdir("/usr/share/darling/tests/eunion/mutation/bind_parent") != 0) {
+		printf("chdir upper bind parent failed: %s\n", strerror(errno));
+		return 1;
+	}
+	int bind_result = bind_unix_socket("sock");
+	if (fchdir(saved_cwd) != 0) {
+		printf("restore cwd failed: %s\n", strerror(errno));
+		close(saved_cwd);
+		return 1;
+	}
+	close(saved_cwd);
+	if (bind_result != 0)
 		return 1;
 	struct stat st;
 	if (lstat("/usr/share/darling/tests/eunion/mutation/bind_parent/sock", &st) != 0) {

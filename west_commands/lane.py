@@ -827,11 +827,14 @@ def create_lane(
         selected.environment(os.path.expanduser(os.fspath(base)))
     except RuntimeInstallationError as error:
         raise LaneError(str(error)) from error
-    if not shutil.which(FUSE_OVERLAYFS) or not shutil.which(FUSERMOUNT):
-        raise LaneError(
-            f"{FUSE_OVERLAYFS} and {FUSERMOUNT} are required for a rootless "
-            "copy-on-write prefix layer"
-        )
+    from lane_provider import ProviderError, resolve_provider
+
+    try:
+        provider = resolve_provider()
+    except ProviderError as error:
+        raise LaneError(str(error)) from error
+    if not shutil.which(FUSERMOUNT):
+        raise LaneError(f"{FUSERMOUNT} is required for a rootless copy-on-write prefix layer")
     identity = _base_identity(base)
     base_path = Path(identity["path"])
     in_use = base_in_use(base_path, mountinfo_path=mountinfo_path)
@@ -914,7 +917,7 @@ def create_lane(
         mount = _run(
             runner,
             [
-                FUSE_OVERLAYFS,
+                str(provider),
                 "-o",
                 f"lowerdir={base_path},upperdir={upper},workdir={work}",
                 str(merged),
@@ -952,6 +955,10 @@ def create_lane(
         "base": identity,
         "runtime": runtime_identity,
         "source": identity_source,
+        "provider": {
+            "executable": str(provider),
+            "provenance": json.loads((provider.parent.parent / "provenance.json").read_text()),
+        },
         "root": str(Path(root)),
     }
     (lane / LANE_MARKER).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")

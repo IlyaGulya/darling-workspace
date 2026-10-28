@@ -2,6 +2,8 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/time.h>
+#include <sys/wait.h>
 #include <sys/stat.h>
 #include <sys/xattr.h>
 #include <unistd.h>
@@ -79,6 +81,68 @@ append_byte(const char* path)
 	return 0;
 }
 
+static int
+expect_fd_times(const char* path, int fd)
+{
+	struct timeval times[2] = {{111222333, 123456}, {111222334, 654321}};
+	struct stat st;
+	int failed = 0;
+	int alias = dup(fd);
+	if (alias < 0) {
+		printf("duplicate metadata fd failed: %s\n", strerror(errno));
+		return 1;
+	}
+	if (futimes(fd, times) != 0) {
+		printf("futimes exact timestamps failed: %s\n", strerror(errno));
+		failed = 1;
+	}
+	if (stat(path, &st) != 0 || st.st_atimespec.tv_sec != times[0].tv_sec ||
+	    st.st_atimespec.tv_nsec != times[0].tv_usec * 1000L ||
+	    st.st_mtimespec.tv_sec != times[1].tv_sec ||
+	    st.st_mtimespec.tv_nsec != times[1].tv_usec * 1000L) {
+		printf("futimes must preserve microsecond precision in pathname metadata\n");
+		failed = 1;
+	}
+	if (fstat(fd, &st) != 0 || st.st_mtimespec.tv_sec != times[1].tv_sec ||
+	    st.st_mtimespec.tv_nsec != times[1].tv_usec * 1000L ||
+	    fstat(alias, &st) != 0 || st.st_mtimespec.tv_sec != times[1].tv_sec ||
+	    st.st_mtimespec.tv_nsec != times[1].tv_usec * 1000L) {
+		printf("futimes must update the same opened inode through fd aliases\n");
+		failed = 1;
+	}
+	struct timeval before, after;
+	if (gettimeofday(&before, NULL) != 0) {
+		close(alias);
+		return 1;
+	}
+	/* A bad NULL implementation must fail this case, not prevent the parent
+	 * from reporting the exact-timestamp and opened-description failures. */
+	pid_t child = fork();
+	if (child == 0)
+		_exit(futimes(alias, NULL) == 0 ? 0 : 2);
+	int status = 0;
+	pid_t waited = -1;
+	if (child > 0) {
+		do {
+			waited = waitpid(child, &status, 0);
+		} while (waited < 0 && errno == EINTR);
+	}
+	if (child < 0 || waited != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		printf("futimes NULL must set current time without terminating the process\n");
+		failed = 1;
+	}
+	if (gettimeofday(&after, NULL) != 0 || stat(path, &st) != 0 ||
+	    st.st_mtimespec.tv_sec < before.tv_sec - 1 ||
+	    st.st_mtimespec.tv_sec > after.tv_sec + 1 ||
+	    fstat(fd, &st) != 0 || st.st_mtimespec.tv_sec < before.tv_sec - 1 ||
+	    st.st_mtimespec.tv_sec > after.tv_sec + 1) {
+		printf("futimes NULL must publish current time to path and original fd\n");
+		failed = 1;
+	}
+	close(alias);
+	return failed;
+}
+
 int
 main(void)
 {
@@ -112,6 +176,10 @@ main(void)
 	fd = open(fdxattr, O_RDONLY);
 	if (fd < 0) {
 		printf("open fdxattr failed: %s\n", strerror(errno));
+		return 1;
+	}
+	if (expect_fd_times(fdxattr, fd) != 0) {
+		close(fd);
 		return 1;
 	}
 	if (fsetxattr(fd, "user.test.fd", "FDVALUE", strlen("FDVALUE"), 0, 0) != 0) {

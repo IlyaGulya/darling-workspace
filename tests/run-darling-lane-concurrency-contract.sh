@@ -71,7 +71,7 @@ case "$WAIT" in ''|*[!0-9]*) echo "--wait must be an integer of at least 5 secon
 	exit 2
 }
 
-for tool in fuse-overlayfs fusermount3 systemctl systemd-run; do
+for tool in fusermount3 systemctl systemd-run; do
 	command -v "$tool" >/dev/null || { echo "$tool is required and was not found" >&2; exit 2; }
 done
 [ -e /dev/fuse ] || { echo "/dev/fuse is required and is absent" >&2; exit 2; }

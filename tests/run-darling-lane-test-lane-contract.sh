@@ -90,7 +90,7 @@ DARLING_WORKSPACE_ROOT=$REPO
 darling_resolve_runtime "$RUNTIME_ROOT" "$BASE" || exit $?
 RUNTIME_ROOT=$DARLING_RUNTIME_ROOT
 BASE=$(cd "$BASE" 2>/dev/null && pwd) || { echo "base prefix '$BASE' is not a directory" >&2; exit 2; }
-for tool in fuse-overlayfs fusermount3 systemctl systemd-run; do
+for tool in fusermount3 systemctl systemd-run; do
 	command -v "$tool" >/dev/null || { echo "$tool is required and was not found" >&2; exit 2; }
 done
 [ -e /dev/fuse ] || { echo "/dev/fuse is required and is absent" >&2; exit 2; }

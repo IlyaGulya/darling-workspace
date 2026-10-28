@@ -121,7 +121,12 @@ static int open_host(const char *root, const char *name, int flags)
 	char path[4096]; path_join(path, root, name);
 	int fd = open(path, flags);
 	require(fd >= 0, "open fixture descriptor");
+	require(vchroot_fd_opened(fd) == 0, "register opened caller descriptor");
 	return fd;
+}
+static void close_host(int fd)
+{
+	require(vchroot_fd_close(fd) == 0, "close caller descriptor");
 }
 static int descriptor_count(void)
 {
@@ -165,21 +170,21 @@ int main(int argc, char **argv)
 	path_join(path, prefix_path, "upper");
 	require(chmod(path, 04700) == 0, "set upper setuid bit");
 	struct stat lower_root_before = status(libexec_path, ".");
+	int descriptors_before = descriptor_count();
 	int dfd = open_host(libexec_path, ".", O_RDONLY | O_DIRECTORY);
 	int fd = open_host(libexec_path, "fd", O_RDONLY);
-	int descriptors_before = descriptor_count();
 
 	expect("NULL chown", sys_chown(NULL, -1, getgid()), -EFAULT);
 	expect("NULL lchown", sys_lchown(NULL, -1, getgid()), -EFAULT);
 	expect("NULL fchownat", sys_fchownat(dfd, NULL, -1, getgid(), 0), -EFAULT);
-	/* The earlier NULL-guard patch can reuse this production closure without
-	 * asserting ownership support that its historical fixed source did not have. */
+	/* The focused workload isolates pointer faults; the full workload below
+	 * exercises ownership and descriptor lifetime against the same source. */
 	if (getenv("CHOWN_NULL_GUARD_ONLY")) {
-		require(close(fd) == 0 && close(dfd) == 0, "close NULL-guard fixture descriptors");
+		close_host(fd);
+		close_host(dfd);
 		puts("EUNION_OWNERSHIP_NULL_GUARD_OK");
 		return 0;
 	}
-	/* First supported call is the source-base RED: old ENOTSUP is not a link failure. */
 	expect("upper chown must reach Linux", sys_chown("/upper", -1, getgid()), 0);
 	require((status(prefix_path, "upper").st_mode & S_ISUID) == 0,
 		"real chown clears setuid even when uid/gid are unchanged");
@@ -199,12 +204,17 @@ int main(int argc, char **argv)
 	upper_owned("cwd", S_IFREG);
 	expect("absolute path ignores bad dirfd", sys_fchownat(-1, "/directory", -1, getgid(), 0), 0);
 	upper_owned("directory", S_IFDIR);
+	require(lseek(fd, 3, SEEK_SET) == 3, "set caller descriptor position");
 	expect("lower fd ownership", sys_fchown(fd, -1, getgid()), 0);
 	upper_owned("fd", S_IFREG);
 	require(fcntl(fd, F_GETFD) >= 0, "fchown preserves caller fd");
 	struct stat fd_after; require(fstat(fd, &fd_after) == 0, "original fd still valid");
-	require(fd_after.st_ino == file_before[3].st_ino &&
-		same_time(fd_after.st_ctim, file_before[3].st_ctim), "original lower fd inode unchanged");
+	struct stat upper_after = status(prefix_path, "fd");
+	require(fd_after.st_dev == upper_after.st_dev && fd_after.st_ino == upper_after.st_ino &&
+		same_time(fd_after.st_ctim, upper_after.st_ctim),
+		"original fd observes committed ownership metadata");
+	require(lseek(fd, 0, SEEK_CUR) == 3 && (fcntl(fd, F_GETFL) & O_ACCMODE) == O_RDONLY,
+		"ownership promotion preserves position and read-only access");
 
 	expect("chown follows symlink", sys_chown("/follow", -1, getgid()), 0);
 	upper_owned("follow-target", S_IFREG);
@@ -237,7 +247,7 @@ int main(int argc, char **argv)
 	expect("upper directory fchown executes", sys_fchown(directory_fd, -1, getgid()), 0);
 	require(!same_time(status(prefix_path, "directory").st_ctim, directory_upper_before.st_ctim),
 		"real fchown changes directory ctime");
-	require(close(directory_fd) == 0, "fchown preserves upper caller descriptor");
+	close_host(directory_fd);
 
 	/* The native control establishes a genuine kernel denial, not assumed credentials. */
 	path_join(path, prefix_path, "upper");
@@ -246,7 +256,6 @@ int main(int argc, char **argv)
 	expect("denied upper owner change", sys_chown("/upper", 0, -1), -EPERM);
 	unchanged(prefix_path, "upper", denied_upper_before);
 	expect("denied lower owner change", sys_chown("/denied", 0, -1), -EPERM);
-	upper_owned("denied", S_IFREG);
 	expect("denied fd owner change", sys_fchown(fd, 0, -1), -EPERM);
 	require(fcntl(fd, F_GETFD) >= 0, "denied fchown preserves caller fd");
 	expect("invalid descriptor", sys_fchown(-1, -1, getgid()), -EBADF);
@@ -256,13 +265,14 @@ int main(int argc, char **argv)
 	absent_upper("invalid");
 	expect("missing path", sys_chown("/missing", -1, getgid()), -ENOENT);
 	expect("empty path", sys_fchownat(dfd, "", -1, getgid(), 0), -ENOENT);
-	require(descriptor_count() == descriptors_before, "fchown closes fresh descriptors on success and failure");
 
 	for (size_t i = 0; i < sizeof(files) / sizeof(*files); i++) unchanged(libexec_path, files[i], file_before[i]);
 	for (size_t i = 0; i < sizeof(links) / sizeof(*links); i++) unchanged(libexec_path, links[i], link_before[i]);
 	unchanged(libexec_path, "directory", directory_before);
 	unchanged(libexec_path, ".", lower_root_before);
-	require(close(fd) == 0 && close(dfd) == 0, "close caller descriptors");
+	close_host(fd);
+	close_host(dfd);
+	require(descriptor_count() == descriptors_before, "ownership operations release retained descriptors");
 	puts("EUNION_OWNERSHIP_HOST_OK");
 	return 0;
 }

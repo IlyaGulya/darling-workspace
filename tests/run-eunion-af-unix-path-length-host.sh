@@ -4,19 +4,26 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 xnu="${XNU_SRC_ROOT:-$root/../darling/src/external/xnu}"
 emulation="$xnu/darling/src/libsystem_kernel/emulation"
-work="$(mktemp -d /tmp/eunion-af-unix-length.XXXXXX)"
+darling="${DARLING_SRC:-$(cd "$xnu/../../.." && pwd)}"
+for input in "$emulation/src/linux_premigration/vchroot_userspace.c" \
+	"$emulation/src/linux_premigration/eunion_resolver.c" \
+	"$emulation/src/xnu_syscall/bsd/helper/network/duct.c" \
+	"$darling/src/external/darlingserver/include/darlingserver/rpc-supplement.h" \
+	"$darling/src/startup/mldr/elfcalls/elfcalls.h"; do
+	test -f "$input" || { echo "missing selected-source input: $input" >&2; exit 2; }
+done
+state="${DW_STATE_ROOT:-$(cd "$root/.." && pwd)/.west-state}"
+case "$state" in
+	/*) ;;
+	*) echo 'DW_STATE_ROOT must be absolute' >&2; exit 2 ;;
+esac
+test -n "${state//\/}" || { echo 'DW_STATE_ROOT must not be the filesystem root' >&2; exit 2; }
+mkdir -p "$state/h"
+work="$(mktemp -d "$state/h/sXXXXXXX")"
 cleanup() {
 	rm -rf -- "$work"
 }
 trap cleanup EXIT
-
-test -f "$emulation/src/xnu_syscall/bsd/helper/network/duct.c"
-mkdir -p "$work/shim/darling/emulation/linux_premigration"
-cp "$emulation/include/linux_premigration/vchroot_expand.h" \
-	"$work/shim/darling/emulation/linux_premigration/"
-mkdir -p "$work/shim/darling/emulation/common/bsdthread"
-cp "$root/experiments/e-union/shim/darling/emulation/common/bsdthread/per_thread_wd.h" \
-	"$work/shim/darling/emulation/common/bsdthread/"
 mkdir -p "$work/include/darling"
 ln -s "$emulation/include" "$work/include/darling/emulation"
 
@@ -24,15 +31,19 @@ mkdir -p "$work/root/prefix/libexec/darling"
 printf 'LOWER_SENTINEL\n' >"$work/root/prefix/libexec/darling/sentinel"
 lower_before="$(sha256sum "$work/root/prefix/libexec/darling/sentinel")"
 
-gcc -std=gnu11 -Wall -Wextra \
+"${CC:-gcc}" -std=gnu11 -Wall -Wextra -Ulinux \
 	-Wno-format-overflow -Wno-unused-variable -Wno-unused-function \
-	-DEUNION -DEFAULT=14 \
+	-DTEST=1 -DEUNION -DEFAULT=14 \
+	-ffunction-sections -fdata-sections -Wl,--gc-sections \
 	-DEUNION_LIBEXEC_PATH="\"$work/root/prefix/libexec/darling\"" \
 	-I"$emulation/src/linux_premigration" \
-	-I"$emulation/include" -I"$work/shim" -I"$work/include" \
+	-I"$emulation/src" \
+	-I"$emulation/include" -I"$root/experiments/e-union/shim" -I"$work/include" \
+	-I"$darling/src/external/darlingserver/include" \
+	-I"$darling/src/startup/mldr/elfcalls" \
 	-o "$work/fixture" \
 	"$root/tests/eunion_af_unix_path_length_host.c" \
-	"$root/experiments/e-union/whiteout_hook_fallback.c" \
+	"$root/experiments/e-union/simple_format_host.c" \
 	"$emulation/src/linux_premigration/eunion_resolver.c" \
 	"$emulation/src/conversion/network/duct.c" \
 	"$emulation/src/xnu_syscall/bsd/helper/network/duct.c"
