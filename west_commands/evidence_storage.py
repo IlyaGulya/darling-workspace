@@ -203,16 +203,13 @@ class _WriterSnapshot:
     denied: list[str]
 
 
-_PRIVILEGED_CENSUS = False
-
-
-def _proc_writer_census(targets: set[tuple[int, int]]) -> _WriterSnapshot:
+def _proc_writer_census(targets: set[tuple[int, int]], pids: set[str] | None = None) -> _WriterSnapshot:
     """Read /proc once, retaining only identities in this bounded batch."""
     writers: set[tuple[int, int]] = set()
     denied: list[str] = []
     with os.scandir("/proc") as processes:
         for process in processes:
-            if not process.name.isdecimal():
+            if not process.name.isdecimal() or (pids is not None and process.name not in pids):
                 continue
             process_path = Path(process.path)
             try:
@@ -241,33 +238,28 @@ def _proc_writer_census(targets: set[tuple[int, int]]) -> _WriterSnapshot:
                 continue
             except PermissionError:
                 denied.append(process.name)
-                # The caller retries the complete census with read-only root
-                # access. Do not repeatedly traverse known-inaccessible owners.
-                break
     return _WriterSnapshot(targets, writers, denied)
 
 
 def _writer_snapshot(targets: set[tuple[int, int]]) -> _WriterSnapshot:
-    global _PRIVILEGED_CENSUS
     if not targets:
         return _WriterSnapshot(targets, set(), [])
-    snapshot = None if _PRIVILEGED_CENSUS else _proc_writer_census(targets)
-    if snapshot is not None and not snapshot.denied:
+    snapshot = _proc_writer_census(targets)
+    if not snapshot.denied:
         return snapshot
-    # Non-dumpable systemd/sshd processes can share the user's UID. Their mere
-    # existence is not evidence of a writer on these files. A privileged child
-    # reads only /proc, emits only the bounded target inode set, and never opens
-    # a selected payload for writing or executes an evidence-provided command.
+    # Complete the natural-user census first: root cannot inspect descriptors
+    # on user-owned FUSE mounts. Escalate only its inaccessible processes and
+    # merge both observations; an inaccessible process still fails closed.
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
         try:
-            command = ["sudo", "-n", "--", sys.executable, "-B", "-I", str(Path(__file__).absolute()), "_writer-census", json.dumps(sorted(targets))]
+            command = ["sudo", "-n", "--", sys.executable, "-B", "-I", str(Path(__file__).absolute()), "_writer-census", json.dumps(sorted(targets)), json.dumps(snapshot.denied)]
             result = subprocess.run(command, stdout=output, stderr=errors, timeout=30, check=False)
         except (OSError, subprocess.TimeoutExpired) as error:
             raise EvidenceError(f"cannot establish writer ownership; read-only privileged /proc census unavailable: {error}") from error
         if result.returncode:
             errors.seek(0)
             detail = errors.read(8192).decode("utf-8", errors="replace").strip()
-            denied = ",".join(snapshot.denied) if snapshot is not None else "previously inaccessible processes"
+            denied = ",".join(snapshot.denied)
             raise EvidenceError(f"cannot inspect writer ownership for PID {denied}; privileged /proc census failed: {detail}")
         output.seek(0)
         encoded = output.read(65537)
@@ -279,8 +271,7 @@ def _writer_snapshot(targets: set[tuple[int, int]]) -> _WriterSnapshot:
     writers = {tuple(key) for key in data["writers"]}
     if not writers <= targets or data["denied"]:
         raise EvidenceError("privileged writer census could not establish scoped ownership")
-    _PRIVILEGED_CENSUS = True
-    return _WriterSnapshot(targets, writers, [])
+    return _WriterSnapshot(targets, snapshot.writers | writers, [])
 
 
 def _has_writer(value: os.stat_result, snapshot: _WriterSnapshot | None = None) -> bool:
@@ -957,14 +948,17 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "_writer-census":
+    if len(sys.argv) == 4 and sys.argv[1] == "_writer-census":
         requested = json.loads(sys.argv[2])
         if not isinstance(requested, list) or not 0 < len(requested) <= 32 or any(
             not isinstance(key, list) or len(key) != 2 or any(not isinstance(number, int) or number < 0 for number in key)
             for key in requested
         ):
             raise SystemExit("invalid bounded writer-census inode set")
-        snapshot = _proc_writer_census({tuple(key) for key in requested})
+        pids = json.loads(sys.argv[3])
+        if not isinstance(pids, list) or not pids or any(not isinstance(pid, str) or not pid.isdecimal() for pid in pids):
+            raise SystemExit("invalid writer-census process set")
+        snapshot = _proc_writer_census({tuple(key) for key in requested}, set(pids))
         print(json.dumps({"writers": sorted(snapshot.writers), "denied": snapshot.denied}, sort_keys=True))
     else:
         raise SystemExit(main())

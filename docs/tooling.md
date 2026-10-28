@@ -632,9 +632,11 @@ python3 -B scripts/darling-evidence.py verify evidence --recursive
 
 Recursive archival protects tracked files by default. An explicit `--include-tracked` migration permits only clean
 tracked diagnostic payloads under a finalized evidence subtree; staged or working changes remain untouched.
-Source/build/prefix/cache trees and metadata remain excluded. The host needs `zstd`; if `/proc` hides potential
-writers, an isolated read-only `sudo -n` census is attempted. Unavailable ownership inspection preserves raw files
-and reports the reason rather than guessing that they are idle.
+Source/build/prefix/cache trees and metadata remain excluded. The host needs `zstd`. Writer inspection completes
+the natural-user `/proc` census, then uses an isolated read-only `sudo -n` census only for inaccessible processes
+and merges their writer identities. Root cannot replace the first census: user-owned FUSE mounts can deny root
+while remaining readable by their owner. Any unresolved ownership inspection preserves raw files and reports
+the reason rather than guessing that they are idle.
 
 The helper's `compact-runtime UNIT --archive-root DIR` preserves a closed runtime unit's diagnostics, provenance
 and content-deduplicated runtime images before separate West GC. Keep that archive outside GC roots and verify its

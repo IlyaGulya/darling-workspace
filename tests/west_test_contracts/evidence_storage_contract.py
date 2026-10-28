@@ -351,9 +351,19 @@ class EvidenceStorageContract(unittest.TestCase):
         self.assertEqual(stored.read_bytes(), prior_stored)
         self.assertEqual(path.read_bytes(), PAYLOAD)
 
+    @unittest.skipIf(os.geteuid() == 0, "requires an unprivileged census")
     def test_unavailable_authoritative_census_preserves_original(self) -> None:
         path = self.payload()
-        with patch.object(storage, "_PRIVILEGED_CENSUS", True):
+        # A real non-dumpable child requires the privileged observation even
+        # when the rest of this host's process table is readable.
+        child_code = (
+            "import ctypes, sys\n"
+            "if ctypes.CDLL(None).prctl(4, 0, 0, 0, 0): raise OSError('prctl failed')\n"
+            "print('ready', flush=True)\n"
+            "sys.stdin.read()\n"
+        )
+        with subprocess.Popen([sys.executable, "-c", child_code], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True) as child:
+            self.assertEqual(child.stdout.readline(), "ready\n")
             with patch.object(storage.subprocess, "run", side_effect=FileNotFoundError("sudo unavailable")):
                 with self.assertRaises(storage.EvidenceError):
                     self.archive(path)
