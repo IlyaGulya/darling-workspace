@@ -7194,6 +7194,26 @@ workloads:
   - darling-prefix
   ok-marker: FOUNDATION_FILE_IO_OK
   timeout-seconds: 30
+- id: proc_pidpath_guest
+  name: proc_pidpath_guest
+  module: darling/src/external/darlingserver
+  bead: dar-xcodebuild-futex-stall-jy3y
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/proc_pidpath_guest.c
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -Werror
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: PROC_PIDPATH_GUEST_OK
+  timeout-seconds: 30
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke
