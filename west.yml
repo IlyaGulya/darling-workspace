@@ -19,7 +19,7 @@ manifest:
     # Product source authority: this committed tree and its exact child gitlinks.
     # Build the normal stock ALL target and complete installation.
     # Workloads, writable guest prefixes and evidence are selected separately.
-    revision: f04a18fad0a388bfdc07899f7717c5d353e0dfbf
+    revision: 2a4fc3f2c50456192836aabdba49baf9d3b42bca
     userdata:
       kind: darling-source
       upstream-repository: darling
