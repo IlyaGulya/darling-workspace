@@ -32,9 +32,10 @@ Product implementation belongs to XNU's
 
 Visibility and operation intent are independent. Visibility distinguishes
 absent, whiteout, lower file/directory, upper file/directory, merged directory,
-opaque directory and explicit HOST escape. READ_OPEN has an unresolved planning
-state: resolution occurs only after shared admission. A non-directory visibility
-class also covers symlinks and special nodes; native type checks still apply.
+opaque directory and explicit HOST escape. READ_OPEN and single-path CREATE /
+CREATE_EXCLUSIVE have an unresolved planning state: resolution occurs only after
+shared / exclusive admission respectively. A non-directory visibility class also
+covers symlinks and special nodes; native type checks still apply.
 
 Relative bases and parent traversal can leave directory routing unresolved.
 Eliding `.` is not permission to return a synthetic upper pathname: the walk
@@ -89,7 +90,10 @@ be removed or renamed by ordinary managed operations.
 A fresh file description of the private namespace lock is acquired per scope:
 
 - **EXCLUSIVE:** reversible copy-up/publication, namespace creation/removal,
-  link/rename and first lower-descriptor promotion.
+  link/rename and first lower-descriptor promotion. Single-path creation holds EX
+  before resolving the original spelling through native completion, so competing
+  creators see the committed object instead of rejecting a stale missing-path
+  snapshot.
 - **SHARED:** ordinary upper mutations and new managed open capabilities.
   READ_OPEN holds SH through resolution, native open and descriptor registration,
   so an aborted publication cannot leak a provisional inode to a reader.

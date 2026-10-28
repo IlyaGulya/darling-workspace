@@ -7324,6 +7324,27 @@ workloads:
   - darling-prefix
   ok-marker: PLANE_MACH_PORT_OPEN_GUEST_OK
   timeout-seconds: 30
+- id: eunion_mkdir_race_guest
+  name: eunion_mkdir_race_guest
+  module: darling/src/external/xnu
+  bead: dar-xcodebuild-futex-stall-jy3y
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/eunion_mkdir_race_guest.c
+  compile-flags:
+  - -std=c11
+  - -Wall
+  - -Wextra
+  - -Werror
+  - -pthread
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: EUNION_MKDIR_RACE_GUEST_OK
+  timeout-seconds: 30
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke
