@@ -7254,6 +7254,30 @@ workloads:
   - darling-prefix
   ok-marker: XTRACE_EXEC_ENVIRONMENT_OK
   timeout-seconds: 30
+- id: security_requirement_guest
+  name: security_requirement_guest
+  module: darling/src/external/security
+  bead: dar-xcodebuild-futex-stall-jy3y
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/security_requirement_guest.c
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -Werror
+  - -framework
+  - CoreFoundation
+  - -framework
+  - Security
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: SECURITY_REQUIREMENT_GUEST_OK
+  timeout-seconds: 30
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke
