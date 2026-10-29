@@ -7541,6 +7541,31 @@ workloads:
   - darling-prefix
   ok-marker: KQUEUE_SOCKET_EOF_GUEST_OK
   timeout-seconds: 30
+- id: membership_autorelease_guest
+  name: membership_autorelease_guest
+  module: darling/src/external/libxpc
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/membership_autorelease_guest.m
+  compile-flags:
+  - -x
+  - objective-c
+  - -std=gnu11
+  - -fno-objc-arc
+  - -Wall
+  - -Wextra
+  - -Werror
+  - -framework
+  - Foundation
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: MEMBERSHIP_AUTORELEASE_GUEST_OK
+  timeout-seconds: 30
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke
