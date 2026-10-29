@@ -7566,6 +7566,26 @@ workloads:
   - darling-prefix
   ok-marker: MEMBERSHIP_AUTORELEASE_GUEST_OK
   timeout-seconds: 30
+- id: posix_spawn_pid_cache_guest
+  name: posix_spawn_pid_cache_guest
+  module: darling/src/external/xnu
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/posix_spawn_pid_cache_guest.c
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -Werror
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: POSIX_SPAWN_PID_CACHE_GUEST_OK
+  timeout-seconds: 30
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke
