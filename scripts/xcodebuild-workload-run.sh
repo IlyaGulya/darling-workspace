@@ -1,5 +1,5 @@
 #!/bin/sh
-# xcodebuild-workload-run.sh -- the two xcodebuild workloads of the Xcode compatibility ladder,
+# xcodebuild-workload-run.sh -- explicit xcodebuild workloads of the Xcode compatibility ladder,
 # run out of THIS repository instead of host scratch.
 #
 # WHY THIS EXISTS (dar-44d8). The project the ladder built was /tmp/minproj, created ad hoc in host
@@ -25,9 +25,9 @@
 #   minproj: <XB> -project hello.xcodeproj -target hello -configuration Debug build
 #   iosapp : <XB> -project iosapp.xcodeproj -target iosapp -sdk iphoneos -configuration Debug \
 #                 -destination generic/platform=iOS clean build
-#   The archive arm of the app, run on the Mac (Xcode 27.0) and NOT yet run in the guest:
-#   iosapp : <XB> -project iosapp.xcodeproj -scheme iosapp -sdk iphoneos -configuration Release \
-#                 archive -archivePath <path>.xcarchive CODE_SIGNING_ALLOWED=NO
+#   iosapp-archive: <XB> -project iosapp.xcodeproj -scheme iosapp -sdk iphoneos -configuration Release \
+#                 archive -archivePath <fresh-owned-path>.xcarchive CODE_SIGNING_ALLOWED=NO
+#   This diagnostic archive produces an unsigned IPA, not a development export or installable app.
 #   <XB> is xcodebuild inside the guest:
 #     /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/usr/bin/xcodebuild
 #
@@ -48,9 +48,11 @@
 # no system files are copied into the writable guest prefix.
 #
 # Usage:
-#   xcodebuild-workload-run.sh --runtime-root ROOT --prefix PREFIX [--workload minproj|iosapp|both]
+#   xcodebuild-workload-run.sh --runtime-root ROOT --prefix PREFIX [--workload minproj|iosapp|both|iosapp-archive]
 #                              [--plug-ins ci|diagnostic|none]
 #                              [--xcode-app PATH] [--wait SECONDS] [--log-dir DIR]
+# The catalog's prefix-controller supplies DPREFIX and DARLING_RUNTIME_ROOT.
+# XCODEBUILD_WORKLOAD_XCODE_APP and XCODEBUILD_WORKLOAD_LOG_DIR supply explicit CI inputs.
 # --plug-ins defaults to `ci`, which enables the build-system plug-in; `diagnostic` restores the
 # historical three-name skip set, under which the new build system is unavailable BY DESIGN and the run
 # is archaeology rather than build evidence. The run prints PLUGIN-CONFIG on every workload.
@@ -72,14 +74,14 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 BOOT_RUN="$SCRIPT_DIR/darling-boot-run.sh"
 LICENSE_SETUP="$REPO_ROOT/testkit/scripts/xcode-license.sh"
 
-PREFIX=""
-RUNTIME_ROOT=""
+PREFIX="${DPREFIX:-}"
+RUNTIME_ROOT="${DARLING_RUNTIME_ROOT:-}"
 DARLING_WORKSPACE_ROOT="$REPO_ROOT"
 . "$SCRIPT_DIR/darling-runtime.sh"
-XCODE_APP="/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app"
+XCODE_APP="${XCODEBUILD_WORKLOAD_XCODE_APP:-/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app}"
 WORKLOADS="both"
 WAIT="300"
-LOG_DIR=""
+LOG_DIR="${XCODEBUILD_WORKLOAD_LOG_DIR:-}"
 XB_REL="Contents/Developer/usr/bin/xcodebuild"
 PLUG_INS="ci"
 
@@ -151,7 +153,7 @@ case "$(file -Lb "$sudo_image" 2>/dev/null)" in
 	*Mach-O*) ;;
 	*) echo "xcodebuild-workloads: missing installed Darling guest sudo (Mach-O): $sudo_image; host sudo will not be used" >&2; exit 2 ;;
 esac
-case "$WORKLOADS" in minproj|iosapp|both) ;; *) echo "xcodebuild-workloads: --workload takes minproj, iosapp or both" >&2; exit 2 ;; esac
+case "$WORKLOADS" in minproj|iosapp|both|iosapp-archive) ;; *) echo "xcodebuild-workloads: --workload takes minproj, iosapp, both or iosapp-archive" >&2; exit 2 ;; esac
 CONFIG_SKIP=$(plug_in_skip "$PLUG_INS") || { echo "xcodebuild-workloads: --plug-ins takes ci, diagnostic or none (got '$PLUG_INS')" >&2; exit 2; }
 # An explicit environment value wins, and is announced: the run must never be read as the canonical
 # configuration when the caller changed it.
@@ -204,6 +206,7 @@ case "$WORKLOADS" in
 esac
 
 for name in $list; do
+	fixture_name="$name"
 	case "$name" in
 		minproj)
 			argv="-project hello.xcodeproj -target hello -configuration Debug build"
@@ -213,9 +216,14 @@ for name in $list; do
 			argv="-project iosapp.xcodeproj -target iosapp -sdk iphoneos -configuration Debug -destination generic/platform=iOS clean build"
 			artifact_rel="build/Debug-iphoneos/iosapp.app"
 			;;
+		iosapp-archive)
+			fixture_name="iosapp"
+			argv="-project iosapp.xcodeproj -scheme iosapp -sdk iphoneos -configuration Release archive -archivePath /private/var/tmp/xcodebuild-iosapp-archive/iosapp.xcarchive CODE_SIGNING_ALLOWED=NO"
+			artifact_rel="iosapp.xcarchive"
+			;;
 	esac
 
-	src="$REPO_ROOT/tests/xcodebuild_fixture/$name"
+	src="$REPO_ROOT/tests/xcodebuild_fixture/$fixture_name"
 	guest_dir="/private/var/tmp/xcodebuild-$name"
 	host_dir="$PREFIX/private/var/tmp/xcodebuild-$name"
 	guest_out="/private/var/tmp/xcodebuild-$name.out"
@@ -226,16 +234,20 @@ for name in $list; do
 	license_host_dir="$host_dir-license"
 	license_evidence="$LOG_DIR/$name.license"
 	mkdir "$license_evidence" || { echo "xcodebuild-workloads: license evidence directory already exists or cannot be created: $license_evidence" >&2; exit 2; }
+	if [ "$name" = iosapp-archive ]; then
+		archive_evidence="$LOG_DIR/$name.artifacts"
+		mkdir "$archive_evidence" || { echo "xcodebuild-workloads: archive evidence already exists or cannot be created: $archive_evidence" >&2; exit 2; }
+	fi
 
 	[ -d "$src" ] || { echo "xcodebuild-workloads: missing asset tree $src" >&2; exit 2; }
 
 	# Install the project into the prefix's persistent guest directory. Wipe first: a stale build
 	# directory would let an earlier run's product be read as this run's artifact.
-	rm -rf "$host_dir" "$license_host_dir"
-	mkdir -p "$host_dir" "$license_host_dir"
-	cp -a "$src/." "$host_dir/"
+	rm -rf "$host_dir" "$license_host_dir" || exit 2
+	mkdir -p "$host_dir" "$license_host_dir" || exit 2
+	cp -a "$src/." "$host_dir/" || exit 2
 	cp "$LICENSE_SETUP" "$PREFIX/private/var/tmp/xcode-license.sh" || exit 2
-	rm -f "$host_out"
+	rm -f "$host_out" || exit 2
 
 	# The probe carries the exact argv above; it prints the workload's own status as XCB_RC=<n>.
 	#
@@ -356,6 +368,17 @@ PROBE
 		else
 			reasons="$reasons product_missing"
 		fi
+	elif [ "$name" = iosapp-archive ]; then
+		if python3 -B "$SCRIPT_DIR/iosapp-archive-package.py" \
+			--archive "$artifact" --output-dir "$archive_evidence" \
+			--build-log "$host_out" --probe "$probe_host" --prior-failures "$reasons" \
+			> "$LOG_DIR/$name.packaging.txt" 2>&1; then
+			artifact_line="archive=$archive_evidence/iosapp.xcarchive ipa=$archive_evidence/iosapp.unsigned.ipa validation=$archive_evidence/validation.json"
+		else
+			reasons="$reasons archive_validation_failed"
+			artifact_line="$artifact_line validation=$archive_evidence/validation.json packaging_log=$LOG_DIR/$name.packaging.txt"
+		fi
+		echo "  unsigned diagnostic archive only; no signing, development export or device installation claim"
 	else
 		[ -x "$artifact" ] || reasons="$reasons product_missing"
 	fi

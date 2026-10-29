@@ -217,6 +217,7 @@ CoreFoundation and Foundation, and they are enabled through ONE variable:
 | `url-free` | CoreFoundation | `[cfurl-free] url=… releaser=…` for every CFURL deallocation, where `releaser` is the caller that asked for the LAST release |
 | `url-life` | Foundation | `[nsurl] retain/release self=… cls=… cfurl=… cftype=… rc=…` for every Foundation NSURL |
 | `url-cache` | CoreFoundation | re-enable the URL resource-info cache, which is off by default (see CLASS-D evidence section 64) |
+| `mach-port` | libsystem_kernel | opt in to Mach-port refcount entry/plane/fallback/exit records; read from the initial environment without libc during bootstrap |
 
 `DARLING_DIAG=alloc,url-life` is the normal spelling; the per-knob variables (`MALLOC_TRACE_RING`,
 `CFURL_FREE_TRACE`, `NSURL_TRACE`, `CF_URL_RESOURCE_CACHE`) are still honoured so older recipes keep working.
@@ -232,6 +233,9 @@ Rules that came from using them:
   it was meant to preserve.
 
 The instruments print on the guest's own fd 1, so they appear in the run's capture, not in the harness log.
+Keep these stdout instruments disabled for ordinary workloads that parse command
+output: opting in can deliberately make a command-substitution or protocol stream
+unusable.
 
 
 ## The diagnostics are ONE tool: `dwdiag`

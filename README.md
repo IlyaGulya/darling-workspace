@@ -90,6 +90,36 @@ results and summary counts. Exit status is 0 only for `healthy`, 1 for
 diagnosed problems or an operational failure, and 2 for invalid command-line
 usage.
 
+### Diagnostic iOS archive and unsigned IPA
+
+Use a prepared idle guest prefix, a complete installed runtime and an acquired
+Xcode with its real iPhoneOS SDK. The existing shared
+[license setup](docs/test-infra.md#xcode-build-workload-license-setup) applies.
+Supply a fresh evidence directory and launch the catalog workload through its
+managed job owner:
+
+```sh
+export XCODEBUILD_WORKLOAD_XCODE_APP=/absolute/path/Xcode.app
+export XCODEBUILD_WORKLOAD_LOG_DIR="$DW_STATE_ROOT/evidence/iosapp-archive"
+export WEST_TEST_VERDICT_CACHE=off
+scripts/west-job.sh start --state-dir "$DW_STATE_ROOT/jobs/iosapp-archive" -- \
+  mise run west -- test --env darling --workload iosapp-archive \
+  --source-root "$S" --runtime-root "$R" --prefix "$P"
+scripts/west-job.sh follow --state-dir "$DW_STATE_ROOT/jobs/iosapp-archive"
+```
+
+The checked-in `iosapp` scheme runs a Release `archive` with
+`CODE_SIGNING_ALLOWED=NO`. The runner retains the actual `.xcarchive`, build
+output and probe, validates its arm64 iOS executable and bundle metadata, and
+packages the unchanged application as `iosapp.unsigned.ipa`. Its artifact directory
+contains `validation.json` and `SHA256SUMS`; PASS requires real compile/link/archive
+completion, successful license setup and ordinary clean shutdown. Existing
+`minproj`, `iosapp` and `both` selections are unchanged.
+
+This is a diagnostic fixture, not the target project's build and not an Xcode
+development/distribution export. The IPA is unsigned, has no provisioning profile,
+and is not claimed to install on a device.
+
 ## Agent skills and local guardrails
 
 Portable agent procedures live canonically in `.agents/skills/`.

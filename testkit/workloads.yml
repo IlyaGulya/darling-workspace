@@ -3,6 +3,36 @@
 # Distinct declarations deliberately retain distinct stable ids.
 version: 1
 workloads:
+- id: iosapp-archive
+  module: darling
+  name: iosapp-archive
+  kind: guest
+  coverage-tier: runtime
+  env: darling
+  diag: bare
+  runner: guest-runtime-script
+  repo: darling-workspace
+  script: scripts/xcodebuild-workload-run.sh
+  args:
+  - --workload
+  - iosapp-archive
+  prefix-controller: true
+  requires:
+  - darling-prefix
+  requires-env:
+  - XCODEBUILD_WORKLOAD_XCODE_APP
+  - XCODEBUILD_WORKLOAD_LOG_DIR
+  timeout-seconds: 600
+  verify-clean-shutdown: true
+  note: >-
+    Explicit diagnostic Release archive of the checked-in shared iosapp scheme,
+    followed by structural iOS arm64 validation and deterministic unsigned IPA
+    retention. The existing prefix-controller lends its lease to the shared
+    xcodebuild runner; that runner alone owns guest boot and ordinary cleanup.
+    Supply the selected Xcode app and a fresh evidence directory through the
+    required environment inputs. Authorizes the shared real Xcode license
+    preparation, not a license bypass. No signing, development export or device
+    installation claim. Existing minproj/iosapp/both selections are unchanged.
 - id: comparison_on_ring_fd_lifetime
   requires-build-features:
     DARLING_RING_TRANSPORT: true
@@ -7345,6 +7375,152 @@ workloads:
   - darling-prefix
   ok-marker: EUNION_MKDIR_RACE_GUEST_OK
   timeout-seconds: 30
+- id: mach_port_stdout_guest
+  name: mach_port_stdout_guest
+  module: darling/src/external/xnu
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/mach_port_stdout_guest.c
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -Werror
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: MACH_PORT_STDOUT_GUEST_OK
+  timeout-seconds: 30
+- id: uttype_device_model_guest
+  name: uttype_device_model_guest
+  module: darling
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/uttype_device_model_guest.m
+  guest-cc: /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+  guest-cflags: -isysroot /Volumes/SystemRoot/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  compile-flags:
+  - -x
+  - objective-c
+  - -fno-objc-arc
+  - -fobjc-exceptions
+  - -mmacosx-version-min=11.0
+  - -Wall
+  - -Wextra
+  - -Werror
+  - -framework
+  - Foundation
+  - -framework
+  - UniformTypeIdentifiers
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: UTTYPE_DEVICE_MODEL_GUEST_OK
+  timeout-seconds: 30
+- id: indexed_collection_filter_guest
+  name: indexed_collection_filter_guest
+  module: darling/src/external/foundation
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/indexed_collection_filter_guest.m
+  compile-flags:
+  - -x
+  - objective-c
+  - -fblocks
+  - -Wall
+  - -Wextra
+  - -Werror
+  - -framework
+  - Foundation
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: INDEXED_COLLECTION_FILTER_GUEST_OK
+  timeout-seconds: 30
+- id: process_activity_guest
+  name: process_activity_guest
+  module: darling/src/external/foundation
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/process_activity_guest.m
+  compile-flags:
+  - -x
+  - objective-c
+  - -std=gnu11
+  - -fblocks
+  - -Wall
+  - -Wextra
+  - -Werror
+  - -framework
+  - Foundation
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: PROCESS_ACTIVITY_GUEST_OK
+  timeout-seconds: 30
+- id: clonefile_guest
+  name: clonefile_guest
+  module: darling/src/external/xnu
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/clonefile_guest.c
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -Werror
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: CLONEFILE_GUEST_OK
+  timeout-seconds: 30
+- id: operation_queue_barrier_guest
+  name: operation_queue_barrier_guest
+  module: darling/src/external/foundation
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/operation_queue_barrier_guest.m
+  compile-flags:
+  - -x
+  - objective-c
+  - -std=gnu11
+  - -fblocks
+  - -fno-objc-arc
+  - -mmacosx-version-min=10.15
+  - -Wall
+  - -Wextra
+  - -Werror
+  - -framework
+  - Foundation
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: OPERATION_QUEUE_BARRIER_GUEST_OK
+  timeout-seconds: 90
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke
