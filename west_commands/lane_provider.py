@@ -21,14 +21,28 @@ class ProviderError(RuntimeError):
     pass
 
 
+def workspace_topdir(workspace: Path = WORKSPACE) -> Path:
+    """Find the actual enclosing West root, including for derived worktrees."""
+    workspace = workspace.resolve()
+    for candidate in (workspace, *workspace.parents):
+        if (candidate / ".west" / "config").is_file():
+            return candidate
+    raise ProviderError(
+        f"No enclosing West workspace (.west/config) for {workspace}. "
+        "Run from a manifest checkout inside the owning West workspace; "
+        "no guessed workspace or source fallback is supported."
+    )
+
+
 def specification(workspace: Path = WORKSPACE) -> tuple[Path, str, Path]:
     manifest = yaml.safe_load((workspace / "west.yml").read_text())["manifest"]
     project = next(p for p in manifest["projects"] if p["name"] == "fuse-overlayfs")
     revision = project["revision"]
     if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ProviderError("fuse-overlayfs West revision must be an exact commit")
-    source = workspace.parent / project["path"]
-    install = workspace.parent / ".west-state" / "workspace-tools" / "fuse-overlayfs" / revision
+    topdir = workspace_topdir(workspace)
+    source = topdir / project["path"]
+    install = topdir / ".west-state" / "workspace-tools" / "fuse-overlayfs" / revision
     return source, revision, install
 
 

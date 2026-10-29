@@ -56,16 +56,38 @@ with `west test`, RED proof or source materialization. A failure observed during
 such overlap requires sequential
 execution before a leak claim.
 
-Two or more agents that need their own prefix at the same time use an isolation
-lane instead of sharing one: `west dev lane create NAME --base P --runtime-root R`,
-then `west test --lane NAME --runtime-root R ...` for the run. The lane gives
-the run its own copy-on-write guest state, state root,
-`TMPDIR`/`XDG_RUNTIME_DIR` and process scope. Runtime publication remains
-separate; concurrent runs may share a verified immutable image, never writable
-guest state. The mechanism, its
-measurements, its cleanup contract and its own tests are in
-[lane-isolation.md](lane-isolation.md); it is optional and no existing command
-changes behaviour without `--lane`.
+Two or more agents needing guest state concurrently use active lanes, not one
+shared prefix: `west dev lane create NAME --base P --runtime-root R`, then
+`west test --lane NAME --runtime-root R ...`. Provision the reviewed provider
+and pinned snapshotter explicitly with `mise run lane-provider-build` and
+`mise run lane-snapshotter-install`; there is one snapshotter store per lane
+root, no alternate-backend fallback and no per-lane `upper/`/`work/` layout.
+After setup/ordinary cleanup, `west dev lane freeze NAME` commits while retaining
+the original mount. `west dev lane create CHILD --parent NAME` requires that
+explicitly frozen, still-mounted parent; children inherit runtime/source
+selection unless explicitly selected otherwise. Frozen lanes cannot execute
+or run `west test`, and referenced parents cannot be destroyed.
+
+Each active lane has independent COW guest state, state root,
+`TMPDIR`/`XDG_RUNTIME_DIR`, prefix lease and process scope. Freeze is cooperative
+CLI immutability, **not** a kernel read-only mount. Lost/remounted views and
+changed mount lifetimes fail closed; never rewrite identity records or remount
+to bypass admission. Import copies the original inert base once per safe
+stat/tree identity, after which it is provenance rather than live storage.
+Runtime publication remains separate: lanes may share a verified immutable
+image, never writable state. Use short, absolute, owned durable roots and
+delete descendants before parents through `west dev lane destroy`.
+Destruction removes guest data and `lane.json`, not the lease namespace: a minimal
+retired parent retains `.execution.lock`, its external prefix lease, owned
+product sibling locks and `.retired-lane.json`. The marker has only
+schema/name/root/UID/parent device+inode, no runtime/source/snapshot pins.
+`list` excludes retired names and `status` reports them missing. Same-name
+creation safely reuses the validated parent and existing lock inodes; unexpected
+data or identity/ownership drift is refused. Never recursively delete retired
+parents or a lane root to force reuse. An interrupted `destroying` lane is
+non-executable and can be completed through normal `destroy`.
+See [lane-isolation.md](lane-isolation.md) for setup, limitations, historical
+measurements, cleanup and gate requirements.
 
 ### Xcode build workload license setup
 
@@ -135,6 +157,21 @@ Omit the toolchain option for runtime-only smoke. Guest C requires the real
 reviewed CLT and SDK, installed through the guest installer and verified by the
 provisioner. No host compiler substitution, invented SDK metadata or system-file
 injection. CLT package/cache integrity and publisher authentication are distinct.
+
+For lane acceptance, first finish the base bootstrap and ordinary cleanup using
+that selected immutable image. The base must have its real managed product
+lifecycle record and no live processes/runtime mounts; do not invent a record
+or use a launcher-shaped stand-in. Run the two prefix-backed lane gates
+sequentially with the same prepared base, or give concurrent gates independent
+base prefixes and owners. Their own two children run concurrently over an
+explicitly frozen parent. Both gates assert minimal retirement and unchanged
+parent/admission/prefix-lease inodes for the children and parent. The interface
+gate also exercises actual CLI same-name recreation with the selected real image
+and base, retained old/current OFD mutual exclusion, and a guest file round-trip
+through Ready and ordinary product shutdown before a second retirement.
+That narrow runtime smoke is not arbitrary workload acceptance: select
+`--guest-workload ID` with its real installed prerequisites and oracle for the
+gate's broader guest phase.
 
 ### Direct bootstrap from an explicit build directory
 
@@ -716,6 +753,18 @@ Never pin derived trees, generated-file digests or replay boundaries to literal
 values: bind assertions to their authoritative inputs and use the deriving
 gate's `--check` mode.
 
+The existing `isolation-lane` host entry executes the real snapshot-store
+regression: physical Source import, commit with a retained parent mount,
+multi-generation COW/whiteouts, referenced-parent refusal and reverse graph
+teardown with no mounts/services. It requires provisioned snapshotter/client/
+reviewed driver, `/dev/fuse`, `fusermount3` and the systemd user manager; missing
+prerequisites fail rather than skip. Scratch lives beneath `DW_STATE_ROOT`
+(or canonical `.west-state`), never host `/tmp`. This is host storage evidence,
+not fabricated bind-clone or Darling runtime proof. The two excluded
+`run-darling-lane-*-contract.sh` gates still require a real immutable installation
+and bootstrapped base, and run through the existing job supervisor. Keep their
+real runtime prerequisites/exclusion rationale distinct from host classification.
+
 After editing reviewed namespace-writer candidate sources, run
 `scripts/generate_namespace_writer_registry.py --check` and regenerate the
 anchored registry before a tier: source SHA drift invalidates that audit.
@@ -1271,6 +1320,7 @@ implementation of helper logic:
 | `west_commands/test_ctest.py` | CTest label/list/passthrough construction and submodule normalization |
 | `west_commands/test_cmake.py` | Source CMake superproject shims, fallback registration, compiler logs and required options |
 | `west_commands/test_resources.py` | Shared typed runtime setup, with provider ordering/selection contracts |
+| `west_commands/lane_snapshotter.py`, `lane.py` | Upstream snapshot graph/storage and retained-view lifecycle; active/frozen admission, leases, product bind-clone and lane scopes |
 
 Update the matching focused contract when changing these interfaces (all
 entrypoints below are under `tests/`):
@@ -1284,6 +1334,8 @@ entrypoints below are under `tests/`):
 | Guest-C source transport, compile/run/verdict | `run-darling-c-test-contract.sh` |
 | Complete runtime installation / bootstrap | `west_test_contracts/runtime_install_contract.py`, `west_test_contracts/darling_bootstrap_contract.py` |
 | GC, proof scratch naming, dry-run pruning | `run-west-test-gc-contract.sh` |
+| Snapshot-store inheritance, isolation, graph guard and teardown | `west_test_contracts/lane_contract.py` (real host tools/store, not a runtime model) |
+| Lane guest concurrency / `west test --lane` lifecycle | `run-darling-lane-concurrency-contract.sh`, `run-darling-lane-test-lane-contract.sh` (prefix-backed manual gates) |
 
 Both metadata and CTest guest-C paths route low-level `launcher shell` through
 `testkit/scripts/darling-guest-shell.sh`, which owns prefix environment and the

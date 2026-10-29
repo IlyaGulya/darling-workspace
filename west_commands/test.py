@@ -2710,17 +2710,19 @@ class DarlingTest(
             lane = lane_path(root, validate_lane_name(name))
         except LaneError as error:
             self.die(str(error))
-        record = read_record(lane)
-        if record is None:
-            self.die(
-                f"no lane '{name}' under {root}; create it with "
-                f"'west dev lane create {name} --base <prefix>'"
-            )
-        problems = record_problems(lane, record)
-        if problems:
-            self.die(f"lane '{name}' is not usable: " + "; ".join(problems))
-
-        environment = lane_env(lane, record)
+        try:
+            record = read_record(lane)
+            if record is None:
+                self.die(
+                    f"no lane '{name}' under {root}; create it with "
+                    f"'west dev lane create {name} (--base <prefix> | --parent <frozen-lane>)'"
+                )
+            problems = record_problems(lane, record)
+            if problems:
+                self.die(f"lane '{name}' is not usable: " + "; ".join(problems))
+            environment = lane_env(lane, record)
+        except LaneError as error:
+            self.die(str(error))
         unit = scope_unit(lane)
         if environ.get(SCOPE_ACTIVE_ENV) != str(lane):
             # Fail closed. A lane run without its own cgroup is a run whose cleanup can miss a guest

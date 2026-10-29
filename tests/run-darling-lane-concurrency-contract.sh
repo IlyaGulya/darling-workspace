@@ -4,8 +4,8 @@
 # WHY THIS EXISTS. "Two agents can work at the same time" is not a property of the lane tooling; it
 # is a property of two real guest runtimes booting and running at the same time, each on its own
 # prefix, while one of them is running code the other must not see and is then stopped mid-flight.
-# This runs exactly that, on the host's rootless FUSE lane layer, and checks the six things that
-# actually decide whether the isolation holds:
+# This runs exactly that, on the snapshotter's rootless FUSE views of one frozen parent,
+# checking the six properties below:
 #
 #   1. no cross-prefix contamination: A's writable guest payload is visible only in A, absent from
 #      B's guest, B's prefix and the inert base;
@@ -16,7 +16,8 @@
 #   4. product shutdown of A does not affect B: A is shut down while B's guest is running;
 #   5. cleanup is lane-scoped: A's lane layer and daemon survive the stop, the repository's own
 #      prefix-scoped cleaner reports A's prefix clean, and it never names B;
-#   6. nothing is left behind: both lanes are removed with no mount, daemon or process remaining.
+#   6. retirement removes guest/storage state with no mount, daemon or process remaining, while
+#      preserving the parent and persistent lease inode for safe same-name reuse.
 #
 # Usage:
 #   run-darling-lane-concurrency-contract.sh --runtime-root ROOT --base PREFIX [--root DIR] [--wait SECONDS] [--keep]
@@ -42,7 +43,7 @@ checks_run=0
 # The count is PINNED, because a run that silently skips a check is indistinguishable from a run that
 # passed them: this contract once printed a PASS while a whole phase's assertions never executed.
 # Change this literal only with the check it counts.
-EXPECTED_CHECKS=39
+EXPECTED_CHECKS=49
 
 usage() { sed -n '2,32p' "$0"; exit 2; }
 
@@ -125,7 +126,7 @@ base_hashes() {
 }
 
 clone_is_bound() {
-	python3 -B - "$BASE" "$1" <<'PY'
+	python3 -B - "$ROOT/lane-parent/merged" "$1" <<'PY'
 import os
 import sys
 from pathlib import Path
@@ -226,6 +227,76 @@ else:
 ' "$1" "$REPO" "$2"
 }
 
+snapshotter_stopped() {
+	python3 -B - "$REPO" "$ROOT" <<'PY'
+import subprocess
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1] + "/west_commands")
+from lane_snapshotter import SnapshotStore
+store = SnapshotStore(Path(sys.argv[2]))
+for unit in [store.unit, *(store.mount_unit(store.lane_root / name / "merged") for name in ("lane-a", "lane-b", "lane-parent"))]:
+    result = subprocess.run(["systemctl", "--user", "show", "--property=ActiveState,MainPID", unit], capture_output=True, text=True)
+    properties = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    assert properties.get("ActiveState") == "inactive", (unit, properties)
+    assert properties.get("MainPID") == "0", (unit, properties)
+assert not store.socket.exists()
+PY
+}
+
+# Persist identities outside guest data; destruction must not split an existing lock domain.
+lane_coordination() { # capture | retired NAME | stable NAME
+	python3 -B - "$REPO" "$ROOT" "$@" <<'PY'
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+sys.path.insert(0, sys.argv[1] + "/west_commands")
+from lane import RETIRED_MARKER, list_lanes, read_record
+from test_prefix import prefix_lease_path
+root = Path(sys.argv[2])
+mode = sys.argv[3]
+baseline = root / "coordination-before.json"
+def identity(path):
+    metadata = path.lstat()
+    assert metadata.st_uid == os.getuid() and not path.is_symlink(), path
+    return [metadata.st_dev, metadata.st_ino]
+if mode == "capture":
+    records = {}
+    for name in ("lane-a", "lane-b", "lane-parent"):
+        lane = root / name
+        files = [lane / ".execution.lock", prefix_lease_path(lane / "merged"),
+                 *sorted(lane.glob(".darling-prefix-lock-v2-*"))]
+        records[name] = {"directory": identity(lane),
+                         "files": {path.name: identity(path) for path in files}}
+    baseline.write_text(json.dumps(records, sort_keys=True) + "\n")
+else:
+    name = sys.argv[4]
+    lane = root / name
+    saved = json.loads(baseline.read_text())[name]
+    if mode == "stable":
+        assert identity(lane) == saved["directory"], lane
+        for filename, expected in saved["files"].items():
+            assert identity(lane / filename) == expected, filename
+    elif mode == "retired":
+        assert read_record(lane) is None and lane not in list_lanes(root)
+        assert not (lane / "merged").exists() and not (lane / "lane.json").exists()
+        metadata = lane.stat()
+        assert json.loads((lane / RETIRED_MARKER).read_text()) == {
+            "schema": 1, "name": name, "root": str(root), "uid": os.getuid(),
+            "device": metadata.st_dev, "inode": metadata.st_ino,
+        }
+        allowed = {RETIRED_MARKER, ".execution.lock", prefix_lease_path(lane / "merged").name}
+        for path in lane.iterdir():
+            metadata = path.lstat()
+            assert path.name in allowed or path.name.startswith(".darling-prefix-lock-v2-"), path
+            assert stat.S_ISREG(metadata.st_mode) and metadata.st_uid == os.getuid(), path
+    else:
+        raise AssertionError(mode)
+PY
+}
+
 lane_owned_processes() {
 	west dev lane status "$1" --root "$ROOT" --json 2>/dev/null |
 		python3 -c 'import json,sys
@@ -263,16 +334,14 @@ run_guest() {
 # which every check passed clears its own scratch, unless --keep asked for it to stay.
 finalize() {
 	local exit_status=$?
-	local lane
 	if [ "$exit_status" -eq 0 ] && [ "$failures" -eq 0 ] && [ "$KEEP" -eq 0 ]; then
-		for lane in lane-a lane-b; do
-			west dev lane destroy "$lane" --root "$ROOT" >/dev/null 2>&1
-		done
-		rm -rf "$ROOT"
+		rm -rf "$ROOT/evidence"
+		rm -f "$ROOT/"*.log "$ROOT/runtime-before.tsv" "$ROOT/coordination-before.json"
+		note "retired lane parents and persistent coordination retained: $ROOT"
 		return
 	fi
 	note "lane root kept for inspection: $ROOT"
-	note "remove it with: west dev lane destroy lane-a --root $ROOT; west dev lane destroy lane-b --root $ROOT; rm -rf $ROOT"
+	note "remove children before parent: west dev lane destroy lane-a --root $ROOT; west dev lane destroy lane-b --root $ROOT; west dev lane destroy lane-parent --root $ROOT"
 }
 trap finalize EXIT
 
@@ -285,10 +354,27 @@ RUNTIME_LAUNCHER_BEFORE=$(sha256sum "$DARLING_LAUNCHER") || exit 2
 "$REPO/scripts/darling-artifact-manifest.sh" --runtime-root "$RUNTIME_ROOT" \
 	--save "$ROOT/runtime-before.tsv" >"$ROOT/runtime-baseline.log" || exit 2
 
-west dev lane create lane-a --base "$BASE" --runtime-root "$RUNTIME_ROOT" --root "$ROOT" >"$ROOT/create-a.log" 2>&1 ||
+west dev lane create lane-parent --base "$BASE" --runtime-root "$RUNTIME_ROOT" --root "$ROOT" >"$ROOT/create-parent.log" 2>&1 ||
+	{ warn "cannot create parent: $(cat "$ROOT/create-parent.log")"; exit 1; }
+mkdir -p "$ROOT/lane-parent/merged/private/var/tmp" || exit 1
+printf 'frozen parent input\n' >"$ROOT/lane-parent/merged/private/var/tmp/lane-parent.txt" || exit 1
+west dev lane freeze lane-parent --root "$ROOT" >"$ROOT/freeze-parent.log" 2>&1 ||
+	{ warn "cannot freeze parent: $(cat "$ROOT/freeze-parent.log")"; exit 1; }
+west dev lane exec --root "$ROOT" --no-scope lane-parent -- sh -c 'printf forbidden > "$1"' _ "$ROOT/frozen-executed" >"$ROOT/frozen-exec.log" 2>&1
+frozen_exec_rc=$?
+require "frozen exec refuses before running the command even without a scope" \
+	bash -c 'test "$1" -ne 0 && ! test -e "$2"' _ "$frozen_exec_rc" "$ROOT/frozen-executed"
+west test --lane lane-parent --runtime-root "$RUNTIME_ROOT" --cleanup-prefix >"$ROOT/frozen-test.log" 2>&1
+frozen_test_rc=$?
+require "west test refuses a frozen lane" test "$frozen_test_rc" -ne 0
+west dev lane create lane-a --parent lane-parent --root "$ROOT" >"$ROOT/create-a.log" 2>&1 ||
 	{ warn "cannot create lane A: $(cat "$ROOT/create-a.log")"; exit 1; }
-west dev lane create lane-b --base "$BASE" --runtime-root "$RUNTIME_ROOT" --root "$ROOT" >"$ROOT/create-b.log" 2>&1 ||
+west dev lane create lane-b --parent lane-parent --root "$ROOT" >"$ROOT/create-b.log" 2>&1 ||
 	{ warn "cannot create lane B: $(cat "$ROOT/create-b.log")"; exit 1; }
+west dev lane destroy lane-parent --root "$ROOT" >"$ROOT/guard-parent.log" 2>&1
+parent_destroy_rc=$?
+require "removing a referenced frozen parent is refused" test "$parent_destroy_rc" -ne 0
+require "refused parent removal leaves its retained mount intact" mountpoint -q "$ROOT/lane-parent/merged"
 
 require "lane A has a product-bound clone identity and generation" clone_is_bound "$LANE_A/merged"
 require "lane B has a product-bound clone identity and generation" clone_is_bound "$LANE_B/merged"
@@ -304,10 +390,10 @@ printf 'lane experiment payload\n' >"$LANE_A/merged/private/var/tmp/lane-experim
 note ""
 note "== phase 1: two guest experiments at once =="
 run_guest lane-a "$LANE_A/logs/concurrent.log" "$WAIT" EXPERIMENT_VISIBLE=1 \
-	'if grep -q "lane experiment payload" /private/var/tmp/lane-experiment.txt; then echo EXPERIMENT_VISIBLE=1; rc=0; else rc=1; fi; echo A_ALIVE=1; sleep 1; echo LANE_RC=$rc' &
+	'if grep -q "lane experiment payload" /private/var/tmp/lane-experiment.txt && grep -q "frozen parent input" /private/var/tmp/lane-parent.txt; then echo EXPERIMENT_VISIBLE=1; rc=0; else rc=1; fi; echo A_ALIVE=1; sleep 1; echo LANE_RC=$rc' &
 pid_a=$!
 run_guest lane-b "$LANE_B/logs/concurrent.log" "$WAIT" B_IS_CLEAN=1 \
-	'if test ! -e /private/var/tmp/lane-experiment.txt; then echo B_IS_CLEAN=1; rc=0; else rc=1; fi; echo B_ALIVE=1; sleep 1; echo LANE_RC=$rc' &
+	'if test ! -e /private/var/tmp/lane-experiment.txt && grep -q "frozen parent input" /private/var/tmp/lane-parent.txt; then echo B_IS_CLEAN=1; rc=0; else rc=1; fi; echo B_ALIVE=1; sleep 1; echo LANE_RC=$rc' &
 pid_b=$!
 wait "$pid_a"; rc_a=$?
 wait "$pid_b"; rc_b=$?
@@ -402,22 +488,34 @@ note ""
 note "== phase 3: the base is untouched, and nothing is left behind =="
 require "base file hashes are identical" test "$BASE_HASHES_BEFORE" = "$(base_hashes)"
 require "base tree identity is identical" test "$BASE_DIGEST_BEFORE" = "$(base_tree_digest "$BASE")"
-west dev lane verify lane-a --root "$ROOT" >"$ROOT/verify-a.log" 2>&1 ||
-	{ warn "$(cat "$ROOT/verify-a.log")"; }
-require "west dev lane verify says A's base is unchanged" grep -q 'is unchanged' "$ROOT/verify-a.log"
+west dev lane verify lane-a --root "$ROOT" >"$ROOT/verify-a.log" 2>&1
+verify_a_rc=$?
+require "lane A's managed layers, retained mounts and runtime verify" test "$verify_a_rc" -eq 0
 
 mkdir -p "$ROOT/evidence/lane-a" "$ROOT/evidence/lane-b"
 cp -a "$LANE_A/logs" "$LANE_A/receipts" "$LANE_A/lane.json" "$ROOT/evidence/lane-a/" || exit 1
 cp -a "$LANE_B/logs" "$LANE_B/receipts" "$LANE_B/lane.json" "$ROOT/evidence/lane-b/" || exit 1
+lane_coordination capture || exit 1
 west dev lane destroy lane-a --root "$ROOT" >"$ROOT/destroy-a.log" 2>&1
+destroy_a_rc=$?
 west dev lane destroy lane-b --root "$ROOT" >"$ROOT/destroy-b.log" 2>&1
-require "lane A was removed" bash -c "! test -e '$LANE_A'"
-require "lane B was removed" bash -c "! test -e '$LANE_B'"
+destroy_b_rc=$?
+west dev lane destroy lane-parent --root "$ROOT" >"$ROOT/destroy-parent.log" 2>&1
+destroy_parent_rc=$?
+require "the frozen parent retires after its children" \
+	bash -c 'test "$1" -eq 0' _ "$destroy_parent_rc"
+require "lane A has no active record or prefix, only minimal retirement state" lane_coordination retired lane-a
+require "lane B has no active record or prefix, only minimal retirement state" lane_coordination retired lane-b
+require "the parent has no active record or prefix, only minimal retirement state" lane_coordination retired lane-parent
+require "lane A retains its parent, admission and prefix lease inodes" lane_coordination stable lane-a
+require "lane B retains its parent, admission and prefix lease inodes" lane_coordination stable lane-b
+require "the parent retains its parent, admission and prefix lease inodes" lane_coordination stable lane-parent
 require "no lane mount is left" bash -c "! mount | grep -qF '$ROOT'"
-require "no lane fuse daemon is left" test "$(lane_count daemons "$LANE_A")$(lane_count daemons "$LANE_B")" = "00"
+require "no lane fuse daemon is left" test "$(lane_count daemons "$LANE_A")$(lane_count daemons "$LANE_B")$(lane_count daemons "$ROOT/lane-parent")" = "000"
 require "no lane process is left" test "$(lane_count processes "$LANE_A")$(lane_count processes "$LANE_B")" = "00"
-require "both removals reported success" bash -c "grep -q 'removed ' '$ROOT/destroy-a.log' && grep -q 'removed ' '$ROOT/destroy-b.log'"
+require "both child removals succeeded" bash -c 'test "$1" -eq 0 && test "$2" -eq 0' _ "$destroy_a_rc" "$destroy_b_rc"
 require "the selected installed runtime is intact after both lanes" runtime_unchanged
+require "the empty snapshotter store has no active service" snapshotter_stopped
 
 note "CHECKS-RUN ran=$checks_run pinned=$EXPECTED_CHECKS"
 if [ "$checks_run" -ne "$EXPECTED_CHECKS" ]; then

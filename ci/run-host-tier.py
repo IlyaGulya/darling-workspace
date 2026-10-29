@@ -145,9 +145,9 @@ EXPLICIT_CONTRACTS = (
     ("dev-start", "tests/west_test_contracts/dev_start_contract.py", True),
     ("dev-status", "tests/west_test_contracts/dev_status_contract.py", True),
     ("fresh-prefix", "tests/west_test_contracts/fresh_prefix_contract.py", True),
-    # The isolation-lane mechanism is what lets two experiments run at once without sharing a
-    # prefix, a state root or a process tree, so its contract mounts real lanes and observes the
-    # bytes in both layers rather than modelling either.
+    # Real ready-snapshotter storage: import, retained frozen views, multi-generation
+    # COW inheritance/whiteouts, graph removal guards and ordinary service teardown.
+    # Product bind-clone and guest execution remain the prefix-backed gates below.
     ("isolation-lane", "tests/west_test_contracts/lane_contract.py", True),
     ("host-tier", "tests/west_test_contracts/host_tier_contract.py", True),
     ("runtime-proof-state", "tests/west_test_contracts/runtime_proof_state_contract.py", True),
@@ -348,15 +348,17 @@ EXCLUDED_CONTRACTS = {
     "tests/run-darling-lane-concurrency-contract.sh":
         "guest-runtime gate: two independent isolation lanes consume the same immutable normal "
         "installation. Product shutdown of A must leave B running and the selected installation "
-        "unchanged. Requires a bootstrapped base, fuse-overlayfs, a systemd user scope and two "
-        "prefix lifecycles. The host tier runs the isolation-lane mechanism contract; run this gate "
+        "unchanged. Requires a bootstrapped base, provisioned lane snapshotter/tools, /dev/fuse, "
+        "a systemd user manager and two prefix lifecycles over one retained frozen parent. "
+        "The host tier runs the real snapshot-store contract; run this gate "
         "through scripts/west-job.sh with --runtime-root ROOT --base PREFIX",
     "tests/run-darling-lane-test-lane-contract.sh":
-        "prefix-backed interface gate: drives the existing west test runner in two isolation lanes "
-        "against one immutable normal installation. Requires a bootstrapped base, fuse-overlayfs, "
-        "a systemd user scope and two prefix lifecycles. --guest-workload ID additionally executes "
-        "a flat guest workload; it does not materialize sources or an alternate runtime. The host "
-        "tier runs the isolation-lane mechanism contract; run this gate through scripts/west-job.sh "
+        "prefix-backed interface gate: drives the existing west test runner in two child lanes "
+        "over one retained frozen parent against one immutable normal installation. Requires a "
+        "bootstrapped base, provisioned lane snapshotter/tools, /dev/fuse and a systemd user manager. "
+        "--guest-workload ID additionally executes a flat guest workload; it does not materialize "
+        "sources or an alternate runtime. The host tier runs the real snapshot-store contract; "
+        "run this gate through scripts/west-job.sh "
         "with --runtime-root ROOT --base PREFIX",
     "tests/west_test_contracts/a0_typed_wake_fault_hook_contract.py":
         "argparse tool, not a self-running contract: it needs --source, the materialized "

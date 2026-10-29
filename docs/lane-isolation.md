@@ -4,15 +4,19 @@ Current operational guidance is below; dated observations are retained separatel
 as historical evidence from 2026-10-18 (Ubuntu 24.04, kernel 6.8, this workstation),
 not verification of the current runtime cutover.
 
-An isolation lane gives one experiment its own copy-on-write prefix, its own state root, its own
-temporary and runtime directories, and its own process ownership, so two agents can run two Darling
-experiments at the same time without sharing mutable product state. Stopping one lane cannot reach
-another, and the base prefix a lane is layered over is never written.
+An isolation lane gives one experiment its own copy-on-write guest prefix,
+state root, temporary/runtime directories and process ownership. Cooperative
+experiments can share one immutable installed runtime without sharing writable
+guest state. Storage is one containerd fuse-overlayfs snapshotter store per lane
+root, mounted by the exact reviewed West FUSE driver; there is no legacy or
+selectable alternate backend.
 
-The mechanism is one West subcommand, `west dev lane`, plus one opt-in flag on the existing test
-runner, `west test --lane NAME`. The implementation is `west_commands/lane.py` (every rule) and
-`west_commands/dev_lane.py` (argument shapes and reporting). There is no second test framework: a
-lane changes *where* an existing command runs and *who owns its processes*, never what it runs.
+`west dev lane` manages this lifecycle; `west test --lane NAME` runs the existing
+test runner in an active lane. `lane_snapshotter.py` owns the upstream snapshot
+API adapter and storage services, `lane.py` owns product lifecycle and admission,
+and `dev_lane.py` owns CLI/reporting. A lane changes where a command runs and who
+owns it, not which workload is selected. Product `bind-clone`, not workspace
+record rewriting, binds every new prefix to its mounted directory identity.
 
 ## Why this mechanism, in host facts
 
@@ -42,88 +46,162 @@ Two more that shape the *process* story:
   `<P.parent>/.west-prefix-lease-<sha256(P.name)>`. Different lane prefixes have
   independent leases, even when prefixes share a parent. Never delete the lease
   file; it is distinct from the product's `P/.lifecycle.lock`.
+  Destruction keeps the lane's parent directory and coordination files, so a
+  controller retaining an old open lease cannot be split from a same-name lane
+  recreated later.
 
 ## Commands
 
-First provision the exact West-owned host provider with
-`mise run lane-provider-build` (see [host tool prerequisites](environment.md#host-tools-and-agent-activation)).
-`mise install` alone does not build unpublished hard-fork source. Inspect its
-verified absolute path with `mise run lane-provider-path`; creation never
-searches PATH or accepts the system provider. A missing or mismatched build is
-an actionable error, not automatic installation. Each lane records the selected
-executable and its source/binary provenance in `lane.json`. Existing lanes keep
-their original daemon; new source requires a new revision-addressed build,
-never replacing an executable beneath a mounted lane.
-
+Provision the exact tools explicitly before creating lanes:
 
 ```sh
-# Create a lane. The base is stable writable guest state and must be inert: a base with
-# live processes or mounts is refused, because its runtime sockets live in the lower layer
-# and a lane would resolve them to the base's own server. The immutable runtime image is
-# selected separately; a lane never inherits a launcher from its base.
-west dev lane create lane-a --base /abs/path/to/base-guest-state --runtime-root /abs/runtime
-
-# Inspect it: mounts, owned processes, its cgroup and unit name, its upper-layer disk use,
-# base identity.
-west dev lane status lane-a
-west dev lane list
-west dev lane verify lane-a     # base and source unchanged since creation
-
-# Run anything inside it: prefix, DW_STATE_ROOT, TMPDIR, XDG_RUNTIME_DIR, DARLING_BUILD_DIR and cgroup.
-west dev lane exec lane-a -- ./scripts/darling-boot-run.sh --runtime-root /abs/runtime --prefix /abs/lane-root/lane-a/merged --wait 20
-west dev lane exec --root /abs/lane-root lane-a -- <command>   # --root precedes the lane name
-
-# --no-scope runs WITHOUT the lane's cgroup. It is refused nowhere and labelled everywhere, because
-# nothing about the run looks different afterwards: UNSAFE FOR CONCURRENT AGENTS.
-west dev lane exec lane-a --no-scope -- <command>
-
-# The existing test runner, in a lane. Everything else about the invocation is unchanged.
-west test --lane lane-a --runtime-root /abs/runtime --label name:some-case
-west test --lane lane-a --runtime-root /abs/runtime --source-root /abs/source --workload WORKLOAD_ID
-
-# Stop and remove exactly this lane.
-west dev lane destroy lane-a
+mise run lane-provider-build
+mise run lane-snapshotter-install
+mise run lane-provider-path
+mise run lane-snapshotter-path
 ```
 
-`west test --lane NAME` selects an existing lane explicitly; it cannot be
-combined with `--prefix`. The runner re-enters its lane scope before doing work.
-Select the same immutable runtime image recorded by the lane, not a launcher
-from its writable base. Workload selection remains independent of source/runtime.
+See [host prerequisites](environment.md#host-tools-and-agent-activation) for
+reviewed source availability, the pinned upstream release, host ctr identity,
+`/dev/fuse`, `fusermount3` and a working systemd user manager. Creation resolves
+verified immutable tools; it never downloads, rebuilds, searches for a substitute
+provider on PATH or silently switches backend. Tool executables serving existing
+mounts must never be overwritten.
 
-The runner re-enters itself once, before doing any work, under
-`systemd-run --user --scope --unit darling-lane-<name>-<digest>.scope`, so materialization, the boot,
-the guest case and the run's own cleanup are all inside one kernel-enforced scope. The recap and
-`west-test-lifecycle.log` name the lane, its prefix and its state root, so a lane run's output says
-which lane produced it. The run destroys nothing of the lane: `merged/` and `upper/` keep the run's
-writes for inspection, and a second run gets a second scope. The scope is transient and ends with
-the run — which is why an *interrupted* run leaves its processes inside its own scope and the next
-run into that lane is refused (`lane scope … still owns N process(es); stop it with 'systemctl --user
-stop …' or remove the lane`) instead of quietly starting a second experiment in the same lane.
+Select an absolute owned, **short** lane root beneath your durable task state
+or owned workspace state. Guest AF_UNIX pathname limits apply after expanding
+the prefix and symlinks: `/var/run/shellspawn.sock` becomes
+`<prefix>/private/var/run/shellspawn.sock` (prefix bytes + 32). With the current
+108-byte host address, normal bootstrap therefore needs a prefix no longer than
+75 bytes; other guest socket paths can impose tighter limits. Abstract courier
+names have a separate bound. A short snapshotter socket does not remove these
+product-runtime limits; do not use symlink aliases or truncate names to bypass them.
+Bootstrap the base separately with the selected normal installation, then finish
+product shutdown and cleanup before import. `--base` selects guest state, never
+an installed image.
 
-**Lane execution fails closed.** With no working per-lane `systemd --user` scope there is no
-per-lane process ownership, so a run that would be parallel is refused rather than started unowned:
-`west test --lane` dies, and `west dev lane exec` refuses unless `--no-scope` says otherwise in
-those words. The single escape is that flag, and the only labelled mode in this mechanism is the
-unisolated one.
+```sh
+export DW_LANE_ROOT=/absolute/owned/short-state/lanes
+
+# Exactly one of --base PREFIX and --parent NAME is required.
+# Import an inert managed prefix. Live base processes or mounts are refused.
+west dev lane create seed --base /abs/base-prefix --runtime-root /abs/runtime
+
+# Prepare guest state through the supported owner while seed is active.
+west dev lane exec --root "$DW_LANE_ROOT" seed -- <command>
+west test --lane seed --runtime-root /abs/runtime --workload WORKLOAD_ID
+
+# Freeze explicitly, only after all executions and product cleanup have ended.
+west dev lane freeze seed
+
+# Forks inherit the frozen snapshot, plus runtime/source selection by default.
+west dev lane create lane-a --parent seed
+west dev lane create lane-b --parent seed
+west dev lane status seed
+west dev lane list
+west dev lane verify lane-a
+west dev lane exec --root "$DW_LANE_ROOT" lane-a -- <command>
+west test --lane lane-b --runtime-root /abs/runtime --workload WORKLOAD_ID
+
+# For a second generation: finish lane-a's work, freeze it, then fork it.
+west dev lane freeze lane-a
+west dev lane create grandchild --parent lane-a
+
+# Delete reverse ancestry. A referenced parent is refused without losing its mount.
+west dev lane destroy grandchild
+west dev lane destroy lane-a
+west dev lane destroy lane-b
+west dev lane destroy seed
+```
+
+Freeze commits the snapshot **without unmounting the original view**. It requires
+an idle lane scope, exclusive lane admission, an available exclusive prefix lease
+and a quiescent managed prefix. A parent must already be frozen and retain its original mount; create
+does not freeze implicitly. Frozen lanes remain inspectable/verifiable, but
+`exec` and `west test --lane` reject them. There is no thaw operation: create a
+child to continue work. The root's operation lease serializes storage graph and
+lane-record publication.
+
+Destroy retires a lane rather than deleting its lease namespace. It removes
+`lane.json`, the guest prefix, writable data and work/evidence directories, but
+keeps the same parent directory, `.execution.lock`, external prefix lease and
+owned product sibling lock files, plus `.retired-lane.json`. This small marker
+contains only schema/name/root/UID and the parent device/inode: it holds no
+runtime-image, source or snapshot references and pins no runtime installation.
+Retired names disappear from `list`; `status` treats them as missing.
+
+A later `create` with the same name can reuse that exact retired parent and
+lease domain with a newly selected base or frozen parent and installed runtime.
+Only a validated minimal tombstone is reusable: unexpected data, replaced
+parents, wrong ownership or nonregular coordination files fail closed. Never
+remove a lease or delete/recreate its parent by hand to make reuse succeed.
+
+
+**Freeze is cooperative CLI immutability, not a kernel read-only remount.**
+The retained frozen view is still writable by the owning host user. Do not write
+it directly, launch a runtime against it or modify snapshotter layer directories.
+Children depend on frozen layer bytes remaining stable.
+
+`west test --lane NAME` selects an existing active lane and cannot combine with
+`--prefix`. Select the same immutable installation recorded by the lane. Workload
+and source selection remain independent of the installed image. Both test and
+exec re-enter their own per-lane scope before admission. The test controller
+retains its normal external prefix lease through execution/cleanup. Arbitrary
+`exec` commands instead hold a lane admission lease; no lifecycle descriptor or
+borrowed-lease marker is passed into the command or its runtime children.
+Nested supported controllers acquire their own prefix lease normally.
+Freeze requires exclusive admission and cannot race an admitted command.
+The transient scope owns materialization, guest work and cleanup; an interrupted
+run with remaining owned processes prevents another experiment in that lane.
+Commands preserve the mounted view and its writes for inspection/reuse.
+
+**Admission fails closed.** A missing/remounted view, changed mount lifetime,
+incomplete/failed lane mode or invalid frozen ancestor prevents execution and
+forking. The retained identity includes boot ID, mount ID and device/inode;
+a reboot ends that lifetime. Do not reanchor metadata to make a lost view appear
+valid. No working per-lane user scope means `west test --lane` refuses execution.
+`west dev lane exec --root "$DW_LANE_ROOT" --no-scope lane-a -- <command>` is the
+explicit **UNSAFE FOR CONCURRENT AGENTS** escape from scope ownership only; it
+does not bypass mount/mode admission or the lane admission lease.
 
 ## Layout and environment
 
-```
-<lane root>/<name>/            root defaults to <west topdir>/.darling-lanes; DW_LANE_ROOT overrides
-  lane.json                    schema, name, base identity + tree digest, source revision, created
-  merged/                      the prefix a run points at: fuse-overlayfs over the base (own lock domain)
-  upper/                       everything a run writes; delete the lane to discard it
-  work/                        overlayfs working directory
-  state/                       DW_STATE_ROOT: bundles, scratch, runtime evidence
-  tmp/  run/                   TMPDIR, XDG_RUNTIME_DIR (0700)
-  build/                       where a lane's own build belongs (DW_LANE_BUILD_DIR)
-  logs/  cores/  receipts/     run logs, cores, deploy receipts, the fuse daemon's own log
+```text
+<lane root>/                   DW_LANE_ROOT; otherwise <west topdir>/.darling-lanes
+  .snapshotter/
+    store.json                 exact store/tool ownership
+    operation.lock             serialized graph/lifecycle operations
+    commit.json                transient durable intent preserving labels across upstream Commit
+    data/                      upstream-owned metadata and numeric layer directories
+  <name>/
+    lane.json                  schema 2; mode, snapshot ancestry, mount/runtime/source identity
+    .execution.lock            shared exec admission; exclusive create/freeze/destruction
+    .west-prefix-lease-<hash>   persistent external lease for merged; survives retirement
+    .darling-prefix-lock-v2-*  owned product sibling locks; also survive retirement
+    merged/                    retained FUSE view; the actual guest prefix/lock domain
+    state/                     DW_STATE_ROOT: bundles, scratch, runtime evidence
+    tmp/  run/                 TMPDIR, XDG_RUNTIME_DIR (0700)
+    build/                     lane-specific build selection
+    logs/  cores/  receipts/    logs, FUSE diagnostics, cores and runtime baselines
+  <retired name>/              same directory/inode; no lane.json or merged/
+    .retired-lane.json         schema/name/root/UID/device/inode only; no runtime pins
+    .execution.lock            same admission inode
+    .west-prefix-lease-<hash>   same prefix lease inode
+    .darling-prefix-lock-v2-*  retained owned product sibling locks, when present
 ```
 
-A command started with `west dev lane exec` or `west test --lane` sees `DPREFIX`,
-`DARLING_PREFIX`, `DW_STATE_ROOT`, `TMPDIR`, `XDG_RUNTIME_DIR`, `DW_LANE`, `DW_LANE_NAME`,
-`DW_LANE_BUILD_DIR`, `DARLING_BUILD_DIR` and (when a source was recorded) `DW_LANE_SOURCE` set to
-that checkout's path.
+There are no per-lane `upper/` or `work/` directories. The snapshotter alone owns
+layer IDs, storage paths and ancestry. Status exposes mode, parent, snapshot,
+snapshot kind, storage root, children, layer bytes/inodes, retained mount and
+scope/process diagnostics. Those are observations, not permission to edit the
+store database or remove a physical layer.
+
+Each root has an owned systemd snapshotter service and short socket beneath
+`/run/user/UID`; every retained FUSE view has its own independently owned service.
+The services outlive individual commands. A lane command sees `DPREFIX`,
+`DARLING_PREFIX`, `DW_STATE_ROOT`, `TMPDIR`, `XDG_RUNTIME_DIR`, `DW_LANE`,
+`DW_LANE_NAME`, `DW_LANE_BUILD_DIR`, `DARLING_BUILD_DIR` and, when recorded,
+`DW_LANE_SOURCE`.
 
 Choose build `B` explicitly and configure absolute `CMAKE_INSTALL_PREFIX=R`;
 default `COMPONENTS=stock`, ALL build and complete normal install publish a new
@@ -141,31 +219,34 @@ were observed in the then-current runtime-build cache. The end-to-end
 two-source `west test` runtime-build claim was not exercised. These observations
 do not authorize retired profile materialization or current default-path use.
 
-The base is stable guest state and remains the immutable lower layer of the
-lane overlay; it is not the installed runtime's system root. Only the product
-may publish clone identity: lane creation invokes
-`DPREFIX=DEST R/bin/darling bind-clone BASE`. The product validates and writes
-the destination lifecycle record through the merged view; it lands in the
-upper layer. Workspace Python never rewrites lifecycle records. Preserve raw
-prefix spelling for product safety checks.
+The first import copies an inert base into the physical Source returned by the
+snapshotter's parentless prepare, preserving root metadata, then commits it.
+Imports are cached by safe base stat/tree identity within that store, not copied
+again for every lane. After import the original base path is provenance, not a
+live lower-directory dependency: moving/changing it does not change an existing
+lane. No layer belongs to the original base directory.
 
-Two different checks say that, and they are not the same claim:
+Every actual lane is an active FUSE child. The selected real launcher performs
+`DPREFIX=DEST R/bin/darling bind-clone SOURCE`, where SOURCE is the inert original
+prefix for an import or the retained frozen parent view for a fork. Only the
+product publishes destination lifecycle identity. Preserve raw prefix spelling
+for its safety checks; never manufacture lifecycle metadata.
 
-* **runtime content** — a runtime-root artifact baseline is recorded with
-  `scripts/darling-artifact-manifest.sh --runtime-root R --save RECEIPT`;
-  verification checks the recorded image, not runtime copies in guest state.
-* **tree identity** — a stat-only digest over path, size, mtime, inode and mode for every entry. It
-  is a drift detector: it also fires when a file is replaced by an identical one or merely touched.
-  It is NOT a content-integrity proof and is not presented as one.
+`verify` checks managed lower layers and frozen-layer stat identity, retained
+mount lifetime, the recorded installed runtime's artifact content baseline, and
+optional source identity. The tree digest includes stat metadata (path, size,
+mtime, inode and mode); it detects replacement/touch drift but is not a content
+hash or a security boundary. Runtime content baseline verification is a separate
+claim from those stat checks. Verification does not boot a guest.
 
 ## What a lane isolates, and what it does not
 
 | Isolated | How |
 |---|---|
-| Prefix contents | copy-on-write layer; base never written (`verify` proves it) |
+| Prefix contents | snapshotter-managed COW inheritance and whiteouts; active writes never change the imported/frozen lower layers |
 | Runtime processes | per-lane `systemd --user` scope; `systemctl --user stop` reaches only that tree |
 | Runtime state root, temp, runtime dir | `DW_STATE_ROOT`, `TMPDIR`, `XDG_RUNTIME_DIR` under the lane |
-| Logs, cores, deploy receipts | lane directories; the FUSE daemon logs to `logs/fuse-overlayfs.log` |
+| Logs, cores, deploy receipts | lane directories; the independent FUSE service logs to `logs/fuse-overlayfs.log` |
 | Prefix lock domain | persistent external per-prefix sibling lease; independent lane prefixes do not serialize |
 | IPC identity | the runtime derives its courier/socket names from the prefix path, so two lanes cannot share one courier |
 
@@ -175,6 +256,7 @@ Two different checks say that, and they are not the same claim:
 | Network namespace | not created. Two lanes share the host network |
 | CPU, memory, pid limits | the lane scope gives *ownership*, not limits. Nothing in this mechanism caps a lane's resource use |
 | Kernel | shared. A lane is not a security boundary against hostile code; it is an isolation boundary between cooperative experiments |
+| Frozen snapshot writes by the host user | freeze is a cooperative lifecycle rule, not kernel-enforced read-only access; never mutate a retained frozen view |
 | Source checkout | a lane records an independent checkout (`--source`) and verifies its manifest revision; it does not copy source. Two lanes that share one checkout are two writers of one source tree; point each `--source` at its own worktree (`west dev start`, or `git worktree add` plus `west darling-source-worktree prepare`, which materializes the gitlink closure from local objects) |
 | Installed runtime image | may be shared read-only; publish a fresh complete root for different code, never mutate a shared image |
 | Other framework caches | `<topdir>/.west-test/{runtime-evidence,test-verdict-cache,stock-stack-cache}` are shared. They are keyed by content or identity and published atomically, but they are host state a lane does read |
@@ -250,24 +332,40 @@ about its artifact.
 
 ## Cleanup
 
-`west dev lane destroy` is the only way to remove a lane, and it refuses rather than forces:
+`west dev lane destroy` is the only supported way to remove a lane:
 
-1. stop the lane's `systemd --user` scope (kernel-enforced; it cannot reach another lane, and a
-   scope whose description names a different lane is refused rather than stopped);
-2. terminate only processes that prove ownership of *this* prefix — the existing evidence the
-   repository already uses (`DARLING_PREFIX`/`DARLING_ROOTLESS` in the environment, or the runtime
-   holding this prefix's exact directory inode);
-3. stop the lane's own `fuse-overlayfs` daemon, identified by program **and** the lane's path in its
-   argv — never by the program name alone;
-4. unmount the lane's layer (the kernel permits this only for the mounting user), refusing to delete
-   a still-mounted lane;
-5. remove the tree only when no process, mount or socket still owns it.
+1. validate schema/store ownership, retained mount identities and graph
+   references **before** disrupting a retained parent; descendants prevent
+   parent deletion without stopping its view;
+2. stop only this lane's owned scope and verified prefix processes, then require
+   product cleanup and no remaining runtime mounts/processes; retain exclusive
+   lane admission and the external prefix lease through deletion and retirement;
+3. publish the durable `destroying` mode before irreversible storage removal,
+   then gracefully unmount its FUSE view; a still-mounted view prevents layer
+   removal, and the independent view service is released only after unmount;
+4. remove the snapshot through the upstream graph API, remove the owned guest,
+   record and work/evidence directories, and publish the minimal retired marker
+   **without deleting or replacing the parent or persistent coordination files**.
+   No direct layer-directory/database deletion is supported. An interrupted
+   `destroying` lane can be completed by `destroy` again; it cannot execute.
 
-A directory without a `lane.json` of the right schema is refused and left alone: a name is never
-ownership. A lane whose *base* is running is refused at creation for the same reason.
+Delete descendants before ancestors. Once no lane references an imported base,
+its snapshot can be reclaimed; an empty store stops its owned snapshotter
+service. Another lane's FUSE service must remain live throughout sibling removal.
 
-The `west dev lane` root is not a GC-managed state root. `DW_STATE_ROOT` keeps a lane's own
-evidence inside the lane; nothing here writes into another lane's root.
+A directory without an owned supported marker is not a lane. Schema-1 lanes
+are rejected explicitly: no adoption, migration-by-editing or deletion of legacy
+layers. Keep old active lanes on their original checkout under their existing
+owner. A missing original retained mount is a fail-closed diagnostic, not an
+invitation to remount/rewrite its identity; preserve the evidence and resolve
+through the owner instead of forcing graph teardown.
+
+Lane roots are not GC-managed. `DW_STATE_ROOT` keeps each lane's evidence in
+that lane; preserve required evidence outside a lane before destroying it.
+The retained tombstone is intentional, not leaked guest storage. Even when a
+gate drops successful-run evidence without `--keep`, it preserves these parents,
+their leases and the store coordination namespace. Do not recursively delete a
+lane root as an alternative cleanup path.
 
 ## Rootless Podman: evaluated, not adopted
 
@@ -297,14 +395,39 @@ part it would have to carry - the prefix layer - is the part it cannot see.
 
 ## Tests
 
-Current lane regression entrypoints are
-`tests/west_test_contracts/lane_contract.py`,
-`tests/run-darling-lane-test-lane-contract.sh` and
-`tests/run-darling-lane-concurrency-contract.sh`. Read their current parsers
-before running; select runtime root and guest state separately. Source inventory
-and offline/synthetic ownership tests are not guest execution or native PASS.
-Guest acceptance requires the full selected workload oracle and ordinary product
-shutdown with zero owned processes/mounts; rescue cleanup cannot yield clean PASS.
+The host regression `tests/west_test_contracts/lane_contract.py` requires the
+real provisioned snapshotter/client/driver, `/dev/fuse`, `fusermount3` and the
+systemd user manager. It uses owned state-root scratch, imports one physical
+Source, commits and mounts a parent, commits while retaining its mount, forks
+two children and a grandchild, checks updates/whiteout isolation and referenced
+parent refusal, then removes reverse ancestry and asserts no mounts/services.
+It does not fabricate a runtime or prove product/guest execution.
+
+The existing prefix-backed gates are
+`tests/run-darling-lane-test-lane-contract.sh` (real `west test --lane` lifecycle,
+optionally `--guest-workload ID`) and
+`tests/run-darling-lane-concurrency-contract.sh` (two actual guests, including
+product shutdown of A while B runs). Both take `--runtime-root R --base P`,
+require a real bootstrapped **idle** base and the same host tools, explicitly
+freeze one parent, and create children with `--parent`. Never run the gates
+against one base concurrently: use separate prepared base prefixes/owners.
+Run each through `scripts/west-job.sh start`/`follow`, select a short absent/empty
+`--root` beneath owned durable state, and use `--keep` to retain run evidence.
+Both gates check minimal retirement and preserved parent/admission/prefix-lease
+inodes for both children and their parent, as well as storage/service teardown.
+The interface gate additionally retains an old lease descriptor across real
+CLI destroy/create of the same name, proves mutual exclusion against the normal
+current prefix-lease helper in both directions, and boots the recreated lane
+through a guest file round-trip, Ready publication and ordinary product shutdown
+before destroying it again. Its default mode is interface evidence with that
+narrow runtime smoke, not acceptance of an arbitrary named workload.
+The optional guest-workload phase also requires that workload's installed
+prerequisites and its matching `--label`/`--guest-marker`.
+
+Guest PASS requires the complete workload oracle and ordinary product shutdown,
+plus zero owned processes/runtime mounts. Lane teardown must also leave no
+retained FUSE mounts, daemons or active empty-store service. Rescue cleanup,
+wording/source audits and fabricated lifecycle records cannot produce clean PASS.
 
 Historical 2026-10-18 test observation (non-operational): the interface contract's
 offline mode ran 33 checks, including 12 lifecycle runs per lane concurrently,

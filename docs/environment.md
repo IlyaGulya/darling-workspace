@@ -44,14 +44,20 @@ Create isolated Python environments with `mise exec -- uv venv PATH` and
 `python3 -m venv` or ensurepip. For an isolated West install use the version
 pinned by `mise.toml` (currently `west==1.5.0`).
 
-Rootless COW lanes use the exact `fuse-overlayfs` workspace-tool revision in
-`west.yml`, plus host `fusermount3`, `/dev/fuse` and the user systemd manager.
-The canonical host-tool source is `<topdir>/fuse-overlayfs`, separate from
+Rootless COW lanes use the pinned upstream containerd fuse-overlayfs snapshotter
+and the exact reviewed `fuse-overlayfs` workspace-tool revision in `west.yml`,
+plus host `/usr/bin/ctr` from containerd v2.2.2, util-linux `flock`,
+`mount.fuse3`, `fusermount3`, `/dev/fuse` and the user systemd manager.
+Snapshotter release v2.1.7, source commit
+`da57796c7d0a2b608abf173651cf148706e33337`, is pinned for Linux amd64 only.
+Other hosts require a separately reviewed upstream release/platform and hash;
+there is no system snapshotter or alternate storage backend fallback.
+The canonical FUSE host-tool source is `<topdir>/fuse-overlayfs`, separate from
 Darling product source. It is a reviewed local hard fork of the Rust provider;
 system 1.x and the unmodified upstream Rust revision are not substitutes.
 Cargo/Rust 1.88 or newer and network access to locked Cargo dependencies are
-build prerequisites. This is a host lane dependency, not an ordinary product
-launch dependency.
+provider build prerequisites. These are host lane dependencies, not ordinary
+product launch dependencies.
 
 After `mise install`, provide the exact reviewed West commit in that checkout,
 then run `mise run lane-provider-build`. For unpublished hard-fork commits a
@@ -72,6 +78,31 @@ installations are never overwritten; an invalid existing installation requires
 owner investigation rather than forced rebuilding over a live provider.
 Use a new pinned revision for changed source. Never rewrite an active provider,
 lane base or published runtime image.
+
+After building the reviewed provider and providing the host ctr client, run
+`mise run lane-snapshotter-install`. This explicit setup downloads the upstream
+`containerd-fuse-overlayfs-2.1.7-linux-amd64.tar.gz` release archive, verifies
+SHA-256 `d54148043c22381af89cec2a167431e40668716404a1eb682ca69dfb890376f3`,
+and accepts only its single regular `containerd-fuse-overlayfs-grpc` member.
+To reuse an existing download, pass
+`mise run lane-snapshotter-install -- --archive /absolute/path/release.tar.gz`;
+the same archive and extracted-binary hash checks are mandatory. No Go build,
+new dependency manager, host-tool replacement or lane-launch download occurs.
+The immutable installation is published atomically beneath
+`<topdir>/.west-state/workspace-tools/containerd-fuse-overlayfs/<source-commit>/`.
+Its `provenance.json` records the upstream release, source commit, archive URL
+and digest, extracted executable digest, and absolute host ctr path with its
+actual version and executable SHA-256.
+
+`mise run lane-snapshotter-path` verifies that receipt, the pinned executable,
+the unchanged host ctr identity and the separately reviewed FUSE provider,
+then prints the absolute snapshotter path. Lane creation only resolves these
+existing tools; missing or changed provenance fails closed with setup guidance.
+Setup never overwrites an existing revision, even if its receipt is invalid.
+Investigate changed installations with their owner rather than deleting or
+replacing tools that might serve mounted lanes. Derived manifest worktrees use
+the actual enclosing West root containing `.west/config` for source and install
+paths, not the manifest's immediate parent or a guessed alternate workspace.
 
 Portable skills live in `.agents/skills/`; `.claude/skills` is the relative
 compatibility symlink `../.agents/skills`. `mise run dw setup-local` exposes that

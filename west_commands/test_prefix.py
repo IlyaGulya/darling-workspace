@@ -107,6 +107,7 @@ def validate_borrowed_prefix_lease(prefix: str | Path) -> int | None:
 @contextmanager
 def prefix_lease(
     prefix: str | Path, *, log: Callable[[str], None] | None = None,
+    blocking: bool = True,
 ) -> Iterator[int]:
     """Hold the shared external lease without creating anything in the prefix."""
     borrowed = validate_borrowed_prefix_lease(prefix)
@@ -131,7 +132,7 @@ def prefix_lease(
                 raise ValueError(f"Darling prefix lease is not a regular file owned by the current user: {lease}")
             if log is not None:
                 log(f"lock Darling prefix: {prefix}")
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            fcntl.flock(descriptor, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
             try:
                 yield descriptor
             finally:

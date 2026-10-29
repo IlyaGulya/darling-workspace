@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 from typing import Any
 
@@ -29,7 +30,9 @@ from lane import (
     create_lane,
     destroy_lane,
     env_argv,
+    freeze_lane,
     lane_env,
+    lane_execution_lease,
     lane_path,
     lane_root,
     lane_status,
@@ -41,6 +44,7 @@ from lane import (
     scope_wrap,
     validate_lane_name,
     verify_lane,
+    west_command_argv,
 )
 
 
@@ -51,31 +55,37 @@ def add_lane_parsers(subparsers: argparse._SubParsersAction) -> None:
     actions = lane.add_subparsers(dest="lane_action", required=True)
 
     create = actions.add_parser(
-        "create", help="layer a disposable copy-on-write prefix over a verified base"
+        "create", help="create a disposable copy-on-write prefix from a base or frozen parent"
     )
     create.add_argument("name")
-    create.add_argument(
+    origin = create.add_mutually_exclusive_group(required=True)
+    origin.add_argument(
         "--base",
-        required=True,
-        help="stable guest-state prefix used as the immutable lower layer",
+        type=Path,
+        help="stable guest-state prefix to import into the snapshot store",
+    )
+    origin.add_argument(
+        "--parent",
+        help="frozen lane in this lane root whose snapshot the new lane inherits",
     )
     create.add_argument(
         "--runtime-root",
         type=Path,
-        help="selected immutable Darling installation (default: DARLING_RUNTIME_ROOT)",
+        help="immutable Darling installation (default: parent, then DARLING_RUNTIME_ROOT)",
     )
     create.add_argument(
         "--source",
         type=Path,
-        help="independent source checkout this lane works on (recorded and verified)",
+        help="independent source checkout to record and verify (default: parent's source)",
     )
     create.add_argument("--root", type=Path, help="lane root (default DW_LANE_ROOT)")
     create.add_argument("--json", action="store_true")
 
     for name, help_text in (
         ("destroy", "stop and remove exactly this lane"),
+        ("freeze", "commit this idle lane as a parent snapshot; retain its mounted view"),
         ("status", "report this lane's mounts, owners, scope and disk use"),
-        ("verify", "assert the base and source are unchanged since creation"),
+        ("verify", "verify managed layers, retained mount, runtime and source identities"),
     ):
         action = actions.add_parser(name, help=help_text)
         action.add_argument("name")
@@ -115,7 +125,7 @@ def _resolve_lane(args: Any, topdir: Path, environ: dict[str, str]) -> Path:
     if read_record(path) is None:
         raise LaneError(
             f"no lane '{name}' under {root}; create it with "
-            f"'west dev lane create {name} --base <guest-state> --runtime-root <installation>'"
+            f"'west dev lane create {name} (--base <guest-state> | --parent <frozen-lane>)'"
         )
     return path
 
@@ -144,6 +154,7 @@ def run_lane_action(
             args.base,
             root,
             args.name,
+            parent=args.parent,
             source=args.source,
             runtime_root=args.runtime_root,
         )
@@ -179,11 +190,16 @@ def run_lane_action(
         for entry in lanes:
             status = entry["status"]
             command.inf(
-                f"{entry['name']:<24} mounted={str(status['mounted']).lower():<5} "
+                f"{entry['name']:<24} mode={status['mode']} "
+                f"mounted={str(status['mounted']).lower():<5} "
                 f"scope={status['scope']:<8} processes={len(status['processes'])} "
-                f"upper={_human_bytes(status['upper_bytes'])} "
+                f"snapshot={status['snapshot']} parent={status['parent'] or '-'} "
+                f"children={','.join(status['children']) or '-'} "
+                f"layer={_human_bytes(status['layer_bytes'])} inodes={status['layer_inodes']} "
                 f"prefix={status['prefix']}"
             )
+            for problem in status["problems"]:
+                command.err(f"lane '{entry['name']}': {problem}")
         return
 
     if action == "exec":
@@ -207,12 +223,17 @@ def run_lane_action(
 
     lane = _resolve_lane(args, topdir, environ)
     if action == "status":
-        payload = {"changed": [], "problems": [], "status": lane_status(lane)}
+        status = lane_status(lane)
+        payload = {"changed": [], "problems": status["problems"], "status": status}
         _report(command, payload, as_json)
         if as_json:
             return
-        status = payload["status"]
         command.inf(f"lane:        {status['name']} ({status['path']})")
+        command.inf(f"mode:        {status['mode']}")
+        command.inf(f"snapshot:    {status['snapshot']} ({status['snapshot_kind']})")
+        command.inf(f"parent:      {status['parent'] or '-'}")
+        command.inf(f"children:    {', '.join(status['children']) or '-'}")
+        command.inf(f"store:       {status['storage_root']}")
         command.inf(f"prefix:      {status['prefix']} mounted={status['mounted']}")
         command.inf(f"state root:  {status['state_root']}")
         command.inf(f"scope:       {status['scope']} ({len(status['processes'])} owned processes)")
@@ -222,13 +243,8 @@ def run_lane_action(
         for pid in status["fuse_daemons"]:
             command.inf(f"  fuse-overlayfs pid={pid}")
         command.inf(
-            f"upper layer: {_human_bytes(status['upper_bytes'])} in {status['upper_files']} file(s)"
+            f"layer:       {_human_bytes(status['layer_bytes'])} in {status['layer_inodes']} inode(s)"
         )
-        if "base" in status:
-            command.inf(
-                f"base:        {status['base']} present={status['base_present']} "
-                f"same-identity={status.get('base_same_identity')}"
-            )
         return
 
     if action == "verify":
@@ -241,6 +257,14 @@ def run_lane_action(
         _report(command, payload, as_json)
         if not result.success:
             raise LaneError("lane verification failed")
+        return
+
+    if action == "freeze":
+        result = freeze_lane(lane)
+        payload = {"changed": result.changed, "problems": result.problems, "lane": str(lane)}
+        _report(command, payload, as_json)
+        if not result.success:
+            raise LaneError("lane freeze refused; see the problems above")
         return
 
     if action == "destroy":
@@ -257,32 +281,49 @@ def run_lane_action(
 def _exec_in_lane(
     command: Any, lane: Path, record: dict[str, Any], argv: list[str], *, use_scope: bool
 ) -> None:
-    environment = lane_env(lane, record)
     unit = scope_unit(lane)
-    wrapped = False
-    if use_scope:
-        # Fail closed: a lane run has to be owned by its own cgroup or it is not a lane run.
+    if use_scope and os.environ.get(SCOPE_ACTIVE_ENV) != str(lane):
+        environment = lane_env(lane, record)
         require_scope()
         claim = claim_scope(unit, lane=lane)
         for message in claim.changed:
             command.inf(message)
         environment[SCOPE_ACTIVE_ENV] = str(lane)
-        argv = scope_wrap(unit, env_argv(environment, argv), description=scope_description(lane))
-        wrapped = True
-    else:
-        command.err(UNSAFE_NO_SCOPE_NOTICE)
-        command.err(
-            f"UNSAFE-NO-SCOPE lane={lane.name} command={' '.join(argv[:2])}"
+        reentry = [
+            *west_command_argv(), "dev", "lane", "exec",
+            "--root", str(lane.parent), lane.name, "--", *argv,
+        ]
+        wrapped = scope_wrap(
+            unit, env_argv(environment, reentry), description=scope_description(lane)
         )
-        argv = env_argv(environment, argv)
-    command.inf(
-        f"lane {lane.name}: prefix={environment['DPREFIX']} "
-        f"cgroup={'own scope ' + unit if wrapped else 'unwrapped'}"
-    )
-    os.execvp(argv[0], argv)
+        command.inf(f"lane {lane.name}: re-entering under cgroup {unit}")
+        try:
+            os.execvp(wrapped[0], wrapped)
+        except OSError as error:
+            raise LaneError(f"cannot re-enter lane '{lane.name}' under {unit}: {error}") from error
+    if not use_scope:
+        command.err(UNSAFE_NO_SCOPE_NOTICE)
+        command.err(f"UNSAFE-NO-SCOPE lane={lane.name} command={' '.join(argv[:2])}")
+    # Admission must happen again inside the scope, after any concurrent freeze,
+    # and the controller must retain the lease until the actual command exits.
+    with lane_execution_lease(lane) as environment:
+        command.inf(
+            f"lane {lane.name}: prefix={environment['DPREFIX']} "
+            f"cgroup={'own scope ' + unit if use_scope else 'unwrapped'}"
+        )
+        try:
+            child_environment = dict(os.environ, **environment)
+            child_environment.pop("WEST_TEST_PREFIX_LEASE", None)
+            child_environment.pop("WEST_TEST_PREFIX_LEASE_FD", None)
+            completed = subprocess.run(argv, env=child_environment)
+        except OSError as error:
+            raise LaneError(f"cannot execute command in lane '{lane.name}': {error}") from error
+        raise SystemExit(completed.returncode)
 
 
-def _human_bytes(count: int) -> str:
+def _human_bytes(count: int | None) -> str:
+    if count is None:
+        return "unknown"
     value = float(count)
     for unit in ("B", "KiB", "MiB", "GiB"):
         if value < 1024 or unit == "GiB":

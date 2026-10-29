@@ -24,3 +24,11 @@ run = "uv run --no-project --with PyYAML==6.0.2 -- python3 west_commands/lane_pr
 [tasks.lane-provider-path]
 description = "Resolve and verify the owned lane provider"
 run = "uv run --no-project --with PyYAML==6.0.2 -- python3 west_commands/lane_provider.py resolve"
+
+[tasks.lane-snapshotter-install]
+description = "Install the pinned upstream lane snapshotter without replacing active tools"
+run = "uv run --no-project --with PyYAML==6.0.2 -- python3 west_commands/lane_snapshotter_tools.py install"
+
+[tasks.lane-snapshotter-path]
+description = "Resolve and verify the pinned snapshotter, host ctr and reviewed FUSE provider"
+run = "uv run --no-project --with PyYAML==6.0.2 -- python3 west_commands/lane_snapshotter_tools.py resolve"
