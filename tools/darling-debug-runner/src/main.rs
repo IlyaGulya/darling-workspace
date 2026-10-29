@@ -1571,7 +1571,9 @@ impl PrefixScope {
             let _ = OWNER_LEASE_FD.set(fd);
         }
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        // The controller gets its prefix by argv, not guest ownership markers.
         let mut helper = Command::new("python3");
+        helper.env_remove("DPREFIX").env_remove("DARLING_PREFIX");
         helper.args(["-B", "-c", r#"
 import os, sys
 from pathlib import Path

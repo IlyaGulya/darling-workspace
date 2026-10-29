@@ -73,6 +73,9 @@ from `P/.lifecycle.lock`. Never delete it or overlap owners. Nested managed
 controllers borrow a validated locked descriptor, not just an environment
 marker; runtime children must not retain it. Rootless is the normal product
 default; no legacy mode-variable triplet or setuid change is required.
+Lifecycle helpers receive the prefix as an explicit argument and do not inherit
+`DPREFIX` or `DARLING_PREFIX`; only runtime children advertise guest-state
+ownership through those environment markers.
 
 ### Capturing an identified process
 
