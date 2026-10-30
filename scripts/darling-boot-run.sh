@@ -256,12 +256,6 @@ own_ancestors() {
 # `WITNESS_QUIET=1` suppresses it for the enumeration the bundle runs ONCE PER POLL during the workload: the same
 # evidence printed hundreds of times is not more evidence, and it would bury the console the bundle announces on.
 witness() { [ "${WITNESS_QUIET:-0}" = 1 ] || echo "$@" >&2; }
-# The harness records its OWN death too: MEASURED, a group-directed SIGTERM killed the harness and the tool that spawned
-# it at the same instant, so neither of them reached the teardown witness and the run simply stopped. A trap turns
-# "it stopped" into "sig=15 arrived at this point in the script".
-STAGE=harness-start
-trap 'witness "HARNESS-SIGNAL sig=15 stage=$STAGE elapsed=${SECONDS}s self=$$ parent=$PPID"; exit 143' TERM
-trap 'witness "HARNESS-SIGNAL sig=2 stage=$STAGE elapsed=${SECONDS}s self=$$"; exit 130' INT
 caller_id() { # pid ppid pgid sid cmd
 	local p=$1 st
 	st=$(sed 's/.*) //' "/proc/$p/stat" 2>/dev/null)
@@ -775,6 +769,141 @@ bundle_report() {
 	return 0
 }
 
+observe_launcher() {
+	[ "$LAUNCHER_RC" = null ] || return 0
+	[ -n "$LAUNCHER_PID" ] || return 0
+	# Observe existence without signaling or consuming the shell's saved status.
+	# Running and stopped children both remain present; only wait after exit.
+	# jobs filters are not POSIX, and reporting completed jobs can discard their rc.
+	ps -p "$LAUNCHER_PID" -o pid= >/dev/null 2>&1 && return 0
+	wait "$LAUNCHER_PID"
+	LAUNCHER_RC=$?
+	printf 'LAUNCHER-EXIT rc=%s\n' "$LAUNCHER_RC" | tee -a "$LOG"
+}
+# STOP-REASON: the run's OWN evidence names the stop, in one line, before anyone greps for it.
+# MEASURED 2026-10-19: an xcodebuild workload died with rc=132 (SIGILL) and no artifact; the missing Swift
+# symbol, its referrer and the image that should have supplied it were ALREADY inside this bundle's captures/,
+# and the cause was still found by hand-grepping 27 KB -- because the bundle was reported, not read. The
+# classifier reads the log plus the bundle's captures/abort text; a passing run prints kind=none, which is a
+# statement about the evidence, never about the verdict.
+report_stop_reason() {
+STAGE=stop-reason
+if [ -x "$SCRIPT_DIR/darling-stop-reason.sh" ]; then
+	_sr_extra=""
+	[ -n "$BUNDLE_DIR" ] && [ -d "$BUNDLE_DIR" ] && _sr_extra="$_sr_extra --bundle=$BUNDLE_DIR"
+	[ -n "$LAST_STATUS_VALUE" ] && _sr_extra="$_sr_extra --rc=$LAST_STATUS_VALUE"
+	# A later zero field or presence oracle cannot erase an earlier failed status/check.
+	[ "$verdict" = 0 ] || _sr_extra="$_sr_extra --runner-rc=$verdict"
+	# RUN SCOPING. The prefix's captures and its server log are CUMULATIVE: they hold earlier runs' records, and a
+	# matching prefix is not run identity. The classifier admits a capture only when it is at or after this run's
+	# own start stamp, counts what it excluded, and says so.
+	[ -n "$BUNDLE_STAMP" ] && [ -f "$BUNDLE_STAMP" ] && _sr_extra="$_sr_extra --run-start=$(stat -c %Y "$BUNDLE_STAMP" 2>/dev/null || echo 0)"
+	_sr_extra="$_sr_extra --run-id=$(basename "$LOG")"
+	# A caller-declared PRESENCE marker is an explicit success oracle: without one, a run whose statuses are both
+	# absent is INCONCLUSIVE and must not be called a pass. A `FIELD=` marker is a status declaration judged on
+	# its own above, so it is not passed here as an oracle.
+	_sr_old_ifs=$IFS; IFS='|'
+	for _m in $MARKERS; do
+		[ -n "$_m" ] || continue
+		case "$_m" in *=) ;; *) _sr_extra="$_sr_extra --oracle=$_m" ;; esac
+	done
+	IFS=$_sr_old_ifs
+	# The workspace paths carry no spaces (documented in that script), so splitting _sr_extra is safe here.
+	_stop=$("$SCRIPT_DIR/darling-stop-reason.sh" --log="$LOG" $_sr_extra 2>/dev/null) || true
+	if [ -n "$_stop" ]; then
+		printf '%s\n' "$_stop"
+		printf '%s\n' "$_stop" >> "$LOG"
+		[ -n "$BUNDLE_DIR" ] && [ -d "$BUNDLE_DIR" ] && printf '%s\n' "$_stop" > "$BUNDLE_DIR/stop-reason.txt"
+	fi
+else
+	echo "STOP-REASON kind=unknown note=no $SCRIPT_DIR/darling-stop-reason.sh"
+fi
+}
+cleanup_runtime() {
+STAGE=cleanup; echo "== cleanup =="
+witness "TEARDOWN stage=shutdown-enter self=$$ parent=$PPID harness=$(caller_id $$)"
+"$DARLING_LAUNCHER" shutdown >/dev/null 2>&1 8<&-
+CLEANUP_SHUTDOWN_RC=$?
+witness "TEARDOWN stage=shutdown-exit rc=$CLEANUP_SHUTDOWN_RC self=$$"
+sleep 3
+rescue_processes=$(count_owned) || exit $?
+if [ "$CLEANUP_SHUTDOWN_RC" -ne 0 ] || [ "$rescue_processes" -ne 0 ]; then
+	echo "cleanup FAILED: product shutdown rc=$CLEANUP_SHUTDOWN_RC, rescue processes=$rescue_processes" >&2
+	verdict=1
+fi
+rescue_owned
+CLEANUP_RESCUE_RC=$?
+CLEANUP_RESCUE_PROCESSES=$rescue_processes
+if [ "$CLEANUP_RESCUE_RC" -ne 0 ] || [ "$rescue_processes" -ne 0 ]; then
+	verdict=1
+fi
+case "$CLEANUP_RESCUE_RC" in 3|4) CLEANUP_EXTERNAL_RESCUE=true ;; esac
+final=$(count_owned) || exit $?
+# A runtime with only a matching environment marker cannot be signalled, but
+# it is still residue. Do not publish zero merely because kill authority is absent.
+residual=$(darling_prefix_residual_pids "$PREFIX") || exit $?
+if [ -n "$residual" ]; then
+	final=$(printf '%s\n' "$residual" | wc -l)
+fi
+# Count mounts whose MOUNTPOINT lies under the prefix. A substring match was MEASURED to fail here:
+# another lane's overlay instance names this prefix in its lowerdir
+# (.west-prefix-instances/probe1/merged lowerdir=<prefix>), which is not a mount under the prefix, yet
+# it made every run print "mounts: 1" and clean up as VERDICT: FAIL while the guest verdict was PASS.
+# A mount AT the prefix path is excluded only when it is a FUSE overlay: that is the isolation layer the
+# run looks THROUGH (an isolation lane, or a fixture's own instance), not residue the run left behind.
+# MEASURED 2026-10-18: counting it made every lane run report "mounts: 1" and VERDICT: FAIL with a PASSing
+# guest. A kernel `overlay` at the prefix stays counted: in the privileged runtime THAT is the server's own
+# bring-up mount, and leaving one behind after shutdown is real residue.
+mount_counts=$(darling_prefix_mount_counts "$PREFIX") || exit $?
+read mounts layer_mounts <<EOF
+$mount_counts
+EOF
+# Same rule after the run: leave the prefix as a *bootable* clean state, not merely a process-free one.
+if [ "$final" -eq 0 ] && [ "$mounts" -eq 0 ]; then
+	clear_stale_runtime_files
+fi
+echo "prefix processes after: $final, mounts: $mounts (plus $layer_mounts prefix layer mount(s))"
+CLEANUP_STATE=clean
+if [ "$CLEANUP_EXTERNAL_RESCUE" = true ]; then
+	CLEANUP_STATE=rescued
+elif [ "$CLEANUP_RESCUE_RC" -ne 0 ]; then
+	CLEANUP_STATE=unavailable
+elif [ "$CLEANUP_SHUTDOWN_RC" -ne 0 ]; then
+	CLEANUP_STATE=failed-shutdown
+fi
+CLEANUP_PROCESSES=$final
+CLEANUP_MOUNTS=$mounts
+CLEANUP_LAYER_MOUNTS=$layer_mounts
+if [ "$final" -gt 0 ] || [ "$mounts" -gt 0 ]; then
+	echo "cleanup FAILED" >&2
+	CLEANUP_STATE=residue
+	verdict=1
+fi
+observe_launcher
+if [ "$LAUNCHER_RC" != null ] && [ "$LAUNCHER_RC" -ne 0 ]; then
+	verdict=1
+fi
+}
+
+HARNESS_STARTED_AT=$(date +%s)
+STAGE=harness-start
+handle_signal() {
+	trap '' TERM INT
+	_signal_rc=$1
+	witness "HARNESS-SIGNAL sig=$2 stage=$STAGE elapsed=$(($(date +%s) - HARNESS_STARTED_AT))s self=$$ parent=$PPID"
+	verdict=1
+	LAST_STATUS_VALUE=""
+	if [ -n "$BUNDLE_MANIFEST" ]; then
+		bundle_finish
+	fi
+	cleanup_runtime
+	if [ -n "$BUNDLE_MANIFEST" ]; then
+		report_stop_reason
+		bundle_finalize
+	fi
+	exit "$_signal_rc"
+}
+
 # A mode that must NOT boot anything: report what this harness would treat as prefix-owned, then exit. The ownership
 # rule is what decides whether the next boot starts clean, and a rule that can only be exercised by booting cannot be
 # tested; tests/run-darling-boot-harness-ownership-contract.sh drives this mode with synthetic processes.
@@ -783,6 +912,8 @@ if [ "$LIST_OWNED" = 1 ]; then
 	report_stale_runtime_files
 	exit 0
 fi
+trap 'handle_signal 143 15' TERM
+trap 'handle_signal 130 2' INT
 
 STAGE=clean-start; echo "== clean start =="
 witness "TEARDOWN stage=shutdown-enter self=$$ parent=$PPID harness=$(caller_id $$)"
@@ -886,16 +1017,6 @@ env $HATCH_ENV $EXTRA_ENV \
 	timeout "$((WAIT + 60))" \
 	"$DARLING_LAUNCHER" shell /bin/bash -c "$CMD" >> "$LOG" 2>&1 8<&- 9<&- &
 LAUNCHER_PID=$!
-observe_launcher() {
-	[ "$LAUNCHER_RC" = null ] || return 0
-	# Observe existence without signaling or consuming the shell's saved status.
-	# Running and stopped children both remain present; only wait after exit.
-	# jobs filters are not POSIX, and reporting completed jobs can discard their rc.
-	ps -p "$LAUNCHER_PID" -o pid= >/dev/null 2>&1 && return 0
-	wait "$LAUNCHER_PID"
-	LAUNCHER_RC=$?
-	printf 'LAUNCHER-EXIT rc=%s\n' "$LAUNCHER_RC" | tee -a "$LOG"
-}
 
 # Wait for explicit --poll, or every explicit status field when no poll was supplied.
 # Ordinary presence markers are not completion: they may open an observation window before the result.
@@ -1034,46 +1155,6 @@ STAGE=bundle
 bundle_finish
 [ "$BUNDLE_FAILED" = 0 ] || verdict=1
 
-# STOP-REASON: the run's OWN evidence names the stop, in one line, before anyone greps for it.
-# MEASURED 2026-10-19: an xcodebuild workload died with rc=132 (SIGILL) and no artifact; the missing Swift
-# symbol, its referrer and the image that should have supplied it were ALREADY inside this bundle's captures/,
-# and the cause was still found by hand-grepping 27 KB -- because the bundle was reported, not read. The
-# classifier reads the log plus the bundle's captures/abort text; a passing run prints kind=none, which is a
-# statement about the evidence, never about the verdict.
-report_stop_reason() {
-STAGE=stop-reason
-if [ -x "$SCRIPT_DIR/darling-stop-reason.sh" ]; then
-	_sr_extra=""
-	[ -n "$BUNDLE_DIR" ] && [ -d "$BUNDLE_DIR" ] && _sr_extra="$_sr_extra --bundle=$BUNDLE_DIR"
-	[ -n "$LAST_STATUS_VALUE" ] && _sr_extra="$_sr_extra --rc=$LAST_STATUS_VALUE"
-	# A later zero field or presence oracle cannot erase an earlier failed status/check.
-	[ "$verdict" = 0 ] || _sr_extra="$_sr_extra --runner-rc=$verdict"
-	# RUN SCOPING. The prefix's captures and its server log are CUMULATIVE: they hold earlier runs' records, and a
-	# matching prefix is not run identity. The classifier admits a capture only when it is at or after this run's
-	# own start stamp, counts what it excluded, and says so.
-	[ -n "$BUNDLE_STAMP" ] && [ -f "$BUNDLE_STAMP" ] && _sr_extra="$_sr_extra --run-start=$(stat -c %Y "$BUNDLE_STAMP" 2>/dev/null || echo 0)"
-	_sr_extra="$_sr_extra --run-id=$(basename "$LOG")"
-	# A caller-declared PRESENCE marker is an explicit success oracle: without one, a run whose statuses are both
-	# absent is INCONCLUSIVE and must not be called a pass. A `FIELD=` marker is a status declaration judged on
-	# its own above, so it is not passed here as an oracle.
-	_sr_old_ifs=$IFS; IFS='|'
-	for _m in $MARKERS; do
-		[ -n "$_m" ] || continue
-		case "$_m" in *=) ;; *) _sr_extra="$_sr_extra --oracle=$_m" ;; esac
-	done
-	IFS=$_sr_old_ifs
-	# The workspace paths carry no spaces (documented in that script), so splitting _sr_extra is safe here.
-	_stop=$("$SCRIPT_DIR/darling-stop-reason.sh" --log="$LOG" $_sr_extra 2>/dev/null) || true
-	if [ -n "$_stop" ]; then
-		printf '%s\n' "$_stop"
-		printf '%s\n' "$_stop" >> "$LOG"
-		[ -n "$BUNDLE_DIR" ] && [ -d "$BUNDLE_DIR" ] && printf '%s\n' "$_stop" > "$BUNDLE_DIR/stop-reason.txt"
-	fi
-else
-	echo "STOP-REASON kind=unknown note=no $SCRIPT_DIR/darling-stop-reason.sh"
-fi
-}
-
 if [ "${FREEZE_ON_FAIL:-0}" -eq 1 ] && [ "$verdict" -ne 0 ]; then
 	STAGE=freeze; echo "== freeze-on-fail (diagnostic) =="
 	echo "FREEZE-ON-FAIL prefix=$PREFIX log=$LOG verdict=$verdict"
@@ -1086,69 +1167,7 @@ if [ "${FREEZE_ON_FAIL:-0}" -eq 1 ] && [ "$verdict" -ne 0 ]; then
 	exit 1
 fi
 
-STAGE=cleanup; echo "== cleanup =="
-witness "TEARDOWN stage=shutdown-enter self=$$ parent=$PPID harness=$(caller_id $$)"
-"$DARLING_LAUNCHER" shutdown >/dev/null 2>&1 8<&-
-CLEANUP_SHUTDOWN_RC=$?
-witness "TEARDOWN stage=shutdown-exit rc=$CLEANUP_SHUTDOWN_RC self=$$"
-sleep 3
-rescue_processes=$(count_owned) || exit $?
-if [ "$CLEANUP_SHUTDOWN_RC" -ne 0 ] || [ "$rescue_processes" -ne 0 ]; then
-	echo "cleanup FAILED: product shutdown rc=$CLEANUP_SHUTDOWN_RC, rescue processes=$rescue_processes" >&2
-	verdict=1
-fi
-rescue_owned
-CLEANUP_RESCUE_RC=$?
-CLEANUP_RESCUE_PROCESSES=$rescue_processes
-if [ "$CLEANUP_RESCUE_RC" -ne 0 ] || [ "$rescue_processes" -ne 0 ]; then
-	verdict=1
-fi
-case "$CLEANUP_RESCUE_RC" in 3|4) CLEANUP_EXTERNAL_RESCUE=true ;; esac
-final=$(count_owned) || exit $?
-# A runtime with only a matching environment marker cannot be signalled, but
-# it is still residue. Do not publish zero merely because kill authority is absent.
-residual=$(darling_prefix_residual_pids "$PREFIX") || exit $?
-if [ -n "$residual" ]; then
-	final=$(printf '%s\n' "$residual" | wc -l)
-fi
-# Count mounts whose MOUNTPOINT lies under the prefix. A substring match was MEASURED to fail here:
-# another lane's overlay instance names this prefix in its lowerdir
-# (.west-prefix-instances/probe1/merged lowerdir=<prefix>), which is not a mount under the prefix, yet
-# it made every run print "mounts: 1" and clean up as VERDICT: FAIL while the guest verdict was PASS.
-# A mount AT the prefix path is excluded only when it is a FUSE overlay: that is the isolation layer the
-# run looks THROUGH (an isolation lane, or a fixture's own instance), not residue the run left behind.
-# MEASURED 2026-10-18: counting it made every lane run report "mounts: 1" and VERDICT: FAIL with a PASSing
-# guest. A kernel `overlay` at the prefix stays counted: in the privileged runtime THAT is the server's own
-# bring-up mount, and leaving one behind after shutdown is real residue.
-mount_counts=$(darling_prefix_mount_counts "$PREFIX") || exit $?
-read mounts layer_mounts <<EOF
-$mount_counts
-EOF
-# Same rule after the run: leave the prefix as a *bootable* clean state, not merely a process-free one.
-if [ "$final" -eq 0 ] && [ "$mounts" -eq 0 ]; then
-	clear_stale_runtime_files
-fi
-echo "prefix processes after: $final, mounts: $mounts (plus $layer_mounts prefix layer mount(s))"
-CLEANUP_STATE=clean
-if [ "$CLEANUP_EXTERNAL_RESCUE" = true ]; then
-	CLEANUP_STATE=rescued
-elif [ "$CLEANUP_RESCUE_RC" -ne 0 ]; then
-	CLEANUP_STATE=unavailable
-elif [ "$CLEANUP_SHUTDOWN_RC" -ne 0 ]; then
-	CLEANUP_STATE=failed-shutdown
-fi
-CLEANUP_PROCESSES=$final
-CLEANUP_MOUNTS=$mounts
-CLEANUP_LAYER_MOUNTS=$layer_mounts
-if [ "$final" -gt 0 ] || [ "$mounts" -gt 0 ]; then
-	echo "cleanup FAILED" >&2
-	CLEANUP_STATE=residue
-	verdict=1
-fi
-observe_launcher
-if [ "$LAUNCHER_RC" != null ] && [ "$LAUNCHER_RC" -ne 0 ]; then
-	verdict=1
-fi
+cleanup_runtime
 report_stop_reason
 bundle_finalize
 

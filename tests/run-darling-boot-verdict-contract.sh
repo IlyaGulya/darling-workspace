@@ -33,7 +33,9 @@ done
 harness="$workspace_root/scripts/darling-boot-run.sh"
 [ -x "$harness" ] || { echo "contract: no executable harness at $harness" >&2; exit 2; }
 
-tmp="$(mktemp -d)"
+state="${DW_STATE_ROOT:-$workspace_root/../.west-state}/contracts/boot-verdict"
+mkdir -p "$state"
+tmp="$(mktemp -d "$state/run.XXXXXX")"
 cleanup_contract() {
 	if [ -n "${prefix:-}" ] && [ -d "$prefix" ]; then
 		python3 -B "$(dirname "$0")/../west_commands/test_prefix.py" \
@@ -222,6 +224,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -273,7 +276,7 @@ if mode == "stopped":
     os.kill(0, signal.SIGCONT)
     os.waitpid(helper, 0)
     os.close(handle)
-elif mode == "running":
+elif mode == "running" or mode.startswith("cancel-"):
     while not shutdown.exists():
         time.sleep(0.01)
 sys.exit(0 if mode == "zero" else 23)
@@ -285,13 +288,14 @@ def state(pid):
     except FileNotFoundError:
         return None
 
-for mode in ("zero", "running", "stopped"):
+for mode in ("zero", "running", "stopped", "cancel-term", "cancel-int"):
     root = Path(scratch) / mode
     root.mkdir()
     shutdown = root / "shutdown"
     process = subprocess.Popen(
         [harness, "--runtime-root", runtime, "--prefix", prefix,
-         "--log", str(root / "run.log"), "--no-bundle", "--wait", "3",
+         "--log", str(root / "run.log"), "--no-bundle", "--wait",
+         "30" if mode.startswith("cancel-") else "3",
          "--status-marker", "NEVER_RC=", "--cmd",
          shlex.join([sys.executable, str(payload), mode, str(root)])],
         env=dict(os.environ, DARLING_TEST_SHUTDOWN_MARKER=str(shutdown)),
@@ -316,6 +320,8 @@ for mode in ("zero", "running", "stopped"):
         if mode == "running":
             assert state(record["producer"]) not in (None, "Z", "T"), record
             assert state(record["launcher"]) not in (None, "Z", "T"), record
+        if mode.startswith("cancel-"):
+            process.send_signal(signal.SIGTERM if mode == "cancel-term" else signal.SIGINT)
         output, _ = process.communicate(timeout=15)
     except BaseException:
         # Release only this fixture on failure, then reap; this path cannot pass.
@@ -323,10 +329,13 @@ for mode in ("zero", "running", "stopped"):
         output, _ = process.communicate(timeout=15)
         print(output, file=sys.stderr)
         raise
-    assert process.returncode == (1 if mode == "zero" else 23), (mode, process.returncode, output)
-    assert "VERDICT: FAIL" in output, (mode, output)
+    if mode.startswith("cancel-"):
+        assert process.returncode == (143 if mode == "cancel-term" else 130), (mode, process.returncode, output)
+    else:
+        assert process.returncode == (1 if mode == "zero" else 23), (mode, process.returncode, output)
+        assert "VERDICT: FAIL" in output, (mode, output)
     observed = shutdown.stat().st_mtime - record["time"]
-    assert 2.5 <= observed < 10, (mode, observed, output)
+    assert (0 <= observed < 10) if mode.startswith("cancel-") else (2.5 <= observed < 10), (mode, observed, output)
     assert state(record["producer"]) is None, (mode, "unreaped producer", record)
     assert state(record["launcher"]) is None, (mode, "unreaped launcher", record)
 PY

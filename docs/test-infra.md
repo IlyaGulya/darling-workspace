@@ -34,6 +34,11 @@ hang or kill launchd/server processes by guessed PID or broad name patterns.
 Never rewrite a published installation. New code gets a new complete runtime
 root; retain image identity and the lifecycle owner's failure evidence.
 
+`darling-boot-run.sh` handles SIGINT/SIGTERM through its ordinary prefix teardown
+while retaining the external lease, then exits 130/143 respectively. Cancellation
+is never a workload PASS; inspect the finalized cleanup observations before
+reusing the prefix, including when the owner reports a signal exit.
+
 Noisy/long RED proofs, full guest CTest selections and contracts that invoke
 `west test` internally use the same supervisor. In particular,
 `tests/run-west-test-metadata-contract.sh` requires the explicit `west-job`
@@ -253,23 +258,20 @@ and explicit unresolved prerequisites.
 
 ### Applicability review commands
 
-Moving reviewed policy when declarations change or shift index is a
-supported command in the same collector, not hand work. All three modes read the
-declaration identity the census writes; none of them builds or executes anything:
+Moving reviewed policy between stable workload IDs is a supported command,
+not hand work. Neither command builds or executes product tests:
 
 ```sh
 scripts/audit-test-registration.py report
 scripts/audit-test-registration.py carry --move OLD=NEW [--move ...] [--drop KEY ...]
-scripts/audit-test-registration.py rekey --shift OLD=NEW [--shift ...] [--drop KEY ...]
 ```
 
 `report` is read-only. It prints every binding with its `identity_sha256` and
 separately lists policy records that have no binding, bindings that have no
 policy, and identity mismatches, and exits non-zero while any of them remains.
 `carry` moves the policy and reason verbatim between the keys the reviewer names,
-in one invocation when a re-recording moves many. `rekey` does the same for a
-pure index shift, where old and new keys are ordinals of the same
-declaration. The reviewer always supplies the mapping: the tool never
+in one invocation when a re-recording moves many. Stable workload IDs do not
+shift when neighboring declarations move. The reviewer always supplies the mapping: the tool never
 guesses one, refuses to invent a policy for a key that had none, refuses to
 carry a review across keys whose declarations differ in more than the key, and
 refuses to overwrite a record the mapping names neither as a source nor as a
@@ -281,7 +283,7 @@ record to read or rewrite; both default to this workspace. An inconsistent
 record can therefore be measured without touching the versioned file:
 
 ```sh
-scripts/audit-test-registration.py report --record /tmp/applicability-probe.json
+scripts/audit-test-registration.py report --record "$DW_STATE_ROOT/applicability-probe.json"
 ```
 
 These commands maintain the metadata record only: they move decisions a reviewer
@@ -289,8 +291,8 @@ already made and never make one. A carried reason is the reviewed text, so a
 declaration whose meaning changed needs a new review rather than a re-key.
 
 The applicability review contract builds a throwaway West workspace and covers
-report, carry, rekey, their refusals, and that a refused or repeated command
-leaves the record unchanged. It runs against a fixture copy of the record, never
+report, carry, their refusals, and that a refused or repeated command leaves the
+record unchanged. It runs against a fixture copy of the record, never
 the versioned file:
 
 ```sh
@@ -597,7 +599,7 @@ establish success for another.
 ### Native applicability and migration gates
 
 Review each binding's native applicability using
-`audits/native-test-applicability.json`. `report`, `carry` and `rekey` in
+`audits/native-test-applicability.json`. `report` and `carry` in
 `scripts/audit-test-registration.py` maintain that record; they move decisions a
 reviewer already made and never make one. Distinguish public semantic references,
 implementation-only or internal diagnostics, and workloads requiring ABI,
