@@ -7606,6 +7606,50 @@ workloads:
   - darling-prefix
   ok-marker: KQUEUE_FORK_GUEST_OK
   timeout-seconds: 30
+- id: security_chain_copy_guest
+  name: security_chain_copy_guest
+  module: darling/src/external/security
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/security_chain_copy_guest.c
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -Werror
+  - -framework
+  - CoreFoundation
+  - -framework
+  - Security
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: SECURITY_CHAIN_COPY_GUEST_OK
+  timeout-seconds: 30
+- id: os_crash_message_guest
+  name: os_crash_message_guest
+  module: darling/src/external/libc
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/os_crash_message_guest.c
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -Werror
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: OS_CRASH_MESSAGE_GUEST_OK
+  timeout-seconds: 30
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke
