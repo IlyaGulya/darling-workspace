@@ -6430,6 +6430,27 @@ workloads:
   - -Wall
   - -Wextra
   - -Werror
+- id: dispatch-workloop-target
+  name: dispatch-workloop-target
+  module: darling/src/external/libdispatch
+  repo: darling
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  runner: guest-c-fixture
+  script: tests/src/dispatch_workloop_target_guest.c
+  env: darling
+  coverage-tier: runtime
+  diag: bare
+  ok-marker: DISPATCH_WORKLOOP_TARGET_OK
+  requires:
+  - darling-prefix
+  timeout-seconds: 45
+  compile-flags:
+  - -std=gnu11
+  - -m64
+  - -fblocks
+  - -Wall
+  - -Wextra
+  - -Werror
 - id: kprintf-logging
   name: kprintf-logging
   module: darling
