@@ -415,6 +415,9 @@ Run each through `scripts/west-job.sh start`/`follow`, select a short absent/emp
 `--root` beneath owned durable state, and use `--keep` to retain run evidence.
 Both gates check minimal retirement and preserved parent/admission/prefix-lease
 inodes for both children and their parent, as well as storage/service teardown.
+The concurrency gate keeps B running until the controller observes A's product
+shutdown and releases B through its own guest-state marker. Its deadline still
+covers boot and workload; a fixed sleep must not consume most of that budget.
 The interface gate additionally retains an old lease descriptor across real
 CLI destroy/create of the same name, proves mutual exclusion against the normal
 current prefix-lease helper in both directions, and boots the recreated lane

@@ -439,8 +439,18 @@ require "lane A's experiment is running inside its own cgroup" test -n "$a_pids"
 require "lane A's unit says which lane it belongs to" \
 	bash -c "systemctl --user show --property=Description --value '$UNIT_A' | grep -qF '$LANE_A'"
 
+# B waits for A's actual shutdown, not a fraction of its total boot/workload
+# deadline. A fixed sleep consumes the deadline before slow boots can finish.
 run_guest lane-b "$LANE_B/logs/after-stop.log" "$WAIT" B_IS_CLEAN=1 \
-	"if test ! -e /private/var/tmp/lane-experiment.txt; then echo B_IS_CLEAN=1; rc=0; else rc=1; fi; echo B_ALIVE=1; sleep $((WAIT * 3 / 4)); echo LANE_RC=\$rc" &
+	"if test ! -e /private/var/tmp/lane-experiment.txt; then echo B_IS_CLEAN=1; rc=0; else rc=1; fi
+	echo B_ALIVE=1
+	remaining=$WAIT
+	while test ! -f /private/var/tmp/.west-lane-a-shutdown && test \$remaining -gt 0; do
+		sleep 1
+		remaining=\$((remaining - 1))
+	done
+	test \"\$(cat /private/var/tmp/.west-lane-a-shutdown 2>/dev/null)\" = 0 || rc=1
+	echo LANE_RC=\$rc" &
 pid_b=$!
 
 # Waiting for B's OWN cgroup to be live is the premise of this whole phase. A fixed sleep was
@@ -458,6 +468,8 @@ DPREFIX="$LANE_A/merged" DARLING_PREFIX="$LANE_A/merged" "$DARLING_LAUNCHER" shu
 	>"$ROOT/shutdown-a.log" 2>&1
 shutdown_a_rc=$?
 require "B's cgroup still holds its guest while A is shut down" test -n "$(scope_processes "$UNIT_B")"
+printf '%s\n' "$shutdown_a_rc" >"$LANE_B/merged/private/var/tmp/.west-lane-a-shutdown" ||
+	{ warn "could not release B after A's shutdown"; failures=$((failures + 1)); }
 wait "$pid_a"; stopped_a_rc=$?
 require "A was interrupted through successful product shutdown, never host rescue" \
 	bash -c 'test "$1" -eq 0 && test "$2" -ne 0 && test -z "$3"' _ \
