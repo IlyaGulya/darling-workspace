@@ -865,6 +865,12 @@
       "policy": "darling_internal_gate",
       "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
     },
+    "exec_worker_checkin_guest": {
+      "name": "exec_worker_checkin_guest",
+      "identity_sha256": "d50cd8f1a8b572a6ddcbe955190fac0484b5966d44b1b9cf0b5dd51ae9c432ee",
+      "policy": "semantic_reference_review",
+      "reason": "Public pthread/exec and Mach-message behavior: a worker replaces the process image while the previous main thread waits for a Mach reply. The oracle requires the replacement image to run and exit successfully, without Darling fault injection or private transport assertions. A native Darwin reference has not been executed; this is not an internal-proof exemption or native PASS."
+    },
     "mldr_recv_adaptive_spin": {
       "name": "mldr_recv_adaptive_spin",
       "identity_sha256": "298bd71bcb802dd551ff607bf8dee9addc542a95520629d57c296065811d23dd",

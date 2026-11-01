@@ -7265,6 +7265,28 @@ workloads:
   - darling-prefix
   ok-marker: PROC_PIDPATH_GUEST_OK
   timeout-seconds: 30
+- id: exec_worker_checkin_guest
+  name: exec_worker_checkin_guest
+  module: darling/src/external/darlingserver
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/exec_worker_checkin_guest.c
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -Werror
+  run-args:
+  - worker
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: EXEC_AFTER_PASS=1
+  timeout-seconds: 120
 - id: supplementary_groups_guest
   name: supplementary_groups_guest
   module: darling/src/external/darlingserver
