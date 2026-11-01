@@ -871,6 +871,12 @@
       "policy": "semantic_reference_review",
       "reason": "Public pthread/exec and Mach-message behavior: a worker replaces the process image while the previous main thread waits for a Mach reply. The oracle requires the replacement image to run and exit successfully, without Darling fault injection or private transport assertions. A native Darwin reference has not been executed; this is not an internal-proof exemption or native PASS."
     },
+    "guest_immediate_exit_guest": {
+      "name": "guest_immediate_exit_guest",
+      "identity_sha256": "4985a8abd29a5b8e6ee9cfb44609180fb5bdd005eb01787cdc73f26e53a178dd",
+      "policy": "darling_internal_gate",
+      "reason": "Complete tests/src/guest_immediate_exit_guest.c oracle uses Darling's private loader/guest _elfcalls bridge and actual host glibc __cxa_atexit/exit/write to observe inherited ELF finalization. A direct host-exit child proves the pipe observer is live; a real Darwin fork/_exit(127) child must not invoke host handlers and must retain its exact exit status; a normal guest exit(3) child must still run the genuine guest handler. The full observation channel is absent on native Darwin and fails explicitly, not as a PASS/skip. This is a real installed-runtime consumer test, not a copied exit implementation, mock, source-text assertion, or proof of the original Tuist stall's cause. Public _exit semantics may have a separate native reference."
+    },
     "mldr_recv_adaptive_spin": {
       "name": "mldr_recv_adaptive_spin",
       "identity_sha256": "298bd71bcb802dd551ff607bf8dee9addc542a95520629d57c296065811d23dd",
