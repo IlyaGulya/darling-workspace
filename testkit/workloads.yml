@@ -7492,6 +7492,54 @@ workloads:
   - darling-prefix
   ok-marker: INDEXED_COLLECTION_FILTER_GUEST_OK
   timeout-seconds: 30
+- id: nsstring_common_prefix_guest
+  name: nsstring_common_prefix_guest
+  module: darling/src/external/foundation
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/nsstring_common_prefix_guest.m
+  compile-flags:
+  - -x
+  - objective-c
+  - -fblocks
+  - -Wall
+  - -Wextra
+  - -Werror
+  - -framework
+  - Foundation
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: NSSTRING_COMMON_PREFIX_PASS=1
+  timeout-seconds: 30
+- id: filemanager_symlink_remove_guest
+  name: filemanager_symlink_remove_guest
+  module: darling/src/external/foundation
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/filemanager_symlink_remove_guest.m
+  compile-flags:
+  - -x
+  - objective-c
+  - -fblocks
+  - -Wall
+  - -Wextra
+  - -Werror
+  - -framework
+  - Foundation
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: FILEMANAGER_SYMLINK_REMOVE_PASS=1
+  timeout-seconds: 30
 - id: process_activity_guest
   name: process_activity_guest
   module: darling/src/external/foundation

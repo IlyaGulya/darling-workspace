@@ -1207,6 +1207,18 @@
       "reason": "Source-reviewed tests/nsdate_now_guest.c: +now must return a real NSDate, agree with +date and time(2) within five seconds, and not return epoch/distant sentinels. Establish a macOS version exposing +now and controlled clock/tolerance for native comparison. This review records the guest oracle only, not native PASS or a completed Xcode workload.",
       "identity_sha256": "09424e789f051203dbf15b55aa347b84272838e9ca2ad19d51cebfc193712a40"
     },
+    "nsstring_common_prefix_guest": {
+      "name": "nsstring_common_prefix_guest",
+      "policy": "semantic_reference_review",
+      "reason": "Source-reviewed tests/src/nsstring_common_prefix_guest.m: public Apple -[NSString commonPrefixWithString:options:] supports only NSCaseInsensitiveSearch and NSLiteralSearch, defaults to canonical equivalence and returns the receiver's own spelling. Exact UTF-16 prefixes pin empty/no-common input, one-character and file-path prefixes including a full shorter argument, case-sensitive versus case-insensitive versus literal+case search, composed/decomposed receiver preservation with a literal normalization distinction, an atomic CRLF pair (no partial carriage return), regional-indicator flags and whole emoji characters (no half surrogate), and a meaningful shared path longer than 1024 UTF-16 units. Native Darwin execution was not performed; guest RED/GREEN is not native evidence, so an independent native reference remains required.",
+      "identity_sha256": "7f8d0d2643deacb41c2c61cda4efa9a52e97899ef97c9c20b648eab8cd261944"
+    },
+    "filemanager_symlink_remove_guest": {
+      "name": "filemanager_symlink_remove_guest",
+      "policy": "semantic_reference_review",
+      "reason": "Source-reviewed tests/src/filemanager_symlink_remove_guest.m exercises the public NSFileManager removeItemAtPath:error: contract on isolated real filesystem objects: removing a root directory symlink removes the link, recursive removal of an ordinary directory does not traverse a nested directory link, and a dangling link can be removed without creating or following its target. The original external target's inode and exact payload must survive. This distinguishes physical removal from the destructive logical nftw walk and preserves the existing delegate/error route; it is not a source-text or bridge-wiring test. Apple FileManager removal semantics, the vendored nftw FTW_PHYS implementation and the read-only sibling's physical traversal are semantic references. Native Darwin execution remains unperformed.",
+      "identity_sha256": "a5de922ee486a79ceac0297939b85f92c77ae33b50167add20bff0de64943fd8"
+    },
     "dateformatter_guest": {
       "name": "dateformatter_guest",
       "policy": "assertion_review_before_native",
