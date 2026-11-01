@@ -1219,6 +1219,12 @@
       "reason": "Source-reviewed tests/src/filemanager_symlink_remove_guest.m exercises the public NSFileManager removeItemAtPath:error: contract on isolated real filesystem objects: removing a root directory symlink removes the link, recursive removal of an ordinary directory does not traverse a nested directory link, and a dangling link can be removed without creating or following its target. The original external target's inode and exact payload must survive. This distinguishes physical removal from the destructive logical nftw walk and preserves the existing delegate/error route; it is not a source-text or bridge-wiring test. Apple FileManager removal semantics, the vendored nftw FTW_PHYS implementation and the read-only sibling's physical traversal are semantic references. Native Darwin execution remains unperformed.",
       "identity_sha256": "a5de922ee486a79ceac0297939b85f92c77ae33b50167add20bff0de64943fd8"
     },
+    "nsiso8601_dateformatter_guest": {
+      "name": "nsiso8601_dateformatter_guest",
+      "policy": "semantic_reference_review",
+      "reason": "Public NSISO8601DateFormatter consumer oracle in tests/src/nsiso8601_dateformatter_guest.m: fixed instants and offsets, calendar/basic/ordinal/week-year/fractional option families, real parsing and invalid input, warmed-cache property transitions, formatter copy isolation, actual keyed archive/unarchive with the nested NSTimeZone provider, and wrong-type timezone rejection using a real non-secure unarchiver. Expectations follow vendored and newer corelibs ISO/timezone semantics; trailing-input acceptance and incidental pattern strings are not pinned. Native Darwin execution and global secure-archiver support were not established. Runtime comparison must compile the identical fixture in Darling and select the declared source root and distinct immutable bad/fixed images.",
+      "identity_sha256": "41aeb82ceb76d46a4f2c2f633960c5dc0c004adf1e4461ee83c8665b9d29fe4d"
+    },
     "dateformatter_guest": {
       "name": "dateformatter_guest",
       "policy": "assertion_review_before_native",

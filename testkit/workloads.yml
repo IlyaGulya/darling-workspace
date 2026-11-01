@@ -7540,6 +7540,30 @@ workloads:
   - darling-prefix
   ok-marker: FILEMANAGER_SYMLINK_REMOVE_PASS=1
   timeout-seconds: 30
+- id: nsiso8601_dateformatter_guest
+  name: nsiso8601_dateformatter_guest
+  module: darling/src/external/foundation
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/nsiso8601_dateformatter_guest.m
+  compile-flags:
+  - -x
+  - objective-c
+  - -fblocks
+  - -Wall
+  - -Wextra
+  - -Werror
+  - -framework
+  - Foundation
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: NSISO8601_DATEFORMATTER_PASS=1
+  timeout-seconds: 30
 - id: process_activity_guest
   name: process_activity_guest
   module: darling/src/external/foundation
