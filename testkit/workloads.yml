@@ -7307,6 +7307,26 @@ workloads:
   - darling-prefix
   ok-marker: GUEST_IMMEDIATE_EXIT_PASS=1
   timeout-seconds: 30
+- id: urgent_signal_lifecycle_guest
+  name: urgent_signal_lifecycle_guest
+  module: darling/src/external/darlingserver
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: tests/src/urgent_signal_lifecycle_guest.c
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -Werror
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: URGENT_SIGNAL_LIFECYCLE_PASS=1
+  timeout-seconds: 30
 - id: supplementary_groups_guest
   name: supplementary_groups_guest
   module: darling/src/external/darlingserver
