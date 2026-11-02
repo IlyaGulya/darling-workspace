@@ -28,3 +28,4 @@ tools/darling-debug-runner/target/
 # Recovery bundles belong in private durable state, never published history.
 handoff/
 source-bundles/
+tool-handoff/
