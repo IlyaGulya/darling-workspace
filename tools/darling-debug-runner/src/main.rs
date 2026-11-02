@@ -1,13 +1,19 @@
+mod exact;
+
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand};
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::{Pid, getpgid};
 use regex::Regex;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::fd::AsFd;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::net::UnixStream;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -16,6 +22,60 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+struct Cancellation {
+    reader: UnixStream,
+    signals: [signal_hook::SigId; 2],
+}
+
+impl Cancellation {
+    fn install() -> Result<Self> {
+        let (reader, writer) = UnixStream::pair()?;
+        reader.set_nonblocking(true)?;
+        let interrupt = signal_hook::low_level::pipe::register(
+            signal_hook::consts::SIGINT,
+            writer.try_clone()?,
+        )?;
+        let terminate =
+            match signal_hook::low_level::pipe::register(signal_hook::consts::SIGTERM, writer) {
+                Ok(id) => id,
+                Err(error) => {
+                    signal_hook::low_level::unregister(interrupt);
+                    return Err(error.into());
+                }
+            };
+        Ok(Self {
+            reader,
+            signals: [interrupt, terminate],
+        })
+    }
+
+    fn requested(&mut self) -> Result<bool> {
+        match self.reader.read(&mut [0]) {
+            Ok(1) => Ok(true),
+            Ok(_) => bail!("cancellation pipe closed"),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn wait(&self, seconds: u64) -> Result<()> {
+        let mut fds = [PollFd::new(self.reader.as_fd(), PollFlags::POLLIN)];
+        let timeout = PollTimeout::try_from(Duration::from_secs(seconds))?;
+        match poll(&mut fds, timeout) {
+            Ok(_) | Err(nix::errno::Errno::EINTR) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+impl Drop for Cancellation {
+    fn drop(&mut self) {
+        for id in self.signals {
+            signal_hook::low_level::unregister(id);
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(about = "Run and capture local or Darling debugging experiments")]
@@ -85,6 +145,8 @@ enum RunnerCommand {
 
 #[derive(Args)]
 struct CommonArgs {
+    #[command(flatten)]
+    exact: exact::ExactArgs,
     #[arg(long)]
     name: String,
     #[arg(long, default_value = "~/work/darling-debug")]
@@ -97,6 +159,9 @@ struct CommonArgs {
     poll_seconds: u64,
     #[arg(long, value_parser = parse_key_value)]
     env: Vec<(String, String)>,
+    /// Replay captured stdout and stderr for enclosing test runners.
+    #[arg(long)]
+    forward_output: bool,
     #[arg(long)]
     stall_log: Option<PathBuf>,
     #[arg(long)]
@@ -122,6 +187,10 @@ struct CommonArgs {
     gdb_cwd: Option<PathBuf>,
     #[arg(long)]
     gdb_ex: Vec<String>,
+    /// GDB command file passed with `-x` to the pre-attached fatal debugger. This can define
+    /// breakpoint conditions that a command-line `-ex` cannot. Only `--capture-on-fatal` uses it.
+    #[arg(long)]
+    gdb_command_file: Option<PathBuf>,
     #[arg(long)]
     capture_pattern: Option<String>,
     /// Also require the matched process's /proc/PID/exe basename to equal this. The Darling launcher
@@ -201,6 +270,8 @@ struct DarlingArgs {
 
 #[derive(Args)]
 struct CaptureArgs {
+    #[command(flatten)]
+    exact: exact::ExactArgs,
     #[arg(long, conflicts_with = "pattern")]
     pid: Option<u32>,
     #[arg(long, conflicts_with = "pid")]
@@ -403,6 +474,36 @@ fn make_bundle(root: &Path, name: &str) -> Result<PathBuf> {
     Ok(bundle)
 }
 
+/// Locate the workspace-owned lifecycle and evidence authorities in either
+/// supported source layout: vendored under tools/ or the sibling West project.
+pub(crate) fn workspace_root() -> Result<PathBuf> {
+    let valid = |root: &Path| {
+        root.join("west.yml").is_file()
+            && root.join("scripts/darling-evidence.py").is_file()
+            && root.join("west_commands/test_prefix.py").is_file()
+    };
+    if let Some(root) = std::env::var_os("DWDIAG_WORKSPACE") {
+        let root = PathBuf::from(root);
+        if !valid(&root) {
+            bail!("DWDIAG_WORKSPACE does not contain the workspace authorities");
+        }
+        return Ok(root);
+    }
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if let Some(root) = source.parent().and_then(Path::parent)
+        && valid(root)
+    {
+        return Ok(root.to_path_buf());
+    }
+    if let Some(parent) = source.parent() {
+        let root = parent.join("darling-workspace");
+        if valid(&root) {
+            return Ok(root);
+        }
+    }
+    bail!("workspace authorities unavailable; set DWDIAG_WORKSPACE")
+}
+
 /// Apply the shared storage policy only after this bundle's capture writers close.
 /// Its index, byte verification and writer census remain Python-owned authorities.
 fn finalize_bundle_storage(bundle: &Path, command_result: &str, retained_live: bool) -> Result<bool> {
@@ -421,7 +522,7 @@ fn finalize_bundle_storage(bundle: &Path, command_result: &str, retained_live: b
     let errors = bundle.join("summary-storage-errors.txt");
     let outcome = Command::new("python3")
         .arg("-B")
-        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/darling-evidence.py"))
+        .arg(workspace_root()?.join("scripts/darling-evidence.py"))
         .args(["compress", "--recursive"])
         .arg(bundle)
         .stdin(Stdio::null())
@@ -556,8 +657,41 @@ fn arm_fatal_gdb(
         if armed.iter().any(|(existing, _)| *existing == pid) {
             continue;
         }
+        // Capture identity once, before the fault can destroy the /proc entry and before the
+        // debugger attach is attempted: a failed attach must not lose the process attribution.
+        let identity_path = bundle.join(format!("fatal-identity-{pid}.txt"));
+        match process_identity(pid) {
+            Ok(report) => {
+                if let Err(error) = fs::write(&identity_path, report) {
+                    let _ = fs::write(
+                        bundle.join("fatal-identity-error.txt"),
+                        format!("pid {pid}: writing {}: {error}\n", identity_path.display()),
+                    );
+                }
+            }
+            Err(error) => {
+                let unavailable = format!("pid={pid}\nidentity=unavailable\nerror={error:#}\n");
+                if let Err(write_error) = fs::write(&identity_path, unavailable) {
+                    let _ = fs::write(
+                        bundle.join("fatal-identity-error.txt"),
+                        format!(
+                            "pid {pid}: identity unavailable ({error:#}); writing {}: {write_error}\n",
+                            identity_path.display()
+                        ),
+                    );
+                }
+            }
+        }
         let out = bundle.join(format!("gdb-fatal-{pid}.txt"));
-        match spawn_fatal_gdb(pid, &out, args.gdb_namespace, args.gdb_executable.as_deref(), args.gdb_cwd.as_deref(), &args.gdb_ex) {
+        match spawn_fatal_gdb(
+            pid,
+            &out,
+            args.gdb_namespace,
+            args.gdb_executable.as_deref(),
+            args.gdb_cwd.as_deref(),
+            &args.gdb_ex,
+            args.gdb_command_file.as_deref(),
+        ) {
             Ok(child) => armed.push((pid, child)),
             Err(error) => {
                 let _ = fs::write(bundle.join("fatal-attach-error.txt"), format!("pid {pid}: {error}\n"));
@@ -565,6 +699,45 @@ fn arm_fatal_gdb(
         }
     }
     Ok(())
+}
+
+/// The parts of a live process's identity that attribute a debugger stop to one workload
+/// incarnation: the start time from /proc/PID/stat (stable against pid reuse), plus the executable
+/// and command line. Reads are reported as explicit `unavailable` lines rather than empty values,
+/// because an empty string would make an unreadable process look successfully identified.
+fn process_identity(pid: u32) -> Result<String> {
+    let stat_path = format!("/proc/{pid}/stat");
+    let stat = fs::read_to_string(&stat_path)
+        .with_context(|| format!("reading {stat_path}"))?;
+    let (ppid, starttime) = parse_process_stat(&stat)
+        .with_context(|| format!("parsing process identity from {stat_path}"))?;
+    let ppid = ppid
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unavailable".to_owned());
+    let mut report = format!("pid={pid}\nstarttime={starttime}\nppid={ppid}\n");
+    match fs::read_link(format!("/proc/{pid}/exe")) {
+        Ok(path) => report.push_str(&format!("exe={}\n", path.display())),
+        Err(error) => report.push_str(&format!("exe=unavailable error={error}\n")),
+    }
+    match fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(bytes) => {
+            let cmdline = String::from_utf8_lossy(&bytes).replace('\0', " ");
+            report.push_str(&format!("cmdline={}\n", cmdline.trim_end()));
+        }
+        Err(error) => report.push_str(&format!("cmdline=unavailable error={error}\n")),
+    }
+    Ok(report)
+}
+
+/// Field 4 (ppid) and field 22 (starttime, in clock ticks since boot) of /proc/PID/stat.
+/// The comm field may contain spaces and parentheses, so the split is at its final `)`.
+fn parse_process_stat(stat: &str) -> Option<(Option<u32>, u64)> {
+    let (_, tail) = stat.rsplit_once(')')?;
+    let mut fields = tail.split_whitespace();
+    let _state = fields.next()?;
+    let ppid = fields.next().and_then(|value| value.parse().ok());
+    let starttime = fields.nth(17)?.parse().ok()?;
+    Some((ppid, starttime))
 }
 
 fn command_to_file(mut command: Command, output: &Path) {
@@ -764,16 +937,21 @@ fn spawn_fatal_gdb(
     executable: Option<&Path>,
     cwd: Option<&Path>,
     expressions: &[String],
+    command_file: Option<&Path>,
 ) -> Result<std::process::Child> {
     let mut command = Command::new("sudo");
     command.arg("-n");
+    let attach_pid = if gdb_namespace {
+        namespace_pid(pid).context("cannot read the target's namespace PID")?
+    } else {
+        pid
+    };
     if gdb_namespace {
-        let namespace_pid = namespace_pid(pid).unwrap_or(pid);
         command
             .args([
                 "nsenter",
                 "--target",
-                &namespace_pid.to_string(),
+                &pid.to_string(),
                 "--pid",
                 "--mount",
                 "--",
@@ -788,7 +966,10 @@ fn spawn_fatal_gdb(
     if let Some(executable) = executable {
         command.arg(expand_home(executable));
     }
-    command.args(["-p", &pid.to_string(), "-batch", "-ex", "set pagination off"]);
+    command.args(["-p", &attach_pid.to_string(), "-batch", "-ex", "set pagination off"]);
+    if let Some(file) = command_file {
+        command.arg("-x").arg(expand_home(file));
+    }
     for signal in ["SIGILL", "SIGSEGV", "SIGABRT", "SIGBUS", "SIGFPE"] {
         command.args(["-ex", &format!("handle {signal} stop print nopass")]);
     }
@@ -1129,6 +1310,38 @@ impl StraceAttacher {
     }
 }
 
+fn register_output_logs(bundle: &Path) -> Result<()> {
+    let Some(state) = std::env::var_os("WEST_JOB_STATE_DIR") else {
+        return Ok(());
+    };
+    let directory = PathBuf::from(state).join("activity-logs.d");
+    fs::create_dir_all(&directory)?;
+    let name = format!(
+        "runner-{}-{}",
+        std::process::id(),
+        Utc::now()
+            .timestamp_nanos_opt()
+            .context("registration timestamp out of range")?
+    );
+    let temporary = directory.join(format!("{name}.tmp"));
+    let published = directory.join(format!("{name}.logs"));
+    let result = (|| -> Result<()> {
+        let mut output = File::create_new(&temporary)?;
+        for name in ["stdout.log", "stderr.log"] {
+            output.write_all(b"file\0")?;
+            output.write_all(bundle.join(name).as_os_str().as_bytes())?;
+            output.write_all(b"\0")?;
+        }
+        drop(output);
+        fs::rename(&temporary, published)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.context("publishing west-job output logs")
+}
+
 fn spawn(
     args: &CommonArgs,
     bundle: &Path,
@@ -1138,6 +1351,7 @@ fn spawn(
     let program = command.first().context("missing command")?;
     let stdout = File::create(bundle.join("stdout.log"))?;
     let stderr = File::create(bundle.join("stderr.log"))?;
+    register_output_logs(bundle)?;
     let mut process = Command::new(program);
     process
         .args(&command[1..])
@@ -1167,6 +1381,7 @@ fn run_experiment(
     command: Vec<String>,
     extra_env: HashMap<String, String>,
 ) -> Result<(PathBuf, &'static str)> {
+    let mut cancellation = Cancellation::install()?;
     let bundle = make_bundle(&args.bundle_root, &args.name)?;
     fs::write(
         bundle.join("command.txt"),
@@ -1179,7 +1394,13 @@ fn run_experiment(
                 .iter()
                 .map(|(key, value)| (key.clone(), value.clone())),
         )
-        .map(|(key, value)| format!("{key}={value}"))
+        .map(|(key, value)| {
+            if args.exact.capture_exact {
+                format!("{key}=<redacted>")
+            } else {
+                format!("{key}={value}")
+            }
+        })
         .collect();
     env_lines.sort();
     fs::write(bundle.join("env.txt"), env_lines.join("\n") + "\n")?;
@@ -1195,12 +1416,16 @@ fn run_experiment(
         && (args.gdb_namespace
             || args.gdb_executable.is_some()
             || args.gdb_cwd.is_some()
+            || args.gdb_command_file.is_some()
             || !args.gdb_ex.is_empty())
     {
-        bail!("--gdb-namespace/--gdb-executable/--gdb-cwd/--gdb-ex were given without --capture-gdb, so they would be ignored; add --capture-gdb or drop them");
+        bail!("--gdb-namespace/--gdb-executable/--gdb-cwd/--gdb-command-file/--gdb-ex were given without --capture-gdb, so they would be ignored; add --capture-gdb or drop them");
     }
     if args.capture_on_fatal && !args.capture_gdb {
         bail!("--capture-on-fatal needs --capture-gdb: the fatal-signal catch IS the debugger attach");
+    }
+    if args.gdb_command_file.is_some() && !args.capture_on_fatal {
+        bail!("--gdb-command-file is only used by the --capture-on-fatal debugger; add --capture-on-fatal or drop it");
     }
     if args.capture_on_fatal && args.capture_pattern.is_none() {
         bail!("--capture-on-fatal needs --capture-pattern so the debugger knows which process to hold");
@@ -1213,7 +1438,16 @@ fn run_experiment(
         strace_preflight()?;
     }
     println!("BUNDLE={}", bundle.display());
+    std::io::stdout().flush()?;
     let mut detector = StallDetector::from_args(args)?;
+    let marker_pattern = match &args.capture_on_line {
+        Some(p) => Some(Regex::new(p).context("invalid --capture-on-line")?),
+        None => None,
+    };
+    let state_expr = match &args.capture_on_state {
+        Some(e) => Some(StateTrigger::parse(e)?),
+        None => None,
+    };
     let mut futex_probe = match args.futex_trace_out.as_ref() {
         Some(path) => Some(FutexProbe::spawn(path)?),
         None => None,
@@ -1246,16 +1480,10 @@ fn run_experiment(
         )
     });
     let result;
-    let marker_pattern = match &args.capture_on_line {
-        Some(p) => Some(Regex::new(p).context("invalid --capture-on-line")?),
-        None => None,
-    };
     let marker_log = args.stall_log.clone();
     let mut marker_offset: u64 = 0;
-    let state_expr = match &args.capture_on_state {
-        Some(e) => Some(StateTrigger::parse(e)?),
-        None => None,
-    };
+    let mut stdout_marker_offset: u64 = 0;
+    let mut stderr_marker_offset: u64 = 0;
     let mut state_quiet_since: Option<Instant> = None;
     // The interesting process is usually NOT there when the run starts: the linker is spawned by a
     // shell inside the guest, so its host process (whose cmdline carries the guest path) appears only
@@ -1267,6 +1495,11 @@ fn run_experiment(
     let mut marker_pattern_armed = false;
 
     loop {
+        if cancellation.requested()? {
+            fs::write(bundle.join("cancelled.txt"), "cancellation requested\n")?;
+            result = "cancelled";
+            break;
+        }
         if let Some(status) = child.try_wait()? {
             fs::write(bundle.join("exit-status.txt"), format!("{status}\n"))?;
             result = if status.success() { "exited" } else { "failed" };
@@ -1293,7 +1526,10 @@ fn run_experiment(
             },
             None => child.id(),
         };
-        if args.capture_on_fatal && args.capture_on_line.is_none() && target_note.is_none() {
+        if args.capture_on_fatal
+            && (args.capture_on_line.is_none() || marker_pattern_armed)
+            && target_note.is_none()
+        {
             arm_fatal_gdb(&args, &bundle, child.id(), &mut fatal_gdb)?;
         }
         if let Some(expr) = &state_expr {
@@ -1353,16 +1589,24 @@ fn run_experiment(
                 }
             } else {
                 let mut fired = false;
-                for watch in [&stdout, &stderr] {
-                    if marker_seen(watch, pattern, &mut marker_offset)? {
+                for (watch, offset) in [
+                    (&stdout, &mut stdout_marker_offset),
+                    (&stderr, &mut stderr_marker_offset),
+                ] {
+                    if marker_seen(watch, pattern, offset)? {
                         fired = true;
                         break;
                     }
                 }
                 if fired {
                     fs::write(bundle.join("marker.txt"), "capture requested by --capture-on-line\n")?;
-                    result = "marker";
-                    break;
+                    if args.capture_on_fatal {
+                        marker_pattern_armed = true;
+                        arm_fatal_gdb(args, &bundle, child.id(), &mut fatal_gdb)?;
+                    } else {
+                        result = "marker";
+                        break;
+                    }
                 }
             }
         }
@@ -1375,7 +1619,7 @@ fn run_experiment(
             result = "stall";
             break;
         }
-        thread::sleep(Duration::from_secs(args.poll_seconds));
+        cancellation.wait(args.poll_seconds)?;
     }
 
     // The workload is over, so the probe is stopped first: it flushes on SIGINT and reports how much it recorded.
@@ -1420,6 +1664,33 @@ fn run_experiment(
             let stall_log = expand_home(stall_log);
             let _ = fs::copy(stall_log, bundle.join("stall-log.txt"));
         }
+        if result != "cancelled" && args.exact.capture_exact {
+            let selected = match args.capture_pattern.as_deref() {
+                Some(pattern) => find_pid_in_tree(
+                    child.id(), pattern, args.capture_exe.as_deref(), args.capture_comm.as_deref(),
+                ),
+                None => Ok(child.id()),
+            };
+            let capture_result = match selected {
+                Ok(pid) => {
+                    let pids = if args.capture_tree {
+                        process_tree(pid)
+                    } else {
+                        vec![pid]
+                    };
+                    exact::capture(&pids, &bundle, &args.exact)
+                }
+                Err(_) if args.exact.capture_prefix.is_some() => {
+                    exact::capture(&[], &bundle, &args.exact)
+                }
+                Err(error) => Err(error),
+            };
+            let report = match capture_result {
+                Ok(complete) => format!("complete={complete}\n"),
+                Err(error) => format!("incomplete: {error:#}\n"),
+            };
+            let _ = fs::write(bundle.join("exact-status.txt"), report);
+        }
         let _ = capture_process_tree(
             child.id(),
             &bundle.join("guarded-tree"),
@@ -1435,11 +1706,13 @@ fn run_experiment(
         // asked for produced no directory and said nothing about why. The /proc tree is exactly what
         // a hang needs (per-thread wchan/syscall/stack at the moment it stops), and it does not need
         // the debugger, so the tree is captured whenever it is asked for, with gdb only when asked.
-        if args.capture_tree || args.capture_gdb {
+        if result != "cancelled" && (args.capture_tree || args.capture_gdb) {
             let capture_pid = args
                 .capture_pattern
                 .as_deref()
-                .and_then(|pattern| find_pid_in_tree(child.id(), pattern, None, None).ok())
+                .and_then(|pattern| find_pid_in_tree(
+                    child.id(), pattern, args.capture_exe.as_deref(), args.capture_comm.as_deref(),
+                ).ok())
                 .unwrap_or(child.id());
             if args.capture_tree {
                 capture_process_tree(
@@ -1467,17 +1740,32 @@ fn run_experiment(
                 )?;
             }
         }
-        if let Some(command) = &args.capture_command {
+        if result != "cancelled" && let Some(command) = &args.capture_command {
             let _ = shell_hook(command, &bundle, child.id());
         }
         if result != "stall" || !args.leave_running_on_stall {
             if let Some(command) = &args.terminate_command {
-                let cleanup = match shell_hook(command, &bundle, child.id()) {
-                    Ok(status) => format!("authority=terminate-hook state={} status={} product_shutdown_verified=false external_rescue=unknown\n",
-                        if status.success() { "hook-completed" } else { "hook-failed" }, status),
-                    Err(error) => format!("authority=terminate-hook state=hook-error error={error} product_shutdown_verified=false external_rescue=unknown\n"),
-                };
-                fs::write(bundle.join("cleanup-status.txt"), cleanup)?;
+                let status = shell_hook(command, &bundle, child.id())
+                    .context("failed to execute terminate-command")?;
+                if !status.success() {
+                    fs::write(bundle.join("cleanup-status.txt"),
+                        format!("authority=terminate-hook state=hook-failed status={status} product_shutdown_verified=false\n"))?;
+                    bail!("terminate-command failed: {status}; owner cleanup is incomplete");
+                }
+                let cleanup_deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    if let Some(child_status) = child.try_wait()? {
+                        fs::write(bundle.join("cleanup-status.txt"),
+                            format!("authority=terminate-hook state=hook-completed status={status} child_status={child_status} product_shutdown_verified=false external_rescue=unknown\n"))?;
+                        break;
+                    }
+                    if Instant::now() >= cleanup_deadline {
+                        fs::write(bundle.join("cleanup-status.txt"),
+                            "authority=terminate-hook state=child-still-running product_shutdown_verified=false\n")?;
+                        bail!("terminate-command returned but the managed child is still running");
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
             } else {
                 fs::write(
                     bundle.join("cleanup-status.txt"),
@@ -1490,6 +1778,16 @@ fn run_experiment(
         && let Some(command) = &args.cleanup_command
     {
         let _ = shell_hook(command, &bundle, child.id());
+    }
+    if args.forward_output {
+        std::io::copy(
+            &mut File::open(bundle.join("stdout.log"))?,
+            &mut std::io::stdout().lock(),
+        )?;
+        std::io::copy(
+            &mut File::open(bundle.join("stderr.log"))?,
+            &mut std::io::stderr().lock(),
+        )?;
     }
     Ok((bundle, result))
 }
@@ -1570,7 +1868,7 @@ impl PrefixScope {
             }
             let _ = OWNER_LEASE_FD.set(fd);
         }
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let workspace = workspace_root()?;
         // The controller gets its prefix by argv, not guest ownership markers.
         let mut helper = Command::new("python3");
         helper.env_remove("DPREFIX").env_remove("DARLING_PREFIX");
@@ -1822,7 +2120,7 @@ fn main() -> Result<ExitCode> {
             // This route itself owns a lifecycle, unlike generic `run`. Reexec
             // under the shared CLI so nested managed hooks can borrow the lease.
             if std::env::var_os("WEST_TEST_PREFIX_LEASE").is_none() {
-                let owner = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../west_commands/test_prefix.py");
+                let owner = workspace_root()?.join("west_commands/test_prefix.py");
                 let error = Command::new("python3").arg("-B").arg(owner)
                     .arg("--prefix").arg(&dprefix).arg("--")
                     .arg(std::env::current_exe()?).args(std::env::args_os().skip(1)).exec();
@@ -1860,9 +2158,32 @@ fn main() -> Result<ExitCode> {
             }
         }
         RunnerCommand::Capture(args) => {
-            let pid = find_pid(args.pid, args.pattern.as_deref())?;
+            let pid = if args.exact.capture_prefix.is_some()
+                && args.pid.is_none()
+                && args.pattern.is_none()
+            {
+                None
+            } else {
+                Some(find_pid(args.pid, args.pattern.as_deref())?)
+            };
             let bundle = make_bundle(&args.bundle_root, &args.name)?;
-            if args.tree {
+            println!("BUNDLE={}", bundle.display());
+            std::io::stdout().flush()?;
+            let exact_complete = if args.exact.capture_exact {
+                let pids = pid
+                    .map(|pid| {
+                        if args.tree {
+                            process_tree(pid)
+                        } else {
+                            vec![pid]
+                        }
+                    })
+                    .unwrap_or_default();
+                exact::capture(&pids, &bundle, &args.exact)?
+            } else {
+                true
+            };
+            if let Some(pid) = pid.filter(|_| args.tree) {
                 capture_process_tree(
                     pid,
                     &bundle,
@@ -1874,7 +2195,7 @@ fn main() -> Result<ExitCode> {
                     args.snapshots,
                     Duration::from_secs(args.interval_seconds),
                 )?;
-            } else {
+            } else if let Some(pid) = pid {
                 capture_target(
                     pid,
                     &bundle,
@@ -1887,7 +2208,7 @@ fn main() -> Result<ExitCode> {
                     Duration::from_secs(args.interval_seconds),
                 )?;
             }
-            (bundle, "captured")
+            (bundle, if exact_complete { "captured" } else { "capture-incomplete" })
         }
         // unreachable: the diagnostics are dispatched before this match, and they own their exit codes
         RunnerCommand::Diag(_) => unreachable!("diag dispatched before the bundle machinery"),
@@ -2142,5 +2463,25 @@ fn sample_threads(pid: u32) -> Vec<ThreadState> {
         out.push(ThreadState { pid, tid, state, wchan, syscall });
     }
     out
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::parse_process_stat;
+
+    #[test]
+    fn stat_identity_splits_after_the_final_comm_parenthesis() {
+        let mut fields = vec!["S".to_owned(), "42".to_owned()];
+        fields.extend(std::iter::repeat_n("0".to_owned(), 17));
+        fields.push("777".to_owned());
+        let stat = format!("123 (a name) with spaces) {}\n", fields.join(" "));
+        assert_eq!(parse_process_stat(&stat), Some((Some(42), 777)));
+    }
+
+    #[test]
+    fn a_stat_line_without_enough_fields_has_no_identity() {
+        assert_eq!(parse_process_stat("123 (cat) S 1"), None);
+        assert_eq!(parse_process_stat("123 cat S 1"), None);
+    }
 }
 

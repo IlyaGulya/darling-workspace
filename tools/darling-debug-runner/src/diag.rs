@@ -819,8 +819,8 @@ fn provenance_report(
     };
     lines.push(format!("PROVENANCE runtime-root={} guest-prefix={}", root.display(),
         prefix.map(|path| path.display().to_string()).unwrap_or_else(|| "<unset>".to_string())));
-    let compiled_workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().and_then(Path::parent);
-    let Some(workspace) = workspace.or(compiled_workspace) else {
+    let default_workspace = crate::workspace_root().ok();
+    let Some(workspace) = workspace.or(default_workspace.as_deref()) else {
         return (false, vec!["workspace:receipt-authority-unavailable".to_string()], lines);
     };
     let script = r#"import json, sys
@@ -1079,7 +1079,7 @@ fn run_watch(args: WatchArgs) -> Result<ExitCode> {
                     let cmd = std::fs::read(format!("/proc/{pid}/cmdline"))
                         .map(|b| b.iter().map(|c| if *c == 0 { ' ' } else { *c as char }).collect::<String>())
                         .unwrap_or_default();
-                    if cmd.contains(&pattern) && !cmd.contains("gwn-") {
+                    if cmd.contains(&pattern) {
                         println!("WATCH target pid={pid} exe={exe}");
                         target = Some(pid);
                         break;
@@ -6787,20 +6787,25 @@ fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
     let script_text = format!(
         "set pagination off\n\
          set confirm off\n\
+         set follow-fork-mode parent\n\
+         set detach-on-fork off\n\
+         set schedule-multiple on\n\
          {handles}\n\
          handle SIGCONT nostop noprint pass\n\
          handle SIGSTOP nostop noprint pass\n\
          handle SIGCHLD nostop noprint pass\n\
          signal SIGCONT\n\
-         continue\n\
          info registers rip rsp\n\
          x/4i $pc\n\
          python\n\
          import gdb, os, traceback\n\
          try:\n\
          \x20   d = '{dir}'\n\
-         \x20   inf = gdb.selected_inferior()\n\
-         \x20   open(os.path.join(d, 'maps'), 'w').write(open('/proc/{pid}/maps').read())\n\
+         \x20   thread = gdb.selected_thread()\n\
+         \x20   inf = thread.inferior if thread is not None else gdb.selected_inferior()\n\
+         \x20   ipid = inf.pid or {pid}\n\
+         \x20   open(os.path.join(d, 'inferior-pid'), 'w').write(str(ipid))\n\
+         \x20   open(os.path.join(d, 'maps'), 'w').write(open('/proc/%d/maps' % ipid).read())\n\
          \x20   for t in inf.threads():\n\
          \x20       t.switch()\n\
          \x20       rsp = int(gdb.parse_and_eval('$rsp'))\n\
@@ -6864,6 +6869,7 @@ fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
         crate::say(&format!("CATCH-PYTHON-ERROR {}", e.trim()));
     }
 
+    let mut captured_stack = false;
     // The stack images gdb left behind, resolved now. This is the part gdb cannot do itself.
     if let Ok(maps_text) = std::fs::read_to_string(dir.join("maps")) {
         let maps = parse_maps_text(&maps_text);
@@ -6880,7 +6886,8 @@ fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
         dumps.sort();
         let mut segments = MachoSegmentCache::default();
         for (rsp, path) in dumps {
-            let mem = std::fs::read(&path).unwrap_or_default();
+            let mem = std::fs::read(&path)?;
+            captured_stack |= !mem.is_empty();
             let frames = scan_stack(&mem, &maps, &image_ok, 12, &mut segments);
             crate::say(&format!("CATCH-STACK rsp={rsp:#x} frames={}", frames.len()));
             for (addr, img, sym) in &frames {
@@ -6889,7 +6896,11 @@ fn run_catch(pid: u32, signal: &str, timeout_s: u64) -> Result<ExitCode> {
             }
         }
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(if out.status.success() && !dir.join("python-error.txt").exists() && captured_stack {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 fn run_unwind(args: UnwindArgs) -> Result<ExitCode> {
@@ -9235,17 +9246,43 @@ mod core_identity_tests {
 mod macho_vmaddr_tests {
     use super::*;
 
-    // The measured defect, as a regression: a real dylib where file offset and VM address differ. Reading the load
-    // commands is the only way to know, and the wrong answer here is a plausible WRONG function name.
     #[test]
-    fn the_deployed_libsystem_platform_maps_file_offsets_to_vm_addresses() {
-        let p = "/home/ilyagulya/work/wr-fresh/prefix-ios/usr/lib/system/libsystem_platform.dylib";
-        if !std::path::Path::new(p).exists() {
-            return; // the test is about a deployed artifact; absent means nothing to check
+    fn segment_file_offsets_map_to_vm_addresses_in_thin_and_fat_images() {
+        let dir = std::env::temp_dir().join(format!("dwdiag-vmaddr-{}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let mut thin = vec![0u8; 0x3000];
+        thin[0..4].copy_from_slice(&0xfeed_facfu32.to_le_bytes());
+        thin[4..8].copy_from_slice(&0x0100_0007u32.to_le_bytes());
+        thin[8..12].copy_from_slice(&3u32.to_le_bytes());
+        thin[12..16].copy_from_slice(&6u32.to_le_bytes());
+        thin[16..20].copy_from_slice(&1u32.to_le_bytes());
+        thin[20..24].copy_from_slice(&72u32.to_le_bytes());
+        thin[32..36].copy_from_slice(&0x19u32.to_le_bytes());
+        thin[36..40].copy_from_slice(&72u32.to_le_bytes());
+        thin[56..64].copy_from_slice(&0x12000u64.to_le_bytes());
+        thin[64..72].copy_from_slice(&0x2000u64.to_le_bytes());
+        thin[72..80].copy_from_slice(&0x2000u64.to_le_bytes());
+        thin[80..88].copy_from_slice(&0x1000u64.to_le_bytes());
+        let mut fat = vec![0u8; 0x4000];
+        fat[0..4].copy_from_slice(&0xcafe_babeu32.to_be_bytes());
+        fat[4..8].copy_from_slice(&1u32.to_be_bytes());
+        fat[8..12].copy_from_slice(&0x0100_0007u32.to_be_bytes());
+        fat[12..16].copy_from_slice(&3u32.to_be_bytes());
+        fat[16..20].copy_from_slice(&0x1000u32.to_be_bytes());
+        fat[20..24].copy_from_slice(&0x3000u32.to_be_bytes());
+        fat[24..28].copy_from_slice(&12u32.to_be_bytes());
+        fat[0x1000..].copy_from_slice(&thin);
+        for (name, bytes, slice_base) in [("thin", thin, 0), ("fat", fat, 0x1000)] {
+            let path = dir.join(name);
+            fs::write(&path, bytes).unwrap();
+            let image = path.to_str().unwrap();
+            assert_eq!(macho_vmaddr_for_fileoff(image, slice_base + 0x2000), Some(0x12000));
+            assert_eq!(macho_vmaddr_for_fileoff(image, slice_base + 0x2a9e), Some(0x12a9e));
+            assert_eq!(macho_vmaddr_for_fileoff(image, slice_base + 0x2fff), Some(0x12fff));
+            assert_eq!(macho_vmaddr_for_fileoff(image, slice_base + 0x1fff), None);
+            assert_eq!(macho_vmaddr_for_fileoff(image, slice_base + 0x3000), None);
         }
-        // MEASURED: file offset 0x3a9e is VM 0x2a9e (ud2 sites of the two views differ by exactly 0x1000).
-        assert_eq!(macho_vmaddr_for_fileoff(p, 0x3a9e), Some(0x2a9e));
-        assert_eq!(macho_vmaddr_for_fileoff(p, 0x22e3), Some(0x12e3));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -12119,9 +12156,9 @@ mod evidence_manifest_tests {
     #[test]
     fn parses_the_prefix_start_end_and_every_registered_file_with_its_offset() {
         let m = parse_evidence_manifest(
-            "version=1\nstart=1791645300\nend=1791649999\nprefix=/p/prefix-ios\nfile=/tmp/darling-boot-032645-2125225.log 192767\nfile=/p/prefix-ios/private/var/log/dserver.log 0\n",
+            "version=1\nstart=1791645300\nend=1791649999\nprefix=/p/prefix\nfile=/tmp/darling-boot-032645-2125225.log 192767\nfile=/p/prefix/private/var/log/dserver.log 0\n",
         );
-        assert_eq!(m.prefix, Some(PathBuf::from("/p/prefix-ios")));
+        assert_eq!(m.prefix, Some(PathBuf::from("/p/prefix")));
         assert_eq!(m.start, Some(1791645300));
         assert_eq!(m.end, Some(1791649999));
         assert_eq!(m.files.len(), 2);
@@ -12386,7 +12423,7 @@ mod guest_fault_tests {
 
     // The exact shape the deployed handler writes, copied from a real run log (the padding before the path is the
     // kernel's, not a typo): `[sigexc-fault-map <one /proc/self/maps line>]` immediately above `[sigexc-fatal ...]`.
-    const FAULT_MAP: &str = "[sigexc-fault-map 76d22cce4000-76d22cddf000 r-xp 00001000 fc:00 5509130                    /home/ilyagulya/work/wr-fresh/prefix-ios/usr/lib/system/libsystem_c.dylib]";
+    const FAULT_MAP: &str = "[sigexc-fault-map 76d22cce4000-76d22cddf000 r-xp 00001000 fc:00 5509130                    /opt/darling/usr/lib/system/libsystem_c.dylib]";
     const FATAL_DEPLOYED: &str = "[sigexc-fatal sig=4 code=2 addr=0x76D22CDD547F pid=794192 tid=794192]";
     const FATAL_RIP: &str = "[sigexc-fatal sig=11 code=1 addr=0x0 rip=0x100003a20 rsp=0x7ffee000 rbp=0x7ffee010 pid=1 tid=1]";
 

@@ -1,8 +1,8 @@
 manifest:
   projects:
   - name: darling
-    url: https://github.com/darlinghq/darling
-    revision: 5f2d7401d878455cf3c3c0865ee5a4290dfa03f0
+    url: https://github.com/darling-next/darling
+    revision: 3c9987b1f4b6e80c474a4e7aee0ee2336f88d797
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -36,7 +36,7 @@ manifest:
       upstream-repository: darling-DSTools
   - name: darling-src-external-directoryservice
     url: https://github.com/darlinghq/darling-DirectoryService
-    revision: feb9742f574ab812a210634fd3997f19b645095f
+    revision: 6a8528b0b86a657308300cf98ee0080c6819f9aa
     path: darling/src/external/DirectoryService
     userdata:
       kind: darling-source
@@ -57,7 +57,7 @@ manifest:
       upstream-repository: darling-IOKitTools
   - name: darling-src-external-iokituser
     url: https://github.com/darlinghq/darling-iokituser
-    revision: 9843fd575a87926ab3cd3ee011215b97e90c1006
+    revision: b676f2ae5a1e1ebe8b3acdf6497755d8864bf093
     path: darling/src/external/IOKitUser
     userdata:
       kind: darling-source
@@ -91,15 +91,15 @@ manifest:
       kind: darling-source
       upstream-repository: darling-iostoragefamily
   - name: darling-src-external-javascriptcore
-    url: https://github.com/darlinghq/darling-JavaScriptCore
-    revision: 93410cc0dbc7a961d58d048c151117acdb18a566
+    url: https://github.com/darling-next/darling-JavaScriptCore
+    revision: 43088165b6294c2c73c46381186d8288b976a300
     path: darling/src/external/JavaScriptCore
     userdata:
       kind: darling-source
       upstream-repository: darling-JavaScriptCore
   - name: darling-src-external-libinfo
-    url: https://github.com/darlinghq/darling-Libinfo
-    revision: 9ef680edcd31158f23efbbf853868b5f5432d047
+    url: https://github.com/darling-next/darling-Libinfo
+    revision: 051a54d99af3bf27b0808eed9fc83cd2554e49fa
     path: darling/src/external/Libinfo
     userdata:
       kind: darling-source
@@ -155,7 +155,7 @@ manifest:
       upstream-repository: darling-TextEdit
   - name: darling-src-external-wtf
     url: https://github.com/darlinghq/darling-WTF
-    revision: 88a36e496a6f285a9e15140c2c431b817bae353b
+    revision: fd20fe36a23d893ca59175f0fd97c6df527ba7e7
     path: darling/src/external/WTF
     userdata:
       kind: darling-source
@@ -252,29 +252,29 @@ manifest:
       kind: darling-source
       upstream-repository: darling-bzip2
   - name: darling-src-external-cctools
-    url: https://github.com/darlinghq/darling-cctools
-    revision: 8777b6dc7c4de87087c028e17db075795b3684d3
+    url: https://github.com/darling-next/darling-cctools
+    revision: 465c9ba1563fdae4e7a29808966a64dc5693394e
     path: darling/src/external/cctools
     userdata:
       kind: darling-source
       upstream-repository: darling-cctools
   - name: darling-src-external-cctools-port
     url: https://github.com/darlinghq/cctools-port
-    revision: d9456c221e1f462e17c0b3297748bc089d5a861e
+    revision: 286be5f1bbc44af4dd7ba12425edd8e7d0aa1073
     path: darling/src/external/cctools-port
     userdata:
       kind: darling-source
       upstream-repository: cctools-port
   - name: darling-src-external-cfnetwork
-    url: https://github.com/darlinghq/darling-cfnetwork
-    revision: e7e3db881008d883f82914765a72ce842bcba735
+    url: https://github.com/darling-next/darling-cfnetwork
+    revision: 18a08cc5ec6013002bd1f77f7d4e6d869a8bae2a
     path: darling/src/external/cfnetwork
     userdata:
       kind: darling-source
       upstream-repository: darling-cfnetwork
   - name: darling-src-external-cocotron
-    url: https://github.com/darlinghq/darling-cocotron
-    revision: 3feab339b091e51365687773d759da7cdc5fb117
+    url: https://github.com/darling-next/darling-cocotron
+    revision: 0234eac4335e6f0fa5d840d49f3296d4e84aa236
     path: darling/src/external/cocotron
     userdata:
       kind: darling-source
@@ -295,7 +295,7 @@ manifest:
       upstream-repository: darling-compiler-rt
   - name: darling-src-external-configd
     url: https://github.com/darlinghq/darling-configd
-    revision: 98e52de19c52f7938e581ed20385f38abd7fa197
+    revision: c890d5b0ce078e848930b0c16e1b16f3a5b39929
     path: darling/src/external/configd
     userdata:
       kind: darling-source
@@ -322,8 +322,8 @@ manifest:
       kind: darling-source
       upstream-repository: ctest
   - name: darling-src-external-corefoundation
-    url: https://github.com/darlinghq/darling-corefoundation
-    revision: 9eff764d957188d555f98b6f251605512c6b50aa
+    url: https://github.com/darling-next/darling-corefoundation
+    revision: ab9b95e359db7a11aa423705d8b1df77d92b882d
     path: darling/src/external/corefoundation
     userdata:
       kind: darling-source
@@ -378,8 +378,8 @@ manifest:
       kind: darling-source
       upstream-repository: darling-dmg
   - name: darling-src-external-darlingserver
-    url: https://github.com/darlinghq/darlingserver
-    revision: 89751e64bc6c2082f7725061824ee0e33395b0de
+    url: https://github.com/darling-next/darlingserver
+    revision: 87699e9590d5d7e4f66daa5ee3f9b4956c8ea2a0
     path: darling/src/external/darlingserver
     userdata:
       kind: darling-source
@@ -399,15 +399,15 @@ manifest:
       kind: darling-source
       upstream-repository: darling-doc_cmds
   - name: darling-src-external-dtrace
-    url: https://github.com/darlinghq/darling-dtrace
-    revision: 4f52343b36756e32a81eb302242ac6472e9075fa
+    url: https://github.com/darling-next/darling-dtrace
+    revision: 1107ed2a70db6a4949d40b5d444f2c7c7844c1b0
     path: darling/src/external/dtrace
     userdata:
       kind: darling-source
       upstream-repository: darling-dtrace
   - name: darling-src-external-dyld
-    url: https://github.com/darlinghq/darling-dyld
-    revision: 63f667cf06d7ed59553adebb0c8d70a117135ac9
+    url: https://github.com/darling-next/darling-dyld
+    revision: c37271c75cd3a739289e4589dd53832cae13dd30
     path: darling/src/external/dyld
     userdata:
       kind: darling-source
@@ -435,7 +435,7 @@ manifest:
       upstream-repository: darling-file
   - name: darling-src-external-file_cmds
     url: https://github.com/darlinghq/darling-file_cmds
-    revision: c0d72b5c98888a9d8e0b73cf8aac0df908e615f2
+    revision: eaabf282376ad1762e2fdc79a265e1f14dedd2e6
     path: darling/src/external/file_cmds
     userdata:
       kind: darling-source
@@ -455,8 +455,8 @@ manifest:
       kind: darling-source
       upstream-repository: fmdb
   - name: darling-src-external-foundation
-    url: https://github.com/darlinghq/darling-foundation
-    revision: 416872a2026c226c51a40d7cf9b9f27d18fa0816
+    url: https://github.com/darling-next/darling-foundation
+    revision: 0cace2569a893de523e2a6385dc9ab9d02a1209c
     path: darling/src/external/foundation
     userdata:
       kind: darling-source
@@ -504,22 +504,22 @@ manifest:
       kind: darling-source
       upstream-repository: darling-groff
   - name: darling-src-external-icu
-    url: https://github.com/darlinghq/darling-icu
-    revision: 6b609b2b0ce9a620543f357de4e549f09afec4ea
+    url: https://github.com/darling-next/darling-icu
+    revision: c47ec6f45bb28fb30fd898b355d10cc565b5c410
     path: darling/src/external/icu
     userdata:
       kind: darling-source
       upstream-repository: darling-icu
   - name: darling-src-external-installer
-    url: https://github.com/darlinghq/darling-installer
-    revision: 88764e6149f92f1747442c27ab00231f40de278c
+    url: https://github.com/darling-next/darling-installer
+    revision: 1da4b6c16c49f53f49b47beb28fbe5285cde5c7c
     path: darling/src/external/installer
     userdata:
       kind: darling-source
       upstream-repository: darling-installer
   - name: darling-src-external-iokitd
-    url: https://github.com/darlinghq/darling-iokitd
-    revision: 5549ac4cd2db923c256f016a1381b3bfb716730a
+    url: https://github.com/darling-next/darling-iokitd
+    revision: 8c2d1d2c50e8e8e1ea0c4fec508829b64cf96a1d
     path: darling/src/external/iokitd
     userdata:
       kind: darling-source
@@ -553,8 +553,8 @@ manifest:
       kind: darling-source
       upstream-repository: darling-libauto
   - name: darling-src-external-libc
-    url: https://github.com/darlinghq/darling-Libc
-    revision: 5a38c8dabf9e76b39407c24bc13134e33e5594e6
+    url: https://github.com/darling-next/darling-Libc
+    revision: 5cbfd80e2ccbd4b12ec1834baf45c0890be1253e
     path: darling/src/external/libc
     userdata:
       kind: darling-source
@@ -567,8 +567,8 @@ manifest:
       kind: darling-source
       upstream-repository: darling-libclosure
   - name: darling-src-external-libcxx
-    url: https://github.com/darlinghq/darling-libcxx
-    revision: c47677d3ba33bdabbfb07e75f531831579355a2d
+    url: https://github.com/darling-next/darling-libcxx
+    revision: b09e14bd34dbf6c34421c0f85d15feeec8a11080
     path: darling/src/external/libcxx
     userdata:
       kind: darling-source
@@ -581,8 +581,8 @@ manifest:
       kind: darling-source
       upstream-repository: darling-libcxxabi
   - name: darling-src-external-libdispatch
-    url: https://github.com/darlinghq/darling-libdispatch
-    revision: 380f03c180b80d940134fb35783ddc714784a53a
+    url: https://github.com/darling-next/darling-libdispatch
+    revision: d97d3e71cfbcf22f60afa60ebc8a1a94094dcc88
     path: darling/src/external/libdispatch
     userdata:
       kind: darling-source
@@ -609,8 +609,8 @@ manifest:
       kind: darling-source
       upstream-repository: darling-libiconv
   - name: darling-src-external-libkqueue
-    url: https://github.com/darlinghq/darling-libkqueue
-    revision: f673c801cbc4011d3ae35301bb8b5073eb41c103
+    url: https://github.com/darling-next/darling-libkqueue
+    revision: 7c9ae3f88c211bdef12842e70a47846413a06e80
     path: darling/src/external/libkqueue
     userdata:
       kind: darling-source
@@ -623,15 +623,15 @@ manifest:
       kind: darling-source
       upstream-repository: darling-liblzma
   - name: darling-src-external-libmalloc
-    url: https://github.com/darlinghq/darling-libmalloc
-    revision: a57991e2651226a675654bd96e5d9ab6bec288c5
+    url: https://github.com/darling-next/darling-libmalloc
+    revision: 3bbf29dabebfceea201a6743d7f54af418438a64
     path: darling/src/external/libmalloc
     userdata:
       kind: darling-source
       upstream-repository: darling-libmalloc
   - name: darling-src-external-libnetwork
     url: https://github.com/darlinghq/darling-libnetwork
-    revision: 56c5fad43f24a40d8ca7f8a1d0badedfeaf7e64e
+    revision: 1d1736da6658db3740acf217c09b6a852bd595ae
     path: darling/src/external/libnetwork
     userdata:
       kind: darling-source
@@ -644,15 +644,15 @@ manifest:
       kind: darling-source
       upstream-repository: darling-Libnotify
   - name: darling-src-external-libplatform
-    url: https://github.com/darlinghq/darling-libplatform
-    revision: 5a3e5b529d25c70257dcfa97e94f1826e71e9f40
+    url: https://github.com/darling-next/darling-libplatform
+    revision: b36418683ea908a5e2c0a273d79a6c8729e496cc
     path: darling/src/external/libplatform
     userdata:
       kind: darling-source
       upstream-repository: darling-libplatform
   - name: darling-src-external-libpthread
-    url: https://github.com/darlinghq/darling-libpthread
-    revision: f07f265bfbcf071c1adfc808de971e053ea5edc5
+    url: https://github.com/darling-next/darling-libpthread
+    revision: b181d28bca497664bf4fad28621e0f99e94b9bc7
     path: darling/src/external/libpthread
     userdata:
       kind: darling-source
@@ -687,7 +687,7 @@ manifest:
       upstream-repository: darling-libressl
   - name: darling-src-external-libressl-2-8-3
     url: https://github.com/darling-next/darling-libressl
-    revision: 2a56b36b77a00573c53ccd8e6932eb136172c950
+    revision: 45f14a83115947ba36a33572e29975a8dd811eb5
     path: darling/src/external/libressl-2.8.3
     userdata:
       kind: darling-source
@@ -708,8 +708,8 @@ manifest:
       kind: darling-source
       upstream-repository: darling-libstdcxx
   - name: darling-src-external-libsystem
-    url: https://github.com/darlinghq/darling-Libsystem
-    revision: 08df454b6eb0df9400aa4c39839a7efd6efd2c3c
+    url: https://github.com/darling-next/darling-Libsystem
+    revision: c1058b69df172a397ca5399655fbca91eafee5d9
     path: darling/src/external/libsystem
     userdata:
       kind: darling-source
@@ -722,15 +722,15 @@ manifest:
       kind: darling-source
       upstream-repository: darling-libtelnet
   - name: darling-src-external-libtrace
-    url: https://github.com/darlinghq/darling-libtrace
-    revision: 8cf07f02b15f7dca6436882a03678fff0392eaf6
+    url: https://github.com/darling-next/darling-libtrace
+    revision: 86fc27d693bfcb6c9ba00abb501e399d5c800c4c
     path: darling/src/external/libtrace
     userdata:
       kind: darling-source
       upstream-repository: darling-libtrace
   - name: darling-src-external-libunwind
     url: https://github.com/darlinghq/darling-libunwind
-    revision: a91da1a0e262e04eb601152a84228ff733e48422
+    revision: 2b44abbef86662d7f531cdcdab5385d9bc2ca886
     path: darling/src/external/libunwind
     userdata:
       kind: darling-source
@@ -750,8 +750,8 @@ manifest:
       kind: darling-source
       upstream-repository: darling-libxml2
   - name: darling-src-external-libxpc
-    url: https://github.com/darlinghq/darling-libxpc
-    revision: 394e033333d3c253a12f08a99090c113b0917d00
+    url: https://github.com/darling-next/darling-libxpc
+    revision: ea25865ae707c3396e3e15417c8878a67698b66d
     path: darling/src/external/libxpc
     userdata:
       kind: darling-source
@@ -779,7 +779,7 @@ manifest:
       upstream-repository: lzfse
   - name: darling-src-external-mdnsresponder
     url: https://github.com/darlinghq/darling-mDNSResponder
-    revision: 7e38ef562b4f3d41bffabb3e30d844d8042d3bbd
+    revision: 0a7cdb41233bcbaa76593f902beddf5517594539
     path: darling/src/external/mDNSResponder
     userdata:
       kind: darling-source
@@ -861,6 +861,7 @@ manifest:
     userdata:
       kind: darling-source
       upstream-repository: mruby
+      fetch-override-reason: third-party-upstream
   - name: darling-src-external-nghttp2-third-party-neverbleed
     url: https://github.com/darling-next/neverbleed
     revision: b967ca054f48a36f82d8fcdd32e54ec5144f2751
@@ -871,7 +872,7 @@ manifest:
       fetch-override-reason: darling-next-public-mirror-preserves-pin
   - name: darling-src-external-objc4
     url: https://github.com/darling-next/darling-objc4
-    revision: 53342cec3dcc9cde6dd1aa935bbe26d88c3e5aa8
+    revision: e2bbd61a2944fe66f0dd331af1b69628cbfe8280
     path: darling/src/external/objc4
     userdata:
       kind: darling-source
@@ -941,8 +942,8 @@ manifest:
       kind: darling-source
       upstream-repository: darling-pcre
   - name: darling-src-external-perl
-    url: https://github.com/darlinghq/darling-perl
-    revision: a65d68be2146d85928e511aabc8f3a2b05e564ba
+    url: https://github.com/darling-next/darling-perl
+    revision: 6c27f05a29fa6dc76fd14e485c4a76f100e6be3e
     path: darling/src/external/perl
     userdata:
       kind: darling-source
@@ -1004,8 +1005,8 @@ manifest:
       kind: darling-source
       upstream-repository: darling-screen
   - name: darling-src-external-security
-    url: https://github.com/darlinghq/darling-security
-    revision: 3cfffcf2c5b5900169c964facdf42cc05c23005c
+    url: https://github.com/darling-next/darling-security
+    revision: 1ac1ef955ad6a0bcf936a5d67b2cf248bd3816cb
     path: darling/src/external/security
     userdata:
       kind: darling-source
@@ -1025,8 +1026,8 @@ manifest:
       kind: darling-source
       upstream-repository: darling-sqlite
   - name: darling-src-external-swift
-    url: https://github.com/darlinghq/darling-swift
-    revision: 471514f4b4985a604b192e1facac9bbc53dedad3
+    url: https://github.com/darling-next/darling-swift
+    revision: 6be8b69feffc293afa74191e576408e4f5301a03
     path: darling/src/external/swift
     userdata:
       kind: darling-source
@@ -1101,6 +1102,7 @@ manifest:
     userdata:
       kind: darling-source
       upstream-repository: googletest
+      fetch-override-reason: third-party-upstream
   - name: darling-src-external-xcbuild-thirdparty-linenoise
     url: https://github.com/antirez/linenoise
     revision: c894b9e59f02203dbe4e2be657572cf88c4230c3
@@ -1108,9 +1110,10 @@ manifest:
     userdata:
       kind: darling-source
       upstream-repository: linenoise
+      fetch-override-reason: third-party-upstream
   - name: darling-src-external-xnu
-    url: https://github.com/darlinghq/darling-xnu
-    revision: 5f26a4c2365d9774b5a1e66ae7da20b61ab6d2db
+    url: https://github.com/darling-next/darling-xnu
+    revision: 7b6b865521e17c36680d2e6934e4ef58aab7a823
     path: darling/src/external/xnu
     userdata:
       kind: darling-source
@@ -1136,10 +1139,15 @@ manifest:
     userdata:
       kind: darling-source
       upstream-repository: darling-zsh
+  - name: fuse-overlayfs
+    url: https://github.com/darling-next/fuse-overlayfs
+    revision: d2a240d4e60b60fe001f6039844c711856508e78
+    userdata:
+      kind: workspace-tool
+      owner: darling-next
   - name: darling-debug-runner
     url: https://github.com/darling-next/darling-debug-runner
-    revision: dbcd8ebfbb63a94e5f3f21fb6df570b831425b33
-    path: darling-debug-runner
+    revision: 95a58fdf4930c4512c582cf3f3b410f5491590bb
     groups:
     - private
     - debug-tools

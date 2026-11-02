@@ -1,24 +1,23 @@
 #!/bin/sh
 # dwdiag -- the ONE entry point for the workspace diagnostics that used to be four separate scripts.
 #
-# It is a build-and-exec shim, not an implementation: the tool itself is the Rust crate in the sibling
-# `darling-debug-runner` repository, whose `diag` subcommands own the verdict rule, the symbolization, the crash
-# resolution and the suite table. Keeping the shim means a stable path for callers and for muscle memory, while the
-# behaviour (and its tests) live in one place with the runner's own machinery.
+# This build-and-exec shim runs the reviewed vendored Rust source, whose `diag`
+# subcommands own verdicts, symbolization and crash analysis. The standalone
+# repository owns the source; this workspace records its revision and vendors it
+# so the executable and its callers cannot silently select an older checkout.
 #
 # Usage: dwdiag <symbolize|crash|verdict|suite|progress|courier|witness|prefix|core|identity|build|cycle|mappings|env|attach-less capture> [OPTIONS]
 #        dwdiag <run|capture|darling> [OPTIONS]   # spawn-and-capture modes of the same tool, passed through
 #        dwdiag --help
 set -eu
 
-# The tool is VENDORED into this workspace so that its source, its README and the instructions that call it live in one
-# tree. The sibling repository it came from stays as a fallback for a checkout that predates the move; which one answered
-# is printed, because "the tool ran" and "the tool you documented ran" are not the same claim.
+# Resolve only the source shipped by this workspace; do not revive retired copies.
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-VENDORED="$(dirname "$SELF_DIR")/tools/darling-debug-runner"
-LEGACY=${DWDIAG_TOOL_REPO:-/home/ilyagulya/work/darling-debug-runner}
-if [ -d "$VENDORED/src" ]; then TOOL_REPO="$VENDORED"; elif [ -d "$LEGACY/src" ]; then TOOL_REPO="$LEGACY"; else
-	echo "dwdiag: no tool source found (looked in $VENDORED and $LEGACY)" >&2; exit 3; fi
+TOOL_REPO="$(dirname "$SELF_DIR")/tools/darling-debug-runner"
+if [ ! -d "$TOOL_REPO/src" ]; then
+	echo "dwdiag: vendored tool source is missing: $TOOL_REPO" >&2
+	exit 3
+fi
 BIN="$TOOL_REPO/target/release/darling-debug-runner"
 
 # REBUILD when the SOURCE is newer than the binary. MEASURED (2026-09-27): the shim only built a missing binary, so

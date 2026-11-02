@@ -19,7 +19,7 @@ manifest:
     # Product source authority: this committed tree and its exact child gitlinks.
     # Build the normal stock ALL target and complete installation.
     # Workloads, writable guest prefixes and evidence are selected separately.
-    revision: 0ac01ad9c6261b8891f1193db6396a01916d5b10
+    revision: 3c9987b1f4b6e80c474a4e7aee0ee2336f88d797
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -122,16 +122,16 @@ manifest:
   - name: darling-src-external-javascriptcore
     repo-path: darling-JavaScriptCore
     path: darling/src/external/JavaScriptCore
-    remote: darling
-    revision: 93410cc0dbc7a961d58d048c151117acdb18a566
+    remote: darling-next
+    revision: 43088165b6294c2c73c46381186d8288b976a300
     userdata:
       kind: darling-source
       upstream-repository: darling-JavaScriptCore
   - name: darling-src-external-libinfo
     repo-path: darling-Libinfo
     path: darling/src/external/Libinfo
-    remote: darling
-    revision: 9ef680edcd31158f23efbbf853868b5f5432d047
+    remote: darling-next
+    revision: 051a54d99af3bf27b0808eed9fc83cd2554e49fa
     userdata:
       kind: darling-source
       upstream-repository: darling-Libinfo
@@ -306,8 +306,8 @@ manifest:
   - name: darling-src-external-cctools
     repo-path: darling-cctools
     path: darling/src/external/cctools
-    remote: darling
-    revision: 3f713694878eb1e731f7389335a13f8974f23814
+    remote: darling-next
+    revision: 465c9ba1563fdae4e7a29808966a64dc5693394e
     userdata:
       kind: darling-source
       upstream-repository: darling-cctools
@@ -322,16 +322,16 @@ manifest:
   - name: darling-src-external-cfnetwork
     repo-path: darling-cfnetwork
     path: darling/src/external/cfnetwork
-    remote: darling
-    revision: d9e4cc3aaed42ad8f1899c283fa02f84565c82b0
+    remote: darling-next
+    revision: 18a08cc5ec6013002bd1f77f7d4e6d869a8bae2a
     userdata:
       kind: darling-source
       upstream-repository: darling-cfnetwork
   - name: darling-src-external-cocotron
     repo-path: darling-cocotron
     path: darling/src/external/cocotron
-    remote: darling
-    revision: e5a680f09ea0d4519d2012c18edbc83d4d977ac0
+    remote: darling-next
+    revision: 0234eac4335e6f0fa5d840d49f3296d4e84aa236
     userdata:
       kind: darling-source
       upstream-repository: darling-cocotron
@@ -386,8 +386,8 @@ manifest:
   - name: darling-src-external-corefoundation
     repo-path: darling-corefoundation
     path: darling/src/external/corefoundation
-    remote: darling
-    revision: 47a7f18a718ab09ee751919ea715e1b9267ea632
+    remote: darling-next
+    revision: ab9b95e359db7a11aa423705d8b1df77d92b882d
     userdata:
       kind: darling-source
       upstream-repository: darling-corefoundation
@@ -477,8 +477,8 @@ manifest:
   - name: darling-src-external-dtrace
     repo-path: darling-dtrace
     path: darling/src/external/dtrace
-    remote: darling
-    revision: 4f52343b36756e32a81eb302242ac6472e9075fa
+    remote: darling-next
+    revision: 1107ed2a70db6a4949d40b5d444f2c7c7844c1b0
     userdata:
       kind: darling-source
       upstream-repository: darling-dtrace
@@ -486,7 +486,7 @@ manifest:
     repo-path: darling-dyld
     path: darling/src/external/dyld
     remote: darling-next
-    revision: 3209fef5d799f0ee493734420c8b90b6500749ac
+    revision: c37271c75cd3a739289e4589dd53832cae13dd30
     userdata:
       kind: darling-source
       upstream-repository: darling-dyld
@@ -541,8 +541,8 @@ manifest:
   - name: darling-src-external-foundation
     repo-path: darling-foundation
     path: darling/src/external/foundation
-    remote: darling
-    revision: 750ec33e123a05442dc147f394e1f9c8d54e2455
+    remote: darling-next
+    revision: 0cace2569a893de523e2a6385dc9ab9d02a1209c
     userdata:
       kind: darling-source
       upstream-repository: darling-foundation
@@ -597,8 +597,8 @@ manifest:
   - name: darling-src-external-icu
     repo-path: darling-icu
     path: darling/src/external/icu
-    remote: darling
-    revision: 7197be1c4803d7a7b36402d95d10a2f86f7ecec6
+    remote: darling-next
+    revision: c47ec6f45bb28fb30fd898b355d10cc565b5c410
     userdata:
       kind: darling-source
       upstream-repository: darling-icu
@@ -613,8 +613,8 @@ manifest:
   - name: darling-src-external-iokitd
     repo-path: darling-iokitd
     path: darling/src/external/iokitd
-    remote: darling
-    revision: 5549ac4cd2db923c256f016a1381b3bfb716730a
+    remote: darling-next
+    revision: 8c2d1d2c50e8e8e1ea0c4fec508829b64cf96a1d
     userdata:
       kind: darling-source
       upstream-repository: darling-iokitd
@@ -653,8 +653,8 @@ manifest:
   - name: darling-src-external-libc
     repo-path: darling-Libc
     path: darling/src/external/libc
-    remote: darling
-    revision: 26bc5a0b5beb3875a149595cdfd75514c776e3b3
+    remote: darling-next
+    revision: 5cbfd80e2ccbd4b12ec1834baf45c0890be1253e
     userdata:
       kind: darling-source
       upstream-repository: darling-Libc
@@ -693,8 +693,8 @@ manifest:
   - name: darling-src-external-libdispatch
     repo-path: darling-libdispatch
     path: darling/src/external/libdispatch
-    remote: darling
-    revision: 4b2efa16e43c7c37abd4f6f27c14dcb94080dc74
+    remote: darling-next
+    revision: d97d3e71cfbcf22f60afa60ebc8a1a94094dcc88
     userdata:
       kind: darling-source
       upstream-repository: darling-libdispatch
@@ -725,10 +725,10 @@ manifest:
   - name: darling-src-external-libkqueue
     repo-path: darling-libkqueue
     path: darling/src/external/libkqueue
-    # The reviewed WR pin for this component lives on the project FORK
-    # (recovery/ring-wr); the upstream repository stays recorded in userdata.
+    # Match the declared Darling tree's exact child gitlink; retain the
+    # original upstream identity in userdata.
     remote: darling-next
-    revision: 660ebc3ae078a264503f1f54a9b76f65d46bfe2f
+    revision: 7c9ae3f88c211bdef12842e70a47846413a06e80
     userdata:
       kind: darling-source
       upstream-repository: darling-libkqueue
@@ -778,7 +778,7 @@ manifest:
     repo-path: darling-libpthread
     path: darling/src/external/libpthread
     remote: darling-next
-    revision: 4230e91447ef26fa9681462b3a135895e7106ab3
+    revision: b181d28bca497664bf4fad28621e0f99e94b9bc7
     userdata:
       kind: darling-source
       upstream-repository: darling-libpthread
@@ -842,8 +842,8 @@ manifest:
   - name: darling-src-external-libsystem
     repo-path: darling-Libsystem
     path: darling/src/external/libsystem
-    remote: darling
-    revision: 449326b12bb1d2965f593c40e8968beb7bd0317d
+    remote: darling-next
+    revision: c1058b69df172a397ca5399655fbca91eafee5d9
     userdata:
       kind: darling-source
       upstream-repository: darling-Libsystem
@@ -858,8 +858,8 @@ manifest:
   - name: darling-src-external-libtrace
     repo-path: darling-libtrace
     path: darling/src/external/libtrace
-    remote: darling
-    revision: c953eed779bb30240b28ee81cab44bf37aa24241
+    remote: darling-next
+    revision: 86fc27d693bfcb6c9ba00abb501e399d5c800c4c
     userdata:
       kind: darling-source
       upstream-repository: darling-libtrace
@@ -890,8 +890,8 @@ manifest:
   - name: darling-src-external-libxpc
     repo-path: darling-libxpc
     path: darling/src/external/libxpc
-    remote: darling
-    revision: 9b807d6a3f46cc79ce3891bdb8d68f236faff83b
+    remote: darling-next
+    revision: ea25865ae707c3396e3e15417c8878a67698b66d
     userdata:
       kind: darling-source
       upstream-repository: darling-libxpc
@@ -1181,8 +1181,8 @@ manifest:
   - name: darling-src-external-security
     repo-path: darling-security
     path: darling/src/external/security
-    remote: darling
-    revision: 1e67b69368febc2377edc7ef7c5bbcbb77a0aecb
+    remote: darling-next
+    revision: 1ac1ef955ad6a0bcf936a5d67b2cf248bd3816cb
     userdata:
       kind: darling-source
       upstream-repository: darling-security
@@ -1205,8 +1205,8 @@ manifest:
   - name: darling-src-external-swift
     repo-path: darling-swift
     path: darling/src/external/swift
-    remote: darling
-    revision: 178e1fb00ce458c82d68e170049aade31411ebce
+    remote: darling-next
+    revision: 6be8b69feffc293afa74191e576408e4f5301a03
     userdata:
       kind: darling-source
       upstream-repository: darling-swift
@@ -1336,15 +1336,15 @@ manifest:
       upstream-repository: darling-zsh
   - name: fuse-overlayfs
     path: fuse-overlayfs
-    url: https://github.com/containers/fuse-overlayfs
+    url: https://github.com/darling-next/fuse-overlayfs
     revision: d2a240d4e60b60fe001f6039844c711856508e78
     userdata:
       kind: workspace-tool
-      owner: local-hard-fork
+      owner: darling-next
   - name: darling-debug-runner
     path: darling-debug-runner
     remote: darling-next
-    revision: 5d106d347b719a5c5b66f0356e2fa9d4e894d8de
+    revision: 95a58fdf4930c4512c582cf3f3b410f5491590bb
     groups:
     - private
     - debug-tools

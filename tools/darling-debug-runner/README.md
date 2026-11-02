@@ -1,9 +1,9 @@
 # darling-debug-runner
 
-The workspace vendors this tool in `tools/darling-debug-runner`. The stable
-entry point is `scripts/dwdiag`, which builds the host runner when needed and
-prints its tool/binary provenance. Even invoking the shim for help may build it.
-The runner source is this tree, not a sibling checkout or an old keeper bundle.
+This repository owns the standalone runner source. A West workspace vendors it
+at `tools/darling-debug-runner`; in that layout the stable entry point is
+`scripts/dwdiag`, which builds the host runner when needed and prints its
+tool/binary provenance. Even invoking the shim for help may build it.
 
 The binary has two interfaces:
 
@@ -13,9 +13,9 @@ The binary has two interfaces:
   The shim supplies `diag`, so `scripts/dwdiag cycle ...` corresponds to
   `target/release/darling-debug-runner diag cycle ...`.
 
-See the [diagnostic command reference](../../docs/tooling.md#the-diagnostics-are-one-tool-dwdiag)
-for the complete roster, and [environment](../../docs/environment.md) for source,
-state and lane ownership. Examples below run from the workspace manifest.
+See the West workspace's `docs/tooling.md` for the complete diagnostic command
+roster, and `docs/environment.md` for source, state and lane ownership.
+Examples below run from the workspace manifest.
 `B`, `R`, `P`, source, fixture and log variables denote explicit paths:
 
 | Variable | Meaning |
@@ -41,6 +41,11 @@ log paths to analysis commands: newest-log discovery can select another run.
 Build the host binary from this crate with `cargo build --release` when using it
 directly. This does not build or install Darling.
 
+The companion workspace owns evidence storage, provenance and prefix lifecycle
+authorities. Both the sibling West-project and vendored source layouts are
+recognized. Set `DWDIAG_WORKSPACE` explicitly for any other layout; an invalid
+explicit selection is an error rather than a fallback to a different workspace.
+
 ```sh
 tools/darling-debug-runner/target/release/darling-debug-runner run \
   --name example --bundle-root "$DW_STATE_ROOT/bundles" \
@@ -52,6 +57,13 @@ writes a debug bundle. Preparation, capture, termination and cleanup hooks are
 explicit options. An unsuccessful command is `RESULT=failed`, not a stall, and
 returns nonzero. A bundle path alone is not proof that every requested capture
 succeeded; inspect the command result, capture output and missing/error files.
+
+SIGINT/SIGTERM request cooperative cancellation even during a long poll interval.
+The runner executes termination and cleanup before returning. A successful
+`--terminate-command` must also let the managed child exit within five seconds;
+a zero hook status alone is not cleanup proof. `--forward-output` replays the
+closed stdout/stderr logs after execution, while managed jobs register those
+logs for live observation before starting the workload.
 
 `run` is prefix-agnostic: ambient `DPREFIX` does not acquire a lease or promise
 product shutdown. An inner managed command, such as `west darling-bootstrap`,
@@ -93,9 +105,8 @@ is an explicit host-process mutation, not a prefix cleanup operation.
 Add `--tree` to capture descendants. During `run` or `darling`, use
 `--capture-gdb --capture-tree` for timeout/stall captures. `--gdb-namespace` adds
 a namespace-local GDB attach; inspect its output and permissions rather than
-assuming attach succeeded. In particular, the fatal-capture helper currently
-uses the namespace PID as nsenter's host target: do not rely on
-`--capture-on-fatal --gdb-namespace` when host and namespace PIDs differ.
+assuming attach succeeded. Namespace entry selects the host-visible PID, while
+the debugger attaches using the PID visible inside that namespace.
 
 For automatic target selection, `--capture-pattern` matches argv,
 `--capture-exe mldr` distinguishes the loader from a pre-exec launcher, and
@@ -111,9 +122,31 @@ privilege/namespace prerequisites must be available. `--capture-on-line` and
 `--stall-log` and its pattern; existing logs are followed from their current end.
 Use `--terminate-command` when the command has its own safe shutdown mechanism.
 
+`--gdb-command-file FILE` passes a real GDB script to that pre-attached
+debugger with `-x`, so breakpoint conditions and capture logic are not limited
+to command-line `-ex` expressions. It requires `--capture-gdb` and
+`--capture-on-fatal`; other modes would ignore it and are refused. The fatal
+bundle records `fatal-identity-PID.txt` before attaching, with the process start
+time, parent PID, executable and command line, so a stop is attributable to one
+incarnation even if the PID is later reused. An unreadable identity is written
+to the same file as `identity=unavailable` with its error, never as an empty
+success; `fatal-identity-error.txt` records a file-write failure.
+
+With `--capture-on-line`, stdout and stderr are followed independently unless an
+explicit `--stall-log` is selected. In fatal mode the marker arms the debugger;
+it does not terminate the workload at readiness. `--capture-exact` retains the
+separate exact-process/core capture contract used by the managed test executor.
+
+`diag unwind --pid HOST_PID --catch SIGNAL` resumes the attached target once
+and captures the actual stopped inferior, including a faulting fork child.
+Its saved `inferior-pid`, maps and stack bytes refer to that same process.
+A failed debugger session or missing stack capture returns nonzero; a signal
+line alone is not successful capture. The exact-capture integration script
+also reads archived payloads through the companion workspace's verified reader.
+
 These are host captures, not server-state queries through the C++ debugging ABI.
-No Rust darling-debug client or LLDB glue is shipped; see
-[debugger availability](../../docs/darling-debugger.md).
+No Rust darling-debug client or LLDB glue is shipped; see the workspace's
+`docs/darling-debugger.md` for debugger availability.
 
 `signal --pid HOST_PID --signal TERM` is explicit operator signaling, not prefix
 ownership or normal shutdown. On Linux an individual target is pinned with a

@@ -497,6 +497,12 @@ when no chain is available.
 signal -- the part gdb cannot do itself, since it cannot walk a guest frame. Each stopped thread is
 reported as `CATCH-STACK rsp=... frames=N` followed by its `FRAME` lines, in the same depth order.
 
+The catch resumes once, then records the stopped thread's actual inferior PID,
+maps and stack bytes. A faulting fork child is not attributed to its parent.
+Debugger errors or absent stack capture return nonzero; a delivered signal alone
+does not establish successful capture. For fatal supervision, the runner's
+`--gdb-command-file FILE` requires both `--capture-gdb` and `--capture-on-fatal`.
+
 ```
 scripts/dwdiag unwind --pid 890075 --image prefix-ios --max 6
 UNWIND pid=890075 window=524288 threads=3
