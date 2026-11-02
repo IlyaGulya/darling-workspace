@@ -6,6 +6,8 @@ Darling product source belongs to the surrounding West workspace, not this repo.
 Keep private target-project names, source URLs, identifiers, configuration,
 credentials and runtime evidence outside this repository and its Git history.
 Beads and commit messages are public too.
+After an approved public-history cleanup, re-clone or rebase clean commits;
+never merge old refs that could restore removed private history.
 
 ## Canonical environment
 

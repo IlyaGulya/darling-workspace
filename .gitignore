@@ -17,6 +17,10 @@ __pycache__/
 testkit/build/
 .west-test/
 
+# Runtime diagnostics and deployment backups belong in owned private state.
+/evidence/
+/hunt/
+
 # vendored tool build output
 tools/darling-debug-runner/target/
 
