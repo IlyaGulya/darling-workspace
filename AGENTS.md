@@ -1,7 +1,11 @@
 # Darling workspace
 
-Private coordination repository: manifests, Beads, local refs and agent workflow.
+Public coordination repository: manifests, Beads, local refs and agent workflow.
 Darling product source belongs to the surrounding West workspace, not this repo.
+
+Keep private target-project names, source URLs, identifiers, configuration,
+credentials and runtime evidence outside this repository and its Git history.
+Beads and commit messages are public too.
 
 ## Canonical environment
 
