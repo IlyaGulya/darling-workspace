@@ -34,6 +34,8 @@ never merge old refs that could restore removed private history.
   current CLI comments use `comments add ID TEXT` (also `--file`/`--message`);
   the older `comment ID TEXT` spelling is rejected. Never add Beads, agent state or workspace
   metadata to product-source commits. Stage explicit owned paths, not `git add -A`.
+- Private consumer tasks use an external `.beads` store selected with both
+  `BEADS_DIR` and `br --db`; never import that store into the public `.beads`.
 - Durable state belongs beneath the owned `DW_STATE_ROOT` or workspace state
   root, never `/tmp`. This includes prefixes, lanes, jobs and run evidence.
   Keep a checksummed acceptance-evidence copy outside GC-managed roots.

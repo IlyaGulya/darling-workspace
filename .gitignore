@@ -21,6 +21,11 @@ testkit/build/
 /evidence/
 /hunt/
 /diagnostics/
+/jobs/
+/acceptance-archive/
+/state/*
+!/state/README.md
+!/state/repos.tsv
 
 # vendored tool build output
 tools/darling-debug-runner/target/

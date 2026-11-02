@@ -7,3 +7,7 @@ initialized submodule.
 It is an audit and handoff manifest, not an automatic checkout mechanism.
 Darling's gitlinks remain authoritative for clean build pins.
 
+Only this README and the public `repos.tsv` control snapshot are versioned here.
+Keep private consumer records, diagnostic logs and runtime outputs in an owned
+state root outside this public repository.
+
