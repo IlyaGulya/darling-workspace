@@ -4827,6 +4827,42 @@ workloads:
     and membership matches the production kURLPathAllowedCharacters contract. The unimplemented
     stringByAddingPercentEncodingWithAllowedCharacters: API is reported, not gated.
   env: darling
+- id: cfurl_mounted_volumes_guest
+  name: cfurl_mounted_volumes_guest
+  module: darling/src/external/corefoundation
+  repo: darling
+  kind: guest
+  runner: guest-c-fixture
+  script: src/external/corefoundation/tests/mounted_volumes_guest.m
+  env: darling
+  coverage-tier: runtime
+  diag: guarded
+  requires:
+  - darling-prefix
+  requires-installed-paths:
+  - libexec/darling/usr/share/darling/tests/storagekit/storagekit.dmg
+  - libexec/darling/usr/share/darling/tests/storagekit/payload.txt
+  compile-flags:
+  - -x
+  - objective-c
+  - -fblocks
+  - -fno-objc-arc
+  - -Wall
+  - -Wextra
+  - -Werror
+  link-flags:
+  - -x
+  - none
+  - -Wl,-syslibroot,/
+  - -framework
+  - Foundation
+  - -framework
+  - CoreFoundation
+  run-args:
+  - /usr/share/darling/tests/storagekit/storagekit.dmg
+  - /usr/share/darling/tests/storagekit/payload.txt
+  ok-marker: CFURL_MOUNTED_VOLUMES=PASS
+  timeout-seconds: 180
 - id: pid_for_task_plane_route_guest
   module: darling/src/external/xnu
   bead: dar-liaq
@@ -5025,6 +5061,35 @@ workloads:
     \ The oracle makes the attribution mechanical for the next reader.\n"
   env: host
   coverage-tier: host
+- id: xpc_absent_service_async_guest
+  name: xpc_absent_service_async_guest
+  module: darling/src/external/libxpc
+  repo: darling
+  kind: guest
+  runner: guest-c-fixture
+  script: src/external/libxpc/test/async_missing_service_guest.c
+  env: darling
+  coverage-tier: runtime
+  diag: guarded
+  requires:
+  - darling-prefix
+  compile-flags:
+  - -std=gnu11
+  - -fblocks
+  - -Wall
+  - -Wextra
+  - -Werror
+  link-flags:
+  - -Wl,-syslibroot,/
+  - -framework
+  - Foundation
+  ok-marker: XPC_ASYNC_SMOKE=PASS
+  timeout-seconds: 90
+  note: >-
+    Unknown Mach services must invalidate queued and subsequent requests on the
+    requested queues, including replies deferred past the last caller reference.
+    A real anonymous endpoint must still work before activation and across
+    connection suspension/resumption.
 - id: xpc_sync_send_unconnected_guest
   module: darling/src/external/libxpc
   bead: dar-liaq
