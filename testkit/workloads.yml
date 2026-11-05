@@ -1320,28 +1320,30 @@ workloads:
     records RPC arguments produced by real guest syscalls; bad libsystem_kernel truncates cvlsgen and
     passes mugen as the cvbroad mutex, fixed runtime records the full generations and mutex.
   env: darling
-- id: fstatfs_missing_proc_contract
+- id: statfs_namespace_guest
   module: darling/src/external/xnu
-  bead: dar-vqr9
-  name: fstatfs_missing_proc_contract
-  kind: unit
-  coverage-tier: host
-  diag: bare
-  runner: c-fixture
-  script: darling/src/libsystem_kernel/tests/fstatfs_missing_proc_contract.c
-  source-files:
-  - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/stat/fstatfs.c
-  fixture-include-dirs:
-  - darling/src/libsystem_kernel/tests/fixtures/fstatfs-missing-proc
+  name: statfs_namespace_guest
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: src/external/xnu/darling/src/libsystem_kernel/tests/statfs_namespace_guest.c
   compile-flags:
+  - -arch
+  - x86_64
   - -std=gnu11
   - -Wall
   - -Wextra
   - -Werror
-  note: RED->GREEN contract for copy-mode prefixes where /proc/self/mounts is absent; valid fstatfs must
-    still succeed.
-  env: host
-  source-env: XNU_SRC_ROOT
+  requires:
+  - darling-prefix
+  - darling-eunion-prefix
+  ok-marker: PASS statfs_namespace_guest
+  timeout-seconds: 30
+  env: darling
+  note: Filesystem statistics must finish while another process holds the real namespace EX gate;
+    native mount metadata must not reenter guest pathname admission.
 - id: select_fdset_conversion
   module: darling/src/external/xnu
   bead: dar-q95.3
@@ -6331,6 +6333,44 @@ workloads:
   - -Wall
   - -Wextra
   - -Werror
+- id: storagekit_mount_state_guest
+  name: storagekit_mount_state_guest
+  module: darling
+  repo: darling
+  kind: guest
+  runner: guest-c-fixture
+  script: src/frameworks/StorageKit/tests/smoke.m
+  env: darling
+  coverage-tier: runtime
+  diag: guarded
+  requires:
+  - darling-prefix
+  requires-installed-paths:
+  - libexec/darling/usr/share/darling/tests/storagekit/storagekit.dmg
+  - libexec/darling/usr/share/darling/tests/storagekit/payload.txt
+  - libexec/darling/usr/share/darling/tests/storagekit/corrupt.txt
+  - libexec/darling/usr/share/darling/tests/storagekit/SKInternal.h
+  - libexec/darling/System/Library/PrivateFrameworks/StorageKit.framework/Versions/A/StorageKit
+  compile-flags:
+  - -x
+  - objective-c
+  - -fblocks
+  - -fno-objc-arc
+  - -I/usr/share/darling/tests/storagekit
+  link-flags:
+  - -Wl,-syslibroot,/
+  - -framework
+  - Foundation
+  - -x
+  - none
+  - /System/Library/PrivateFrameworks/StorageKit.framework/Versions/A/StorageKit
+  run-args:
+  - /usr/share/darling/tests/storagekit/storagekit.dmg
+  - /Volumes/storagekit regression
+  - /usr/share/darling/tests/storagekit/payload.txt
+  - /usr/share/darling/tests/storagekit/corrupt.txt
+  ok-marker: SK_SMOKE=OK
+  timeout-seconds: 180
 - id: dtape_kqchan_fill_runtime
   module: darling/src/external/darlingserver
   bead: dar-dtape-explicit-context-6to3.5
