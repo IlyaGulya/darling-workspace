@@ -20,6 +20,9 @@
 #   bash tests/run-darling-boot-verdict-contract.sh                                # must PASS
 set -uo pipefail
 
+# Synthetic host captures belong to this fixture, not an enclosing transport job.
+unset WEST_JOB_STATE_DIR WEST_JOB_ACTIVE
+
 workspace_root="$(cd "$(dirname "$0")/.." && pwd)"
 while [ $# -gt 0 ]; do
 	case "$1" in

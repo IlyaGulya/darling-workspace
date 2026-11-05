@@ -43,6 +43,10 @@ _METADATA_NAMES = {
     "cleanup-status.txt", "prefix-cleanup-status.txt", "attach-strace.txt",
     "fatal-targets.txt", "evidence-manifest",
 }
+# A caller that owns a finite record can name its exact role instead of relying
+# on a suffix. This is deliberately a closed mapping: "log" is only eligible as
+# a west-job producer log, never as a blanket extensionless-file rule.
+_FINALIZED_ROLES = {"job-log": frozenset({"log"})}
 
 
 class EvidenceError(RuntimeError):
@@ -79,7 +83,14 @@ def _blocked(path: Path, *, directory: bool = False) -> bool:
     return False
 
 
-def _eligible(path: Path, *, explicit: bool) -> bool:
+def _eligible(path: Path, *, explicit: bool, role: str | None = None) -> bool:
+    if role is not None:
+        names = _FINALIZED_ROLES.get(role)
+        if names is None:
+            raise EvidenceError(f"unknown finalized evidence role: {role}")
+        if path.name not in names:
+            raise EvidenceError(f"finalized evidence role {role!r} does not own {path.name!r}")
+        return not (path.name.startswith(".") or _blocked(path))
     name = path.name.lower()
     if name in _METADATA_NAMES:
         return False
@@ -194,6 +205,9 @@ def _verify_zstd(path: Path, expected_hash: str, expected_size: int) -> None:
             if process.poll() is None:
                 process.kill()
             process.wait()
+
+
+_WRITER_CENSUS_BATCH_SIZE = 32
 
 
 @dataclass
@@ -346,11 +360,12 @@ class _PreparedPayload:
         self.temporary.unlink(missing_ok=True)
 
 
-def _prepare_file(path: Path, *, explicit: bool, writers: _WriterSnapshot | None = None) -> dict[str, Any] | _PreparedPayload:
+def _prepare_file(path: Path, *, explicit: bool, writers: _WriterSnapshot | None = None,
+                  role: str | None = None) -> dict[str, Any] | _PreparedPayload:
     path = _absolute(path)
     result: dict[str, Any] = {"path": str(path), "action": "retained", "saved_bytes": 0}
     _no_symlinks(path)
-    if _blocked(path) or not _eligible(path, explicit=explicit):
+    if _blocked(path) or not _eligible(path, explicit=explicit, role=role):
         return {**result, "reason": "not a diagnostic payload"}
     if not path.exists() and os.path.lexists(path.with_name(path.name + ".zst")):
         metadata = payload_metadata(path)
@@ -458,11 +473,37 @@ def _publish_directory(items: list[_PreparedPayload], *, dry_run: bool, include_
     return [{**item.report, "action": "compressed", "stored_path": str(item.stored)} for item in items]
 
 
-def compress_file(path: Path, *, finalized: bool, dry_run: bool = False, explicit: bool = True) -> dict[str, Any]:
+def open_writers(paths: list[Path]) -> list[str]:
+    """Return selected paths that some process currently holds open for writing.
+
+    This is a bounded, identity-based census, not a lock probe: a producer can
+    hold raw bytes open without an advisory lock. Symlink targets are checked
+    because finalization copies their bytes into the sealed payload.
+    """
+    selected: dict[tuple[int, int], str] = {}
+    for path in paths:
+        absolute = _absolute(path)
+        try:
+            value = absolute.stat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISREG(value.st_mode):
+            selected[(value.st_dev, value.st_ino)] = str(absolute)
+    if not selected:
+        return []
+    targets = iter(selected)
+    writers: set[tuple[int, int]] = set()
+    while batch := set(itertools.islice(targets, _WRITER_CENSUS_BATCH_SIZE)):
+        writers.update(_writer_snapshot(batch).writers)
+    return sorted(selected[key] for key in writers if key in selected)
+
+
+def compress_file(path: Path, *, finalized: bool, dry_run: bool = False, explicit: bool = True,
+                  role: str | None = None) -> dict[str, Any]:
     """Archive one finalized payload, keeping raw bytes on any publication error."""
     if not finalized:
         raise EvidenceError("only explicitly finalized evidence may be compressed")
-    prepared = _prepare_file(path, explicit=explicit)
+    prepared = _prepare_file(path, explicit=explicit, role=role)
     if isinstance(prepared, dict):
         return prepared
     try:
@@ -556,7 +597,7 @@ def verify_stored(path: Path, sha256: str, size: int) -> None:
 def compress_paths(paths: list[Path], *, recursive: bool = False, dry_run: bool = False, include_tracked: bool = False) -> Iterator[dict[str, Any]]:
     """Stage bounded batches; share writer censuses and durable index updates."""
     selected = iter(_selected(paths, recursive, include_tracked=include_tracked))
-    while batch := list(itertools.islice(selected, 32)):
+    while batch := list(itertools.islice(selected, _WRITER_CENSUS_BATCH_SIZE)):
         batch = list(dict(batch).items())
         targets = set()
         for path, explicit in batch:
@@ -950,7 +991,7 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "_writer-census":
         requested = json.loads(sys.argv[2])
-        if not isinstance(requested, list) or not 0 < len(requested) <= 32 or any(
+        if not isinstance(requested, list) or not 0 < len(requested) <= _WRITER_CENSUS_BATCH_SIZE or any(
             not isinstance(key, list) or len(key) != 2 or any(not isinstance(number, int) or number < 0 for number in key)
             for key in requested
         ):

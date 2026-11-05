@@ -153,6 +153,9 @@ EXPLICIT_CONTRACTS = (
     ("runtime-proof-state", "tests/west_test_contracts/runtime_proof_state_contract.py", True),
     ("evidence-storage", "tests/west_test_contracts/evidence_storage_contract.py", True),
     ("evidence-retention", "tests/west_test_contracts/evidence_retention_contract.py", True),
+    ("runtime-image-retention", "tests/west_test_contracts/runtime_retention_contract.py", True),
+    ("run-evidence-retention", "tests/west_test_contracts/evidence_run_retention_contract.py", True),
+    ("managed-run-owner", "tests/west_test_contracts/managed_run_contract.py", True),
     ("source-search", "tests/west_test_contracts/source_search_contract.py", True),
     ("macho-inspection", "tests/west_test_contracts/macho_inspection_contract.py", True),
     (

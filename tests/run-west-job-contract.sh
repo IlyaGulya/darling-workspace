@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Failure-diagnosis assertions must not inherit an enclosing observer's opt-out.
+unset WEST_JOB_NO_AUTODIAG
+
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
 export WEST_JOB_REGISTRY_ROOT="$tmp"

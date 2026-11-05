@@ -67,6 +67,7 @@ from test_descriptor_transport import (
 )
 from test_execution import process_output_text, run_bounded
 from fresh_prefix import create_fresh_prefix, remove_fresh_prefix
+from runtime_retention import leased_runtime, runtime_use
 from lane import (
     SCOPE_ACTIVE_ENV,
     LaneError,
@@ -351,7 +352,9 @@ class DarlingTest(
         runtime = getattr(self, '_runtime', None)
         if runtime is None:
             try:
-                runtime = resolve_runtime(getattr(self, '_runtime_root', None))
+                root = getattr(self, '_runtime_root', None)
+                guards = getattr(self, '_runtime_guards', None)
+                runtime = guards.enter_context(leased_runtime(root)) if guards is not None else resolve_runtime(root)
             except (OSError, ValueError, RuntimeError) as error:
                 self.die(str(error))
             self._runtime = runtime
@@ -2720,6 +2723,9 @@ class DarlingTest(
             problems = record_problems(lane, record)
             if problems:
                 self.die(f"lane '{name}' is not usable: " + "; ".join(problems))
+            if record.get("managed_run") is not None:
+                from managed_run import authorize_lane_execution
+                authorize_lane_execution(lane, record)
             environment = lane_env(lane, record)
         except LaneError as error:
             self.die(str(error))
@@ -2757,10 +2763,25 @@ class DarlingTest(
         )
         yield
 
+    @contextmanager
+    def _runtime_use_context(self, args):
+        selected = getattr(args, "runtime_root", None) or os.environ.get("DARLING_RUNTIME_ROOT")
+        with ExitStack() as guards:
+            if selected and not getattr(args, "gc", False):
+                try:
+                    guards.enter_context(runtime_use(Path(selected)))
+                except (OSError, ValueError) as error:
+                    self.die(str(error))
+            self._runtime_guards = None if getattr(args, "gc", False) else guards
+            try:
+                yield
+            finally:
+                self._runtime_guards = None
+
     def do_run(self, args, unknown):
         try:
             with self._lane_context(args):
-                with self._fresh_prefix_context(args):
+                with self._runtime_use_context(args), self._fresh_prefix_context(args):
                     result = self._do_run(args, unknown)
         except SystemExit as error:
             if not error.code and getattr(self, "_prefix_cleanup_failed", False):

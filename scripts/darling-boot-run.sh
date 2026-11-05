@@ -48,8 +48,8 @@
 
 set -u
 
-PREFIX=""
-RUNTIME_ROOT=""
+PREFIX="${DPREFIX:-}"
+RUNTIME_ROOT="${DARLING_RUNTIME_ROOT:-}"
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DARLING_WORKSPACE_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 . "$SCRIPT_DIR/darling-runtime.sh"
@@ -151,6 +151,13 @@ done
 }
 parse_args "$@"
 
+if [ -n "${DW_MANAGED_RUN:-}" ]; then
+	if [ "$PREFIX" != "${DPREFIX:-}" ] || [ "$RUNTIME_ROOT" != "${DARLING_RUNTIME_ROOT:-}" ]; then
+		echo "REFUSING: managed lane run must use its selected DPREFIX and DARLING_RUNTIME_ROOT" >&2
+		exit 2
+	fi
+fi
+
 register_harness_output() {
 	[ -n "${WEST_JOB_STATE_DIR:-}" ] || return 0
 	[ "$LIST_OWNED" != 1 ] || return 0
@@ -218,7 +225,7 @@ fi
 if [ "$LIST_OWNED" != 1 ]; then
 	if [ -z "${WEST_TEST_PREFIX_LEASE:-}" ]; then
 		exec python3 -B "$DARLING_WORKSPACE_ROOT/west_commands/test_prefix.py" \
-			--prefix "$PREFIX" -- "$0" "$@"
+			--prefix "$PREFIX" --runtime-root "$RUNTIME_ROOT" -- "$0" "$@"
 	fi
 	[ "$WEST_TEST_PREFIX_LEASE" = "$PREFIX" ] || {
 		echo "borrowed prefix lease does not match --prefix" >&2

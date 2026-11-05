@@ -42,6 +42,25 @@ a zero. Set WEST_JOB_NO_AUTODIAG=1 to skip it, WEST_JOB_DIAG_LINES and
 WEST_JOB_DIAG_TIMEOUT_SECONDS to widen it. Runtime/prefix selections come from
 the job's actual argv (or inherited selectors only for transparent commands),
 not the observer's environment or opaque shell text.
+
+New job states are marked and locked for their lifetime. When the state
+directory is beneath DW_STATE_ROOT or WEST_JOB_RETENTION_ROOT, completing a job
+finalizes it and applies a bounded retention policy to this script's own prior
+finalized states only: the newest state stays, older states beyond
+WEST_JOB_RETENTION_KEEP_LAST (default 5) or WEST_JOB_RETENTION_MAX_BYTES
+(default 1 GiB) are pruned, and retained job logs are compacted through the
+logical evidence index. Unmarked/legacy states, live states, and states outside
+the declared root are never adopted or deleted. A completed job's log remains
+readable through the same logical resolver after compaction.
+
+An observer of a marked state leases it: follow takes the shared lease on
+.west-job.readers.lock for its whole observation and final rc/log delivery.
+Retention pruning takes that lease exclusively (plus the producer's lifetime
+.west-job.lock) before deleting, so a followed state is never removed from
+under an observer; the producer never takes the reader lease, so following a
+live job does not wait for it to finish. After leasing, follow revalidates the
+ownership marker and directory generation and refuses a state that was pruned
+or replaced in between.
 USAGE
 	exit 2
 }
@@ -49,6 +68,26 @@ USAGE
 state_dir=
 follow_timeout_seconds=0
 activity_logs=()
+finish_rc=
+
+job_retention_tool() {
+	printf '%s/../west_commands/evidence_retention.py' "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+}
+
+job_retention_root() {
+	local candidate="${WEST_JOB_RETENTION_ROOT:-${DW_STATE_ROOT:-}}"
+	[[ -n "$candidate" ]] && realpath -m -- "$candidate"
+}
+
+mark_job_state() {
+	local root
+	root="$(job_retention_root)" || root=""
+	if [[ -n "$root" ]]; then
+		python3 -B "$(job_retention_tool)" job-mark --state-dir "$state_dir" --root "$root"
+	else
+		python3 -B "$(job_retention_tool)" job-mark --state-dir "$state_dir"
+	fi
+}
 
 write_command_record() {
 	local target="$1"
@@ -272,7 +311,18 @@ register_job() {
 }
 
 finish_evidence_job() {
-	evidence_record finish
+	# A detached child may outlive the uv environment that started its caller.
+	# Do not retain Bash's cached path to a removed transient interpreter.
+	hash -r
+	evidence_record finish || printf "DIAG-UNAVAILABLE evidence finalization failed\n"
+	if [[ -f "$state_dir/.west-job-owned.json" && ! -L "$state_dir/.west-job-owned.json" && \
+		-f "$state_dir/.west-job.lock" && ! -L "$state_dir/.west-job.lock" ]]; then
+		local keep_last="${WEST_JOB_RETENTION_KEEP_LAST:-5}"
+		local max_bytes="${WEST_JOB_RETENTION_MAX_BYTES:-1073741824}"
+		python3 -B "$(job_retention_tool)" job-finalize --state-dir "$state_dir" \
+			--rc "${finish_rc:-0}" --keep-last "$keep_last" --max-bytes "$max_bytes" >/dev/null \
+			|| printf "DIAG-UNAVAILABLE job retention finalization failed\n"
+	fi
 }
 
 registry_dir_for_state_root() {
@@ -445,6 +495,11 @@ parse_state_dir() {
 			--activity-log)
 				[[ "$command" == start && $# -ge 2 && -n "$2" ]] || usage
 				activity_logs+=("$(realpath -m -- "$2")")
+				shift 2
+				;;
+			--rc)
+				[[ "$command" == finish-evidence && "$2" =~ ^[0-9]+$ ]] || usage
+				finish_rc="$2"
 				shift 2
 				;;
 			--)
@@ -652,8 +707,26 @@ start_job() {
 	trap cleanup_registry_reservation EXIT
 	reserve_job_registry_entry
 	mkdir -p "$state_dir"
-	mkdir "$state_dir/activity-logs.d"
 	REGISTRY_STATE_CREATED=1
+	(umask 077; : >"$state_dir/.west-job.lock"; : >"$state_dir/.west-job.readers.lock")
+	if [[ ! -f "$state_dir/.west-job.lock" || -L "$state_dir/.west-job.lock" ]]; then
+		echo "west job lifetime lock is not a regular file: $state_dir/.west-job.lock" >&2
+		exit 2
+	fi
+	if [[ ! -f "$state_dir/.west-job.readers.lock" || -L "$state_dir/.west-job.readers.lock" ]]; then
+		echo "west job reader lease is not a regular file: $state_dir/.west-job.readers.lock" >&2
+		exit 2
+	fi
+	exec {JOB_LOCK_FD}<>"$state_dir/.west-job.lock"
+	if ! flock -n "$JOB_LOCK_FD"; then
+		echo "west job state already has a live owner: $state_dir" >&2
+		exit 2
+	fi
+	if ! mark_job_state >/dev/null; then
+		echo "west job state ownership marker could not be published: $state_dir" >&2
+		exit 2
+	fi
+	mkdir "$state_dir/activity-logs.d"
 	write_command_record "$state_dir/command"
 	evidence_record start "${STATE_REST[@]}"
 	local -a initial_logs=()
@@ -682,7 +755,7 @@ start_job() {
 			if [[ -e "$state_dir/cancel-requested" ]]; then
 				rc=143
 			fi
-			"$job_script" finish-evidence --state-dir "$state_dir" || printf "DIAG-UNAVAILABLE evidence finalization failed\n"
+			"$job_script" finish-evidence --state-dir "$state_dir" --rc "$rc" || printf "DIAG-UNAVAILABLE evidence finalization failed\n"
 			printf "%s\\n" "$rc" >"$state_dir/rc.tmp"
 			mv "$state_dir/rc.tmp" "$state_dir/rc"
 			exit "$rc"
@@ -741,6 +814,45 @@ status_job() {
 	exit 1
 }
 
+job_reader_lease() {
+	# Only marked states are pruned by this script; legacy states are never
+	# adopted, so they keep their previous follow behaviour. The lease is what
+	# makes retention safe for a followed finalized state: shared here for the
+	# whole observation and final rc/log delivery, exclusive for pruning.
+	local directory_device directory_inode
+	local reader_device reader_inode
+	[[ -f "$state_dir/.west-job-owned.json" && ! -L "$state_dir/.west-job-owned.json" ]] || return 0
+	if [[ ! -f "$state_dir/.west-job.readers.lock" || -L "$state_dir/.west-job.readers.lock" ]]; then
+		echo "west job reader lease is not a regular file: $state_dir/.west-job.readers.lock" >&2
+		exit 2
+	fi
+	if ! read -r directory_device directory_inode < <(stat -c '%d %i' -- "$state_dir"); then
+		echo "west job state is unavailable: $state_dir" >&2
+		exit 2
+	fi
+	exec {JOB_READER_LOCK_FD}<"$state_dir/.west-job.readers.lock"
+	# Shared leases compose; an exclusive pruning lease is the only conflict.
+	if ! flock -s "$JOB_READER_LOCK_FD"; then
+		echo "west job state could not be leased for observation: $state_dir" >&2
+		exit 2
+	fi
+	if ! read -r reader_device reader_inode < <(stat -Lc '%d %i' -- "/proc/$$/fd/$JOB_READER_LOCK_FD"); then
+		echo "west job reader lease is unavailable: $state_dir" >&2
+		exit 2
+	fi
+	if [[ "$(stat -c '%d %i' -- "$state_dir/.west-job.readers.lock" 2>/dev/null || true)" != \
+		"$reader_device $reader_inode" ]]; then
+		echo "west job state was replaced before observation: $state_dir" >&2
+		exit 2
+	fi
+	if ! python3 -B "$(job_retention_tool)" job-follow-check --state-dir "$state_dir" \
+			--directory-device "$directory_device" --directory-inode "$directory_inode" \
+			--reader-device "$reader_device" --reader-inode "$reader_inode" >/dev/null; then
+		echo "west job state is not the marked generation that was leased: $state_dir" >&2
+		exit 2
+	fi
+}
+
 follow_job() {
 	# The observer stays attached. Python keeps byte cursors and partial lines in
 	# memory instead of recounting and rescanning the entire log on every tick.
@@ -749,7 +861,7 @@ follow_job() {
 	# The observer propagates the job's rc, and `set -e` would end this function on that non-zero
 	# status before anything below it ran -- which is exactly how the automatic diagnosis stayed
 	# silent. Calling it inside `if` makes the status a condition instead of an exit.
-	if python3 - "$state_dir" "$follow_timeout_seconds" "${activity_logs[@]}" <<'PY'
+	if python3 - "$state_dir" "$follow_timeout_seconds" "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" "${activity_logs[@]}" <<'PY'
 import os
 from pathlib import Path
 import re
@@ -760,6 +872,15 @@ import time
 
 state = Path(sys.argv[1])
 timeout_seconds = int(sys.argv[2])
+workspace = Path(sys.argv[3])
+extra_logs = sys.argv[4:]
+try:
+    sys.path.insert(0, str(workspace / "west_commands"))
+    from evidence_storage import EvidenceError, open_payload, resolve_payload
+except Exception:
+    EvidenceError = Exception
+    open_payload = None
+    resolve_payload = None
 started = time.monotonic()
 # The observer's heartbeat is advice about liveness, not job output: a caller
 # that wants only the job's own lines sets this to 0 and still receives the
@@ -773,7 +894,7 @@ phase = re.compile(
 
 class Log:
     def __init__(self, path, stream=False):
-        self.path = path
+        self.path = Path(path)
         self.stream = stream
         self.identity = None
         self.offset = 0
@@ -782,15 +903,65 @@ class Log:
         self.stage = "unknown"
         self.mtime = None
         self.available = False
+        self.compressed_done = False
+
+    def _compressed_update(self):
+        # An absent log is retryable: a registered activity log may be created
+        # later, and its output and phase records must still be observed. Only a
+        # completed read of the stored logical payload marks the compressed
+        # state, so a missing payload must never set compressed_done.
+        if self.compressed_done or open_payload is None or resolve_payload is None:
+            return False
+        try:
+            stored = resolve_payload(self.path)
+        except (EvidenceError, OSError):
+            return False
+        if stored == self.path:
+            # The raw log appeared between the open attempt and this fallback;
+            # the live path must observe it (and its later writes), not a
+            # stale one-shot read.
+            return False
+        try:
+            with open_payload(self.path) as source:
+                # A retry after a partial publish continues where output ended;
+                # logical readers are not seekable, so discard the prefix.
+                skipped = 0
+                while skipped < self.offset:
+                    chunk = source.read(min(1024 * 1024, self.offset - skipped))
+                    if not chunk:
+                        raise EvidenceError(f"stored evidence shortened: {self.path}")
+                    skipped += len(chunk)
+                while chunk := source.read(1024 * 1024):
+                    if self.stream:
+                        sys.stdout.buffer.write(chunk)
+                        sys.stdout.buffer.flush()
+                    lines = (self.pending + chunk).split(b"\n")
+                    self.pending = lines.pop()[-65536:]
+                    for line in lines:
+                        match = phase.fullmatch(line)
+                        if match:
+                            self.stage = match[1].decode("utf-8", errors="replace").strip()
+                    self.offset += len(chunk)
+        except (EvidenceError, OSError):
+            return False
+        self.compressed_done = True
+        self.available = True
+        try:
+            self.mtime = stored.stat().st_mtime
+        except OSError:
+            self.mtime = None
+        return False
 
     def update(self):
         self.available = False
+        if self.compressed_done:
+            return False
         try:
             # O_NONBLOCK prevents an accidentally registered FIFO from wedging
             # the observer; only regular files are followed.
             fd = os.open(self.path, os.O_RDONLY | os.O_NONBLOCK)
         except OSError:
-            return False
+            return self._compressed_update()
         with os.fdopen(fd, "rb") as source:
             info = os.fstat(source.fileno())
             if not stat.S_ISREG(info.st_mode):
@@ -831,7 +1002,7 @@ class Log:
         age = (f"{max(0, int(time.time() - self.mtime))}s"
                if self.available else "unavailable")
         stage = self.stage if self.available else "unavailable"
-        print(f"following pid={pid} state={str(state)!r} log={self.path!r} "
+        print(f"following pid={pid} state={str(state)!r} log={str(self.path)!r} "
               f"stage={stage!r} log-change-age={age}", flush=True)
 
 
@@ -953,7 +1124,7 @@ try:
                  if path)
 except FileNotFoundError:
     pass
-paths.extend(sys.argv[3:])
+paths.extend(extra_logs)
 logs = {}
 for index, path in enumerate(dict.fromkeys(paths)):
     add_log(path, stream=(index == 0))
@@ -1038,6 +1209,14 @@ cancel_job() {
 		local command_pid
 		command_pid="$(<"$state_dir/command-pid")"
 		snapshot_descendants "$command_pid" "$state_dir/cancel-descendants"
+		local owner_interrupt_rc=0
+		python3 -B "$(job_retention_tool)" job-interrupt-owners --state-dir "$state_dir" \
+			|| owner_interrupt_rc=$?
+		case "$owner_interrupt_rc" in
+			0) [[ -n "${WEST_JOB_CANCEL_GRACE_SECONDS:-}" ]] || grace_seconds=300 ;;
+			3) ;;
+			*) printf 'DIAG-UNAVAILABLE managed controller interrupt failed\n' >&2 ;;
+		esac
 		kill -INT "$command_pid" 2>/dev/null || true
 		# The command may exit before its runner finishes resource cleanup. Wait
 		# for the session wrapper so a successful cooperative cancel guarantees
@@ -1124,6 +1303,7 @@ case "$command" in
 		;;
 	follow)
 		parse_follow "$@"
+		job_reader_lease
 		follow_job
 		;;
 	assert-no-live-west-test)

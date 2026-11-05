@@ -46,10 +46,12 @@ from typing import NamedTuple
 from west.commands import WestCommand
 
 try:
-    from .runtime_install import InstalledRuntime, RuntimeInstallationError, resolve_runtime
+    from .runtime_install import InstalledRuntime, RuntimeInstallationError
+    from .runtime_retention import RuntimeRetentionError, leased_runtime
     from .test_guest_execution import run_guest_shell_argv
 except ImportError:  # Loaded as a West extension module, not a package.
-    from runtime_install import InstalledRuntime, RuntimeInstallationError, resolve_runtime
+    from runtime_install import InstalledRuntime, RuntimeInstallationError
+    from runtime_retention import RuntimeRetentionError, leased_runtime
     from test_guest_execution import run_guest_shell_argv
 
 DEFAULT_XCODE_APP = "/home/ilyagulya/work/local-target/xcode-26.3/Xcode.app"
@@ -544,10 +546,17 @@ def provision(
             f"writable guest-state prefix is not a directory: {prefix}", kind="setup"
         )
     try:
-        selected = runtime or resolve_runtime(runtime_root)
-        selected.environment(prefix)
-    except RuntimeInstallationError as error:
+        with leased_runtime(runtime_root, runtime=runtime) as selected:
+            selected.environment(prefix)
+            return _provision(
+                prefix=prefix, resolved=resolved, selected=selected,
+                guest_runner=guest_runner, log=log,
+            )
+    except (RuntimeInstallationError, RuntimeRetentionError) as error:
         raise XcodeSystemResourcesError(str(error), kind="setup") from error
+
+
+def _provision(*, prefix, resolved, selected, guest_runner, log) -> dict[str, object]:
     info = validate_package(resolved)
     log(
         "xcode-system-resources: authenticated {path} (size {size}, compressed-TOC SHA-1 {toc_sha1}, "
@@ -693,10 +702,20 @@ def guest_loader_check(
             f"writable guest-state prefix is not a directory: {prefix}", kind="setup"
         )
     try:
-        selected = runtime or resolve_runtime(runtime_root)
-        environment = selected.environment(prefix)
-    except RuntimeInstallationError as error:
+        with leased_runtime(runtime_root, runtime=runtime) as selected:
+            environment = selected.environment(prefix)
+            return _guest_loader_check(
+                workspace=workspace, prefix=prefix, selected=selected,
+                environment=environment, source=source, guest_cc=guest_cc,
+                guest_cflags=guest_cflags, log=log,
+            )
+    except (RuntimeInstallationError, RuntimeRetentionError) as error:
         raise XcodeSystemResourcesError(str(error), kind="setup") from error
+
+
+def _guest_loader_check(
+    *, workspace, prefix, selected, environment, source, guest_cc, guest_cflags, log,
+) -> str:
     fixture = source or (workspace / GUEST_CHECK_SOURCE)
     transport = workspace / GUEST_CHECK_TRANSPORT
     if not fixture.is_file():

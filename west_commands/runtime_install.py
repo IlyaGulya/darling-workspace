@@ -17,8 +17,16 @@ from typing import Iterator, Mapping, Sequence
 
 try:
     from .deploy_receipt import read_receipt, receipt_path
+    from .runtime_retention import (
+        RuntimeRetentionError, begin_publication, complete_publication, fail_publication,
+        require_publication_budget,
+    )
 except ImportError:
     from deploy_receipt import read_receipt, receipt_path
+    from runtime_retention import (
+        RuntimeRetentionError, begin_publication, complete_publication, fail_publication,
+        require_publication_budget,
+    )
 
 
 class RuntimeInstallationError(ValueError):
@@ -75,6 +83,7 @@ class InstalledRuntime:
     launcher: Path
     system_root: Path
     identity: dict | None
+    retention: tuple[dict[str, object], ...] = ()
 
     def summary(self) -> dict[str, object]:
         """Return an operational identity reference, not the complete file inventory."""
@@ -216,23 +225,72 @@ def install_runtime(
                 f"will not overwrite published or partial installation {root}; "
                 "select that installation to run it, or configure a fresh runtime root for new code"
             )
-        command = ["cmake", "--install", str(build)]
-        print(f"INSTALL: {shlex.join(command)}", file=sys.stderr, flush=True)
-        subprocess.run(command, check=True, stdout=sys.stderr, stderr=sys.stderr)
-        manifests = [build / "install_manifest.txt"]
-        if with_test_data:
-            component = ["cmake", "--install", str(build), "--component", "tests-data"]
-            print(f"INSTALL: {shlex.join(component)}", file=sys.stderr, flush=True)
-            subprocess.run(component, check=True, stdout=sys.stderr, stderr=sys.stderr)
-            data_manifest = build / "install_manifest_tests-data.txt"
-            if not data_manifest.is_file() or not data_manifest.read_text(encoding="utf-8").strip():
-                raise RuntimeInstallationError("product tests-data component did not install its declared input data")
-            manifests.append(data_manifest)
+        source_raw = cmake_cache(build).get("CMAKE_HOME_DIRECTORY")
+        source_directory = (
+            Path(source_raw) if source_raw and Path(source_raw).is_absolute() else None
+        )
         try:
-            from .deploy_receipt import publish_install_receipt
-        except ImportError:
-            from deploy_receipt import publish_install_receipt
-        publish_install_receipt(root, build, Path(manifest_repo), install_manifests=tuple(manifests))
-        return resolve_runtime(root)
+            require_publication_budget(root)
+        except RuntimeRetentionError as error:
+            raise RuntimeInstallationError(str(error)) from error
+        try:
+            managed = begin_publication(
+                root,
+                build_directory=build,
+                manifest_directory=Path(manifest_repo),
+                source_directory=source_directory,
+            )
+        except RuntimeRetentionError as error:
+            raise RuntimeInstallationError(str(error)) from error
+        try:
+            command = ["cmake", "--install", str(build)]
+            print(f"INSTALL: {shlex.join(command)}", file=sys.stderr, flush=True)
+            subprocess.run(
+                command, check=True, stdout=sys.stderr, stderr=sys.stderr,
+                pass_fds=(descriptor,),
+            )
+            manifests = [build / "install_manifest.txt"]
+            if with_test_data:
+                component = ["cmake", "--install", str(build), "--component", "tests-data"]
+                print(f"INSTALL: {shlex.join(component)}", file=sys.stderr, flush=True)
+                subprocess.run(
+                    component, check=True, stdout=sys.stderr, stderr=sys.stderr,
+                    pass_fds=(descriptor,),
+                )
+                data_manifest = build / "install_manifest_tests-data.txt"
+                if not data_manifest.is_file() or not data_manifest.read_text(encoding="utf-8").strip():
+                    raise RuntimeInstallationError("product tests-data component did not install its declared input data")
+                manifests.append(data_manifest)
+            try:
+                from .deploy_receipt import publish_install_receipt
+            except ImportError:
+                from deploy_receipt import publish_install_receipt
+            publish_install_receipt(root, build, Path(manifest_repo), install_manifests=tuple(manifests))
+            published = resolve_runtime(root)
+            retention_rows: tuple[dict[str, object], ...] = ()
+            if managed is not None:
+                try:
+                    completed = complete_publication(root)
+                except RuntimeRetentionError as error:
+                    raise RuntimeInstallationError(str(error)) from error
+                retention_rows = tuple(completed.get("retention", ())) if completed else ()
+                for row in retention_rows:
+                    if row.get("action") not in ("keep",):
+                        print(
+                            f"RETENTION: {row.get('action')}: {row.get('path')} "
+                            f"({row.get('reason')}, {row.get('bytes')} bytes)",
+                            file=sys.stderr, flush=True,
+                        )
+            return InstalledRuntime(
+                published.root, published.launcher, published.system_root,
+                published.identity, retention_rows,
+            )
+        except BaseException as error:
+            if managed is not None:
+                try:
+                    fail_publication(root, error)
+                except (OSError, ValueError):
+                    pass
+            raise
     finally:
         os.close(descriptor)

@@ -22,11 +22,13 @@ from typing import Callable, Iterable, Iterator, Mapping
 try:
     from .test_guest_execution import run_guest_argv, run_guest_shell, shutdown_guest_prefix
     from .test_execution import process_output_text, run_bounded
-    from .runtime_install import RuntimeInstallationError, prefix_path_is_safe, resolve_runtime
+    from .runtime_install import RuntimeInstallationError, prefix_path_is_safe
+    from .runtime_retention import leased_runtime
 except ImportError:
     from test_guest_execution import run_guest_argv, run_guest_shell, shutdown_guest_prefix
     from test_execution import process_output_text, run_bounded
-    from runtime_install import RuntimeInstallationError, prefix_path_is_safe, resolve_runtime
+    from runtime_install import RuntimeInstallationError, prefix_path_is_safe
+    from runtime_retention import leased_runtime
 
 ProcessEntry = tuple[int, int, str]
 
@@ -650,7 +652,7 @@ class PrefixLifecycleMixin:
                 or os.environ.get("DARLING_LAUNCHER") or shutil.which("darling")):
             return None
         try:
-            runtime = resolve_runtime(root)
+            runtime = self._installed_runtime()
         except RuntimeInstallationError as error:
             self.die(str(error))
         self._runtime = runtime
@@ -1290,13 +1292,47 @@ class PrefixLifecycleMixin:
         return "\n".join(lines)
 
 
+def _supervise_prefix_owner(command: list[str], environment: dict[str, str]) -> int:
+    """Keep the image lease out of the child while its lifecycle owner exits."""
+    child = None
+    interrupted = 0
+    previous = {}
+
+    def forward(signum, frame):
+        nonlocal interrupted
+        interrupted = interrupted or signum
+        if child is not None:
+            try:
+                child.send_signal(signum)
+            except ProcessLookupError:
+                pass
+
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous[signum] = signal.signal(signum, forward)
+        child = subprocess.Popen(
+            command, env=environment, pass_fds=(8,), start_new_session=True,
+        )
+        if interrupted:
+            forward(interrupted, None)
+        code = child.wait()
+        return 128 + interrupted if interrupted else 128 - code if code < 0 else code
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
 def _lease_exec() -> None:
-    """Exec a shell lifecycle owner with lease FD 8; runtime children close it."""
+    """Run a shell lifecycle owner with prefix FD 8 and an optional image lease."""
     import argparse
     import sys
 
     parser = argparse.ArgumentParser(description="Hold one prefix lease while executing its lifecycle owner.")
     parser.add_argument("--prefix", required=True)
+    parser.add_argument(
+        "--runtime-root",
+        help="hold the selected image through command cleanup; empty selects the environment/PATH",
+    )
     parser.add_argument("--list-owned", action="store_true")
     parser.add_argument(
         "--list-residual", action="store_true",
@@ -1356,6 +1392,10 @@ def _lease_exec() -> None:
                 os.dup2(descriptor, 8, inheritable=True)
                 os.set_inheritable(descriptor, False)
             environment = dict(os.environ, WEST_TEST_PREFIX_LEASE=args.prefix, WEST_TEST_PREFIX_LEASE_FD="8")
+            if args.runtime_root is not None:
+                with leased_runtime(args.runtime_root or None) as runtime:
+                    environment = runtime.environment(args.prefix, environment)
+                    raise SystemExit(_supervise_prefix_owner(command, environment))
             os.execvpe(command[0], command, environment)
     except (OSError, ValueError) as error:
         print(f"prefix lease: {error}", file=sys.stderr)

@@ -16,14 +16,17 @@ import subprocess
 import threading
 import time
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
 from urllib.parse import quote
 
 try:
     from .runtime_install import RuntimeInstallationError, cmake_cache, resolve_runtime
+    from .runtime_retention import leased_runtime
 except ImportError:
     from runtime_install import RuntimeInstallationError, cmake_cache, resolve_runtime
+    from runtime_retention import leased_runtime
 
 SCHEMA_VERSION = 1
 TIER_ORDER = ("quick", "canonical", "acceptance")
@@ -1334,10 +1337,8 @@ def _validate_check_inputs(inputs: dict[str, Any]) -> None:
         )
 
 
-def _validate_check_plan(plan: dict[str, Any]) -> tuple[Path, Path]:
-    _validate_plan_envelope(plan, "check")
+def _validate_check_plan(plan: dict[str, Any], runtime: Any | None) -> tuple[Path, Path]:
     inputs = plan["inputs"]
-    _validate_check_inputs(inputs)
     repo = Path(_validate_text(inputs.get("manifest_repo"), "manifest_repo"))
     evidence = Path(_validate_text(inputs.get("evidence"), "evidence"))
     if not repo.is_absolute() or not evidence.is_absolute():
@@ -1355,7 +1356,7 @@ def _validate_check_plan(plan: dict[str, Any]) -> tuple[Path, Path]:
         raise DevCheckError("manifest repository or active source changed after planning")
     if inputs.get("runtime_launcher") is not None:
         try:
-            runtime = resolve_runtime(Path(inputs["runtime_root"]))
+            assert runtime is not None
             if inputs["prefix"] is not None:
                 runtime.environment(Path(inputs["prefix"]))
         except (OSError, RuntimeInstallationError, ValueError) as error:
@@ -1503,7 +1504,21 @@ def execute_check(
     progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Execute a frozen check plan and return its durable receipt."""
-    repo, evidence = _validate_check_plan(plan)
+    _validate_plan_envelope(plan, "check")
+    _validate_check_inputs(plan["inputs"])
+    with ExitStack() as guards:
+        runtime = None
+        root = plan["inputs"].get("runtime_root")
+        if root is not None:
+            try:
+                runtime = guards.enter_context(leased_runtime(runtime=resolve_runtime(Path(root))))
+            except (OSError, RuntimeError, ValueError) as error:
+                raise DevCheckError(f"cannot acquire installed-runtime lease: {error}") from error
+        repo, evidence = _validate_check_plan(plan, runtime)
+        return _execute_check(plan, progress, repo, evidence)
+
+
+def _execute_check(plan, progress, repo: Path, evidence: Path) -> dict[str, Any]:
     evidence_fd = _open_pinned_directory(
         evidence.parent, plan["inputs"]["evidence_parent_identity"]
     )

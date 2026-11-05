@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from runtime_install import resolve_runtime
+from runtime_retention import leased_runtime
 
 MARKER = "SELFCHECK-BOOT-OK"
 
@@ -16,7 +16,11 @@ def run_boot_smoke(
     topdir: Path, prefix: Path, wait_seconds: int = 45, *, runtime_root: Path | None = None,
 ) -> tuple[bool, str]:
     """Keep complete durable evidence; artifact integrity alone is never guest readiness."""
-    runtime = resolve_runtime(runtime_root)
+    with leased_runtime(runtime_root) as runtime:
+        return _run_boot_smoke(topdir, prefix, wait_seconds, runtime=runtime)
+
+
+def _run_boot_smoke(topdir: Path, prefix: Path, wait_seconds: int, *, runtime) -> tuple[bool, str]:
     environment = runtime.environment(prefix)
     topdir = Path(topdir)
     script = next((candidate for candidate in (

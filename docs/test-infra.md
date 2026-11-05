@@ -32,7 +32,24 @@ scripts/west-job.sh cancel --state-dir /absolute/path/to/new-job
 Use a new job state directory for each run. Do not use log silence as proof of a
 hang or kill launchd/server processes by guessed PID or broad name patterns.
 Never rewrite a published installation. New code gets a new complete runtime
-root; retain image identity and the lifecycle owner's failure evidence.
+root; only a new normal installation inside an explicit `DW_STATE_ROOT` enters
+managed image retention, and source, Git, private inputs, active build forests
+and unregistered or legacy roots are never retention candidates. Admission
+refuses to start a heavy allocation when current free space is below 30 GiB.
+That floor is not a reservation, quota or allocation-size forecast. Retain
+image identity and the lifecycle owner's failure evidence.
+
+New job states are marked and lifetime-locked. Completion finalizes the
+observed command rc, compacts the bare log through the logical evidence index,
+and prunes only prior finalized states owned by this script under the same root
+(`DW_STATE_ROOT` or `WEST_JOB_RETENTION_ROOT`). Defaults are
+`WEST_JOB_RETENTION_KEEP_LAST=5` and `WEST_JOB_RETENTION_MAX_BYTES=1GiB`;
+newest/current, pinned, active, unmarked and unknown states are preserved, and
+legacy states are never adopted. `follow` holds a shared reader lease for its
+whole observation and final-rc delivery, so a live follow neither waits on the
+producer nor loses a state to pruning. Compaction and pruning do not rewrite the
+recorded command rc. Read a compacted log by its logical path rather than
+assuming `log` is still raw.
 
 `darling-boot-run.sh` handles SIGINT/SIGTERM through its ordinary prefix teardown
 while retaining the external lease, then exits 130/143 respectively. Cancellation
@@ -57,11 +74,18 @@ such overlap requires sequential
 execution before a leak claim.
 
 Two or more agents needing guest state concurrently use active lanes, not one
-shared prefix: `west dev lane create NAME --base P --runtime-root R`, then
-`west test --lane NAME --runtime-root R ...`. Provision the reviewed provider
-and pinned snapshotter explicitly with `mise run lane-provider-build` and
-`mise run lane-snapshotter-install`; there is one snapshotter store per lane
-root, no alternate-backend fallback and no per-lane `upper/`/`work/` layout.
+shared prefix. A temporary experiment uses one producer-owned managed run,
+`west dev lane run (--base INERT_PREFIX | --parent FROZEN_PARENT) -- COMMAND`,
+which owns creation, evidence and retirement; see
+[state ownership and cleanup](environment.md#durable-state-and-cleanup) for
+roots, defaults, recovery and pin controls. Do not use an ad hoc
+`create -> exec -> destroy` sequence for a temporary run. Deliberately persistent
+lanes still use `west dev lane create NAME --base P --runtime-root R`, then
+`west dev lane exec NAME -- COMMAND` or `west test --lane NAME --runtime-root R
+...`; provision the reviewed provider and pinned snapshotter explicitly with
+`mise run lane-provider-build` and `mise run lane-snapshotter-install`. There is
+one snapshotter store per lane root, no alternate-backend fallback and no
+per-lane `upper/`/`work/` layout.
 After setup/ordinary cleanup, `west dev lane freeze NAME` commits while retaining
 the original mount. `west dev lane create CHILD --parent NAME` requires that
 explicitly frozen, still-mounted parent; children inherit runtime/source
@@ -227,7 +251,11 @@ mise run west test --gc --dry-run \
 
 Ordinary GC preserves failed runtime evidence. `--gc-runtime-evidence` explicitly
 opts into collecting it; preserve required acceptance bytes outside these roots
-with SHA-256 hashes first. Never run GC unattended or delete prefix lease files.
+with SHA-256 hashes first. This generic GC remains an explicit, inspected
+operation: never run it unattended, and never adopt or clean legacy/unregistered
+roots or purge source/history caches with it. Bounded automatic retirement of
+new managed runs, job states and registered images belongs to their producer and
+stays inside its declared state root. Never delete prefix lease files.
 
 `ci/run-test-tier.sh` is the sole tier entrypoint. `ci/bootstrap-west.sh`
 materializes a clean checkout before Linux tiers. Hosted Linux jobs set
@@ -1321,6 +1349,9 @@ implementation of helper logic:
 | `west_commands/test_cmake.py` | Source CMake superproject shims, fallback registration, compiler logs and required options |
 | `west_commands/test_resources.py` | Shared typed runtime setup, with provider ordering/selection contracts |
 | `west_commands/lane_snapshotter.py`, `lane.py` | Upstream snapshot graph/storage and retained-view lifecycle; active/frozen admission, leases, product bind-clone and lane scopes |
+| `west_commands/managed_run.py` | Producer-owned temporary-run journal, scope, closed evidence, recovery and retirement |
+| `west_commands/evidence_retention.py` | Run/job evidence finalization, logical log compaction, bounded pruning and retirement journal |
+| `west_commands/runtime_retention.py` | Explicit-root new-image registry, references/pins, read-only census and bounded image retention |
 
 Update the matching focused contract when changing these interfaces (all
 entrypoints below are under `tests/`):
@@ -1336,6 +1367,18 @@ entrypoints below are under `tests/`):
 | GC, proof scratch naming, dry-run pruning | `run-west-test-gc-contract.sh` |
 | Snapshot-store inheritance, isolation, graph guard and teardown | `west_test_contracts/lane_contract.py` (real host tools/store, not a runtime model) |
 | Lane guest concurrency / `west test --lane` lifecycle | `run-darling-lane-concurrency-contract.sh`, `run-darling-lane-test-lane-contract.sh` (prefix-backed manual gates) |
+| New-image registry, pins, references and bounded retention | `west_test_contracts/runtime_retention_contract.py` (`runtime-image-retention`) |
+| Managed-run journal, recovery, evidence and retirement | `west_test_contracts/managed_run_contract.py` (`managed-run-owner`) |
+| Run-evidence finalization, bounded pruning and retirement journal | `west_test_contracts/evidence_run_retention_contract.py` (`run-evidence-retention`) |
+
+The three newly registered host gates exercise synthetic host metadata plus
+native process/file-descriptor and filesystem behavior. They are not real guest
+or installed-runtime acceptance, and native storage contracts are not a guest
+verdict. The existing `isolation-lane` host contract additionally covers the real interrupted
+base-import owner and foreign-label protection; the evidence-storage regression
+covers more than 32 files and real writer descriptors across bounded privileged
+census batches, with only the elevation transport substituted in the host
+contract.
 
 Both metadata and CTest guest-C paths route low-level `launcher shell` through
 `testkit/scripts/darling-guest-shell.sh`, which owns prefix environment and the

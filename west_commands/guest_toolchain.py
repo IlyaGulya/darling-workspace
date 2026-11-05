@@ -19,7 +19,8 @@ try:
         guest_c_fixture_prerequisite_problems,
         repair_prefix_prerequisites,
     )
-    from .runtime_install import RuntimeInstallationError, resolve_runtime
+    from .runtime_install import RuntimeInstallationError
+    from .runtime_retention import leased_runtime
     from .test_execution import ProcessResult
     from .test_guest_execution import run_guest_shell_argv
 except ImportError:  # Loaded as a West extension module, not a package.
@@ -27,7 +28,8 @@ except ImportError:  # Loaded as a West extension module, not a package.
         guest_c_fixture_prerequisite_problems,
         repair_prefix_prerequisites,
     )
-    from runtime_install import RuntimeInstallationError, resolve_runtime
+    from runtime_install import RuntimeInstallationError
+    from runtime_retention import leased_runtime
     from test_execution import ProcessResult
     from test_guest_execution import run_guest_shell_argv
 
@@ -539,7 +541,18 @@ def ensure_command_line_tools(
                 "cannot identify an installation from the guest launcher; select DARLING_RUNTIME_ROOT"
             )
         runtime_root = str(selected_launcher.parent.parent)
-    runtime = resolve_runtime(runtime_root)
+    with leased_runtime(runtime_root) as runtime:
+        return _install_command_line_tools(
+            runtime=runtime, prefix=prefix, cwd=cwd, env=env,
+            cache_dir=cache_dir, timeout_seconds=timeout_seconds, opener=opener,
+            guest_runner=guest_runner, log=log, command_prefix=command_prefix,
+        )
+
+
+def _install_command_line_tools(
+    *, runtime, prefix, cwd, env, cache_dir, timeout_seconds,
+    opener, guest_runner, log, command_prefix,
+) -> list[str]:
     env = runtime.environment(prefix, env)
     prefix = Path(prefix)
     launcher = str(runtime.launcher)

@@ -16,6 +16,10 @@
 # bundle collection, classification and storage.
 set -uo pipefail
 
+# This host fixture owns its captures; a copied harness must not register its
+# soon-to-disappear scratch paths as evidence of an enclosing transport job.
+unset WEST_JOB_STATE_DIR WEST_JOB_ACTIVE
+
 workspace_root="$(cd "$(dirname "$0")/.." && pwd)"
 harness="$workspace_root/scripts/darling-boot-run.sh"
 [ -x "$harness" ] || { echo "contract: no executable harness at $harness" >&2; exit 2; }

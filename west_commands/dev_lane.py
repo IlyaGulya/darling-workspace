@@ -119,6 +119,47 @@ def add_lane_parsers(subparsers: argparse._SubParsersAction) -> None:
     )
     execute.add_argument("command", nargs=argparse.REMAINDER)
 
+    managed = actions.add_parser(
+        "run", help="own a temporary experiment from creation through evidence and retirement"
+    )
+    origin = managed.add_mutually_exclusive_group(required=True)
+    origin.add_argument("--base", type=Path, help="inert guest-state prefix to import")
+    origin.add_argument("--parent", help="frozen parent in the selected lane root")
+    managed.add_argument("--root", type=Path, help="lane root (default DW_LANE_ROOT or STATE/l)")
+    managed.add_argument("--state-root", type=Path, help="owner root (default DW_STATE_ROOT or workspace state)")
+    managed.add_argument("--runtime-root", type=Path, help="immutable image; defaults to parent")
+    managed.add_argument("--source", type=Path, help="source selection to record, never owned or deleted")
+    managed.add_argument("--name", help="fresh lane name (default unique short name)")
+    managed.add_argument("--allow-root", action="store_true", help="new view permits root and owner")
+    managed.add_argument("--keep", action="store_true", help="retain idle lane for inspection; release with recover --release-kept")
+    managed.add_argument("--pin", action="store_true", help="protect this run's evidence from bounded retention")
+    managed.add_argument("--min-free-gib", type=int, default=30, help="reserve before allocation (default 30 GiB)")
+    managed.add_argument("--evidence-keep-last", type=int, default=5, help="maximum ordinary completed evidence count")
+    managed.add_argument("--evidence-max-gib", type=int, default=1, help="ordinary evidence budget (default 1 GiB)")
+    managed.add_argument("--runtime-keep-last", type=int, default=2, help="newest managed images, plus all pins (minimum 2)")
+    managed.add_argument("--json", action="store_true", help="JSON result on stdout; live command output on stderr")
+    managed.add_argument("command", nargs=argparse.REMAINDER)
+
+    for name in ("runs", "recover", "pin", "unpin", "images", "pin-runtime", "unpin-runtime"):
+        action = actions.add_parser(name, help={
+            "runs": "inspect managed experiment owners and final states",
+            "recover": "finish only unlocked interrupted owners through their lifecycle",
+            "pin": "protect a completed experiment's actual evidence",
+            "unpin": "release an explicit evidence pin",
+            "images": "show the managed image retention plan without deletion",
+            "pin-runtime": "protect a registered immutable image",
+            "unpin-runtime": "release a named manual image pin",
+        }[name])
+        action.add_argument("--state-root", type=Path, help="declared owner root")
+        action.add_argument("--json", action="store_true")
+        if name in ("recover", "pin", "unpin"):
+            action.add_argument("--run", type=Path, required=name != "recover", help="managed run directory")
+        if name == "recover":
+            action.add_argument("--release-kept", action="store_true", help="explicitly finish kept idle lanes")
+        if name in ("pin-runtime", "unpin-runtime"):
+            action.add_argument("--runtime-root", type=Path, required=True)
+            action.add_argument("--reason", required=True, help="stable name of the manual pin")
+
 
 def _lane_argument_root(args: Any, topdir: Path, environ: dict[str, str]) -> Path:
     declared = getattr(args, "root", None)
@@ -149,6 +190,85 @@ def _report(command: Any, payload: dict[str, Any], as_json: bool) -> None:
         command.err(message)
 
 
+def _run_managed_action(
+    command: Any, args: Any, *, topdir: Path, environ: dict[str, str],
+) -> None:
+    from managed_run import (
+        RetentionPolicy, collect_retired, list_runs, owner_root, recover_runs,
+        run_experiment, set_run_pin,
+    )
+    from runtime_retention import pin_runtime, prune_runtimes, unpin_runtime
+
+    action = args.lane_action
+    as_json = bool(args.json)
+    root = owner_root(topdir, args.state_root, environ, create=action == "run")
+    previous_root = os.environ.get("DW_STATE_ROOT")
+    os.environ["DW_STATE_ROOT"] = str(root)
+    try:
+        if action == "run":
+            argv = list(args.command)
+            if argv and argv[0] == "--":
+                argv = argv[1:]
+            selected_root = args.root or environ.get("DW_LANE_ROOT") or root / "l"
+            policy = RetentionPolicy(
+                min_free_bytes=args.min_free_gib * 2**30,
+                evidence_keep_last=args.evidence_keep_last,
+                evidence_max_bytes=args.evidence_max_gib * 2**30,
+                runtime_keep_last=args.runtime_keep_last,
+            )
+            payload = run_experiment(
+                root, Path(selected_root).expanduser().absolute(), argv,
+                base=args.base, parent=args.parent, runtime_root=args.runtime_root,
+                source=args.source, name=args.name, allow_root=args.allow_root,
+                keep=args.keep, pin=args.pin, policy=policy, json_output=as_json,
+                emit=lambda text: print(text, file=sys.stderr if as_json else sys.stdout, flush=True),
+            )
+            if as_json:
+                command.inf(json.dumps(payload, sort_keys=True, indent=2))
+            else:
+                command.inf(
+                    f"run {payload['id']}: phase={payload['phase']} workload_rc={payload['workload_rc']} "
+                    f"final_rc={payload['final_rc']} evidence={payload['path']}"
+                )
+                for problem in payload.get("cleanup", {}).get("problems", []):
+                    command.err(problem)
+                if payload.get("error"):
+                    command.err(payload["error"])
+                for row in payload.get("retention", []):
+                    if row.get("action") not in ("keep", "would-delete"):
+                        command.inf(
+                            f"retention {row.get('action')}: {row.get('path', row.get('root', root))} "
+                            f"{row.get('reason', '')}"
+                        )
+            raise SystemExit(payload["final_rc"])
+        if action == "runs":
+            payload = {"root": str(root), "runs": list_runs(root)}
+        elif action == "recover":
+            rows = recover_runs(root, run=args.run, release_kept=args.release_kept)
+            payload = {"root": str(root), "recovery": rows, "retention": collect_retired(root, RetentionPolicy())}
+        elif action in ("pin", "unpin"):
+            payload = set_run_pin(root, args.run, action == "pin")
+        elif action == "images":
+            payload = {"root": str(root), "images": prune_runtimes(root, dry_run=True)}
+        else:
+            image = args.runtime_root.expanduser().absolute()
+            if image != root and root not in image.parents:
+                raise LaneError("image pin must stay inside its declared state root")
+            key = "manual:" + args.reason
+            changed = (pin_runtime if action == "pin-runtime" else unpin_runtime)(image, key)
+            if not changed:
+                raise LaneError("image is unregistered; it is already outside automatic retention")
+            payload = {"runtime_root": str(image), "pin": key, "enabled": action == "pin-runtime"}
+        command.inf(json.dumps(payload, sort_keys=True, indent=2))
+        if action == "recover" and args.run and any(row["action"] != "recovered" for row in rows):
+            raise LaneError("selected run could not be recovered; its state was preserved")
+    finally:
+        if previous_root is None:
+            os.environ.pop("DW_STATE_ROOT", None)
+        else:
+            os.environ["DW_STATE_ROOT"] = previous_root
+
+
 def run_lane_action(
     command: Any, args: Any, *, topdir: Path, environ: dict[str, str]
 ) -> None:
@@ -156,6 +276,9 @@ def run_lane_action(
 
     action = args.lane_action
     as_json = bool(getattr(args, "json", False))
+    if action in {"run", "runs", "recover", "pin", "unpin", "images", "pin-runtime", "unpin-runtime"}:
+        _run_managed_action(command, args, topdir=topdir, environ=environ)
+        return
 
     if action == "create":
         root = _lane_argument_root(args, topdir, environ)
@@ -316,7 +439,8 @@ def _exec_in_lane(
         command.err(f"UNSAFE-NO-SCOPE lane={lane.name} command={' '.join(argv[:2])}")
     # Admission must happen again inside the scope, after any concurrent freeze,
     # and the controller must retain the lease until the actual command exits.
-    with lane_execution_lease(lane) as environment:
+    from runtime_retention import runtime_use
+    with lane_execution_lease(lane) as environment, runtime_use(Path(environment["DARLING_RUNTIME_ROOT"])):
         command.inf(
             f"lane {lane.name}: prefix={environment['DPREFIX']} "
             f"cgroup={'own scope ' + unit if use_scope else 'unwrapped'}"
@@ -325,10 +449,14 @@ def _exec_in_lane(
             child_environment = dict(os.environ, **environment)
             child_environment.pop("WEST_TEST_PREFIX_LEASE", None)
             child_environment.pop("WEST_TEST_PREFIX_LEASE_FD", None)
-            completed = subprocess.run(argv, env=child_environment)
+            if record.get("managed_run") is not None:
+                from managed_run import run_lane_payload
+                returncode = run_lane_payload(argv, child_environment, record["managed_run"])
+            else:
+                returncode = subprocess.call(argv, env=child_environment)
         except OSError as error:
             raise LaneError(f"cannot execute command in lane '{lane.name}': {error}") from error
-        raise SystemExit(completed.returncode)
+        raise SystemExit(returncode)
 
 
 def _human_bytes(count: int | None) -> str:

@@ -18,6 +18,7 @@ from runtime_install import (
     configured_runtime_root,
     install_runtime,
 )
+from runtime_retention import RuntimeRetentionError, require_publication_budget
 
 
 class DarlingBuild(WestCommand):
@@ -55,6 +56,7 @@ class DarlingBuild(WestCommand):
                     raise RuntimeInstallationError(
                         f"will not overwrite published or partial installation {root}; configure a fresh runtime root"
                     )
+                require_publication_budget(root)
                 build_runtime(build, targets=args.targets or (), jobs=args.jobs)
                 runtime = install_runtime(
                     build, root, manifest_repo=self.manifest.repo_abspath,
@@ -66,8 +68,9 @@ class DarlingBuild(WestCommand):
                     "build_dir": str(build), "runtime_root": str(root),
                     "installed": runtime is not None,
                     "installation_identity": runtime.summary() if runtime else None,
+                    "retention": list(runtime.retention) if runtime else [],
                 }
-        except (OSError, RuntimeInstallationError, subprocess.CalledProcessError) as error:
+        except (OSError, RuntimeInstallationError, RuntimeRetentionError, subprocess.CalledProcessError) as error:
             if args.json:
                 print(json.dumps({"status": "FAIL", "build_dir": str(build), "error": str(error)}, sort_keys=True))
             else:

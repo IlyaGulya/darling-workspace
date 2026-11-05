@@ -131,6 +131,64 @@ AND prefix cleanup. Separate lanes may run concurrently.
 
 ## 3. Run once and inspect evidence
 
+A temporary guest experiment is one producer-owned managed run, never an ad hoc
+`create -> exec -> destroy` sequence. It creates a fresh lane, executes through
+the actual lane `exec`, captures closed evidence and normally retires the lane on
+both success and workload failure:
+
+```bash
+export DW_STATE_ROOT=/absolute/owned/state
+export DW_LANE_ROOT="$DW_STATE_ROOT/l"
+
+mise run west -- dev lane run \
+  --base /absolute/owned/base-prefix --runtime-root /absolute/owned/runtime \
+  -- <COMMAND>...
+```
+
+`--base` imports an inert, unmounted guest prefix; the runtime is selected
+separately and remains immutable. For repeated experiments, prepare and freeze a
+persistent seed once, then fork each temporary run from it:
+
+```bash
+mise run west -- dev lane create seed --base /absolute/owned/base-prefix \
+  --runtime-root /absolute/owned/runtime
+mise run west -- dev lane exec seed -- <PREPARE_COMMAND>...
+mise run west -- dev lane freeze seed
+
+mise run west -- dev lane run --parent seed -- <COMMAND>...
+```
+
+`--parent` requires that explicitly frozen parent's original mount to stay
+retained; it never writes the frozen view. Keep low-level
+`create`/`exec`/`freeze`/`destroy` for deliberately persistent seeds and lanes,
+not for temporary experiments. `--allow-root` is per-new-view and never
+inherited; establish the host prerequisite first.
+
+Inside the run, the normal harness inherits `DPREFIX` and
+`DARLING_RUNTIME_ROOT`; do not pass those selectors or disagree with them:
+
+```bash
+mise run west -- dev lane run --parent seed -- \
+  scripts/darling-boot-run.sh --wait 120 --marker 'VERDICT: PASS'
+```
+
+The run reports `RUN=...` (on stderr when `--json` is used); `run.json` and the
+immutable `payload/` live under `S/runs/run-UUID/`. `workload_rc` is the
+command's status and `final_rc` also covers cancellation or cleanup failure. A
+`completed` phase means the resource lifecycle finished, not that the workload
+passed; missing, unknown or cancelled status is never PASS, and ambiguous capture
+leaves blocked raw state with its reason. `--keep` retains a quiesced, mounted
+lane for inspection outside automatic retirement and is released with
+`mise run west -- dev lane recover --state-root S --run RUN_DIR --release-kept --json`;
+`--pin` protects completed evidence, not the raw prefix. Inspect with
+`mise run west -- dev lane runs --state-root S --json`; use `lane recover` for
+dead-owned interrupted runs. Active owner locks, live PID generations, kept runs
+and unknown entries are preserved, and old or unregistered state is never
+adopted. Retirement intentionally keeps the lane parent, admission/prefix leases
+and a minimal tombstone; never delete them or the lane root to force reuse. Full
+roots, policy bounds and image retention are in
+[state ownership and cleanup](../../../docs/environment.md#durable-state-and-cleanup).
+
 - Read `mise run west darling-doctor --help` and select explicit `--runtime-root R`
   and `--prefix P` for the requested audit. Defaults are not workspace discovery.
   A scoped doctor pass, install receipt or successful smoke is not the enclosing
@@ -173,7 +231,9 @@ AND prefix cleanup. Separate lanes may run concurrently.
    `--check --cleanup-mounts` before using `--cleanup-mounts`. That operation
    can unmount and terminate identified Darling mount holders; it is not just
    file repair. A remaining process or mount keeps cleanup incomplete.
-5. For lanes use their supported verify/destroy lifecycle. The
+5. For lanes use their supported verify/destroy lifecycle. A temporary managed
+   run retires its own lane; for an interrupted owner inspect `lane runs` and
+   finish it through `lane recover`, not an out-of-band `destroy`. The
    `darling-rootless-debug-cleanup` command currently accepts only recognized
    disposable trees directly under `/tmp`, not canonical durable-state prefixes.
    It is not a general deletion tool and does not justify new `/tmp` prefixes.

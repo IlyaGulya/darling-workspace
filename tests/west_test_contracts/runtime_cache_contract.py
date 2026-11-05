@@ -191,6 +191,12 @@ def maintenance_contract(root: Path) -> None:
         raise AssertionError("GC escaped the declared state root")
     assert snapshot(root) == before
     assert maintenance_root(root, {"WEST_RUNTIME_BUILD_CACHE": "off"}) == root / ".west-test/runtime-build-cache"
+    explicit = root / "explicit-runtime-cache"
+    assert maintenance_root(root, {"WEST_RUNTIME_BUILD_CACHE_DIR": str(explicit)}) == explicit
+    assert maintenance_root(
+        root,
+        {"WEST_RUNTIME_BUILD_CACHE": "off", "WEST_RUNTIME_BUILD_CACHE_DIR": str(explicit)},
+    ) == explicit
 
 
 def maintenance_cli_contract(root: Path) -> None:

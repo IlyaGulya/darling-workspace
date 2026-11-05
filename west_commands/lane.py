@@ -28,6 +28,11 @@ try:
 except ImportError:  # Loaded as a West extension module, not a package.
     from runtime_install import InstalledRuntime, RuntimeInstallationError, resolve_runtime
 
+try:
+    from .runtime_retention import leased_runtime, pin_runtime, unpin_runtime
+except ImportError:
+    from runtime_retention import leased_runtime, pin_runtime, unpin_runtime
+
 from lane_snapshotter import (
     KIND_LABEL, STORE_LABEL, TREE_LABEL, SnapshotStore, SnapshotStoreError, require_allow_root,
     write_json,
@@ -867,6 +872,12 @@ def lane_execution_lease(path: Path) -> Iterator[dict[str, str]]:
         record = read_record(path)
         if record is None:
             raise LaneError(f"lane record is missing: {path}")
+        if record.get("managed_run") is not None:
+            try:
+                from .managed_run import authorize_lane_execution
+            except ImportError:
+                from managed_run import authorize_lane_execution
+            authorize_lane_execution(path, record)
         yield lane_env(path, record)
 
 
@@ -946,20 +957,26 @@ def _check_snapshot_layers(store: SnapshotStore, record: Mapping[str, Any]) -> N
             raise LaneError("frozen lane layer changed after commit")
 
 
-def _import_base(store: SnapshotStore, base: Path, identity: dict[str, Any]) -> str:
+def _base_snapshot_keys(identity: Mapping[str, Any]) -> tuple[str, str]:
     token = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-    key, active = "base-" + token, "import-" + token
+    return "base-" + token, "import-" + token
+
+
+def _import_base(store: SnapshotStore, base: Path, identity: dict[str, Any]) -> str:
+    key, active = _base_snapshot_keys(identity)
     existing = store.info(key)
     if existing is not None:
         if (existing.get("Kind") != "Committed"
                 or existing.get("Labels", {}).get(STORE_LABEL) != str(store.root)):
             raise LaneError(f"base snapshot is not owned committed state: {key}")
         return key
+    _collect_base(store, key)
     from fresh_prefix import _ignore_prefix_transients
 
     # A parentless snapshot's physical Source is the snapshotter's supported
     # import surface. Actual prefixes are always FUSE children, never bind mounts.
     recipe = store.prepare(active)
+    store.label(active, {KIND_LABEL: "base-import"})
     physical = store.layer_path(recipe["Source"])
     try:
         shutil.copytree(base, physical, dirs_exist_ok=True, symlinks=True,
@@ -979,8 +996,17 @@ def _import_base(store: SnapshotStore, base: Path, identity: dict[str, Any]) -> 
 def _collect_base(store: SnapshotStore, key: str) -> None:
     info = store.info(key)
     if (info is not None and info.get("Labels", {}).get(KIND_LABEL) == "base"
+            and info.get("Labels", {}).get(STORE_LABEL) == str(store.root)
             and not store.children(key)):
         store.remove(key)
+    if key.startswith("base-"):
+        partial = "import-" + key.removeprefix("base-")
+        pending = store.info(partial)
+        if (pending is not None and pending.get("Kind") == "Active"
+                and pending.get("Labels", {}).get(STORE_LABEL) == str(store.root)
+                and pending.get("Labels", {}).get(KIND_LABEL) == "base-import"
+                and not store.children(partial)):
+            store.remove(partial)
 
 
 def create_lane(
@@ -993,6 +1019,7 @@ def create_lane(
     runtime: InstalledRuntime | None = None,
     runtime_root: str | Path | None = None,
     allow_root: bool = False,
+    managed_run: Mapping[str, str] | None = None,
     runner: Callable[..., Any] = subprocess.run,
     mountinfo_path: Path = Path("/proc/self/mountinfo"),
     clock: Callable[[], str] | None = None,
@@ -1006,6 +1033,14 @@ def create_lane(
     from fresh_prefix import bind_prefix_clone
     from test_prefix import prefix_lease, prefix_process_ownership_snapshot
 
+    if managed_run is not None:
+        if (set(managed_run) != {"id", "path"}
+                or not re.fullmatch(r"[0-9a-f]{32}", managed_run.get("id", ""))):
+            raise LaneError("invalid managed run ownership descriptor")
+        owner = Path(managed_run["path"])
+        if (not owner.is_absolute() or ".." in owner.parts or owner.is_symlink()
+                or not owner.is_dir() or owner.stat().st_uid != os.geteuid()):
+            raise LaneError("managed run owner must be an existing owned directory")
     validate_lane_name(name)
     if (base is None) == (parent is None):
         raise LaneError("select exactly one base prefix or frozen parent lane")
@@ -1038,6 +1073,9 @@ def create_lane(
         if allow_root:
             require_allow_root()
         with SnapshotStore(root).locked(create=True) as store, ExitStack() as guards:
+            selected = guards.enter_context(leased_runtime(runtime_root, runtime=runtime))
+            selected.environment(base)
+            selected.environment(lane_prefix(lane))
             # Reserve before writing anything: mkdir must never merge with a
             # direct controller's unrecorded destination.
             retired = os.path.lexists(lane)
@@ -1065,7 +1103,7 @@ def create_lane(
                     if parent_record is None or parent_record.get("mode") != "frozen":
                         raise LaneError(f"parent lane '{parent}' must be frozen explicitly first")
                     if inherit_runtime and parent_record["runtime"]["root"] != str(selected.root):
-                        selected = resolve_runtime(parent_record["runtime"]["root"])
+                        selected = guards.enter_context(leased_runtime(parent_record["runtime"]["root"]))
                         selected.environment(base)
                         selected.environment(lane_prefix(lane))
                     problems = record_problems(parent_path, parent_record)
@@ -1073,7 +1111,7 @@ def create_lane(
                     _check_snapshot_layers(store, parent_record)
                 if problems:
                     raise LaneError("clone source is not inert and valid: " + "; ".join(problems))
-                parent_key = (_import_base(store, base_path, identity) if parent_record is None
+                parent_key = (_base_snapshot_keys(identity)[0] if parent_record is None
                               else parent_record["storage"]["key"])
                 identity_source = (explicit_source if source is not None
                                    else parent_record.get("source") if parent_record else None)
@@ -1087,9 +1125,17 @@ def create_lane(
                                 "system_root": str(selected.system_root), "identity": selected.summary()},
                     "storage": {"root": str(store.root), "key": active_key, "parent": parent_key},
                 }
+                if managed_run is not None:
+                    metadata = lane.stat()
+                    record["managed_run"] = {
+                        **managed_run, "device": metadata.st_dev, "inode": metadata.st_ino,
+                    }
                 try:
                     write_json(lane / LANE_MARKER, record)
                     (lane / RETIRED_MARKER).unlink()
+                    pin_runtime(selected.root, "lane:" + str(lane))
+                    if parent_record is None:
+                        _import_base(store, base_path, identity)
                     for subdir in LANE_SUBDIRS:
                         (lane / subdir).mkdir()
                     os.chmod(lane / RUN_DIRNAME, 0o700)
@@ -1138,6 +1184,7 @@ def create_lane(
                             store.remove(active_key)
                         _collect_base(store, parent_key)
                         _retire_lane(lane, record)
+                        unpin_runtime(selected.root, "lane:" + str(lane))
                     except Exception as cleanup_error:
                         record["mode"] = "failed"
                         record["failure"] = str(error)
@@ -1222,6 +1269,7 @@ def destroy_lane(
     *,
     runner: Callable[..., Any] = subprocess.run,
     mountinfo_path: Path = Path("/proc/self/mountinfo"),
+    before_retire: Callable[[Path, Mapping[str, Any]], None] | None = None,
 ) -> LaneResult:
     """Refuse referenced parents before touching their scope or mounted view."""
     from runtime_install import prefix_path_is_safe
@@ -1245,6 +1293,11 @@ def destroy_lane(
                 raise LaneError("lane record does not own this directory and snapshot")
             if record["storage"].get("root") != str(store.root):
                 raise LaneError("lane record names another snapshot store")
+            if record.get("managed_run") is not None and before_retire is None:
+                raise LaneError(
+                    "managed lane must finish through its run owner; "
+                    "use 'west dev lane recover' to retain its evidence before retirement"
+                )
             _lane_namespace(lane, with_data=True)
             mode = record.get("mode")
             if mode not in ("creating", "active", "freezing", "frozen", "failed", "destroying"):
@@ -1311,13 +1364,16 @@ def destroy_lane(
                 store.release_mount_service(merged)
                 if fuse_daemon_pids(lane):
                     raise LaneError("lane provider has not released its view")
+                if before_retire is not None:
+                    before_retire(lane, record)
                 if info is not None:
                     store.remove(key)
                 _collect_base(store, record["storage"]["parent"])
                 _retire_lane(lane, record)
+                unpin_runtime(Path(record["runtime"]["root"]), "lane:" + str(lane))
                 result.changed.append(f"removed lane {lane} and its snapshot; retained lease namespace")
                 store.stop_if_empty()
-    except (LaneError, SnapshotStoreError, BlockingIOError, OSError, ValueError) as error:
+    except (RuntimeError, BlockingIOError, OSError, ValueError) as error:
         result.problems.append(str(error))
     return result
 

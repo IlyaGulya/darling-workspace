@@ -42,9 +42,17 @@ never merge old refs that could restore removed private history.
 - One lifecycle owner per prefix: no overlapping runs, manual cleanup or deploy
   into another owner's runtime. Independent concurrent experiments need separate
   lanes. Never globally kill Darling processes or glob-delete prefixes/caches.
+- Temporary guest experiments use the producer-owned managed route
+  `mise run west -- dev lane run (--base INERT_PREFIX | --parent FROZEN_PARENT) -- COMMAND`;
+  it owns creation, evidence and normal retirement. Do not hand-run
+  `create -> exec -> destroy` for a temporary run; low-level
+  `create`/`exec`/`freeze`/`destroy` are for deliberately persistent seeds and
+  lanes only. `--keep` retains a quiesced lane for inspection, `--pin` protects
+  completed evidence, and `lane runs`/`recover` inspect or finish dead-owned
+  runs. A `completed` phase means resource retirement, not workload PASS.
 - Use managed run/follow/cancel and cleanup tools; observer timeout is not
   cancellation. Wait for final status AND prefix cleanup before reusing it.
-  Inspect GC dry-run and ownership before removal; never run GC unattended.
+  For generic GC, inspect dry-run and ownership first; never run it unattended.
 - Before implementing a missing API, check this tree's vendored sources/submodules,
   then the component's newer upstream release, then sibling forks. VibeDarling is
   a read-only reference, never a build source. Record what was found and why an
@@ -59,7 +67,7 @@ A tooling question also requires the relevant reference section and current help
 
 | Work | Required guidance |
 |---|---|
-| Guest launch, shellspawn, guest compilation, DCC, deploy or prefix repair | [darling-boot](.agents/skills/darling-boot/SKILL.md) |
+| Guest launch, temporary managed experiment, shellspawn, guest compilation, DCC, deploy or prefix repair | [darling-boot](.agents/skills/darling-boot/SKILL.md) |
 | Tracing, instrumentation, artifact comparison, loader closure or fault capture | [darling-diagnostics](.agents/skills/darling-diagnostics/SKILL.md), then relevant [tooling](docs/tooling.md) / [debugger](docs/darling-debugger.md) sections |
 | Adding/changing tests, runners, CMake/CTest, regression proof or acceptance claims | [darling-testing](.agents/skills/darling-testing/SKILL.md), then relevant [test infrastructure](docs/test-infra.md) sections |
 | Dirty source, checkout/update, committing, handoff or ending a changing session | [darling-durability](.agents/skills/darling-durability/SKILL.md) |

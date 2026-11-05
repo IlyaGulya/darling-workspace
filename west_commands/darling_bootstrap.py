@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from contextlib import ExitStack
 
 from west.commands import WestCommand
 
@@ -17,6 +18,7 @@ from runtime_install import (
     RuntimeInstallationError, build_lock, build_runtime, configured_runtime_root,
     install_runtime, prefix_path_is_safe, resolve_runtime,
 )
+from runtime_retention import require_publication_budget, runtime_use
 from test_execution import process_output_text
 from test_guest_execution import run_guest_shell
 from test_prefix import PrefixLifecycleOwner
@@ -63,8 +65,10 @@ class DarlingBootstrap(WestCommand):
             "build_performed": False, "installed": False, "smoke": "NOT_RUN",
             "toolchain": "NOT_RUN" if args.guest_toolchain else "NOT_REQUESTED", "cleanup": None,
         }
+        lifetime = ExitStack()
         phase = "installation"
         try:
+            lifetime.enter_context(runtime_use(args.runtime_root.expanduser()))
             exists = root.is_dir() and any(root.iterdir())
             if exists:
                 if args.build_dir and not args.no_build:
@@ -83,6 +87,7 @@ class DarlingBootstrap(WestCommand):
             else:
                 if args.build_dir is None:
                     raise RuntimeInstallationError("a fresh installation needs --build-dir configured with this CMAKE_INSTALL_PREFIX")
+                require_publication_budget(root)
                 build = args.build_dir.expanduser().resolve()
                 with build_lock(build):
                     if configured_runtime_root(build) != root:
@@ -97,6 +102,8 @@ class DarlingBootstrap(WestCommand):
                         with_test_data=args.with_test_data,
                     )
                     result["installed"] = True
+            if result["installed"]:
+                lifetime.enter_context(runtime_use(root))
             if args.with_test_data and not (runtime.system_root / "usr/share/darling/tests/eunion").is_dir():
                 raise RuntimeInstallationError("selected immutable image lacks tests-data; publish a fresh image with --with-test-data")
             result["installation_identity"] = runtime.summary()
@@ -151,6 +158,8 @@ class DarlingBootstrap(WestCommand):
             else:
                 self.err(f"bootstrap {phase} failed: {error}\ncleanup: {result['cleanup']}")
             raise SystemExit(getattr(error, "returncode", 1) or 1)
+        finally:
+            lifetime.close()
         if args.json:
             print(json.dumps(result, sort_keys=True))
         else:

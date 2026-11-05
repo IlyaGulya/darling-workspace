@@ -12,7 +12,10 @@ root, mounted by the exact reviewed West FUSE driver; there is no legacy or
 selectable alternate backend.
 
 `west dev lane` manages this lifecycle; `west test --lane NAME` runs the existing
-test runner in an active lane. `lane_snapshotter.py` owns the upstream snapshot
+test runner in an active lane. `west dev lane run` is the default mandatory route
+for a temporary experiment: it creates a fresh lane, executes the command,
+captures evidence and retires the lane normally. `lane_snapshotter.py` owns the
+upstream snapshot
 API adapter and storage services, `lane.py` owns product lifecycle and admission,
 and `dev_lane.py` owns CLI/reporting. A lane changes where a command runs and who
 owns it, not which workload is selected. Product `bind-clone`, not workspace
@@ -52,6 +55,9 @@ Two more that shape the *process* story:
 
 ## Commands
 
+Run lane commands from the manifest as `mise run west -- <west arguments>`; the
+examples below show the West CLI itself.
+
 Provision the exact tools explicitly before creating lanes:
 
 ```sh
@@ -70,9 +76,12 @@ mounts must never be overwritten.
 
 Guest disk-image mounts such as `hdiutil attach` invoke a setuid FUSE helper.
 Create a **new** view with explicit root access when that workload needs it:
-`west dev lane create NAME --parent FROZEN_PARENT --allow-root`.
-The default remains owner-only; the option is not inherited from a frozen
-parent. It never remounts an existing view.
+`west dev lane run --parent FROZEN_PARENT --allow-root -- COMMAND` for a
+temporary experiment, or
+`west dev lane create NAME --parent FROZEN_PARENT --allow-root` for a persistent
+lane. The default remains owner-only; the option is not inherited from a frozen
+parent. It never remounts an existing view. A temporary run may import an inert
+base with `--base` instead of a frozen parent.
 
 An administrator must first approve and enable `user_allow_other` in
 `/etc/fuse.conf`, preserving a backup of that file. The CLI checks this host
@@ -83,8 +92,9 @@ all-users `allow_other` mode. Kernel mount information still shows the
 owner, with ordinary file permissions unchanged.
 
 For an existing owner-only lane, finish its workload and ordinary cleanup,
-freeze it, then create a child with `--allow-root`. Do not change an active
-lane's mount options or restart another lane's provider.
+freeze it, then create a persistent child or use a managed run with
+`--allow-root`. Do not change an active lane's mount options or restart another
+lane's provider.
 
 Select an absolute owned, **short** lane root beneath your durable task state
 or owned workspace state. Guest AF_UNIX pathname limits apply after expanding
@@ -96,48 +106,95 @@ names have a separate bound. A short snapshotter socket does not remove these
 product-runtime limits; do not use symlink aliases or truncate names to bypass them.
 Bootstrap the base separately with the selected normal installation, then finish
 product shutdown and cleanup before import. `--base` selects guest state, never
-an installed image.
+an installed image; live base processes or mounts are refused. `create` and
+`run` require exactly one of `--base` and `--parent`. Set `DW_LANE_ROOT` at or
+below `DW_STATE_ROOT` when a persistent seed must serve managed runs, whose
+default lane root is `S/l`.
+
+**Persistent seed.** Deliberately retained guest state uses the low-level
+actions. Prepare it through the supported owner while it is active, then freeze
+it only after all executions and product cleanup have ended:
 
 ```sh
-export DW_LANE_ROOT=/absolute/owned/short-state/lanes
+export DW_STATE_ROOT=/absolute/owned/state
+export DW_LANE_ROOT="$DW_STATE_ROOT/l"
 
-# Exactly one of --base PREFIX and --parent NAME is required.
-# Import an inert managed prefix. Live base processes or mounts are refused.
+# Import an inert guest prefix; runtime selection is separate and immutable.
 west dev lane create seed --base /abs/base-prefix --runtime-root /abs/runtime
-
-# Prepare guest state through the supported owner while seed is active.
-west dev lane exec --root "$DW_LANE_ROOT" seed -- <command>
-west test --lane seed --runtime-root /abs/runtime --workload WORKLOAD_ID
-
-# Freeze explicitly, only after all executions and product cleanup have ended.
+west dev lane exec seed -- <prepare command>
 west dev lane freeze seed
+```
 
-# Forks inherit the frozen snapshot, plus runtime/source selection by default.
-west dev lane create lane-a --parent seed
-west dev lane create lane-b --parent seed
-west dev lane status seed
-west dev lane list
-west dev lane verify lane-a
-west dev lane exec --root "$DW_LANE_ROOT" lane-a -- <command>
-west test --lane lane-b --runtime-root /abs/runtime --workload WORKLOAD_ID
+**Temporary experiments.** A temporary experiment must use the managed run,
+which always creates a fresh lane and refuses an existing namespace. It executes
+through the actual lane `exec`, captures evidence, then retires the lane with the
+same supported destroy path.
 
-# For a second generation: finish lane-a's work, freeze it, then fork it.
-west dev lane freeze lane-a
-west dev lane create grandchild --parent lane-a
+```sh
+# Fork from the frozen seed; runtime/source selection is inherited by default.
+west dev lane run --parent seed -- <command>
 
-# Delete reverse ancestry. A referenced parent is refused without losing its mount.
-west dev lane destroy grandchild
-west dev lane destroy lane-a
-west dev lane destroy lane-b
+# Or import an inert base directly when no reusable seed is needed.
+west dev lane run --base /abs/base-prefix --runtime-root /abs/runtime -- <command>
+
+# Retain a quiesced mounted lane for inspection, then release it.
+west dev lane run --parent seed --keep --name inspect-a -- <command>
+west dev lane recover --state-root "$DW_STATE_ROOT" \
+  --run "$DW_STATE_ROOT/runs/run-<id>" --release-kept --json
+
+# Protect completed evidence from bounded retention; inspect/recover owners.
+west dev lane run --parent seed --pin -- <command>
+west dev lane runs --state-root "$DW_STATE_ROOT" --json
+west dev lane recover --state-root "$DW_STATE_ROOT" --json
+```
+
+A managed run's evidence lives under `S/runs/run-UUID/`: mutable `run.json` and
+an immutable `payload/` with full `SHA256SUMS` and capture provenance. Evidence
+selection covers logs, cores, receipts, state diagnostics and command outputs,
+never the whole prefix, SDK, source, Git or build caches. `--keep` retains a
+quiesced mounted lane outside automatic retirement; `--pin` protects completed
+evidence, not the raw prefix. A `completed` phase means the resource lifecycle
+finished, not that the workload passed: `workload_rc` is the command's own status
+and `final_rc` also includes cancellation or cleanup failure. Missing, unknown
+or blocked status is never PASS. Ambiguous capture or ownership leaves a
+`blocked` run with its reason and raw state; recovery preserves it rather than
+inventing success.
+
+`lane runs` and `lane recover` preserve active owner locks, live PID
+generations, kept runs and unknown entries, and recover only dead-owned
+interrupted owners through the same native cleanup. A managed run requires a
+fresh lane name and never adopts existing, old or unregistered lane/run data.
+See [state ownership and cleanup](environment.md#durable-state-and-cleanup) for
+roots, retention bounds and image policy.
+
+**Explicitly persistent lanes.** Low-level `create`/`exec`/`destroy` remain for
+long-lived lanes, deliberate bases and inspection, not as a shortcut for a
+temporary experiment:
+
+```sh
+west dev lane create persistent-a --parent seed
+west dev lane status persistent-a
+west dev lane verify persistent-a
+west dev lane exec persistent-a -- <command>
+west test --lane persistent-a --runtime-root /abs/runtime --workload WORKLOAD_ID
+
+# Freeze it to serve further children, or retire it through the supported path.
+west dev lane freeze persistent-a
+west dev lane run --parent persistent-a -- <command>
+west dev lane destroy persistent-a
+
+# Delete reverse ancestry; a referenced parent is refused without losing its mount.
 west dev lane destroy seed
 ```
 
 Freeze commits the snapshot **without unmounting the original view**. It requires
 an idle lane scope, exclusive lane admission, an available exclusive prefix lease
-and a quiescent managed prefix. A parent must already be frozen and retain its original mount; create
-does not freeze implicitly. Frozen lanes remain inspectable/verifiable, but
-`exec` and `west test --lane` reject them. There is no thaw operation: create a
-child to continue work. The root's operation lease serializes storage graph and
+and a quiescent managed prefix. A parent must already be frozen and retain its
+original mount; `create` does not freeze implicitly, and a managed run never
+freezes its own lane. Frozen lanes remain inspectable/verifiable, but `exec` and
+`west test --lane` reject them. There is no thaw operation: create a persistent
+child, or use a managed `lane run --parent FROZEN_PARENT` for a temporary one, to
+continue work. The root's operation lease serializes storage graph and
 lane-record publication.
 
 Destroy retires a lane rather than deleting its lease namespace. It removes
@@ -146,7 +203,11 @@ keeps the same parent directory, `.execution.lock`, external prefix lease and
 owned product sibling lock files, plus `.retired-lane.json`. This small marker
 contains only schema/name/root/UID and the parent device/inode: it holds no
 runtime-image, source or snapshot references and pins no runtime installation.
-Retired names disappear from `list`; `status` treats them as missing.
+Retired names disappear from `list`; `status` treats them as missing. A managed
+run invokes this same retirement automatically and leaves the same persistent
+lock and tombstone metadata; that small residue is intentional, not leaked guest
+storage. Do not destroy a managed owner's lane out-of-band while it is live, and
+never delete the lane parent, locks or lane root to reclaim space.
 
 A later `create` with the same name can reuse that exact retired parent and
 lease domain with a newly selected base or frozen parent and installed runtime.
@@ -163,22 +224,24 @@ Children depend on frozen layer bytes remaining stable.
 `west test --lane NAME` selects an existing active lane and cannot combine with
 `--prefix`. Select the same immutable installation recorded by the lane. Workload
 and source selection remain independent of the installed image. Both test and
-exec re-enter their own per-lane scope before admission. The test controller
-retains its normal external prefix lease through execution/cleanup. Arbitrary
-`exec` commands instead hold a lane admission lease; no lifecycle descriptor or
-borrowed-lease marker is passed into the command or its runtime children.
-Nested supported controllers acquire their own prefix lease normally.
-Freeze requires exclusive admission and cannot race an admitted command.
-The transient scope owns materialization, guest work and cleanup; an interrupted
-run with remaining owned processes prevents another experiment in that lane.
-Commands preserve the mounted view and its writes for inspection/reuse.
+exec re-enter their own per-lane scope before admission; a managed run executes
+through that lane `exec`. The test controller retains its normal external prefix
+lease through execution/cleanup. Arbitrary `exec` commands instead hold a lane
+admission lease; no lifecycle descriptor or borrowed-lease marker is passed into
+the command or its runtime children. Nested supported controllers acquire their
+own prefix lease normally. Freeze requires exclusive admission and cannot race
+an admitted command. The transient scope owns materialization, guest work and
+cleanup; an interrupted run with remaining owned processes prevents another
+experiment in that lane. Low-level `exec` commands preserve the mounted view and
+its writes for inspection/reuse; a managed run retires its lane unless `--keep`
+retained it.
 
 **Admission fails closed.** A missing/remounted view, changed mount lifetime,
 incomplete/failed lane mode or invalid frozen ancestor prevents execution and
 forking. The retained identity includes boot ID, mount ID and device/inode;
 a reboot ends that lifetime. Do not reanchor metadata to make a lost view appear
 valid. No working per-lane user scope means `west test --lane` refuses execution.
-`west dev lane exec --root "$DW_LANE_ROOT" --no-scope lane-a -- <command>` is the
+`west dev lane exec --root "$DW_LANE_ROOT" --no-scope NAME -- <command>` is the
 explicit **UNSAFE FOR CONCURRENT AGENTS** escape from scope ownership only; it
 does not bypass mount/mode admission or the lane admission lease.
 
@@ -192,7 +255,8 @@ does not bypass mount/mode admission or the lane admission lease.
     commit.json                transient durable intent preserving labels across upstream Commit
     data/                      upstream-owned metadata and numeric layer directories
   <name>/
-    lane.json                  schema 2; mode, snapshot ancestry, mount/runtime/source identity
+    lane.json                  schema 2; mode, snapshot ancestry, mount/runtime/source identity,
+                               plus the managed-run owner identity for a temporary lane
     .execution.lock            shared exec admission; exclusive create/freeze/destruction
     .west-prefix-lease-<hash>   persistent external lease for merged; survives retirement
     .darling-prefix-lock-v2-*  owned product sibling locks; also survive retirement
@@ -207,6 +271,9 @@ does not bypass mount/mode admission or the lane admission lease.
     .west-prefix-lease-<hash>   same prefix lease inode
     .darling-prefix-lock-v2-*  retained owned product sibling locks, when present
 ```
+
+A managed run keeps its closed evidence outside the lane, in
+`<state root>/runs/run-UUID/`; lane retirement does not remove it.
 
 There are no per-lane `upper/` or `work/` directories. The snapshotter alone owns
 layer IDs, storage paths and ancestry. Status exposes mode, parent, snapshot,
@@ -350,7 +417,9 @@ about its artifact.
 
 ## Cleanup
 
-`west dev lane destroy` is the only supported way to remove a lane:
+`west dev lane destroy` is the only supported way to remove a lane; a managed
+run invokes it automatically after capturing evidence. Do not call it
+out-of-band on a live owner's lane.
 
 1. validate schema/store ownership, retained mount identities and graph
    references **before** disrupting a retained parent; descendants prevent
@@ -378,12 +447,12 @@ owner. A missing original retained mount is a fail-closed diagnostic, not an
 invitation to remount/rewrite its identity; preserve the evidence and resolve
 through the owner instead of forcing graph teardown.
 
-Lane roots are not GC-managed. `DW_STATE_ROOT` keeps each lane's evidence in
-that lane; preserve required evidence outside a lane before destroying it.
-The retained tombstone is intentional, not leaked guest storage. Even when a
-gate drops successful-run evidence without `--keep`, it preserves these parents,
-their leases and the store coordination namespace. Do not recursively delete a
-lane root as an alternative cleanup path.
+Lane roots are not GC-managed. A lane's own state and evidence live in that
+lane; a managed run's closed evidence lives under `S/runs/run-UUID/`. Preserve
+required evidence outside a lane before destroying it. The retained tombstone is
+intentional, not leaked guest storage. Evidence retention never removes these
+parents, their leases or the store coordination namespace. Do not recursively
+delete a lane root as an alternative cleanup path.
 
 ## Rootless Podman: evaluated, not adopted
 
@@ -430,7 +499,9 @@ require a real bootstrapped **idle** base and the same host tools, explicitly
 freeze one parent, and create children with `--parent`. Never run the gates
 against one base concurrently: use separate prepared base prefixes/owners.
 Run each through `scripts/west-job.sh start`/`follow`, select a short absent/empty
-`--root` beneath owned durable state, and use `--keep` to retain run evidence.
+`--root` beneath owned durable state, and pass the gate's own `--keep` only when
+its scratch directory must be retained. These gates intentionally exercise the
+low-level lane lifecycle, not the temporary managed-run owner.
 Both gates check minimal retirement and preserved parent/admission/prefix-lease
 inodes for both children and their parent, as well as storage/service teardown.
 The concurrency gate keeps B running until the controller observes A's product

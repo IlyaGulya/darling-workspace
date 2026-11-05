@@ -17,9 +17,9 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "west_commands"))
 
-from lane import LaneError, destroy_lane, lane_path, mount_targets, validate_lane_name
+from lane import _collect_base, LaneError, destroy_lane, lane_path, mount_targets, validate_lane_name
 from lane_provider import workspace_topdir
-from lane_snapshotter import SnapshotStore, SnapshotStoreError
+from lane_snapshotter import KIND_LABEL, STORE_LABEL, SnapshotStore, SnapshotStoreError
 
 
 def refuses(call, exception):
@@ -70,6 +70,39 @@ def contract(root):
     store = SnapshotStore(root / "lanes")
     views = {name: root / name for name in ("parent", "child", "sibling", "grandchild")}
     mounted_identities = {}
+
+    # A real owner dies during base import. Recovery uses the persisted native
+    # graph, and a matching key is not authority to delete another owner's node.
+    interrupted = "a" * 64
+    child = subprocess.run([
+        sys.executable, "-B", "-c",
+        "import os,sys\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[1])\n"
+        "from lane_snapshotter import SnapshotStore,KIND_LABEL\n"
+        "s=SnapshotStore(Path(sys.argv[2]))\n"
+        "with s.locked(create=True):\n"
+        "    r=s.prepare('import-'+sys.argv[3])\n"
+        "    s.label('import-'+sys.argv[3],{KIND_LABEL:'base-import'})\n"
+        "    (s.layer_path(r['Source'])/'partial').write_bytes(b'interrupted import')\n"
+        "    os._exit(29)\n",
+        str(ROOT / "west_commands"), str(store.lane_root), interrupted,
+    ], capture_output=True, text=True, timeout=30)
+    assert child.returncode == 29, child.stdout + child.stderr
+    with store.locked():
+        pending = store.info("import-" + interrupted)
+        assert pending is not None and pending["Kind"] == "Active"
+        _collect_base(store, "base-" + interrupted)
+        assert store.info("import-" + interrupted) is None
+        foreign_key = "base-" + "b" * 64
+        store.prepare("foreign-import")
+        store.label("foreign-import", {KIND_LABEL: "base"})
+        store.commit(foreign_key, "foreign-import")
+        store.label(foreign_key, {STORE_LABEL: "/unrelated-owner"})
+        foreign_before = store.info(foreign_key)
+        _collect_base(store, foreign_key)
+        assert store.info(foreign_key) == foreign_before
+        # Undo only this fixture's deliberate label mutation before teardown.
+        store.label(foreign_key, {STORE_LABEL: str(store.root)})
+        store.remove(foreign_key)
 
     with store.locked(create=True):
         assert store.snapshots() == []

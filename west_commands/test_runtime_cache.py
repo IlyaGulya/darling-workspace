@@ -44,6 +44,9 @@ DEFAULT_MAX_BYTES = 12 * 1024**3
 MARKER_NAME = ".west-runtime-cache.json"
 SOURCE_KIND = "west-runtime-source"
 BUILD_KIND = "west-runtime-build"
+STORE_SWITCH = "WEST_RUNTIME_BUILD_CACHE"
+STORE_DIRECTORY = ".west-test"
+STORE_NAME = "runtime-build-cache"
 
 
 
@@ -102,9 +105,16 @@ def maintenance_root(
     if override is not None:
         return Path(override).expanduser().absolute()
     configured = dict(environ)
-    configured.pop("WEST_RUNTIME_BUILD_CACHE", None)
-    root = cache_root(manifest_repo, configured)
-    assert root is not None
+    configured.pop(STORE_SWITCH, None)
+    root = store_root(
+        manifest_repo,
+        configured,
+        switch=STORE_SWITCH,
+        directory=STORE_DIRECTORY,
+        default_name=STORE_NAME,
+    )
+    if root is None:
+        raise ValueError("runtime build cache store is disabled")
     return root
 
 

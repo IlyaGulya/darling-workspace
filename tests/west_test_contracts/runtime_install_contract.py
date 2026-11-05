@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import types
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "west_commands"))
@@ -44,6 +45,7 @@ from deploy_receipt import read_receipt, receipt_path, verify_receipt
 from runtime_install import (
     RuntimeInstallationError, build_runtime, install_runtime, resolve_runtime,
 )
+from runtime_retention import registered_runtime, runtime_use
 
 
 CMAKE_PROJECT = r'''cmake_minimum_required(VERSION 3.18)
@@ -142,6 +144,9 @@ def expect_install_refusal(build: Path, runtime: Path, manifest: Path) -> None:
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="west-real-install-contract-") as directory:
         root = Path(directory)
+        managed_state = root / "managed state"
+        managed_state.mkdir()
+        os.environ["DW_STATE_ROOT"] = str(managed_state)
         source = root / "host source with spaces"
         source.mkdir()
         (source / "CMakeLists.txt").write_text(CMAKE_PROJECT)
@@ -242,6 +247,50 @@ def main() -> None:
         unrecorded = snapshot(second)
         package_runtime = resolve_runtime(second)
         assert package_runtime.identity is None and snapshot(second) == unrecorded
+
+        # A NEW normal publication inside an explicitly declared DW_STATE_ROOT is
+        # registered and receives a use lease; a sibling legacy root is not adopted.
+        managed_image = managed_state / "published image three"
+        configure(source, build, managed_image, "three")
+        with patch.dict(os.environ, {"DW_STATE_ROOT": str(managed_state)}):
+            returncode, published_managed = build_command(manifest, build, managed_image)
+        assert returncode == 0 and published_managed["installed"] is True, published_managed
+        assert isinstance(published_managed.get("retention"), list), published_managed
+        assert all(
+            row.get("action") != "error" for row in published_managed["retention"]
+        ), published_managed["retention"]
+        managed_status = registered_runtime(managed_image)
+        assert managed_status is not None, managed_status
+        assert managed_status["state"] == "published" and managed_status["problems"] == []
+        assert registered_runtime(image) is None and registered_runtime(second) is None
+        managed_snapshot = snapshot(managed_image)
+        with runtime_use(managed_image) as registration:
+            assert registration is not None
+            assert registration["root"] == str(managed_image)
+            assert registration["state"] == "published"
+            assert resolve_runtime(managed_image).identity is not None
+        assert snapshot(managed_image) == managed_snapshot
+
+        # Exercise the actual publisher, not a separate collector invocation:
+        # new normal installations evict old images, but never an active reader.
+        managed_four = managed_state / "published image four"
+        managed_five = managed_state / "published image five"
+        with runtime_use(managed_image):
+            for destination, version in ((managed_four, "four"), (managed_five, "five")):
+                configure(source, build, destination, version)
+                returncode, result = build_command(manifest, build, destination)
+                assert returncode == 0 and result["installed"] is True, result
+            assert snapshot(managed_image) == managed_snapshot
+            assert run(str(managed_four / "bin/darling"), "--host-contract-version").stdout.strip() == "four"
+            assert run(str(managed_five / "bin/darling"), "--host-contract-version").stdout.strip() == "five"
+        managed_six = managed_state / "published image six"
+        configure(source, build, managed_six, "six")
+        returncode, result = build_command(manifest, build, managed_six)
+        assert returncode == 0 and result["installed"] is True, result
+        assert not managed_image.exists() and not managed_four.exists(), result
+        assert run(str(managed_five / "bin/darling"), "--host-contract-version").stdout.strip() == "five"
+        assert run(str(managed_six / "bin/darling"), "--host-contract-version").stdout.strip() == "six"
+        assert snapshot(image) == published_bytes and snapshot(second) == unrecorded
 
     print("PASS real CMake/compiler/install immutable runtime consumer contract (host only; no guest boot)")
 

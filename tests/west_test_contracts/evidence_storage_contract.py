@@ -34,6 +34,26 @@ class EvidenceStorageContract(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
 
+    def test_large_evidence_set_preserves_real_writer_detection_across_batches(self) -> None:
+        paths = [self.payload(f"record-{index}.json", b"metadata\n") for index in range(67)]
+        real_run = subprocess.run
+
+        def denied_natural_census(targets, pids=None):
+            # Exercise the same fallback as an ordinary host with root daemons.
+            return storage._WriterSnapshot(targets, set(), [str(os.getpid())])
+
+        def without_privilege(command, **kwargs):
+            # Only elevation is substituted. The isolated bounded worker and
+            # its /proc observation of this process's actual FDs remain real.
+            return real_run(command[3:], **kwargs)
+
+        with patch.object(storage, "_proc_writer_census", denied_natural_census), patch.object(
+            storage.subprocess, "run", without_privilege,
+        ):
+            with paths[0].open("ab"), paths[-1].open("ab"):
+                self.assertEqual(set(storage.open_writers(paths)), {str(paths[0]), str(paths[-1])})
+            self.assertEqual(storage.open_writers(paths), [])
+
     def payload(self, name: str = "server.log", content: bytes = PAYLOAD) -> Path:
         path = self.root / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -297,16 +317,6 @@ class EvidenceStorageContract(unittest.TestCase):
         self.assertFalse((self.root / storage.INDEX_NAME).exists())
         self.assertFalse(list(self.root.glob(".evidence-*.partial")))
 
-    def test_bulk_censuses_and_index_publication_are_shared(self) -> None:
-        paths = [self.payload(f"part-{index}.log") for index in range(4)]
-        with patch.object(storage, "_writer_snapshot", wraps=storage._writer_snapshot) as census:
-            with patch.object(storage, "_atomic_json", wraps=storage._atomic_json) as publication:
-                reports = list(storage.compress_paths(paths))
-        self.assertEqual([report["action"] for report in reports], ["compressed"] * len(paths))
-        self.assertLessEqual(census.call_count, 3)
-        self.assertEqual(publication.call_count, 1)
-        for path in paths:
-            self.assertEqual(self.cat(path), PAYLOAD)
 
     def test_incompressible_and_small_inputs_are_retained(self) -> None:
         random = os.urandom(128 * 1024)

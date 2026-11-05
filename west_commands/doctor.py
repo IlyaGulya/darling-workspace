@@ -18,7 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from deploy_receipt import receipt_path, verify_receipt
 from prefix_repair import prefix_boot_phase, prefix_boot_prerequisite_problems
 from runtime_boot_smoke import run_boot_smoke
-from runtime_install import cmake_cache, resolve_runtime
+from runtime_install import cmake_cache
+from runtime_retention import leased_runtime
 
 
 SCHEMA_VERSION = 1
@@ -517,7 +518,10 @@ class DarlingDoctor(WestCommand):
 
     def _check_installation(self, args):
         self._section("3. installed-runtime integrity")
-        runtime = resolve_runtime(args.runtime_root)
+        with leased_runtime(args.runtime_root) as runtime:
+            self._check_installed_runtime(args, runtime)
+
+    def _check_installed_runtime(self, args, runtime):
         self._ok(f"ordinary installed launcher: {runtime.launcher}")
         if args.prefix is not None:
             runtime.environment(args.prefix)

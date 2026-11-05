@@ -32,6 +32,18 @@ installed fixtures, not a different runtime. For real guest C/C++ compilation,
 bootstrap with `--guest-toolchain darling-command-line-tools`. Runtime smoke
 does not establish a working compiler or workload acceptance.
 
+Only a new normal installation inside an explicit `DW_STATE_ROOT` is registered
+for managed image retention. Old, unregistered or outside roots, source, Git,
+private inputs and active build forests are never adopted, rewritten or removed.
+Managed build/install and managed-run admission refuse to start a heavy
+allocation when current free space is below 30 GiB; that is an admission floor,
+not a reservation, quota, size forecast or cleanup trigger. Use the managed
+`mise run west -- dev lane run (--base INERT_PREFIX | --parent FROZEN_PARENT) ...
+-- COMMAND` owner rather than ad hoc create/exec/destroy. See
+[state ownership and cleanup](environment.md#durable-state-and-cleanup) for
+roots, bounded evidence and image retention, recovery and pin controls, and
+[lane isolation](lane-isolation.md) for persistent lanes.
+
 Before invoking the runner, set `TMPDIR` to an existing owned directory beneath
 `DW_STATE_ROOT` so automatically named run logs also stay in durable state.
 
@@ -665,6 +677,27 @@ written by `--write-manifest`; `checksums` counts rows checked in existing recei
 and is a scan-time observation, not a writer lock: quiesce the owning writers before sealing. Keep later results
 in a new addendum rather than overwriting an existing receipt.
 
+Managed lane-run evidence uses the same logical index and seal rules under its
+declared state root. Its producer retains the newest five ordinary completed
+runs and a 1 GiB soft budget by default; the newest completed oracle and
+pinned, live, kept or blocked resources are exempt, so byte pressure may evict
+older entries inside the count window but never protected or newest evidence.
+Only selected logs, cores, receipts, state diagnostics and command outputs are
+eligible: never the whole prefix, SDK, source, Git, build tree or cache.
+Unknown source, worktree or payload entries preserve the run's raw state and
+report the reason instead of being dropped or rewritten. Retirement is
+journaled, and an image pin is released only after the evidence deletion; the
+completed journal remains until acknowledged. `west dev lane pin|unpin` controls an
+evidence pin; `west dev lane images` is a dry-run image-retention plan, not a
+deletion command.
+
+New `west-job.sh` states compact their finalized bare log through this
+index under their own retention root. Read the logical path rather than
+assuming `log` still names a raw file. Follow through the supported resolver;
+job finalization records the observed command rc, and compaction or pruning
+does not rewrite it. These bounded producer-owned policies are not a generic
+unattended sweeper and never extend to legacy or unmarked state.
+
 
 ### Reading foreign memory without killing the process being measured (xtrace)
 
@@ -846,6 +879,33 @@ Reconnect through the existing supervisor's `follow`; cancellation belongs to
 that owner and must be followed to final status. Observer timeout is not job
 cancellation. Do not start another prefix-backed run until the owning command
 and lifecycle cleanup have finished.
+
+For a managed lane run, `cancel` also interrupts its registered controller
+directly across opaque launch wrappers. The binding checks the job/run directory
+generations, owner PID/start time and live run lease; signals use a pidfd, never
+a guessed PID or process name. The in-scope foreground controller forwards the
+signal to its actual child, letting prefix teardown finish before scope retirement.
+An earlier cancellation request is honored before allocation. Registered managed
+owners get a 300-second default cleanup grace; `WEST_JOB_CANCEL_GRACE_SECONDS`
+explicitly overrides it. Escalation can still interrupt cleanup: inspect
+`lane runs`, then use `lane recover` for a dead-owned interrupted run rather than
+deleting its prefix.
+
+New marked `west-job.sh` states are lifetime-locked. Finalization records the
+observed command rc, compacts the logical bare log through the evidence index,
+and prunes only prior finalized states owned by this script under the same
+declared root. Defaults are `WEST_JOB_RETENTION_KEEP_LAST=5` and
+`WEST_JOB_RETENTION_MAX_BYTES=1GiB`; newest/current, pinned, active, unmarked
+and unknown states are preserved, and legacy states are never adopted.
+
+`follow` holds a shared reader lease across output and final-rc delivery. The
+producer uses a different lifetime exclusive lock, and pruning needs both
+exclusive locks, so following a live job does not wait for the producer and a
+pruned state cannot disappear from under an observer. After compaction, read
+the log by its logical path (`darling-evidence.py cat PATH` or an equivalent
+resolver), not by assuming `log` remains a raw regular file. A managed run
+likewise keeps `workload_rc` separate from `final_rc`; cleanup, cancellation or
+retention never rewrites the original command result.
 
 ## Attributing a hang that the log cannot explain
 

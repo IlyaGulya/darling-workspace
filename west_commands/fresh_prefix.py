@@ -15,9 +15,11 @@ from prefix_repair import cleanup_prefix_mounts
 from test_prefix import cleanup_verified_prefix_processes, cleanup_rootless_runtime_sockets, prefix_process_ownership_snapshot
 
 try:
-    from .runtime_install import InstalledRuntime, RuntimeInstallationError, prefix_path_is_safe, resolve_runtime
+    from .runtime_install import InstalledRuntime, RuntimeInstallationError, prefix_path_is_safe
+    from .runtime_retention import RuntimeRetentionError, leased_runtime
 except ImportError:  # Loaded as a West extension module, not a package.
-    from runtime_install import InstalledRuntime, RuntimeInstallationError, prefix_path_is_safe, resolve_runtime
+    from runtime_install import InstalledRuntime, RuntimeInstallationError, prefix_path_is_safe
+    from runtime_retention import RuntimeRetentionError, leased_runtime
 
 
 _PREFIX_NAME = "darling-fresh-prefix-"
@@ -248,10 +250,20 @@ def create_fresh_prefix(
 
     raw_source = os.path.expanduser(os.fspath(baseline))
     try:
-        selected = runtime or resolve_runtime(runtime_root)
-        selected.environment(raw_source)
-    except RuntimeInstallationError as error:
+        with leased_runtime(runtime_root, runtime=runtime) as selected:
+            selected.environment(raw_source)
+            return _copy_fresh_prefix(
+                raw_source, destination=destination, temp_root=temp_root,
+                reserve_bytes=reserve_bytes, selected=selected,
+            )
+    except (OSError, RuntimeInstallationError, RuntimeRetentionError) as error:
         return FreshPrefixResult(problems=[str(error)])
+
+
+def _copy_fresh_prefix(
+    raw_source: str, *, destination, temp_root: Path,
+    reserve_bytes: int, selected: InstalledRuntime,
+) -> FreshPrefixResult:
     source = Path(raw_source)
     if not source.is_dir():
         return FreshPrefixResult(problems=[f"baseline is not a real directory: {source}"])
