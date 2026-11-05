@@ -26,6 +26,9 @@ correct stale instructions rather than following copied paths or hashes.
   prefix/process identity, not names alone. Each concurrent experiment needs its
   own lane: [state ownership and lane safety](../../../docs/environment.md#durable-state-and-cleanup).
   Never write the inert base; a job supervisor is not a prefix-ownership lock.
+- Guest disk-image mounts in COW lanes need the additional
+  [root-only lane prerequisites](../../../docs/lane-isolation.md#commands).
+  Establish them for a new view; never retrofit an active lane.
 - Rootless is the launcher default. Its current launch path does not create
   Linux user, mount or PID namespaces;
   unprivileged namespace creation is not an ordinary rootless prerequisite.

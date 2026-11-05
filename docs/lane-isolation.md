@@ -68,6 +68,24 @@ verified immutable tools; it never downloads, rebuilds, searches for a substitut
 provider on PATH or silently switches backend. Tool executables serving existing
 mounts must never be overwritten.
 
+Guest disk-image mounts such as `hdiutil attach` invoke a setuid FUSE helper.
+Create a **new** view with explicit root access when that workload needs it:
+`west dev lane create NAME --parent FROZEN_PARENT --allow-root`.
+The default remains owner-only; the option is not inherited from a frozen
+parent. It never remounts an existing view.
+
+An administrator must first approve and enable `user_allow_other` in
+`/etc/fuse.conf`, preserving a backup of that file. The CLI checks this host
+prerequisite before creating lane state and never edits the configuration.
+The option selects the reviewed provider's `RootAndOwner` ACL, **not** its
+all-users `allow_other` mode. Kernel mount information still shows the
+`allow_other` backing flag; the provider admits only root and the mounting
+owner, with ordinary file permissions unchanged.
+
+For an existing owner-only lane, finish its workload and ordinary cleanup,
+freeze it, then create a child with `--allow-root`. Do not change an active
+lane's mount options or restart another lane's provider.
+
 Select an absolute owned, **short** lane root beneath your durable task state
 or owned workspace state. Guest AF_UNIX pathname limits apply after expanding
 the prefix and symlinks: `/var/run/shellspawn.sock` becomes

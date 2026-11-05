@@ -78,6 +78,15 @@ def add_lane_parsers(subparsers: argparse._SubParsersAction) -> None:
         type=Path,
         help="independent source checkout to record and verify (default: parent's source)",
     )
+    create.add_argument(
+        "--allow-root",
+        action="store_true",
+        help=(
+            "mount this lane's view for root and its owner (provider allow_root) "
+            "instead of owner-only; requires 'user_allow_other' in /etc/fuse.conf "
+            "and is not inherited by child lanes"
+        ),
+    )
     create.add_argument("--root", type=Path, help="lane root (default DW_LANE_ROOT)")
     create.add_argument("--json", action="store_true")
 
@@ -157,6 +166,7 @@ def run_lane_action(
             parent=args.parent,
             source=args.source,
             runtime_root=args.runtime_root,
+            allow_root=args.allow_root,
         )
         payload = {
             "changed": result.changed + [f"lane path: {lane}"],

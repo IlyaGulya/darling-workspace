@@ -29,7 +29,8 @@ except ImportError:  # Loaded as a West extension module, not a package.
     from runtime_install import InstalledRuntime, RuntimeInstallationError, resolve_runtime
 
 from lane_snapshotter import (
-    KIND_LABEL, STORE_LABEL, TREE_LABEL, SnapshotStore, SnapshotStoreError, write_json,
+    KIND_LABEL, STORE_LABEL, TREE_LABEL, SnapshotStore, SnapshotStoreError, require_allow_root,
+    write_json,
 )
 
 LANE_SCHEMA = 2
@@ -991,11 +992,17 @@ def create_lane(
     source: Path | None = None,
     runtime: InstalledRuntime | None = None,
     runtime_root: str | Path | None = None,
+    allow_root: bool = False,
     runner: Callable[..., Any] = subprocess.run,
     mountinfo_path: Path = Path("/proc/self/mountinfo"),
     clock: Callable[[], str] | None = None,
 ) -> tuple[LaneResult, Path | None]:
-    """Import an inert base once, or branch an explicitly frozen mounted lane."""
+    """Import an inert base once, or branch an explicitly frozen mounted lane.
+
+    ``allow_root`` mounts the new view with the provider's root-and-owner ACL
+    instead of the default owner-only session. It requires the host's
+    ``user_allow_other`` FUSE policy and is never inherited by later lanes.
+    """
     from fresh_prefix import bind_prefix_clone
     from test_prefix import prefix_lease, prefix_process_ownership_snapshot
 
@@ -1028,6 +1035,8 @@ def create_lane(
     explicit_source = source_identity(source, runner=runner) if source is not None else None
     result = LaneResult()
     try:
+        if allow_root:
+            require_allow_root()
         with SnapshotStore(root).locked(create=True) as store, ExitStack() as guards:
             # Reserve before writing anything: mkdir must never merge with a
             # direct controller's unrecorded destination.
@@ -1098,7 +1107,8 @@ def create_lane(
                     write_json(lane / LANE_MARKER, record)
                     _check_snapshot_layers(store, record)
                     store.mount(recipe, lane_prefix(lane),
-                                lane / LOGS_DIRNAME / "fuse-overlayfs.log", base_path)
+                                lane / LOGS_DIRNAME / "fuse-overlayfs.log", base_path,
+                                allow_root=allow_root)
                     bind_prefix_clone(selected, lane_prefix(lane), base_path)
                     record["storage"]["mount_identity"] = _mount_identity(lane_prefix(lane))
                     record["mode"] = "active"

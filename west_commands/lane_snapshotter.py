@@ -23,6 +23,7 @@ STORE_DIRNAME = ".snapshotter"
 STORE_LABEL = "io.darling.lanes.store"
 KIND_LABEL = "io.darling.lanes.kind"
 TREE_LABEL = "io.darling.lanes.tree"
+FUSE_CONF = Path("/etc/fuse.conf")
 
 
 class SnapshotStoreError(RuntimeError):
@@ -43,6 +44,26 @@ def write_json(path: Path, value: dict) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def require_allow_root() -> None:
+    """Refuse when the host has not opened FUSE mounts to root as well as the owner.
+
+    ``allow_root`` still restricts userspace access to the session owner and
+    root, but fusermount treats it as ``allow_other`` and requires this host
+    policy. The workspace never edits host FUSE configuration.
+    """
+    try:
+        lines = FUSE_CONF.read_text().splitlines()
+    except (OSError, ValueError) as error:
+        raise SnapshotStoreError(
+            f"allow_root needs 'user_allow_other' in {FUSE_CONF}, which cannot be read: {error}"
+        ) from error
+    if not any(line.split("#", 1)[0].strip() == "user_allow_other" for line in lines):
+        raise SnapshotStoreError(
+            f"allow_root needs 'user_allow_other' in {FUSE_CONF}; an administrator must "
+            "add it (backing up the file first). This tool never edits host FUSE policy."
+        )
 
 
 class SnapshotStore:
@@ -293,8 +314,19 @@ class SnapshotStore:
             raise SnapshotStoreError(f"snapshot is absent or belongs to another store owner: {key}")
         self.command("remove", key)
 
-    def mount(self, recipe: dict, target: Path, log: Path, source: Path) -> None:
+    def mount(self, recipe: dict, target: Path, log: Path, source: Path, *,
+              allow_root: bool = False) -> None:
+        """Mount the prepared recipe; ``allow_root`` adds the provider ACL option.
+
+        The snapshot recipe stays exactly upperdir/workdir/lowerdir. The extra
+        provider option is appended for the mount command only, and only after
+        the host's own FUSE policy permits it.
+        """
         upper = self.recipe_paths(recipe)["upperdir"][0]
+        provider_options = list(recipe["Options"])
+        if allow_root:
+            require_allow_root()
+            provider_options.append("allow_root")
         metadata = source.stat()
         os.chown(upper, metadata.st_uid, metadata.st_gid)
         os.chmod(upper, stat.S_IMODE(metadata.st_mode))
@@ -310,7 +342,7 @@ class SnapshotStore:
             "--property=StandardError=append:" + str(log),
             "--description=" + description,
             "--setenv=PATH=" + self.environment["PATH"],
-            str(self.tools.provider), "-o", ",".join(recipe["Options"]), str(target),
+            str(self.tools.provider), "-o", ",".join(provider_options), str(target),
         ], timeout=40)
         if started.returncode or not target.is_mount():
             raise SnapshotStoreError(f"cannot mount snapshotter view {target}: {started.stderr.strip()}; inspect {log}")
