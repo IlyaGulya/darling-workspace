@@ -448,6 +448,10 @@ def _collect_state(state: Path, entries: list[tuple[Path, Path, bool]], omitted:
             if name in _CAPTURE_GENERATED_DIRS:
                 omitted.append(str(Path("state") / name))
                 continue
+            # The guest-C runner removes each temporary fixture, but leaves its
+            # shared container. Only the empty container is safe to discard.
+            if name == "guest-c-fixtures" and not any(entry.iterdir()):
+                continue
             if name in _CAPTURE_STATE_DIRS or name.startswith(("runtime-evidence-", ".inflight-")):
                 _collect_tree(entry, Path("state") / name, entries, omitted)
                 continue

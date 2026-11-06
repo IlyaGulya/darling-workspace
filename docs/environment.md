@@ -188,7 +188,9 @@ never observed. Closed evidence lives under `S/runs/run-UUID/`: mutable
 capture provenance. It selects logs, cores, receipts, state diagnostics and
 command outputs, never the whole prefix, SDK, source, Git, build or caches.
 Unknown source, worktree or payload entries fail closed instead of being
-silently omitted.
+silently omitted. The guest-C runner's empty `guest-c-fixtures` container carries
+no payload and does not block capture; nonempty or symlinked containers remain
+errors and preserve the raw lane.
 
 Evidence retention defaults to the newest 5 ordinary completed runs and a
 1 GiB soft budget, with the newest completed oracle plus pins, live, kept and

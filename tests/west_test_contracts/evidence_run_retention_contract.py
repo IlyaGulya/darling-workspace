@@ -165,6 +165,43 @@ class ManagedRunEvidence(unittest.TestCase):
         core_target.unlink()
         self.assertEqual((payload / "cores" / "core.4242").read_bytes(), core)
 
+    def test_empty_guest_fixture_container_keeps_completed_oracle(self):
+        lane, run, _ = self.managed_pair("d")
+        (lane / "state" / "guest-c-fixtures").mkdir()
+        oracle = b"DISK_ARBITRATION_IMAGE_SMOKE=PASS\n"
+        (lane / "logs" / "guest.log").write_bytes(oracle)
+        finalize_run_evidence(lane, run)
+        payload = run / "payload"
+        shutil.rmtree(lane)
+        self.assertEqual((payload / "logs" / "guest.log").read_bytes(), oracle)
+        verified = verify_archive(payload, recursive=True)
+        self.assertFalse(verified["failed"])
+        self.assertEqual(verified["unsealed_files"], 0)
+
+    def test_nonempty_guest_fixture_container_preserves_raw_bytes(self):
+        lane, run, _ = self.managed_pair("e")
+        scratch = lane / "state" / "guest-c-fixtures"
+        scratch.mkdir()
+        fixture = scratch / "interrupted-fixture.c"
+        source = b"int main(void) { return 17; }\n"
+        fixture.write_bytes(source)
+        with self.assertRaises(EvidenceError):
+            finalize_run_evidence(lane, run)
+        self.assertEqual(fixture.read_bytes(), source)
+        self.assertFalse((run / "payload").exists())
+
+    def test_symlinked_empty_guest_fixture_container_preserves_raw_lane(self):
+        lane, run, _ = self.managed_pair("f")
+        target = self.root / "foreign-empty-container"
+        target.mkdir()
+        scratch = lane / "state" / "guest-c-fixtures"
+        scratch.symlink_to(target, target_is_directory=True)
+        with self.assertRaises(EvidenceError):
+            finalize_run_evidence(lane, run)
+        self.assertTrue(scratch.is_symlink())
+        self.assertTrue(target.is_dir())
+        self.assertFalse((run / "payload").exists())
+
     def test_missing_symlink_target_and_git_worktree_preserve_raw_lane(self):
         lane, run, _ = self.managed_pair("b")
         (lane / "cores" / "core.7").symlink_to(self.root / "missing-core")
