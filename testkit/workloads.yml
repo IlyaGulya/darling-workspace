@@ -4863,6 +4863,66 @@ workloads:
   - /usr/share/darling/tests/storagekit/payload.txt
   ok-marker: CFURL_MOUNTED_VOLUMES=PASS
   timeout-seconds: 180
+- id: cfurl_bookmarks_guest
+  name: cfurl_bookmarks_guest
+  module: darling/src/external/corefoundation
+  repo: darling
+  kind: guest
+  runner: guest-c-fixture
+  script: src/external/corefoundation/tests/bookmarks_guest.m
+  env: darling
+  coverage-tier: runtime
+  diag: guarded
+  requires:
+  - darling-prefix
+  compile-flags:
+  - -x
+  - objective-c
+  - -fblocks
+  - -fno-objc-arc
+  - -Wall
+  link-flags:
+  - -x
+  - none
+  - -Wl,-syslibroot,/
+  - -framework
+  - Foundation
+  - -framework
+  - CoreFoundation
+  ok-marker: BOOKMARK_SMOKE=PASS
+  timeout-seconds: 120
+- id: disk_arbitration_image_guest
+  name: disk_arbitration_image_guest
+  module: darling
+  repo: darling
+  kind: guest
+  runner: guest-c-fixture
+  script: src/frameworks/DiskArbitration/tests/image_backend.c
+  env: darling
+  coverage-tier: runtime
+  diag: guarded
+  requires:
+  - darling-prefix
+  requires-installed-paths:
+  - libexec/darling/usr/share/darling/tests/storagekit/storagekit.dmg
+  - libexec/darling/usr/share/darling/tests/storagekit/payload.txt
+  compile-flags:
+  - -std=gnu11
+  - -fblocks
+  - -Wall
+  link-flags:
+  - -Wl,-syslibroot,/
+  - -framework
+  - DiskArbitration
+  - -framework
+  - CoreFoundation
+  run-args:
+  - /usr/share/darling/tests/storagekit/storagekit.dmg
+  - /Volumes/da-image-regression
+  - payload.txt
+  - /usr/share/darling/tests/storagekit/payload.txt
+  ok-marker: DISK_ARBITRATION_IMAGE_SMOKE=PASS
+  timeout-seconds: 180
 - id: pid_for_task_plane_route_guest
   module: darling/src/external/xnu
   bead: dar-liaq
