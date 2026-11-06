@@ -19,7 +19,7 @@ manifest:
     # Product source authority: this committed tree and its exact child gitlinks.
     # Build the normal stock ALL target and complete installation.
     # Workloads, writable guest prefixes and evidence are selected separately.
-    revision: 0a82ae3c27a0c16d2cefa3dff492495a90e2e68d
+    revision: 0f2adc00417c58786d0d35e2a49a62e949c4a12f
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -331,7 +331,7 @@ manifest:
     repo-path: darling-cocotron
     path: darling/src/external/cocotron
     remote: darling-next
-    revision: 0234eac4335e6f0fa5d840d49f3296d4e84aa236
+    revision: 1c58ee6fbc6c22cf3554757a0324ce93ad56def6
     userdata:
       kind: darling-source
       upstream-repository: darling-cocotron

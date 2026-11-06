@@ -4973,6 +4973,39 @@ workloads:
   - HFS
   ok-marker: DISKIMAGES2_IMAGE_SMOKE=PASS
   timeout-seconds: 240
+- id: quartzcore_remote_layers_guest
+  name: quartzcore_remote_layers_guest
+  module: darling/src/external/cocotron
+  repo: darling
+  kind: guest
+  runner: guest-c-fixture
+  script: src/external/cocotron/QuartzCore/tests/remote_layers.m
+  env: darling
+  coverage-tier: runtime
+  diag: guarded
+  requires:
+  - darling-prefix
+  compile-flags:
+  - -x
+  - objective-c
+  - -std=gnu11
+  - -fblocks
+  - -fno-objc-arc
+  - -Wall
+  link-flags:
+  - -x
+  - none
+  - -Wl,-syslibroot,/
+  - -framework
+  - QuartzCore
+  - -framework
+  - Foundation
+  - -framework
+  - CoreGraphics
+  - -framework
+  - ImageIO
+  ok-marker: REMOTE_LAYER_PIXELS_AND_LIFETIME=PASS
+  timeout-seconds: 180
 - id: pid_for_task_plane_route_guest
   module: darling/src/external/xnu
   bead: dar-liaq
