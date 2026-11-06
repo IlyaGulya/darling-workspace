@@ -7970,6 +7970,28 @@ workloads:
   - darling-prefix
   ok-marker: OS_CRASH_MESSAGE_GUEST_OK
   timeout-seconds: 30
+- id: cryptex_bundle_guest
+  name: cryptex_bundle_guest
+  module: darling/src/libcryptex
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  kind: guest
+  coverage-tier: runtime
+  diag: guarded
+  runner: guest-c-fixture
+  repo: darling
+  script: src/libcryptex/tests/bundle.c
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -I/usr/include
+  link-flags:
+  - /usr/lib/libcryptex.dylib
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: CRYPTEX_BUNDLE_SMOKE=PASS
+  timeout-seconds: 120
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke
