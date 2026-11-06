@@ -4916,6 +4916,8 @@ workloads:
   - DiskArbitration
   - -framework
   - CoreFoundation
+  - -framework
+  - IOKit
   run-args:
   - /usr/share/darling/tests/storagekit/storagekit.dmg
   - /Volumes/da-image-regression
@@ -4923,6 +4925,54 @@ workloads:
   - /usr/share/darling/tests/storagekit/payload.txt
   ok-marker: DISK_ARBITRATION_IMAGE_SMOKE=PASS
   timeout-seconds: 180
+- id: disk_images2_image_guest
+  name: disk_images2_image_guest
+  module: darling
+  repo: darling
+  kind: guest
+  runner: guest-c-fixture
+  script: src/private-frameworks/DiskImages2/tests/image_backend.m
+  env: darling
+  coverage-tier: runtime
+  diag: guarded
+  requires:
+  - darling-prefix
+  requires-installed-paths:
+  - libexec/darling/System/Library/PrivateFrameworks/DiskImages2.framework/Versions/A/DiskImages2
+  - libexec/darling/System/Library/PrivateFrameworks/DiskManagement.framework/Versions/A/DiskManagement
+  - libexec/darling/usr/share/darling/tests/storagekit/storagekit.dmg
+  - libexec/darling/usr/share/darling/tests/storagekit/payload.txt
+  compile-flags:
+  - -x
+  - objective-c
+  - -std=gnu11
+  - -fblocks
+  - -fno-objc-arc
+  - -Wall
+  link-flags:
+  - -x
+  - none
+  - -Wl,-syslibroot,/
+  - -F/System/Library/PrivateFrameworks
+  - -framework
+  - DiskImages2
+  - -framework
+  - DiskManagement
+  - -framework
+  - DiskArbitration
+  - -framework
+  - Foundation
+  - -framework
+  - CoreFoundation
+  - -framework
+  - IOKit
+  run-args:
+  - /usr/share/darling/tests/storagekit/storagekit.dmg
+  - /usr/share/darling/tests/storagekit/payload.txt
+  - payload.txt
+  - HFS
+  ok-marker: DISKIMAGES2_IMAGE_SMOKE=PASS
+  timeout-seconds: 240
 - id: pid_for_task_plane_route_guest
   module: darling/src/external/xnu
   bead: dar-liaq

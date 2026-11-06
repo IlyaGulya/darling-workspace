@@ -19,7 +19,7 @@ manifest:
     # Product source authority: this committed tree and its exact child gitlinks.
     # Build the normal stock ALL target and complete installation.
     # Workloads, writable guest prefixes and evidence are selected separately.
-    revision: 66ceb55099556e10c42f57194f64a1b5bb76ee42
+    revision: 0a82ae3c27a0c16d2cefa3dff492495a90e2e68d
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -443,7 +443,7 @@ manifest:
     repo-path: darling-dmg
     path: darling/src/external/darling-dmg
     remote: darling
-    revision: 1a6de10c5886c40a414090701b2520bd0417ce29
+    revision: ecbf1f3054160d30d6b478a5372b7eb35b1adca5
     userdata:
       kind: darling-source
       upstream-repository: darling-dmg
@@ -614,7 +614,7 @@ manifest:
     repo-path: darling-iokitd
     path: darling/src/external/iokitd
     remote: darling-next
-    revision: 8c2d1d2c50e8e8e1ea0c4fec508829b64cf96a1d
+    revision: 2ee61c7119efc295d31b54b6f1733d128c0dc2a7
     userdata:
       kind: darling-source
       upstream-repository: darling-iokitd
@@ -1306,7 +1306,7 @@ manifest:
     remote: darling-next
     # Production E-UNION mutation/descriptor state machines and native signal
     # authority. This revision must match darling's exact XNU gitlink.
-    revision: 7b6b865521e17c36680d2e6934e4ef58aab7a823
+    revision: 7b0c068a3da8c73e41fe17c5ceabc526aed46187
     userdata:
       kind: darling-source
       upstream-repository: darling-xnu
@@ -1337,7 +1337,7 @@ manifest:
   - name: fuse-overlayfs
     path: fuse-overlayfs
     url: https://github.com/darling-next/fuse-overlayfs
-    revision: d2a240d4e60b60fe001f6039844c711856508e78
+    revision: 293d35d04f7919111a98d23bfc00afa0e9c74915
     userdata:
       kind: workspace-tool
       owner: darling-next
