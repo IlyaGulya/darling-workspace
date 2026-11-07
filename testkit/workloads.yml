@@ -8075,6 +8075,28 @@ workloads:
   - darling-prefix
   ok-marker: CRYPTEX_BUNDLE_SMOKE=PASS
   timeout-seconds: 120
+- id: image4_sentinel_guest
+  name: image4_sentinel_guest
+  module: darling/src/libimg4
+  bead: dar-arm64-uikit-app-in-darling-ix4g
+  kind: guest
+  coverage-tier: runtime
+  diag: bare
+  runner: guest-c-fixture
+  repo: darling
+  script: src/libimg4/tests/sentinel.c
+  compile-flags:
+  - -std=gnu11
+  - -Wall
+  - -Wextra
+  - -I/usr/include
+  link-flags:
+  - /usr/lib/libimg4.dylib
+  env: darling
+  requires:
+  - darling-prefix
+  ok-marker: IMAGE4_SENTINEL_SMOKE=PASS
+  timeout-seconds: 120
 aliases:
   homebrew-prepare:
   - homebrew-readiness-smoke
