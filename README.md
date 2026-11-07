@@ -90,6 +90,15 @@ results and summary counts. Exit status is 0 only for `healthy`, 1 for
 diagnosed problems or an operational failure, and 2 for invalid command-line
 usage.
 
+### Direct iOS compiler diagnostics
+
+`scripts/iosapp-direct-build.py` pins an operator-provided Xcode tree, then runs
+its actual Apple compiler inside an explicitly managed Darling lane to produce
+an arm64 iOS `.app` and deterministic unsigned IPA. Select `objc-uikit` or
+`swiftui`; this does not depend on successful `xcodebuild` project loading.
+See [commands, provenance and limitations](docs/test-infra.md#direct-ios-compiler-and-unsigned-ipa).
+Neither mode builds the private target project or proves device execution.
+
 ### Diagnostic iOS archive and unsigned IPA
 
 Use a prepared idle guest prefix, a complete installed runtime and an acquired

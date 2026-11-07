@@ -156,6 +156,8 @@ EXPLICIT_CONTRACTS = (
     ("runtime-image-retention", "tests/west_test_contracts/runtime_retention_contract.py", True),
     ("run-evidence-retention", "tests/west_test_contracts/evidence_run_retention_contract.py", True),
     ("managed-run-owner", "tests/west_test_contracts/managed_run_contract.py", True),
+    ("iosapp-package", "tests/west_test_contracts/iosapp_package_contract.py", True),
+    ("iosapp-direct-build", "tests/west_test_contracts/iosapp_direct_build_contract.py", True),
     ("source-search", "tests/west_test_contracts/source_search_contract.py", True),
     ("macho-inspection", "tests/west_test_contracts/macho_inspection_contract.py", True),
     (

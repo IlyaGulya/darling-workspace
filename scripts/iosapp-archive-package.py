@@ -25,6 +25,7 @@ from closure_analyze import ARCH_CPUS, MH_MAGIC_64, macho_slices
 APP_REL = Path("Products/Applications/iosapp.app")
 ZIP_ROOT = "Payload/iosapp.app"
 ZIP_DATE = (1980, 1, 1, 0, 0, 0)
+APP_FRAMEWORKS = {"objc-uikit": ("UIKit", "Foundation"), "swiftui": ("SwiftUI",)}
 
 
 def require(condition: bool, message: str) -> None:
@@ -84,7 +85,7 @@ def version_text(value: int) -> str:
     return f"{value >> 16}.{(value >> 8) & 255}.{value & 255}"
 
 
-def validate_macho(path: Path, minimum: str) -> dict:
+def validate_macho(path: Path, minimum: str, required_frameworks: tuple[str, ...] = ("UIKit", "Foundation")) -> dict:
     # Reuse the repository's thin/universal slicing implementation; the guest
     # corpus header validator intentionally accepts only x86_64 guest programs.
     payload = path.read_bytes()
@@ -141,12 +142,39 @@ def validate_macho(path: Path, minimum: str) -> dict:
     require(len(builds) == 1, "expected one iOS LC_BUILD_VERSION")
     require(len(text_ranges) == 1 and len(entries) == 1
             and text_ranges[0][0] <= entries[0] < text_ranges[0][1], "invalid executable entry point")
-    for framework in ("UIKit", "Foundation"):
+    for framework in required_frameworks:
         install_name = f"/System/Library/Frameworks/{framework}.framework/{framework}"
         require(any(d["name"] == install_name and d["command"] == 0xC for d in dylibs),
                 f"missing strong {framework} linkage")
     return {"architecture": "arm64", "cpu_subtype": subtype, "filetype": "MH_EXECUTE",
             "deployment": builds[0], "dylibs": dylibs, "code_signature": "absent"}
+
+
+def validate_app(app: Path, *, kind: str = "objc-uikit") -> dict:
+    """Validate an existing unsigned device app against its actual UI contract."""
+    require(kind in APP_FRAMEWORKS, "unsupported diagnostic app kind")
+    app_rows = inventory(app)
+    app_info = plist(app / "Info.plist")
+    require(app_info.get("CFBundlePackageType") == "APPL", "product is not an application")
+    require(app_info.get("LSRequiresIPhoneOS") is True
+            and app_info.get("CFBundleSupportedPlatforms") == ["iPhoneOS"]
+            and app_info.get("DTPlatformName") == "iphoneos", "wrong application platform metadata")
+    require(app_info.get("CFBundleExecutable") == "iosapp", "wrong declared executable")
+    for field in ("CFBundleIdentifier", "CFBundleShortVersionString", "CFBundleVersion"):
+        value = app_info.get(field)
+        require(isinstance(value, str) and value and "$" not in value,
+                f"missing/unexpanded {field}")
+    require(version(app_info.get("MinimumOSVersion")) == version("17.0"), "wrong fixture deployment target")
+    require(not any(Path(row["path"]).name in ("_CodeSignature", "embedded.mobileprovision")
+                    for row in app_rows), "unexpected signing/provisioning material")
+    executable = app / app_info["CFBundleExecutable"]
+    require(executable.is_file() and not executable.is_symlink()
+            and executable.stat().st_mode & 0o111 != 0, "declared executable missing or not executable")
+    return {"bundle_identifier": app_info["CFBundleIdentifier"],
+            "bundle_short_version": app_info["CFBundleShortVersionString"],
+            "bundle_version": app_info["CFBundleVersion"],
+            "executable": app_info["CFBundleExecutable"],
+            "macho": validate_macho(executable, app_info["MinimumOSVersion"], APP_FRAMEWORKS[kind]), "app_entries": app_rows}
 
 
 def validate_archive(archive: Path) -> dict:
@@ -160,30 +188,15 @@ def validate_archive(archive: Path) -> dict:
     applications = archive / "Products/Applications"
     require(applications.is_dir() and sorted(p.name for p in applications.iterdir()) == ["iosapp.app"],
             "archive must contain exactly Products/Applications/iosapp.app")
-    app = archive / APP_REL
-    app_rows = inventory(app)
-    app_info = plist(app / "Info.plist")
-    require(app_info.get("CFBundlePackageType") == "APPL", "product is not an application")
-    require(app_info.get("LSRequiresIPhoneOS") is True
-            and app_info.get("CFBundleSupportedPlatforms") == ["iPhoneOS"]
-            and app_info.get("DTPlatformName") == "iphoneos", "wrong application platform metadata")
-    require(app_info.get("CFBundleExecutable") == "iosapp", "wrong declared executable")
-    for field in ("CFBundleIdentifier", "CFBundleShortVersionString", "CFBundleVersion"):
-        value = app_info.get(field)
-        require(isinstance(value, str) and value and "$" not in value and props.get(field) == value,
-                f"missing/unexpanded/mismatched {field}")
-    require(version(app_info.get("MinimumOSVersion")) == version("17.0"), "wrong fixture deployment target")
+    validation = validate_app(archive / APP_REL)
+    for field, key in (("CFBundleIdentifier", "bundle_identifier"),
+                       ("CFBundleShortVersionString", "bundle_short_version"),
+                       ("CFBundleVersion", "bundle_version")):
+        require(props.get(field) == validation[key], f"mismatched archive {field}")
     require(props.get("Architectures") == ["arm64"], "archive architectures are not arm64")
     require(not props.get("SigningIdentity"), "unexpected archive signing identity")
-    require(not any(Path(row["path"]).name in ("_CodeSignature", "embedded.mobileprovision")
-                    for row in app_rows), "unexpected signing/provisioning material")
-    executable = app / app_info["CFBundleExecutable"]
-    require(executable.is_file() and not executable.is_symlink()
-            and executable.stat().st_mode & 0o111 != 0, "declared executable missing or not executable")
     return {"archive_version": info["ArchiveVersion"], "application_path": str(APP_REL),
-            "bundle_identifier": app_info["CFBundleIdentifier"],
-            "executable": app_info["CFBundleExecutable"],
-            "macho": validate_macho(executable, app_info["MinimumOSVersion"]), "app_entries": app_rows}
+            **validation}
 
 
 def zip_info(name: str, mode: int) -> zipfile.ZipInfo:

@@ -113,6 +113,76 @@ non-executable and can be completed through normal `destroy`.
 See [lane-isolation.md](lane-isolation.md) for setup, limitations, historical
 measurements, cleanup and gate requirements.
 
+### Direct iOS compiler and unsigned IPA
+
+`scripts/iosapp-direct-build.py` builds the checked-in public diagnostic sources
+with the selected installation's real Apple compiler and iPhoneOS SDK inside
+Darling. It does not invoke `xcodebuild`, generate a pretend `.xcarchive`, or
+claim that a target project's dependencies or build system work.
+
+Acquire Xcode/SDK inputs under their applicable terms before use. This command
+neither accepts a license nor performs or asserts a successful Xcode license
+check; the Xcode workload below has its own separate license setup.
+
+Inspect the installation without launching a guest, retaining a fresh lock
+outside the installation:
+
+```sh
+python3 -B scripts/iosapp-direct-build.py inspect \
+  --xcode-app "$XCODE_APP" --output-lock "$DW_STATE_ROOT/evidence/xcode-inputs.json"
+```
+
+The typed lock records actual Xcode/SDK metadata, selected Mach-O tool identities,
+and a checksum inventory of the physical input tree, including modes and symlink
+text. Build rechecks it before and after execution. This detects input changes;
+it is **not publisher authentication**, proof of extraction equivalence, or an
+SDK-version alias. The executable's recorded SDK version must match the real
+locked SDK.
+
+Use an already bootstrapped, idle, explicitly frozen parent and a complete
+immutable runtime. The managed lane supplies the prefix, runtime and validated
+inherited prefix lease; a default `~/.darling` is not admitted. Start one owner
+per fresh lane/output, then follow through final status and ordinary cleanup:
+
+```sh
+scripts/west-job.sh start --state-dir "$DW_STATE_ROOT/jobs/iosapp-direct" -- \
+  mise run west -- dev lane run --parent "$FROZEN_PARENT" \
+  --runtime-root "$R" --source "$S" --name iosdirect --pin --json --allow-root -- \
+  python3 -B scripts/iosapp-direct-build.py build \
+  --xcode-app "$XCODE_APP" --input-lock "$DW_STATE_ROOT/evidence/xcode-inputs.json" \
+  --output-dir "$DW_STATE_ROOT/evidence/iosapp-direct" --kind objc-uikit
+scripts/west-job.sh follow --state-dir "$DW_STATE_ROOT/jobs/iosapp-direct"
+```
+
+Choose `--kind swiftui` for the minimal SwiftUI fixture, with a different fresh
+lane, output and job directory. Both profiles target arm64 iOS 17.0, use a fresh
+module cache and retain source, object, compiler output, exact guest probe,
+application, `iosapp.unsigned.ipa`, `validation.json` and the harness bundle.
+The host contracts are `iosapp-package` and `iosapp-direct-build` in the host
+tier; those models do not replace an actual guest compiler run.
+
+The validator checks bundle ownership and metadata, thin arm64 `MH_EXECUTE`,
+iOS deployment/SDK metadata, entry point, required strong framework linkage,
+and absence of an application code signature or provisioning profile. UIKit
+requires strong UIKit/Foundation; SwiftUI requires strong SwiftUI and permits
+the compiler's weak UIKit/Foundation autolinks. Packaging retains the app bytes
+and modes under `Payload/iosapp.app` with deterministic ZIP metadata.
+
+Swift 6.2.4's driver forwards `-sdk` to Clang as `--sysroot`. The Swift profile
+also forwards the actual SDK with `-Xclang-linker -isysroot`, matching Darwin
+Clang's SDK selection rather than overwriting the resulting version metadata.
+The installation's `swift-stdlib-tool` scans/copies required runtimes into the
+flat app `Frameworks` directory, without requesting signing. Copied libraries
+are thinned to arm64 and checked as iOS dylibs compatible with the deployment
+minimum; signature-command metadata is recorded, not authenticated. A scanner
+decision to copy zero libraries is reported as an empty runtime inventory, not
+as positive coverage of runtime embedding or device compatibility.
+
+PASS requires completed compile/link/package validation and ordinary guest
+shutdown with no surviving processes or runtime mounts. It proves unsigned
+diagnostic artifacts only: not installation, device execution, signing,
+provisioning, Simulator support, an Xcode archive/export, or Cryptex authorization.
+
 ### Xcode build workload license setup
 
 `scripts/xcodebuild-workload-run.sh --workload minproj|iosapp|both` includes license
