@@ -3,7 +3,7 @@
   "kind": "rootless-namespace-writer-candidate-audit",
   "coverage_tier": "source",
   "count": 1639,
-  "entries_digest": "df2e77e0339abe9a59933872d8305ca3027e5df0e861a1d146fdb4cc80d5eff5",
+  "entries_digest": "a8819cc2a82f2c272c8aafa37d450f035f0503d88f2f6120401c948620c9d2fb",
   "entries": [
     {
       "repository": "darling",
@@ -8303,7 +8303,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/darlingserver/CMakeLists.txt",
-          "sha256": "91c57786d557ebee006710b08b6c6c678942d699525071a833173ece8880e389",
+          "sha256": "64b35ae499279b619a78270d5b84f0851a087fbab59428334dd440d525649c9e",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -8322,7 +8322,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/darlingserver/CMakeLists.txt",
-          "sha256": "91c57786d557ebee006710b08b6c6c678942d699525071a833173ece8880e389",
+          "sha256": "64b35ae499279b619a78270d5b84f0851a087fbab59428334dd440d525649c9e",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -8344,7 +8344,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/darlingserver/CMakeLists.txt",
-          "sha256": "91c57786d557ebee006710b08b6c6c678942d699525071a833173ece8880e389",
+          "sha256": "64b35ae499279b619a78270d5b84f0851a087fbab59428334dd440d525649c9e",
           "relation": "nearest-cmake-ancestor"
         }
       }
