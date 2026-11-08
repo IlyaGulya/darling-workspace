@@ -30,8 +30,10 @@ def ctest_timeout(test: dict) -> int:
     deadline = int(test.get("timeout-seconds", 600))
     runner = test.get("runner")
     stages = 1
-    if runner in {"guest-c-fixture", "guest-macho-fixture", "darling-cmake-target-fixture"}:
-        # Upload/setup, compilation, and execution have independent deadlines.
+    if runner == "guest-c-fixture":
+        # Pre-cleanup, upload, compile, run, and final artifact cleanup.
+        stages = 5
+    elif runner in {"guest-macho-fixture", "darling-cmake-target-fixture"}:
         stages = 3
     elif runner == "source-build-fixture":
         targets = test.get("cmake-targets", [])
@@ -44,8 +46,8 @@ def ctest_timeout(test: dict) -> int:
         # Admission and final shutdown each use the owner's bounded attempts.
         shutdown = int(os.environ.get("WEST_TEST_SHUTDOWN_TIMEOUT_SECONDS", "15"))
         attempts = max(1, int(os.environ.get("WEST_TEST_SHUTDOWN_ATTEMPTS", "2")))
-        # Prefix readiness (15s), upload/cleanup stages (10s each), plus the
-        # guest runner's 15s executor allowance must finish before CTest stops it.
+        # Prefix readiness, bounded legacy setup, and the guest executor's
+        # allowance must finish before CTest stops the lifecycle owner.
         lifecycle_grace = 2 * attempts * shutdown + 15 + 10 + 10 + 15
     return stages * deadline + capture_grace + lifecycle_grace
 

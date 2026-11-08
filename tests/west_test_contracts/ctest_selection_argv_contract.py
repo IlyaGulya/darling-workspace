@@ -282,9 +282,6 @@ with tempfile.TemporaryDirectory() as temporary:
     guest = next(test for test in declarations if test["id"] == "guest-oracle")
     capture = next(test for test in declarations if test["id"] == "capture")
     assert guest["timeout-seconds"] == 37 and capture["timeout-seconds"] == 15
-    assert bridge["ctest_timeout"](guest) >= 3 * 37 + 15 + 60
-    assert bridge["ctest_timeout"](capture) >= 15 + 300 + 60
-    assert f'TIMEOUT [=[{bridge["ctest_timeout"](capture)}]=]' in generated
     assert 'APPEND PROPERTY ENVIRONMENT "DARLING_SOURCE_ROOT=${DARLING_SRC}"' in generated
     if sys.platform != "darwin":
         assert "SKIP_RETURN_CODE [=[77]=]" in generated

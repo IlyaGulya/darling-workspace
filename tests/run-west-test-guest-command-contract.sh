@@ -6,3 +6,4 @@ cd "$repo"
 
 export PYTHONDONTWRITEBYTECODE=1
 python3 tests/west_test_contracts/guest_command_contract.py
+python3 tests/west_test_contracts/guest_c_contract.py

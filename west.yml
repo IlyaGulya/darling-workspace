@@ -19,7 +19,7 @@ manifest:
     # Product source authority: this committed tree and its exact child gitlinks.
     # Build the normal stock ALL target and complete installation.
     # Workloads, writable guest prefixes and evidence are selected separately.
-    revision: 6b8b1d8174a9a6c8f2f1cce2065c06ffc33713cc
+    revision: f2a3637e3e3b8acf14bea24e87a28095cc05f96e
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -451,9 +451,9 @@ manifest:
     repo-path: darlingserver
     path: darling/src/external/darlingserver
     remote: darling-next
-    # Production server matches Darling's gitlink: ownership-safe management
-    # and courier delivery to the authenticated process incarnation.
-    revision: 8e8dc7882bc5ad0bb42e0f6b40a70b82f4402589
+    # Production server matches Darling's gitlink: kernel-observed image bindings
+    # and ownership-safe process memory copies, management and courier delivery.
+    revision: 414c996e006be2225732c6a7b54fa3044972b867
     userdata:
       kind: darling-source
       upstream-repository: darlingserver

@@ -3,7 +3,7 @@
   "kind": "rootless-namespace-writer-candidate-audit",
   "coverage_tier": "source",
   "count": 1639,
-  "entries_digest": "9bef826efbb9f7eb9d5a7ee7ac8df8dd2929a5cbe846d177c0d7bbd7cbd88906",
+  "entries_digest": "df2e77e0339abe9a59933872d8305ca3027e5df0e861a1d146fdb4cc80d5eff5",
   "entries": [
     {
       "repository": "darling",
@@ -8303,7 +8303,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/darlingserver/CMakeLists.txt",
-          "sha256": "26474bd8466c795cab4867e640b3bea1ab70583dbc91ba3ef29bea99c2f63629",
+          "sha256": "91c57786d557ebee006710b08b6c6c678942d699525071a833173ece8880e389",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -8311,7 +8311,7 @@
     {
       "repository": "darling",
       "path": "src/external/darlingserver/tests/interrupt_resume_test.cpp",
-      "sha256": "a3dbbd560c8f87851acfa3364f8a252318b074166098e4c57525abaed7b27f29",
+      "sha256": "f95724b554051a562e963d3d377398af72550c73a99b9446d7a5a07223b5e3e4",
       "classification": "test-fixture-task-owned",
       "reason": "src/external/darlingserver/tests/interrupt_resume_test.cpp requires TMPDIR or DW_STATE_ROOT, creates a unique native scratch child there and removes only its own socket and directory; CTest supplies a build-owned native-test-scratch root rather than a shared bootstrap namespace.",
       "evidence": {
@@ -8322,7 +8322,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/darlingserver/CMakeLists.txt",
-          "sha256": "26474bd8466c795cab4867e640b3bea1ab70583dbc91ba3ef29bea99c2f63629",
+          "sha256": "91c57786d557ebee006710b08b6c6c678942d699525071a833173ece8880e389",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -8344,7 +8344,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/darlingserver/CMakeLists.txt",
-          "sha256": "26474bd8466c795cab4867e640b3bea1ab70583dbc91ba3ef29bea99c2f63629",
+          "sha256": "91c57786d557ebee006710b08b6c6c678942d699525071a833173ece8880e389",
           "relation": "nearest-cmake-ancestor"
         }
       }

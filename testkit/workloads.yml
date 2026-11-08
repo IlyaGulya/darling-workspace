@@ -886,6 +886,25 @@ workloads:
     after delivery. Executes inside Darling; no private-helper host substitute.
   env: darling
   source-module: darling/src/external/darlingserver
+- id: process_copy_lifecycle_guest
+  module: darling/src/external/darlingserver
+  bead: dar-arm64-uikit-app-in-darling-ix4g.9.2
+  name: process_copy_lifecycle_guest
+  kind: guest
+  coverage-tier: runtime
+  diag: bare
+  runner: guest-c-fixture
+  repo: darling-src-external-darlingserver
+  script: tests/process_copy_guest.c
+  compile-flags: [-std=gnu11, -Wall, -Wextra, -Werror, -pthread]
+  timeout-seconds: 120
+  requires:
+  - darling-prefix
+  ok-marker: PROCESS_COPY_LIFECYCLE_OK
+  env: darling
+  source-module: darling/src/external/darlingserver
+  note: Real Mach VM read/write across fork and failed/leader/nonleader exec; old task
+    copy capabilities must not access the replacement image.
 - id: host_regression_ctest
   module: darling
   bead: dar-test-infra-sp5.6.1

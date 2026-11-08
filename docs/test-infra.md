@@ -1014,6 +1014,14 @@ on a source tree, but it does not prove runtime behavior, so it does **not**
 count as behavioral coverage. Report a source-only audit separately and identify
 the missing behavioral host/guest/build/package/fuzz/stress gate and its owner.
 
+
+For metadata `guest-c-fixture` runs, `timeout-seconds` bounds each guest shell
+stage: pre-cleanup, source upload, compilation, execution and final artifact
+cleanup. The outer runner and CTest bridge budget all five stages plus their
+executor/lifecycle allowance, so a completed oracle is not preempted during
+ordinary artifact cleanup. These deadlines do not change the fixture's own
+semantic watchdog or turn failed cleanup into PASS.
+
 Use structured runners for common cases:
 
 ```yaml

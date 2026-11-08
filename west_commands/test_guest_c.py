@@ -470,7 +470,7 @@ cleanup_guest_artifacts() {{
 \t# A split preparation phase deliberately retains its compiled fixture.
 \tif [ "$prepare_only" = 1 ]; then return "$exit_rc"; fi
 \tset +e
-\tguest_shell 10 "rm -f '$guest_src' '$guest_bin'"
+\tguest_shell "$timeout_seconds" "rm -f '$guest_src' '$guest_bin'"
 \tlocal artifact_rc=$?
 \t{capture_shutdown}
 \tlocal shutdown_rc=$?
@@ -483,9 +483,9 @@ trap cleanup_guest_artifacts EXIT
 
 if [ "$run_only" != 1 ]; then
 \tprintf 'WEST_GUEST_STAGE=cleanup\\n' >&2
-\tguest_shell 10 "rm -f '$guest_src' '$guest_bin'"
+\tguest_shell "$timeout_seconds" "rm -f '$guest_src' '$guest_bin'"
 \tprintf 'WEST_GUEST_STAGE=upload\\n' >&2
-\tguest_shell 10 "cat > '$guest_src'" < "$host_src"
+\tguest_shell "$timeout_seconds" "cat > '$guest_src'" < "$host_src"
 fi
 
 if [ "$prepare_only" = 1 ]; then
@@ -533,7 +533,7 @@ fi
                 "cwd": invocation["cwd"],
                 "args": [*capture_prefix, str(host_runner)],
                 "shell": False,
-                "debug_timeout_seconds": int(invocation.get("timeout_seconds", 600)) + 15,
+                "debug_timeout_seconds": 5 * int(invocation.get("timeout_seconds", 600)) + 15,
             }
         )
         result = run_bounded(
