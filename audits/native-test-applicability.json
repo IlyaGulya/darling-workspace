@@ -1709,7 +1709,7 @@
       "name": "process_copy_lifecycle_guest",
       "identity_sha256": "f3dd2ba10907640f2bdd4613ca52ba2156dee9b0b396ebe0b7e37883578cafd4",
       "policy": "split_semantic_reference_and_internal_gate",
-      "reason": "The fixture executes public Mach VM read/write, real fork, failed exec and leader/nonleader exec inside Darling. Preserve independent Darwin semantic review for data transfer, task_for_pid privileges and exec behavior; no native execution is claimed. Rejection through Darling's explicitly retired old task map is an internal image-binding gate, not an assumption that every Darwin task right is invalidated by exec and not evidence of signer, entitlement or executable-closure authority."
+      "reason": "The fixture executes public Mach VM read/write, real fork, failed exec and leader/nonleader exec inside Darling. Preserve independent Darwin semantic review for data transfer, task_for_pid privileges and exec behavior; no native execution is claimed. Raw Linux descendant-admission denials and rejection through Darling's explicitly retired old task map are internal gates, not assumptions that every Darwin task right is invalidated by exec and not evidence of signer, entitlement or executable-closure authority."
     },
     "security_chain_copy_guest": {
       "name": "security_chain_copy_guest",
