@@ -559,55 +559,73 @@ class CmakeFixtureMixin:
         source_root_env = invocation.get("source_root_env")
         if source_root_env and run_env.get(source_root_env):
             source_root = Path(run_env[source_root_env])
-        relative_script = invocation["script_path"].relative_to(invocation["cwd"])
-        fixture_path = invocation["script_path"]
-        if not fixture_path.is_file():
-            source_fixture = source_root / relative_script
-            if source_fixture.is_file():
-                fixture_path = source_fixture
-            else:
-                self.die(f"{invocation['name']}: fixture not found: {fixture_path}")
+        cmake_targets = invocation.get("cmake_targets", [])
+        if cmake_targets:
+            if not (source_root / "CMakeLists.txt").is_file():
+                self.err(f"{invocation['name']}: CMakeLists.txt not found: {source_root}")
+                self._record_failure_phase(invocation, "setup")
+                return 1
+        else:
+            relative_script = invocation["script_path"].relative_to(invocation["cwd"])
+            fixture_path = invocation["script_path"]
+            if not fixture_path.is_file():
+                source_fixture = source_root / relative_script
+                if source_fixture.is_file():
+                    fixture_path = source_fixture
+                else:
+                    self.die(f"{invocation['name']}: fixture not found: {fixture_path}")
         with tempfile.TemporaryDirectory(prefix=f"west-source-build-{invocation['name']}-") as temp:
             tempdir = Path(temp)
-            build_root = tempdir / "source"
-            rc = archive_source_to(
-                source_root,
-                build_root,
-                timeout_seconds=int(invocation.get("timeout_seconds", 600)),
-            )
-            if rc:
-                return rc
-            build_fixture = build_root / relative_script
-            if not build_fixture.is_file():
-                build_fixture.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(fixture_path, build_fixture)
+            if cmake_targets:
+                # Normal CMake owns the complete source/submodule/generated-header
+                # closure. Do not archive HEAD: --source-root selects current bytes.
+                build_root = source_root
+            else:
+                build_root = tempdir / "source"
+                rc = archive_source_to(
+                    source_root,
+                    build_root,
+                    timeout_seconds=int(invocation.get("timeout_seconds", 600)),
+                )
+                if rc:
+                    return rc
+                build_fixture = build_root / relative_script
+                if not build_fixture.is_file():
+                    build_fixture.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(fixture_path, build_fixture)
             child_env = dict(run_env)
             child_env["WEST_TEST_TMP"] = str(tempdir)
             child_env["WEST_TEST_SOURCE_ROOT"] = str(build_root)
             timeout_seconds = int(invocation.get("timeout_seconds", 600))
-            for command in [*invocation.get("build_commands", []), *invocation.get("run_commands", [])]:
-                self.inf(f"  source-build-fixture: {command}")
+            if cmake_targets:
+                build_dir = tempdir / "build"
+                commands = [
+                    ("configure", ["cmake", "-S", str(source_root), "-B", str(build_dir),
+                                   *invocation.get("cmake_args", [])]),
+                    *[("build", ["cmake", "--build", str(build_dir), "--target", target,
+                                "--parallel", str(run_env.get("WEST_TEST_BUILD_JOBS", "2"))])
+                      for target in cmake_targets],
+                ]
+            else:
+                commands = [
+                    (phase, ["/bin/bash", "-lc", command])
+                    for phase, values in (("build", invocation.get("build_commands", [])),
+                                          ("run", invocation.get("run_commands", [])))
+                    for command in values
+                ]
+            for phase, command in commands:
+                self.inf(f"  source-build-fixture: {command[-1] if command[:2] == ['/bin/bash', '-lc'] else command}")
                 result = self._run_bounded(
-                    ["/bin/bash", "-lc", command],
+                    command,
                     cwd=build_root,
                     env=child_env,
                     timeout_seconds=timeout_seconds,
                 )
-                if result.timed_out:
-                    self.err(
-                        f"  source-build-fixture timed out after "
-                        f"{timeout_seconds}s: {command}"
-                    )
-                    self._record_failure_phase(
-                        invocation,
-                        "build" if command in invocation.get("build_commands", []) else "run",
-                    )
-                    return 124
-                if result.returncode:
-                    self._record_failure_phase(
-                        invocation,
-                        "build" if command in invocation.get("build_commands", []) else "run",
-                    )
+                if result.timed_out or result.returncode:
+                    self._record_failure_phase(invocation, phase)
+                    if result.timed_out:
+                        self.err(f"  source-build-fixture timed out after {timeout_seconds}s: {command}")
+                        return 124
                     return result.returncode
             return 0
 

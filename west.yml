@@ -19,7 +19,7 @@ manifest:
     # Product source authority: this committed tree and its exact child gitlinks.
     # Build the normal stock ALL target and complete installation.
     # Workloads, writable guest prefixes and evidence are selected separately.
-    revision: 78afd7648e4b1ee46333fd4fc0208bac50a19930
+    revision: 6b8b1d8174a9a6c8f2f1cce2065c06ffc33713cc
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -453,7 +453,7 @@ manifest:
     remote: darling-next
     # Production server matches Darling's gitlink: ownership-safe management
     # and courier delivery to the authenticated process incarnation.
-    revision: 09cee18e730c0bf6edd969b08592f1f18aa03a11
+    revision: 8e8dc7882bc5ad0bb42e0f6b40a70b82f4402589
     userdata:
       kind: darling-source
       upstream-repository: darlingserver
@@ -1306,7 +1306,7 @@ manifest:
     remote: darling-next
     # Production E-UNION mutation/descriptor state machines and native signal
     # authority. This revision must match darling's exact XNU gitlink.
-    revision: 7b0c068a3da8c73e41fe17c5ceabc526aed46187
+    revision: f1838ba6be042a03586e96ee7afbe1c4f0462ce5
     userdata:
       kind: darling-source
       upstream-repository: darling-xnu

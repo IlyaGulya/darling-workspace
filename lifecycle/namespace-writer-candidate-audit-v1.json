@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "rootless-namespace-writer-candidate-audit",
   "coverage_tier": "source",
-  "count": 1638,
-  "entries_digest": "746cdab490374e774c90434a2d66211cb728602117de4cac15c1f1fe8c43fcbc",
+  "count": 1639,
+  "entries_digest": "9bef826efbb9f7eb9d5a7ee7ac8df8dd2929a5cbe846d177c0d7bbd7cbd88906",
   "entries": [
     {
       "repository": "darling",
@@ -8303,7 +8303,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/darlingserver/CMakeLists.txt",
-          "sha256": "d9c84953c9bd6af8a32178d798bd1f6c756a8a47dbad582b148b99acf763bcc6",
+          "sha256": "26474bd8466c795cab4867e640b3bea1ab70583dbc91ba3ef29bea99c2f63629",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -8322,7 +8322,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/darlingserver/CMakeLists.txt",
-          "sha256": "d9c84953c9bd6af8a32178d798bd1f6c756a8a47dbad582b148b99acf763bcc6",
+          "sha256": "26474bd8466c795cab4867e640b3bea1ab70583dbc91ba3ef29bea99c2f63629",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -8344,7 +8344,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/darlingserver/CMakeLists.txt",
-          "sha256": "d9c84953c9bd6af8a32178d798bd1f6c756a8a47dbad582b148b99acf763bcc6",
+          "sha256": "26474bd8466c795cab4867e640b3bea1ab70583dbc91ba3ef29bea99c2f63629",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28983,7 +28983,7 @@
     {
       "repository": "darling",
       "path": "src/external/xnu/darling/tests/ring-completion/run.py",
-      "sha256": "2595f1d00baa18aeb08b95c9f5f6c5bde16339227c898206eb42912cdb61442f",
+      "sha256": "aa2035a0487b568e828f70c54efad1bfc95781c4becfcef005f55aea06aaedcd",
       "classification": "test-fixture-task-owned",
       "reason": "src/external/xnu/darling/tests/ring-completion/run.py writes generated RPC headers, adapter includes and selected caller source only inside its TemporaryDirectory; the host fixture uses no guest prefix or shared runtime endpoint.",
       "evidence": {
@@ -31919,7 +31919,7 @@
     {
       "repository": "darling-workspace",
       "path": "west_commands/test_cmake.py",
-      "sha256": "7e577d94295df213b0cee7a5927620d5004a97550aa39ff71a103508ef1290ca",
+      "sha256": "3dae9d8140ad639045fb2d4ea73f1bd82df9f802ffe3150e10943609edc36116",
       "classification": "workspace-task-owned-tooling",
       "reason": "west_commands/test_cmake.py mutates only West-owned checkout, evidence, build, or disposable test roots; it is not a guest shared-session namespace writer.",
       "evidence": {
@@ -31931,7 +31931,27 @@
         "build_anchor": {
           "repository": "darling-workspace",
           "path": "west_commands/test_cmake.py",
-          "sha256": "7e577d94295df213b0cee7a5927620d5004a97550aa39ff71a103508ef1290ca",
+          "sha256": "3dae9d8140ad639045fb2d4ea73f1bd82df9f802ffe3150e10943609edc36116",
+          "relation": "workspace-runtime-source"
+        }
+      }
+    },
+    {
+      "repository": "darling-workspace",
+      "path": "west_commands/test_resources.py",
+      "sha256": "44c67a099546235bebe9279fd80748cf154ec76a38b75ca1373930bc9a71c063",
+      "classification": "workspace-task-owned-tooling",
+      "reason": "west_commands/test_resources.py creates generated RPC headers and an emulation include symlink only beneath its owned temporary compiler-resource directory; cleanup retires that scratch, not a guest prefix, runtime image or shared-session endpoint. Other resource providers delegate existing lifecycle ownership rather than acquiring it here.",
+      "evidence": {
+        "runtime_scope": "workspace-task-root",
+        "mutation_operators": [
+          "mkdir",
+          "python-create"
+        ],
+        "build_anchor": {
+          "repository": "darling-workspace",
+          "path": "west_commands/test_resources.py",
+          "sha256": "44c67a099546235bebe9279fd80748cf154ec76a38b75ca1373930bc9a71c063",
           "relation": "workspace-runtime-source"
         }
       }

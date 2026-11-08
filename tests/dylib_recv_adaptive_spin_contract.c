@@ -5,8 +5,18 @@
 
 #include <darling/emulation/linux_premigration/resources/dserver-rpc-defs.h>
 
-#ifndef LINUX_EIO
-#define LINUX_EIO 5
+/* Unrelated S2C services must not be silently accepted by this receive oracle. */
+int darling_vm_operation(const struct darling_vm_request* request, struct darling_vm_result* result)
+{
+	(void)request; (void)result; __builtin_trap();
+}
+const void* __dserver_socket_address(void) { __builtin_trap(); }
+long close_internal(int fd) { (void)fd; __builtin_trap(); }
+void __simple_printf(const char* format, ...) { (void)format; __builtin_trap(); }
+void __simple_abort(void) { __builtin_trap(); }
+
+#if DARLING_GUEST_RECVSPIN != 0 && DARLING_GUEST_RECVSPIN != 3
+#error This oracle must be compiled with the declared enabled or disabled receive budget
 #endif
 
 struct recv_call {
@@ -43,7 +53,7 @@ long test_linux_syscall(long nr, ...)
 	if (nr == __NR_recvmsg) {
 		int socket = va_arg(ap, int);
 		(void)va_arg(ap, struct linux_msghdr*);
-		long flags = va_arg(ap, long);
+		long flags = va_arg(ap, int);
 		va_end(ap);
 		if (recv_call_count >= (int)(sizeof(recv_calls) / sizeof(recv_calls[0])))
 			return -LINUX_EIO;
@@ -119,6 +129,13 @@ static int check_real_spin_error_does_not_block(void)
 		return 1;
 	return 0;
 }
+static int check_interrupted_spin_does_not_retry(void)
+{
+	const long results[] = { -LINUX_EINTR, 1 };
+	reset_results(results, 2);
+	return fail_int("spin EINTR", receive_once(), -LINUX_EINTR) ||
+		fail_int("spin EINTR count", recv_call_count, 1);
+}
 #else
 static int check_disabled_budget_blocks_immediately(void)
 {
@@ -135,6 +152,20 @@ static int check_disabled_budget_blocks_immediately(void)
 }
 #endif
 
+static int check_blocking_errors_do_not_retry(void)
+{
+	long results[4];
+	int count = 0;
+#if DARLING_GUEST_RECVSPIN > 0
+	for (int i = 0; i < DARLING_GUEST_RECVSPIN; ++i) results[count++] = -LINUX_EAGAIN;
+#endif
+	results[count++] = -LINUX_EINTR;
+	reset_results(results, count);
+	return fail_int("blocking EINTR", receive_once(), -LINUX_EINTR) ||
+		fail_int("blocking EINTR count", recv_call_count, count) ||
+		fail_int("blocking EINTR flags", recv_calls[count - 1].flags, 0);
+}
+
 int main(void)
 {
 #if DARLING_GUEST_RECVSPIN > 0
@@ -144,10 +175,14 @@ int main(void)
 		return 1;
 	if (check_real_spin_error_does_not_block())
 		return 1;
+	if (check_interrupted_spin_does_not_retry())
+		return 1;
 #else
 	if (check_disabled_budget_blocks_immediately())
 		return 1;
 #endif
+	if (check_blocking_errors_do_not_retry())
+		return 1;
 	puts("GREEN: dylib receive hook adaptive spin contract");
 	return 0;
 }

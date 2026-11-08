@@ -10,12 +10,18 @@ from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+import os
+from pathlib import Path
+import sys
+import tempfile
 from typing import Any
 
 try:
     from .test_stock_stack_cache import stock_stack_context
+    from .test_execution import run_bounded
 except ImportError:
     from test_stock_stack_cache import stock_stack_context
+    from test_execution import run_bounded
 
 
 @dataclass(frozen=True)
@@ -110,11 +116,61 @@ class HomebrewLz4Provider(ResourceProvider):
         return stock_stack_context(command, invocation, env)
 
 
+class DserverRpcProvider(ResourceProvider):
+    def __init__(self) -> None:
+        super().__init__("dserver-rpc")
+
+    def active(self, invocation: dict[str, Any]) -> bool:
+        return self.name in set(invocation.get("requires_resources", []))
+
+    @contextmanager
+    def context(self, command: Any, invocation: dict[str, Any], env: dict[str, str] | None):
+        server = command._project_path("darling/src/external/darlingserver")
+        product = command._project_path("darling")
+        xnu = command._project_path("darling/src/external/xnu")
+        child_env = dict(os.environ if env is None else env)
+        with tempfile.TemporaryDirectory(prefix="west-dserver-rpc-") as scratch:
+            root = Path(scratch)
+            public = root / "include/darlingserver/rpc.h"
+            internal = root / "internal-include/darlingserver/rpc.internal.h"
+            source = root / "src/rpc.c"
+            for output in (public, internal, source):
+                output.parent.mkdir(parents=True, exist_ok=True)
+            generated = run_bounded(
+                [sys.executable, str(server / "scripts/generate-rpc-wrappers.py"),
+                 str(public), str(internal), str(source),
+                 '"../include/darlingserver/rpc.h"'],
+                cwd=server,
+                env=child_env,
+                timeout_seconds=int(invocation.get("timeout_seconds", 600)),
+            )
+            if generated.returncode:
+                command._record_failure_phase(invocation, "setup")
+                command.die(f"{invocation['name']}: generating production RPC headers failed")
+            overlay = root / "prefix/darling"
+            overlay.mkdir(parents=True)
+            (overlay / "emulation").symlink_to(
+                xnu / "darling/src/libsystem_kernel/emulation/include",
+                target_is_directory=True,
+            )
+            # CPATH follows explicit fixture -I directories, preserving the
+            # external-boundary adapters while using the real protocol ABI.
+            includes = [
+                str(public.parents[1]), str(server / "include"),
+                str(product / "src/startup/mldr/elfcalls"), str(overlay.parent),
+            ]
+            if child_env.get("CPATH"):
+                includes.append(child_env["CPATH"])
+            child_env["CPATH"] = os.pathsep.join(includes)
+            yield child_env
+
+
 RESOURCE_PROVIDERS: tuple[ResourceProvider, ...] = (
     HostTempProvider(),
     HostTraceProvider(),
     HostStatProvider(),
     DescriptorTraceProvider(),
+    DserverRpcProvider(),
     DccCacheProvider(),
     EunionPrefixProvider(),
     HomebrewLz4Provider(),

@@ -9,7 +9,8 @@ for input in "$emulation/src/linux_premigration/vchroot_userspace.c" \
 	"$emulation/src/linux_premigration/eunion_resolver.c" \
 	"$emulation/src/xnu_syscall/bsd/helper/network/duct.c" \
 	"$darling/src/external/darlingserver/include/darlingserver/rpc-supplement.h" \
-	"$darling/src/startup/mldr/elfcalls/elfcalls.h"; do
+	"$darling/src/startup/mldr/elfcalls/elfcalls.h" \
+	"$darling/src/external/darling-dmg/src/DADeviceProtocol.h"; do
 	test -f "$input" || { echo "missing selected-source input: $input" >&2; exit 2; }
 done
 state="${DW_STATE_ROOT:-$(cd "$root/.." && pwd)/.west-state}"
@@ -41,6 +42,7 @@ lower_before="$(sha256sum "$work/root/prefix/libexec/darling/sentinel")"
 	-I"$emulation/include" -I"$root/experiments/e-union/shim" -I"$work/include" \
 	-I"$darling/src/external/darlingserver/include" \
 	-I"$darling/src/startup/mldr/elfcalls" \
+	-I"$darling/src/external/darling-dmg/src" \
 	-o "$work/fixture" \
 	"$root/tests/eunion_af_unix_path_length_host.c" \
 	"$root/experiments/e-union/simple_format_host.c" \

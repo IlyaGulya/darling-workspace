@@ -207,11 +207,11 @@ static int check_validation_and_type_mapping(void)
 	if (expect_int("valid attrlist", darling_attrlist_validate(&attrs, 0), 0))
 		return 1;
 
-	attrs.commonattr = 0x00000200;
+	attrs.commonattr = 0x40000000; /* Outside this packer's supported common attributes. */
 	if (expect_int("unsupported attr rejected", darling_attrlist_validate(&attrs, 0), -EINVAL))
 		return 1;
 
-	attrs.commonattr = DARLING_ATTR_CMN_RETURNED_ATTRS | 0x00000200;
+	attrs.commonattr = DARLING_ATTR_CMN_RETURNED_ATTRS | 0x40000000;
 	if (expect_int("returned subset allowed", darling_attrlist_validate(&attrs, 1), 0))
 		return 1;
 

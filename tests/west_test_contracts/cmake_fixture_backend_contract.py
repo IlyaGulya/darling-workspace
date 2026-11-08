@@ -203,29 +203,35 @@ with tempfile.TemporaryDirectory(prefix="west-source-build-") as raw:
     else:
         raise AssertionError("a missing source fixture must be refused")
 
-# --- _run_darling_cmake_target_fixture -----------------------------------
-# It forwards to the module-level implementation and records the configure
-# phase when that implementation fails.
-import test_cmake as cmake_module  # noqa: E402
+# Execute the normal configure/compile/run closure. Changes to the selected
+# working source must change the target's observable outcome.
+with tempfile.TemporaryDirectory(prefix="west-current-cmake-") as raw:
+    selected = Path(raw) / "current source"
+    selected.mkdir()
+    (selected / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.13)\n"
+        "project(current_source C)\n"
+        "add_executable(consumer consumer.c)\n"
+        "add_custom_target(consumer_run COMMAND $<TARGET_FILE:consumer> DEPENDS consumer)\n"
+    )
+    consumer = selected / "consumer.c"
+    consumer.write_text("int main(void) { return 0; }\n")
+    invocation = {"name": "current source", "cwd": selected,
+                  "cmake_targets": ["consumer_run"], "env": dict(os.environ)}
+    test = new_test()
+    assert test._run_source_build_fixture(invocation) == 0
+    consumer.write_text("int main(void) { return 42; }\n")
+    assert test._run_source_build_fixture(invocation) != 0
+    assert test._failure_phase == "build"
 
-original_target_fixture = cmake_module.run_darling_cmake_target_fixture
-recorded: list[dict] = []
-
-
-def fake_target_fixture(invocation, **kwargs):
-    recorded.append({"invocation": invocation, **kwargs})
-    return 4
-
-
-cmake_module.run_darling_cmake_target_fixture = fake_target_fixture
+test = new_test(_project_path=lambda repo: Path("/selected") / repo,
+                _resolved_diag=lambda metadata: "bare")
+patch = {"module": "darling", "path": "obsolete build"}
 try:
-    messages = []
-    test = new_test(_executor="/executor", _bundle_root="/bundles", inf=messages.append, err=messages.append)
-    assert test._run_darling_cmake_target_fixture({"name": "target"}) == 4
-finally:
-    cmake_module.run_darling_cmake_target_fixture = original_target_fixture
-assert recorded[0]["executor"] == "/executor"
-assert recorded[0]["bundle_root"] == "/bundles"
-assert test._failure_phase == "configure"
+    test._test_invocation(patch, {"runner": "west-build", "target": "system_loader"})
+except SystemExit:
+    pass
+else:
+    raise AssertionError("obsolete build runner was accepted")
 
 print("PASS cmake-fixture-backend-contract")

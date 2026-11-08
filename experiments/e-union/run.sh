@@ -29,6 +29,7 @@ fi
 DARLING_SRC="${DARLING_SRC:-$(cd "$XNU_SRC_ROOT/../../.." && pwd)}"
 for _source in "$DARLING_SRC/src/external/darlingserver/include/darlingserver/rpc-supplement.h" \
                "$DARLING_SRC/src/startup/mldr/elfcalls/elfcalls.h" \
+               "$DARLING_SRC/src/external/darling-dmg/src/DADeviceProtocol.h" \
                "$XNU/src/common/simple.c" \
                "$INCDIR/common/signal_atomic.h" \
                "$INCDIR/common/native_signal_atomic.h"; do
@@ -373,13 +374,15 @@ include_dirs=("-I$SRCDIR" "-I$HERE/shim" "-I$WORK/include")
 
 # Use the same selected source closure as the ordinary emulation build.
 include_dirs+=("-I$DARLING_SRC/src/external/darlingserver/include"
-               "-I$DARLING_SRC/src/startup/mldr/elfcalls")
+               "-I$DARLING_SRC/src/startup/mldr/elfcalls"
+               "-I$DARLING_SRC/src/external/darling-dmg/src")
 sources+=("$SRCDIR/eunion_resolver.c")
 include_dirs+=("-I$INCDIR")
 
 compile_flags=(-Wall -Wno-format-truncation -Wno-unused-function -Ulinux -DTEST=1
     -DEUNION -DEFAULT=14 -pthread
     -DF_CHECK_LV=98 -DF_GETPATH=50 -DF_FULLFSYNC=51 -DENOATTR=ENODATA
+    -DF_SETNOSIGPIPE=73 -DF_GETNOSIGPIPE=74
     -DEUNION_LIBEXEC_PATH="\"$WORK/libexec\"")
 gcc "${compile_flags[@]}" "${include_dirs[@]}" -I"$XNU/src" \
     -ffunction-sections -fdata-sections -c "$HERE/simple_format_host.c" \

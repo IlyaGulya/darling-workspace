@@ -509,28 +509,6 @@ class DarlingTest(
                 }
     
             runner = test.get("runner", "script" if test.get("script") else None)
-            if runner == "west-build":
-                target = test["target"]
-                args = [
-                    "west",
-                    "darling-build",
-                    "--force",
-                    "--skip-doctor",
-                    "--targets",
-                    target,
-                ]
-                return {
-                    "key": " ".join(args),
-                    "display": " ".join(args),
-                    "cwd": Path(self.topdir),
-                    "args": args,
-                    "shell": False,
-                    "diag": self._resolved_diag(test),
-                    "name": test.get("name", patch["path"]),
-                    "timeout_seconds": int(test.get("timeout-seconds", 600)),
-                    "source_env": source_env,
-                    "source_module": source_module,
-                }
             if runner in {
                 "script",
                 "source-contract-script",
@@ -763,9 +741,9 @@ class DarlingTest(
                 }
             if runner == "source-build-fixture":
                 repo = test.get("repo", patch["module"])
-                script = test["script"]
+                script = test.get("script")
                 cwd = self._project_path(repo)
-                script_path = cwd / script
+                script_path = cwd / script if script else None
                 env = None
                 if test.get("env-vars"):
                     env = os.environ.copy()
@@ -777,9 +755,18 @@ class DarlingTest(
                     *build_commands,
                     *run_commands,
                 ]
+                cmake_targets = [str(item) for item in test.get("cmake-targets", [])]
+                cmake_args = [str(item) for item in test.get("cmake-args", [])]
+                if cmake_targets and (script or build_commands or run_commands):
+                    self.die(f"{test.get('name', patch['path'])}: cmake-targets cannot be combined with script/build-commands/run-commands")
+                if not cmake_targets and not script:
+                    self.die(f"{test.get('name', patch['path'])}: source-build-fixture needs cmake-targets or a script")
+                if cmake_targets:
+                    display_steps = ["cmake -S <selected-source> -B <temp>/build",
+                                     f"cmake --build <temp>/build --target {shell_join(cmake_targets)}"]
                 display = f"cd {quote(repo)} && " + " && ".join(display_steps)
                 return {
-                    "key": f"source-build-fixture:{repo}:{script}",
+                    "key": f"source-build-fixture:{cwd}:{script}:{cmake_targets!r}:{cmake_args!r}:{build_commands!r}:{run_commands!r}",
                     "display": display,
                     "cwd": cwd,
                     "script_path": script_path,
@@ -791,6 +778,8 @@ class DarlingTest(
                     "source_build_fixture": True,
                     "build_commands": build_commands,
                     "run_commands": run_commands,
+                    "cmake_targets": cmake_targets,
+                    "cmake_args": cmake_args,
                     "source_root_env": source_env,
                     "source_env": source_env,
                     "source_module": source_module,

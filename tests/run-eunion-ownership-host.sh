@@ -8,7 +8,8 @@ darling="${DARLING_SRC:-$(cd "$xnu/../../.." && pwd)}"
 for input in "$emulation/src/linux_premigration/vchroot_userspace.c" \
     "$emulation/src/linux_premigration/eunion_resolver.c" \
     "$darling/src/external/darlingserver/include/darlingserver/rpc-supplement.h" \
-    "$darling/src/startup/mldr/elfcalls/elfcalls.h"; do
+    "$darling/src/startup/mldr/elfcalls/elfcalls.h" \
+    "$darling/src/external/darling-dmg/src/DADeviceProtocol.h"; do
     test -f "$input" || { echo "missing selected-source input: $input" >&2; exit 2; }
 done
 state="${DW_STATE_ROOT:-$(cd "$root/.." && pwd)/.west-state}"
@@ -39,6 +40,7 @@ done
     -I"$root/experiments/e-union/shim" -I"$work/include" \
     -I"$darling/src/external/darlingserver/include" \
     -I"$darling/src/startup/mldr/elfcalls" \
+    -I"$darling/src/external/darling-dmg/src" \
     -o "$work/fixture" "${sources[@]}"
 # The second layout mirrors rootless Darling: LOWER is nested beneath UPPER.
 mkdir -p "$work/sibling/upper" "$work/sibling/lower" \

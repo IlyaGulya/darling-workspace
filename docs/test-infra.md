@@ -947,7 +947,7 @@ Source revisions are selected explicitly, not composed by workload metadata.
   harnesses, package/runtime reproducers). This is the strongest publication
   evidence.
 - `compile`: compiles, links, or builds a focused fixture/target that exercises
-  the changed contract (`runner: c-fixture`, `runner: west-build`, build gates).
+  the changed contract (`runner: c-fixture`, normal CMake source-build gates).
 - `host`: executes a host-side behavioral contract script against real commands,
   generated outputs, or test assets, but not the full guest runtime.
 - `model`: executes an explicit old-vs-fixed behavioral/state-machine model. It
@@ -983,6 +983,16 @@ bad runtime are not RED. Preserve the current fixture independently of old sourc
 Record explicit nondefault build defines and paired source modules. In
 particular, libsystem_kernel consumes darlingserver-generated RPC inputs and
 dyld embeds emulation; unrelated build failures must not masquerade as RED.
+
+Host C fixtures that consume libsystem_kernel's RPC ABI declare
+`requires: [dserver-rpc]`. That resource runs the selected server's real RPC
+generator and supplies its public headers plus the paired loader/emulation
+includes; it does not copy a frozen protocol or grant a guest prefix.
+Fixture adapters may control external syscalls, but unexpected services must
+fail rather than return fabricated success. Source-build fixtures with
+`cmake-targets` configure the selected current source in a separate temporary
+build and execute the ordered targets, including generated-header dependencies.
+They cannot be mixed with script/build-command/run-command mode.
 
 Source/text checks are allowed only as auxiliary drift guards:
 
@@ -1508,6 +1518,19 @@ flat declaration. It builds the selected source in an isolated superproject.
 Current fixture files and fallback target registration can keep an independent
 bad/fixed comparison meaningful when old source lacked the registration; they
 do not authorize source reconstruction or insert the fix into the bad build.
+
+Normal product builds instead use `runner: source-build-fixture` with
+`repo: darling`, `source-module: darling`, `source-env: DARLING_SRC_ROOT`,
+`cmake-args` and an ordered nonempty `cmake-targets` list. The runner configures
+the selected current source directly into a fresh temporary out-of-source build
+and builds each target in order; normal source CMake owns submodules and generated
+headers. It does not archive `HEAD`, synthesize replacement targets or install a
+runtime. Use a real source-owned run target when execution is part of the oracle.
+This mode cannot be mixed with `script`, `build-commands` or `run-commands`.
+The older script/archive mode remains for standalone upstream build fixtures.
+`west-build` is no longer supported: `darling-build` only consumes an explicitly
+configured `--build-dir`, and a workload must declare its normal source/configure
+closure rather than assume an ambient build directory.
 
 The CTest backend command construction is deliberately small and separate from
 fixture-resource orchestration. `west_commands/test_ctest.py` owns `ctest`

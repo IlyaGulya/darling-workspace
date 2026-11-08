@@ -29,6 +29,13 @@ int vchroot_expand(struct vchroot_expand_args *args)
 	_exit(5);
 }
 
+int vchroot_unexpand(struct vchroot_unexpand_args *args)
+{
+	(void)args;
+	fprintf(stderr, "NULL path reached vchroot_unexpand\n");
+	_exit(6);
+}
+
 int vchroot_prepare_write(const char *path) { (void)path; return 0; }
 void vchroot_pre_mkdir(const char *path) { (void)path; }
 int vchroot_xattr_is_marker(const char *name) { (void)name; return 0; }

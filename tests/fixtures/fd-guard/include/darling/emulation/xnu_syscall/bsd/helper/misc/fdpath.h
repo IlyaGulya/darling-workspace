@@ -1,2 +1,3 @@
 #pragma once
-long fdpath(int fd, long buf, int len);
+#include <stddef.h>
+int fdpath(int fd, char *buf, size_t len);

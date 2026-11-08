@@ -24,12 +24,13 @@ int errno_linux_to_bsd(int ret) { return ret; }
 int oflags_bsd_to_linux(int flags) { return flags; }
 int oflags_linux_to_bsd(int flags) { return flags; }
 
-long fdpath(int fd, long buf, int len)
+int fdpath(int fd, char *buf, size_t len)
 {
 	(void)fd;
 	(void)buf;
 	(void)len;
-	return -EBADF;
+	fprintf(stderr, "guarded fd path reached fdpath fallback\n");
+	_exit(3);
 }
 
 long sys_readlink(const char *path, char *buf, unsigned long bsize)

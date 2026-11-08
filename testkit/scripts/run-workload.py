@@ -34,7 +34,9 @@ def ctest_timeout(test: dict) -> int:
         # Upload/setup, compilation, and execution have independent deadlines.
         stages = 3
     elif runner == "source-build-fixture":
-        stages = max(1, len(test.get("build-commands", [])) + len(test.get("run-commands", [])))
+        targets = test.get("cmake-targets", [])
+        stages = 1 + len(targets) if targets else max(
+            1, len(test.get("build-commands", [])) + len(test.get("run-commands", [])))
     diag = test.get("diag", "bare")
     capture_grace = 300 if diag == "forensic" else 15 if diag == "guarded" else 0
     lifecycle_grace = 0

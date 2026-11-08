@@ -195,27 +195,9 @@
     },
     "dyld_static_libunwind_link": {
       "name": "dyld_static_libunwind_link",
-      "identity_sha256": "7e3813887bd2fd485f76de1a6ef60f4e04770e5244121e11614d3307baa6f84f",
+      "identity_sha256": "c7b5092c25f135e7cf4bfb6eb2ce04be7b960f311ef29939afda755ee0f83ba8",
       "policy": "abi_toolchain_reference_review",
       "reason": "Actual dyld/unwind_static link target: review supported architecture, compiler code generation and static-unwind relocation constraints; compile tier is not a native-toolchain exemption."
-    },
-    "ring_committed_unknown_contract_test--494a1cfc": {
-      "name": "ring_committed_unknown_contract_test",
-      "identity_sha256": "7cc9e8d70fe648fa0b764f0557d39641ccd4030a56a9932d6469ebc48035e76d",
-      "policy": "semantic_reference_review",
-      "reason": "Source gate mixes private no-retry-after-publication invariants with guest-visible KERN_FAILURE versus KERN_SUCCESS policy. Native Mach outcome applicability remains unresolved; private transport loss is not a native injection mechanism."
-    },
-    "rpc_disconnect_status_contract_test--56a1c813": {
-      "name": "rpc_disconnect_status_contract_test",
-      "identity_sha256": "eb25e5b90ffa0a7080d782eadb591f49c8d7d3fd9a51bca5d8869834359f7dc5",
-      "policy": "internal_proof_exemption",
-      "reason": "Private Linux RPC endpoint-disconnect errno classification and sigexc control-flow ordering only; excludes guest interruption and public errno behavior."
-    },
-    "rpc_disconnect_status_contract_test--8c3c7f55": {
-      "name": "rpc_disconnect_status_contract_test",
-      "identity_sha256": "5be28e06fcd6068c7fb9d7f014a7520df9cbe8b5b743e7960fcb04606c633920",
-      "policy": "internal_proof_exemption",
-      "reason": "Private Linux RPC endpoint-disconnect errno classification and sigexc control-flow ordering only; excludes guest interruption and public errno behavior."
     },
     "a0_gate_full_strict": {
       "name": "a0_gate_full_strict",
@@ -223,71 +205,29 @@
       "policy": "platform_setup_before_native",
       "reason": "Reference common package/compiler workloads with declared isolated setup; Darling bootstrap/provisioning/lifecycle remains platform-specific."
     },
-    "standard_signal_coalescing_contract_test--ba80014b": {
-      "name": "standard_signal_coalescing_contract_test",
-      "identity_sha256": "791a3ae2a3a855f8078400aa37346c74cac9ea49960695e2cd739e562083150b",
-      "policy": "semantic_reference_review",
-      "reason": "Composed signal policy admits the first SIGUSR1, suppresses pending duplicates and rearms after clear; retain Darwin/POSIX signal reference review. Source/helper checks do not prove process-level delivery or flood progress."
-    },
-    "ring_committed_unknown_contract_test--5ae08b29": {
-      "name": "ring_committed_unknown_contract_test",
-      "identity_sha256": "93716dd56259d94dd0cd3f8db3976783d6213d7aa35138a4fab6486346311cb2",
-      "policy": "semantic_reference_review",
-      "reason": "Source gate mixes private no-retry-after-publication invariants with guest-visible KERN_FAILURE versus KERN_SUCCESS policy. Native Mach outcome applicability remains unresolved; private transport loss is not a native injection mechanism."
-    },
-    "duct_tape_fail_closed_stubs_test": {
-      "name": "duct_tape_fail_closed_stubs_test",
-      "identity_sha256": "5bea2ca533bcce58b19ec10e61dd19b6e11cb36ea590a7abe3c3aa8e4598ec4a",
-      "policy": "semantic_reference_review",
-      "reason": "Source predicates choose Mach task-background, translated exception, thread_abort_safely KERN_FAILURE and entitlement-denial policies. Unsupported stubs need explicit XNU/security reference review, not a source-tier exemption."
-    },
-    "rpc_serial_contract_test": {
-      "name": "rpc_serial_contract_test",
-      "identity_sha256": "91d9ba31b776b4d8d7056d148b9736e387b9e46f69fdbe8ef60a9e9ec91d00d4",
-      "policy": "internal_proof_exemption",
-      "reason": "Private packed Darling RPC request/reply correlation header, serial extraction, dispatch masking and push_reply handling only; not public Mach message ABI or runtime reply accounting."
-    },
     "rpc_disconnect_send_contract_test--78273e11": {
       "name": "rpc_disconnect_send_contract_test",
-      "identity_sha256": "c67e3a8a38a847746e3796e35bca4350c12144ac75c6cea2757044e36b688f20",
+      "identity_sha256": "5853e5fd95c64cc558e8667d5d34d4357ebe014e6380e43b3494963939586071",
       "policy": "semantic_reference_review",
-      "reason": "Mixed quiet private-send handling and interruptible-disconnect/EINTR selection. Exact public interruption/error correspondence remains to be scoped; generator/source evidence does not resolve it."
+      "reason": "Actual private Linux reply queue dead-peer disposal, no successful-send callback or replay retention, and generic errno/queued FD ownership on unexpected failure. Does not establish guest disconnect-to-EINTR classification; public interruption semantics remain independently reference-relevant."
     },
     "dserver_stack_pool_tests_run": {
       "name": "dserver_stack_pool_tests_run",
-      "identity_sha256": "98e1f91e99539c9e2413bf9de6b65246ade05aa65bfa1b920aeb652d577cc1d4",
+      "identity_sha256": "fb01f7816860e2319fbb38f0df3e976bff7bf21bad8ce7c01de781952fb423fe",
       "policy": "internal_proof_exemption",
       "reason": "Server StackPool empty-handle ownership and allocate/free safety only; fixture asserts no native stack layout, unwind registers or guest stack execution."
     },
-    "standard_signal_coalescing_contract_test--6e982290": {
-      "name": "standard_signal_coalescing_contract_test",
-      "identity_sha256": "1f57f8d153c5e943b005f0b4fb19ffb702b3971a2ff52e4b5e591e4448687aa1",
-      "policy": "semantic_reference_review",
-      "reason": "Composed signal policy admits the first SIGUSR1, suppresses pending duplicates and rearms after clear; retain Darwin/POSIX signal reference review. Source/helper checks do not prove process-level delivery or flood progress."
-    },
-    "rpc_disconnect_send_contract_test--97c5bdb9": {
-      "name": "rpc_disconnect_send_contract_test",
-      "identity_sha256": "266c6501cd87463ef8a31258a4b916deca90505c98ff8a42c2e74628ae8c5ebc",
-      "policy": "semantic_reference_review",
-      "reason": "Mixed quiet private-send handling and interruptible-disconnect/EINTR selection. Exact public interruption/error correspondence remains to be scoped; generator/source evidence does not resolve it."
-    },
     "message_ctrunc_contract": {
       "name": "message_ctrunc_contract",
-      "identity_sha256": "3533463b9b96249301e52685841a84969f37bb4dbb2fc5b9105977e5351f2074",
+      "identity_sha256": "dd5f018375c13e7b98e9bf01477747e25938130a4d63470744208ce64ee40909",
       "policy": "internal_proof_exemption",
       "reason": "Private Linux RPC ingestion of SCM_RIGHTS/SO_PASSCRED envelopes and truncated ancillary-data rejection; excludes ordinary sendmsg conformance and native Mach descriptor ABI."
     },
-    "standard_signal_coalescing_source_contract": {
-      "name": "standard_signal_coalescing_source_contract",
-      "identity_sha256": "616009c480556343358fe4e8d002652fe7ecbe69594cc78a3e233cb92794feb3",
-      "policy": "semantic_reference_review",
-      "reason": "Composed signal policy admits the first SIGUSR1, suppresses pending duplicates and rearms after clear; retain Darwin/POSIX signal reference review. Source/helper checks do not prove process-level delivery or flood progress."
-    },
     "standard_signal_coalescing_helper": {
       "name": "standard_signal_coalescing_helper",
-      "identity_sha256": "cfd0b4c70efd064b90ccdbd0238ef2037901ce00b537ee3d98b5710736358bed",
+      "identity_sha256": "55974ea7c7473138fdd242c30ebbb8ac7fa5f6a375288fc6c06e9db7cfeda69f",
       "policy": "semantic_reference_review",
-      "reason": "Composed signal policy admits the first SIGUSR1, suppresses pending duplicates and rearms after clear; retain Darwin/POSIX signal reference review. Source/helper checks do not prove process-level delivery or flood progress."
+      "reason": "Real guest blocked standard signals, duplicate coalescing, distinct pending bits and delivery re-arm. Requires independent Darwin/POSIX reference; executing inside Darling is not that reference or a native-conformance exemption."
     },
     "host_regression_ctest": {
       "name": "host_regression_ctest",
@@ -429,9 +369,9 @@
     },
     "fork_postfork_child_contract": {
       "name": "fork_postfork_child_contract",
-      "identity_sha256": "aab73bcedc0c9479ad308c5365fba9a32acf94a4bab32e0f035c12857b298e81",
+      "identity_sha256": "cd04a4829cc670130dac0b86b24f7f87fce63a7aae6579a4f50729b8047319c7",
       "policy": "internal_proof_exemption",
-      "reason": "darling-child-postfork-hook-order: production sys_fork with mocked Linux fork and mldr/guard/socket/checkin hooks checks child event order and excludes those hooks from parent/error paths. The oracle is Darling's initialization ordering, not native fork behavior."
+      "reason": "Production sys_fork with controlled external boundaries checks internal bookkeeping on child/parent/error and resource reset/checkin/lifetime ordering. This is Darling initialization ownership behavior, not native fork conformance or deployed guest lifecycle proof."
     },
     "fork_wait_timeout_parent_guest": {
       "name": "fork_wait_timeout_parent_guest",
@@ -567,7 +507,7 @@
     },
     "getattrlist_pack_name_objtype_contract": {
       "name": "getattrlist_pack_name_objtype_contract",
-      "identity_sha256": "3325fba15d9faacc8ca360e5839b65d97c5b6c510b0f842eebd10f5adf956909",
+      "identity_sha256": "a182a4b9efdf0b632066bbe8b428ffed05aa9dfe38a8672a0a3313fd32d4df70",
       "policy": "abi_toolchain_reference_review",
       "reason": "Workspace getattrlist_pack_contract.c checks length, attrreference offsets, alignment, object type and basename against production packer types. These are Darwin record ABI facts and need independent SDK/native reference, not just agreement with Darling constants."
     },
@@ -585,7 +525,7 @@
     },
     "getattrlistbulk_pack_contract": {
       "name": "getattrlistbulk_pack_contract",
-      "identity_sha256": "34bdea0950e93b407189f2110bbb1172c60ddd5dcf3c24856fff3a755a7e4a66",
+      "identity_sha256": "8ffb0f522a363f41a0baf701e60af481a40c0bfd4ff8f9db8651e5443a0a0ded",
       "policy": "abi_toolchain_reference_review",
       "reason": "Same script additionally checks RETURNED_ATTRS subset reporting and length-prefixed records. Separate binding; native bulk packing and unsupported-attribute semantics remain relevant."
     },
@@ -615,7 +555,7 @@
     },
     "sigexc_sa_restart_contract": {
       "name": "sigexc_sa_restart_contract",
-      "identity_sha256": "c4a8b70e99e8edd9eca2f5300091415c92474aab8bbe4e5f758545ace1917f43",
+      "identity_sha256": "bcbed652fc9adcfdd73527b7b8985d0ed0f5bf09dab99385860bbc181ffcb38f",
       "policy": "semantic_reference_review",
       "reason": "Production sys_sigaction/sigexc with fake rt_sigaction checks Linux restart/siginfo/onstack flags and SIG_IGN handling. This only proves chosen Linux implementation flags; SA_RESTART interruption/resumption behavior and ignored-signal semantics still require Darwin/POSIX reference."
     },
@@ -631,15 +571,9 @@
       "policy": "native_reference",
       "reason": "Public Darwin/POSIX observable behavior; preserve target API availability, ordinary-user setup and backend-neutral assertions. Native execution is required before claiming reference evidence."
     },
-    "sigexc_debug_flood_contract": {
-      "name": "sigexc_debug_flood_contract",
-      "identity_sha256": "fd2e5e6573ab4baddf8bb89933d1f1f27b9ca3c8e1b0988d6a7a3e3128ae9829",
-      "policy": "internal_proof_exemption",
-      "reason": "darling-sigexc-debug-link-dependency: production sigexc.c compiled against fixture headers must omit __simple_kprintf by default and reference it under DEBUG_SIGEXC. This is a private logging dependency, not a public header or ABI check."
-    },
     "sigexc_default_resend_self_contract": {
       "name": "sigexc_default_resend_self_contract",
-      "identity_sha256": "160db8f6f91eadc7c6016754364a2b8196d010076ba8ae28e36295868100359e",
+      "identity_sha256": "58a3cab40d43d9f95dff25b092de0fae7f224553727196568dd7a9b955c23068",
       "policy": "semantic_reference_review",
       "reason": "Mocked production handler checks reset-to-default, tgkill(self pid, self tid, signal), no group kill and interrupt exit. This proves routing, not actual Darwin default-action termination scope/delivery. Corresponding public child/parent behavior remains native-relevant."
     },
@@ -657,7 +591,7 @@
     },
     "ulock_eintr_retry_contract": {
       "name": "ulock_eintr_retry_contract",
-      "identity_sha256": "ecc9141e2228490553a265dff70728a032080e95bf7b97861f93d144e3b10341",
+      "identity_sha256": "27bc13111f2467fbd46262b98c25062d29bd5e367df0d2be9edb55d9a336483b",
       "policy": "semantic_reference_review",
       "reason": "Fake futex sequence checks untimed retries, timed EINTR return, wake values and errno flags. These encode __ulock_wait/__ulock_wake SPI semantics, including timeout and NO_ERRNO behavior; independent XNU/libplatform reference is necessary."
     },
@@ -687,13 +621,13 @@
     },
     "sdk_homebrew_detection_contract": {
       "name": "sdk_homebrew_detection_contract",
-      "identity_sha256": "b6e2bb145b5c52b469fd330adc02dd8c46db290f4aa405b1292ef21dc9516acb",
+      "identity_sha256": "654abadd44f9dbfd46d0573ba51d31d8b734a1f9d32aff88a7ff488e12696898",
       "policy": "unresolved_reference_review",
-      "reason": "Workspace Python requires SDKSettings Version 11.3, CanonicalName macosx11.3, PLATFORM_NAME macosx and MacOSX11.sdk -> MacOSX.sdk/, while removing MacOSX10.13.sdk. This proves mutually matching labels only. Actual SDK identity, header/library contents, provenance and supported compiler target are unresolved; native/toolchain reference is indispensable."
+      "reason": "SDK consumer checks discoverable unversioned JSON/plist identity and platform consistency with changing-version/malformed-input arms. It does not establish SDK header/library contents, provenance or compiler compatibility; independent native/toolchain reference remains required."
     },
     "vchroot_pathnull_guard_contract": {
       "name": "vchroot_pathnull_guard_contract",
-      "identity_sha256": "5d6f45e9768485b8651b1bcd4d5830ff888782cbcd2e878e2b9a3455b6106397",
+      "identity_sha256": "9b97e4f97742e0d189d00a42c90e75bc6d06336241e43a9672ca1a45aad0eb15",
       "policy": "semantic_reference_review",
       "reason": "Production syscall closure with stubs checks NULL -> EFAULT before path copies/expansion/Linux fallback across multiple syscall families. Host fixture proves guard placement; public invalid-pointer error and precedence still need corresponding syscall reference."
     },
@@ -795,7 +729,7 @@
     },
     "fd_guard_ebadf_contract": {
       "name": "fd_guard_ebadf_contract",
-      "identity_sha256": "d608feafd367af40526c009dee4d551a6e2a6dc8b4b5a928bf247b8c35efdeda",
+      "identity_sha256": "073353a329c2032d56432f2a34133f9d6c2c97839f6fae4554d89ad7e2ebaed6",
       "policy": "semantic_reference_review",
       "reason": "Workspace fixture marks host fd 77 guarded and calls production dup/dup2/fcntl, requiring EBADF rather than abort or fallback. Guarded internal descriptor selection is Darling-specific; whether exposing it as out-of-range/EBADF\u2014including destination dup2\u2014is compatible needs explicit public-boundary review. Do not equate Darling guards with native guarded-fd API behavior."
     },
@@ -931,12 +865,6 @@
       "policy": "internal_proof_exemption",
       "reason": "darling-private-debug-macro-evaluation: default fixture checks no call/argument side effect; debug fixture checks restoration. The ordinary compiler implementing the macro is required, but no Apple target-language/ABI contract is asserted."
     },
-    "hotpath_kprintf_execve_object_contract": {
-      "name": "hotpath_kprintf_execve_object_contract",
-      "identity_sha256": "77bbb2d7946ebc6b7960a11b52a65f17bc4698c2f7d6b1e27f3596d15fb4608a",
-      "policy": "internal_proof_exemption",
-      "reason": "darling-private-hotpath-log-dependency: compiled production execve.c/filio.c objects must not reference synchronous __simple_kprintf. Not native execve/ioctl behavior."
-    },
     "hotpath_kprintf_filio_object_contract": {
       "name": "hotpath_kprintf_filio_object_contract",
       "identity_sha256": "ff4c4c15deec19968c7ed8c6a0ca782bc9f9d90d94e5c2fc7811cc9d6e76e152",
@@ -945,13 +873,13 @@
     },
     "dylib_recv_adaptive_spin_enabled_contract": {
       "name": "dylib_recv_adaptive_spin_enabled_contract",
-      "identity_sha256": "6e06f9cfcdd6b4e724fec6eee6e8086ec74b037ac40483e2f675e45270517e47",
+      "identity_sha256": "c8233efe643093bba3b0d9c3107df3a02e8727c66c770047e81b58602744b388",
       "policy": "internal_proof_exemption",
       "reason": "linux-private-rpc-receive-poll-budget: production receive hook with fake recv syscalls checks DONTWAIT success, bounded EAGAIN polling then blocking fallback, and real-error exit, with budget 3."
     },
     "dylib_recv_adaptive_spin_disabled_contract": {
       "name": "dylib_recv_adaptive_spin_disabled_contract",
-      "identity_sha256": "47da09b73895db4f167afc5692eef9744ed2c996ff3ffbb7ff5daa07923e9c93",
+      "identity_sha256": "39427bdcaeead4faa00d954958ebb702165c3d1e8239bfa4e8ed9b68cfc944fa",
       "policy": "internal_proof_exemption",
       "reason": "linux-private-rpc-receive-zero-budget: same fixture compiled with budget 0 requires immediate blocking. Distinct binding/policy despite shared script."
     },
@@ -1277,7 +1205,7 @@
       "name": "perf18_ring_host_gate_suite",
       "identity_sha256": "83c36e9ebce670d20ed903fb0d862f9a52f84ed712d2706f17f4ce081b2bac77",
       "policy": "internal_proof_exemption",
-      "reason": "Full experimental Darling ring suite: private ABI/hash, routing/correlation, wake/generation, at-most-once delivery and recording-stub postfork ownership models. Synthetic ports and deallocation are transport payload/model oracles, not native Mach ABI. Optional generated-header-dependent arms may skip; no execution completeness is claimed."
+      "reason": "Full compiled Darling ring/census/validator suite plus current production XNU completion and populated postfork-reset host boundary. Known-bad validator/model arms are self-contained RED; actual production reset is GREEN-only host evidence. Synthetic ports do not establish native Mach semantics or deployed fork/exec correctness."
     },
     "a0_zero_hang_synth_gate": {
       "name": "a0_zero_hang_synth_gate",
@@ -1293,9 +1221,9 @@
     },
     "j7e7_postfork_reset_gate_suite": {
       "name": "j7e7_postfork_reset_gate_suite",
-      "identity_sha256": "78fe068248c91acac32b7ab0d21dcbcee87245a559fee01e3355c847fafa5bad",
+      "identity_sha256": "ecafb61606554aded8ddc1948b5d0ce3c7a7622d3b60988077ab36076ae7b568",
       "policy": "internal_proof_exemption",
-      "reason": "Full experimental Darling ring suite: private ABI/hash, routing/correlation, wake/generation, at-most-once delivery and recording-stub postfork ownership models. Synthetic ports and deallocation are transport payload/model oracles, not native Mach ABI. Optional generated-header-dependent arms may skip; no execution completeness is claimed."
+      "reason": "Full compiled Darling ring/census/validator suite plus current production XNU completion and populated postfork-reset host boundary. Known-bad validator/model arms are self-contained RED; actual production reset is GREEN-only host evidence. Synthetic ports do not establish native Mach semantics or deployed fork/exec correctness."
     },
     "ring_fd_ownership_guest": {
       "name": "ring_fd_ownership_guest",

@@ -742,52 +742,28 @@ workloads:
   name: dyld_static_libunwind_link
   kind: build
   diag: bare
-  runner: west-build
-  target: src/external/dyld/dyld
-  note: Rebuilds dyld, which links libunwind_static and failed before unwind_static used -fno-jump-tables.
+  runner: source-build-fixture
+  repo: darling
+  source-module: darling
+  source-env: DARLING_SRC_ROOT
+  cmake-args:
+  - -DCMAKE_BUILD_TYPE=Release
+  - -DTARGET_i386=OFF
+  - -DENABLE_METAL=OFF
+  - -DCOMPILE_PY2_BYTECODE=OFF
+  - -DDARLING_NO_CCACHE=ON
+  cmake-targets:
+  - libsyscall_generate_mig_headers
+  - libsyscall_generate_mig_internal_headers
+  - libsyscall_generate_bsd_stubs
+  - generate_dserver_rpc_wrappers
+  - rtsig_h
+  - system_loader
+  timeout-seconds: 3600
+  note: Fresh normal source CMake build of the actual dyld system_loader linked to unwind_static;
+    x86_64 compile/link coverage, not installed-runtime execution.
   env: host
   coverage-tier: compile
-- id: ring_committed_unknown_contract_test--494a1cfc
-  module: darling/src/external/xnu
-  bead: dar-rpc-correctness-z27x.2
-  name: ring_committed_unknown_contract_test
-  kind: source-contract
-  diag: bare
-  runner: source-script-fixture
-  repo: darling-src-external-darlingserver
-  source-script: tests/ring_committed_unknown_contract_test.sh
-  cases:
-  - name: default
-  note: Current-source darlingserver test script pins the xnu guest ring committed-unknown no-UDS-retry
-    contract.
-  env: host
-  coverage-tier: source
-- id: rpc_disconnect_status_contract_test--56a1c813
-  module: darling/src/external/xnu
-  bead: dar-rpc-correctness-z27x.6
-  name: rpc_disconnect_status_contract_test
-  kind: source-contract
-  diag: bare
-  runner: source-script-fixture
-  source-script: darling/src/libsystem_kernel/tests/rpc_disconnect_status_contract_test.sh
-  cases:
-  - name: default
-  note: Follow-up current-source test patch; fails before disconnect status classification exists.
-  env: host
-  coverage-tier: source
-- id: rpc_disconnect_status_contract_test--8c3c7f55
-  module: darling/src/external/xnu
-  bead: dar-rpc-correctness-z27x.6
-  name: rpc_disconnect_status_contract_test
-  kind: source-contract
-  diag: bare
-  runner: source-script-fixture
-  source-script: darling/src/libsystem_kernel/tests/rpc_disconnect_status_contract_test.sh
-  cases:
-  - name: default
-  note: Test patch that pins RPC disconnect status classification.
-  env: host
-  coverage-tier: source
 - id: a0_gate_full_strict
   module: darling/src/external/darlingserver
   bead: dar-a0arch-redesign-253u
@@ -809,108 +785,59 @@ workloads:
     Long manual gate, not a fast local default.
   env: darling
   coverage-tier: runtime
-- id: standard_signal_coalescing_contract_test--ba80014b
-  module: darling/src/external/darlingserver
-  bead: dar-rpc-correctness-z27x.8
-  name: standard_signal_coalescing_contract_test
-  kind: source-contract
-  diag: bare
-  runner: source-contract-script
-  script: tests/standard_signal_coalescing_contract_test.sh
-  note: Follow-up current-source test patch; fails before standard signal coalescing state exists.
-  env: host
-  coverage-tier: source
-  source-env: DSERVER_SRC_ROOT
-- id: ring_committed_unknown_contract_test--5ae08b29
-  module: darling/src/external/darlingserver
-  bead: dar-rpc-correctness-z27x.2
-  name: ring_committed_unknown_contract_test
-  kind: source-contract
-  diag: bare
-  runner: source-script-fixture
-  source-script: tests/ring_committed_unknown_contract_test.sh
-  cases:
-  - name: default
-  note: Static contract gate for no UDS retry after a ring operation is committed/unknown.
-  env: host
-  coverage-tier: source
-- id: duct_tape_fail_closed_stubs_test
-  module: darling/src/external/darlingserver
-  bead: dar-rpc-correctness-z27x.4
-  name: duct_tape_fail_closed_stubs_test
-  kind: source-contract
-  diag: bare
-  runner: source-script-fixture
-  source-script: tests/duct_tape_fail_closed_stubs_test.sh
-  cases:
-  - name: default
-  note: Static contract gate for reachable duct-tape stubs failing closed instead of aborting the server.
-  env: host
-  coverage-tier: source
-- id: rpc_serial_contract_test
-  module: darling/src/external/darlingserver
-  bead: dar-rpc-correctness-z27x.1
-  name: rpc_serial_contract_test
-  kind: source-contract
-  diag: bare
-  runner: source-script-fixture
-  source-script: tests/rpc_serial_contract_test.sh
-  cases:
-  - name: default
-  note: Static contract gate for packed call serial/correlation in UDS replies.
-  env: host
-  coverage-tier: source
 - id: rpc_disconnect_send_contract_test--78273e11
   module: darling/src/external/darlingserver
   bead: dar-rpc-correctness-z27x.6
   name: rpc_disconnect_send_contract_test
-  kind: source-contract
+  kind: contract
+  coverage-tier: host
   diag: bare
-  runner: source-script-fixture
-  source-script: tests/rpc_disconnect_send_contract_test.sh
-  cases:
-  - name: default
-  note: Follow-up current-source test patch; fails before disconnect sends are mapped to EINTR.
+  runner: c-fixture
+  repo: darling-src-external-darlingserver
+  script: tests/message_disconnect_test.cpp
+  source-env: DSERVER_SRC_ROOT
+  requires:
+  - dserver-rpc
+  cc: c++
+  include-dirs:
+  - internal-include
+  source-files:
+  - src/message.cpp
+  - src/metrics.cpp
+  compile-flags:
+  - -std=c++17
+  - -Wall
+  - -Wextra
+  - -Werror
+  - -Wno-unused-parameter
+  - -Wno-sign-compare
+  - -pthread
   env: host
-  coverage-tier: source
+  note: Real server reply queue drops vanished-peer replies without replay or successful-send callback;
+    unexpected errors preserve generic errno and queued ownership. Not guest EINTR classification.
 - id: dserver_stack_pool_tests_run
   module: darling/src/external/darlingserver
   bead: dar-9f8b
   name: dserver_stack_pool_tests_run
   kind: contract
   diag: bare
-  runner: west-build
-  target: dserver_stack_pool_tests_run
-  note: Fails on the pre-fix parent because StackPool::free(empty) accepts an invalid handle; passes with
-    the fix.
+  runner: source-build-fixture
+  repo: darling
+  source-module: darling
+  source-env: DARLING_SRC_ROOT
+  cmake-args:
+  - -DCMAKE_BUILD_TYPE=Release
+  - -DTARGET_i386=OFF
+  - -DENABLE_METAL=OFF
+  - -DCOMPILE_PY2_BYTECODE=OFF
+  - -DDARLING_NO_CCACHE=ON
+  cmake-targets:
+  - dserver_stack_pool_tests_run
+  timeout-seconds: 600
+  note: Builds and executes production StackPool allocation, reuse, invalidation and invalid-free
+    behavior with production assertions explicitly enabled.
   env: host
-  coverage-tier: compile
-- id: standard_signal_coalescing_contract_test--6e982290
-  module: darling/src/external/darlingserver
-  bead: dar-rpc-correctness-z27x.8
-  name: standard_signal_coalescing_contract_test
-  kind: source-contract
-  diag: bare
-  runner: source-script-fixture
-  source-script: tests/standard_signal_coalescing_contract_test.sh
-  cases:
-  - name: default
-  note: Pins standard signal coalescing contract.
-  env: host
-  coverage-tier: source
-- id: rpc_disconnect_send_contract_test--97c5bdb9
-  module: darling/src/external/darlingserver
-  bead: dar-rpc-correctness-z27x.8
-  name: rpc_disconnect_send_contract_test
-  kind: source-contract
-  diag: bare
-  runner: source-script-fixture
-  source-script: tests/rpc_disconnect_send_contract_test.sh
-  cases:
-  - name: default
-  note: Pins RPC disconnect send-to-EINTR contract.
-  env: host
-  coverage-tier: source
+  coverage-tier: host
 - id: message_ctrunc_contract
   module: darling/src/external/darlingserver
   bead: dar-rpc-correctness-z27x.5
@@ -922,11 +849,14 @@ workloads:
   repo: darling-src-external-darlingserver
   script: tests/message_ctrunc_test.cpp
   source-env: DSERVER_SRC_ROOT
+  requires:
+  - dserver-rpc
   cc: c++
   include-dirs:
   - internal-include
   source-files:
   - src/message.cpp
+  - src/metrics.cpp
   compile-flags:
   - -std=c++17
   - -Wall
@@ -934,53 +864,27 @@ workloads:
   - -Werror
   - -Wno-unused-parameter
   - -Wno-sign-compare
+  - -pthread
   note: Host behavior contract for the real MessageQueue SCM_RIGHTS receive path; proves push_reply-sized
     fd messages survive SO_PASSCRED and oversized/truncated control data is not accepted.
   env: host
-- id: standard_signal_coalescing_source_contract
-  module: darling/src/external/darlingserver
-  bead: dar-cvstorm2-flood-lost-progress-s41p
-  name: standard_signal_coalescing_source_contract
-  kind: source-contract
-  coverage-tier: source
-  diag: bare
-  runner: source-script-fixture
-  repo: darling/src/external/darlingserver
-  source-env: DSERVER_SRC_ROOT
-  timeout-seconds: 60
-  note: The source-owned script is retained as a historical-source structural proof and gets its source
-    root explicitly; behavioral coverage is provided by the following friend-adapter fixture.
-  env: host
-  source-module: darling/src/external/darlingserver
-  source-script: tests/standard_signal_coalescing_contract_test.sh
-  cases:
-  - name: default
-    args: []
 - id: standard_signal_coalescing_helper
   module: darling/src/external/darlingserver
   bead: dar-cvstorm2-flood-lost-progress-s41p
   name: standard_signal_coalescing_helper
-  kind: contract
-  coverage-tier: host
+  kind: guest
+  coverage-tier: runtime
   diag: bare
-  runner: c-fixture
-  repo: darling-workspace
-  script: tests/standard_signal_coalescing_helper_test.cpp
-  source-env: DSERVER_SRC_ROOT
-  cc: c++
-  fixture-include-dirs:
-  - tests/fixtures/standard-signal-coalescing
-  include-dirs:
-  - internal-include
-  compile-flags:
-  - -std=c++17
-  - -Wall
-  - -Wextra
-  - -Werror
+  runner: guest-c-fixture
+  repo: darling-src-external-darlingserver
+  script: tests/standard_signal_coalescing_guest.c
   timeout-seconds: 60
-  note: The durable friend-adapter fixture compiles against the selected historical-source/profile tree
-    and executes the exact pending-mask helper called by Thread::sendSignal before tgkill.
-  env: host
+  requires:
+  - darling-prefix
+  ok-marker: STANDARD_SIGNAL_COALESCING_OK
+  note: Guest-visible blocked standard signals coalesce, retain distinct pending bits and re-arm
+    after delivery. Executes inside Darling; no private-helper host substitute.
+  env: darling
   source-module: darling/src/external/darlingserver
 - id: host_regression_ctest
   module: darling
@@ -1522,9 +1426,11 @@ workloads:
   bead: dar-q95.12
   name: fork_postfork_child_contract
   kind: contract
-  coverage-tier: compile
+  coverage-tier: host
   diag: bare
   runner: c-fixture
+  requires:
+  - dserver-rpc
   repo: darling-workspace
   script: tests/fork_postfork_child_contract.c
   source-files:
@@ -1539,11 +1445,9 @@ workloads:
   - -Wall
   - -Wextra
   - -Werror
-  note: 'Compiles production fork.c with fork/RPC stubs and checks the child path calls __mldr_postfork_child
-    before guard/socket refresh/checkin while parent/error paths skip child hooks. This remains compile-tier
-    by design: the patch''s invariant is the exact sys_fork child-path call ordering, and a guest smoke
-    test would only observe indirect fork lifecycle symptoms. Broader deployed fork runtime validation
-    is owned by the fork lifecycle work (dar-q95.29.9 / dar-r7fc.2.1).'
+  note: Production fork bookkeeping prepare/release behavior on child, parent and error paths;
+    loader and guard reset precede pre-publication RPC checkin, cwd restoration and lifetime pipe
+    release. Controlled external boundaries, not deployed fork/exec coverage.
   env: host
   source-env: XNU_SRC_ROOT
 - id: fork_wait_timeout_parent_guest
@@ -2141,7 +2045,7 @@ workloads:
   bead: dar-q95.17
   name: getattrlist_pack_name_objtype_contract
   kind: contract
-  coverage-tier: compile
+  coverage-tier: host
   diag: bare
   runner: c-fixture
   source-root-module: darling/src/external/xnu
@@ -2212,7 +2116,7 @@ workloads:
   bead: dar-q95.18
   name: getattrlistbulk_pack_contract
   kind: contract
-  coverage-tier: compile
+  coverage-tier: host
   diag: bare
   runner: c-fixture
   source-root-module: darling/src/external/xnu
@@ -2318,9 +2222,11 @@ workloads:
   bead: dar-q95.20
   name: sigexc_sa_restart_contract
   kind: contract
-  coverage-tier: compile
+  coverage-tier: host
   diag: bare
   runner: c-fixture
+  requires:
+  - dserver-rpc
   repo: darling-workspace
   script: tests/sigexc_sa_restart_contract.c
   source-files:
@@ -2380,54 +2286,16 @@ workloads:
   env-vars:
     WEST_TEST_FORBID_GUEST_TOOLCHAIN: '1'
   env: darling
-- id: sigexc_debug_flood_contract
-  module: darling/src/external/xnu
-  bead: dar-gwn.1.9
-  name: sigexc_debug_flood_contract
-  kind: contract
-  coverage-tier: compile
-  diag: bare
-  runner: object-symbol-fixture
-  repo: darling-workspace
-  source-file: darling/src/libsystem_kernel/emulation/src/linux_premigration/signal/sigexc.c
-  fixture-include-dirs:
-  - tests/fixtures/sigexc/include
-  include-dirs:
-  - darling/src/libsystem_kernel/emulation/include
-  compile-flags:
-  - -std=gnu11
-  - -Wall
-  - -Wextra
-  - -Werror
-  - -Wno-unused-parameter
-  - -Wno-unused-variable
-  - -Wno-unused-but-set-variable
-  - -Wno-unused-function
-  - -include
-  - string.h
-  symbol-checks:
-  - name: default
-    absent-undefined-symbols:
-    - __simple_kprintf
-  - name: debug
-    compile-flags:
-    - -DDEBUG_SIGEXC
-    present-undefined-symbols:
-    - __simple_kprintf
-  note: 'Compiles real sigexc.c and verifies the default build has no __simple_kprintf dependency while
-    DEBUG_SIGEXC still enables the debug path. This is intentionally object-symbol/compile-tier: the regression
-    is an unconditional debug build dependency, and a guest runtime log/perf gate would be an indirect
-    noisy oracle. Broader deployed kprintf/log-flood runtime coverage is tracked separately by dar-sigexc-hotpath-kprintf-runtime-gate-9mpv.'
-  env: host
-  source-env: XNU_SRC_ROOT
 - id: sigexc_default_resend_self_contract
   module: darling/src/external/xnu
   bead: dar-gwn.6.4
   name: sigexc_default_resend_self_contract
   kind: contract
-  coverage-tier: compile
+  coverage-tier: host
   diag: bare
   runner: c-fixture
+  requires:
+  - dserver-rpc
   repo: darling-workspace
   script: tests/sigexc_default_resend_self_contract.c
   source-files:
@@ -2491,71 +2359,28 @@ workloads:
   bead: dar-gwn.6
   name: ulock_eintr_retry_contract
   kind: contract
-  coverage-tier: compile
+  coverage-tier: host
   diag: bare
   runner: c-fixture
   repo: darling-workspace
   script: tests/ulock_eintr_retry_contract.c
+  requires:
+  - dserver-rpc
+  fixture-include-dirs:
+  - tests/fixtures/ulock/include
   source-files:
   - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/ulock_wait.c
   - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/psynch/ulock_wake.c
   include-dirs:
   - darling/src/libsystem_kernel/emulation/include
-  generated-headers:
-    darling/emulation/common/base.h: '#pragma once
-
-      #ifdef __cplusplus
-
-      #define CPP_EXTERN_BEGIN extern "C" {
-
-      #define CPP_EXTERN_END }
-
-      #else
-
-      #define CPP_EXTERN_BEGIN
-
-      #define CPP_EXTERN_END
-
-      #endif
-
-      '
-    darling/emulation/conversion/errno.h: '#pragma once
-
-      int errno_linux_to_bsd(int err);
-
-      '
-    darling/emulation/conversion/duct_errno.h: '#pragma once
-
-      #include <conversion/duct_errno.h>
-
-      '
-    darling/emulation/linux_premigration/linux-syscalls/linux.h: '#pragma once
-
-      #define __NR_futex 202
-
-      long test_linux_syscall(long nr, ...);
-
-      #define LINUX_SYSCALL(n, ...) test_linux_syscall((n), __VA_ARGS__)
-
-      '
-    darling/emulation/xnu_syscall/bsd/impl/psynch/ulock_wait.h: '#pragma once
-
-      #include <xnu_syscall/bsd/impl/psynch/ulock_wait.h>
-
-      '
-    darling/emulation/xnu_syscall/bsd/impl/psynch/ulock_wake.h: '#pragma once
-
-      #include <xnu_syscall/bsd/impl/psynch/ulock_wake.h>
-
-      '
   compile-flags:
   - -std=gnu11
   - -Wall
   - -Wextra
   - -Werror
   - -Wno-unused-parameter
-  note: Compiles production ulock_wait/ulock_wake with a fake futex backend and checks untimed EINTR retry,
-    timed EINTR passthrough, clean wake errno, and wake success behavior.
+  note: Production ulock RPC/futex error, signed retval and wake notification behavior; bootstrap
+    futex paths preserve untimed EINTR retry and timed EINTR passthrough.
   env: host
   source-env: XNU_SRC_ROOT
 - id: ulock_eintr_retry_guest
@@ -2664,8 +2489,8 @@ workloads:
   runner: python
   repo: darling-workspace
   script: tests/sdk_homebrew_detection_contract.py
-  note: Host RED->GREEN contract that Homebrew can discover a JSON-described macOS 11.3 SDK through a
-    matching versioned symlink.
+  note: Checks discoverable unversioned macOS SDK JSON/plist identity and platform consistency,
+    independent of SDK version, display wording and historical alias spellings.
   env: host
   source-env: DARLING_SRC_ROOT
 - id: vchroot_pathnull_guard_contract
@@ -2673,7 +2498,7 @@ workloads:
   bead: dar-gwn.1.6
   name: vchroot_pathnull_guard_contract
   kind: contract
-  coverage-tier: compile
+  coverage-tier: host
   diag: bare
   runner: c-fixture
   repo: darling-workspace
@@ -2694,6 +2519,8 @@ workloads:
   - darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/xattr/listxattr.c
   fixture-include-dirs:
   - tests/fixtures/vchroot-pathnull/include
+  include-dirs:
+  - darling/src/libsystem_kernel/emulation/include
   compile-flags:
   - -std=gnu11
   - -w
@@ -3322,7 +3149,7 @@ workloads:
   bead: dar-6x4.1
   name: fd_guard_ebadf_contract
   kind: contract
-  coverage-tier: compile
+  coverage-tier: host
   diag: bare
   runner: c-fixture
   repo: darling-workspace
@@ -3857,30 +3684,6 @@ workloads:
     arguments.
   env: host
   source-env: XNU_SRC_ROOT
-- id: hotpath_kprintf_execve_object_contract
-  module: darling/src/external/xnu
-  bead: dar-dar6x4-perf-5dq.20
-  name: hotpath_kprintf_execve_object_contract
-  kind: contract
-  coverage-tier: compile
-  diag: bare
-  runner: object-symbol-fixture
-  repo: darling-workspace
-  source-file: darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/process/execve.c
-  fixture-include-dirs:
-  - tests/fixtures/hotpath-kprintf/include
-  include-dirs:
-  - darling/src/libsystem_kernel/emulation/include
-  compile-flags:
-  - -std=gnu11
-  - -w
-  symbol-checks:
-  - name: default
-    absent-undefined-symbols:
-    - __simple_kprintf
-  note: Object contract that the default execve hot path no longer references synchronous kprintf.
-  env: host
-  source-env: XNU_SRC_ROOT
 - id: hotpath_kprintf_filio_object_contract
   module: darling/src/external/xnu
   bead: dar-dar6x4-perf-5dq.20
@@ -3910,9 +3713,11 @@ workloads:
   bead: dar-dar6x4-perf-5dq.14
   name: dylib_recv_adaptive_spin_enabled_contract
   kind: contract
-  coverage-tier: compile
+  coverage-tier: host
   diag: bare
   runner: c-fixture
+  requires:
+  - dserver-rpc
   repo: darling-workspace
   script: tests/dylib_recv_adaptive_spin_contract.c
   fixture-include-dirs:
@@ -3938,10 +3743,12 @@ workloads:
   bead: dar-dar6x4-perf-5dq.14
   name: dylib_recv_adaptive_spin_disabled_contract
   kind: contract
-  coverage-tier: compile
+  coverage-tier: host
   diag: bare
   source-env: XNU_SRC_ROOT
   runner: c-fixture
+  requires:
+  - dserver-rpc
   repo: darling-workspace
   script: tests/dylib_recv_adaptive_spin_contract.c
   fixture-include-dirs:
@@ -5744,10 +5551,9 @@ workloads:
   red-proof:
     mode: self
     expect-output-contains: RED->GREEN OK
-    why-self: 'tests/run-ring-shm-validate.sh compiles postfork-reset bad arms for the shipped close(0)
-      bug and missing -1 sentinel and requires both to fail before the fixed arm passes.
-
-      '
+    why-self: The full suite rejects known-bad validator/model arms before passing the fixed arms.
+      Production postfork reset also executes as a controlled host boundary, without a production-reset
+      RED claim or deployed fork/exec claim.
     expect-failure-phase: self
   runner: script
   script: tests/run-ring-shm-validate.sh

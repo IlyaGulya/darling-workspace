@@ -240,6 +240,15 @@ formatter, signal policy or success fallback. TEST scheduling/failure hooks are
 absent from shipping code. Permanent oracles observe bytes, xattrs, object
 identity, cursor transitions, errors, visibility and resource ownership.
 
+The host compile closure includes `darling-dmg/src/DADeviceProtocol.h` from
+the selected complete product tree: vchroot uses its shared device namespace
+contract even when the fixture does not activate that namespace. Do not replace
+it with fixture-defined device identities. Darwin-only fcntl command numbers
+used by the Linux harness come from XNU `bsd/sys/fcntl.h`; Linux still executes
+the underlying descriptor operations. NULL-path and guarded-descriptor fixtures
+fail immediately if execution reaches their forbidden translation/native-call
+boundaries, rather than returning a simulated expected error there.
+
 Guest regressions compile/run through real CLT in Darling and consume optional
 `tests-data` from the normal installation. Validate original E-UNION workloads
 plus state, routing, xattr and descriptor-lifetime cases. A native harness result

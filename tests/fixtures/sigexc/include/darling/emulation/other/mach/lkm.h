@@ -6,14 +6,21 @@ typedef struct {
 	uint64_t __rip, __rflags, __cs, __fs, __gs;
 } x86_thread_state64_t;
 typedef struct {
+	/* Darwin osfmk/mach/i386/_structs.h, _STRUCT_X86_FLOAT_STATE64.
+	 * Keep reserved bytes: production converts into the shared urgent frame. */
+	int32_t __fpu_reserved[2];
 	uint16_t __fpu_fcw, __fpu_fsw;
-	uint8_t __fpu_ftw;
+	uint8_t __fpu_ftw, __fpu_rsrv1;
 	uint16_t __fpu_fop;
-	uint16_t __fpu_cs, __fpu_ds;
-	uint64_t __fpu_ip, __fpu_dp;
+	uint32_t __fpu_ip;
+	uint16_t __fpu_cs, __fpu_rsrv2;
+	uint32_t __fpu_dp;
+	uint16_t __fpu_ds, __fpu_rsrv3;
 	uint32_t __fpu_mxcsr, __fpu_mxcsrmask;
 	unsigned char __fpu_stmm0[128];
 	unsigned char __fpu_xmm0[256];
+	unsigned char __fpu_rsrv4[96];
+	int32_t __fpu_reserved1;
 } x86_float_state64_t;
 typedef int thread_t;
 int mach_thread_self(void);

@@ -177,7 +177,7 @@ def _default_coverage_tier(test: dict[str, Any]) -> None:
         test["coverage-tier"] = "source"
     elif test.get("env") in {"darling", "macos"} or test.get("kind") == "guest":
         test["coverage-tier"] = "runtime"
-    elif runner in {"c-fixture", "object-symbol-fixture", "west-build"} or test.get("kind") == "build":
+    elif runner in {"c-fixture", "object-symbol-fixture"} or test.get("kind") == "build":
         test["coverage-tier"] = "compile"
     else:
         test["coverage-tier"] = "host"
