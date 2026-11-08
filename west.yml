@@ -866,7 +866,7 @@ manifest:
   - name: darling-src-external-libunwind
     repo-path: darling-libunwind
     path: darling/src/external/libunwind
-    remote: darling
+    remote: darling-next
     revision: 2b44abbef86662d7f531cdcdab5385d9bc2ca886
     userdata:
       kind: darling-source
