@@ -617,6 +617,7 @@ def applied_environ(values: dict):
         "WEST_STOCK_STACK_CACHE",
         "WEST_STOCK_STACK_CACHE_DIR",
         "WEST_STOCK_STACK_CACHE_MAX_BYTES",
+        "WEST_STOCK_STACK_RESTORE",
     )
     saved = {key: os.environ.get(key) for key in keys}
     for key in keys:

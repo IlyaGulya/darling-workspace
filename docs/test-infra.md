@@ -375,7 +375,7 @@ workspace. The latter is audit policy, not a second runtime test registry.
 Reproduce from a configured West checkout with the pinned tool environment:
 
 ```sh
-mise exec -- uv run --no-project --with west==1.5.0 python -B \
+mise exec -- uv run --frozen -- python -B \
   scripts/audit-test-registration.py "$DW_STATE_ROOT/native-inventory"
 ```
 
@@ -439,7 +439,7 @@ resolution, unknown bindings, reused names, declaration drift and discovery
 without product builds or test execution:
 
 ```sh
-mise exec -- uv run --no-project --with west==1.5.0 python -B \
+mise exec -- uv run --frozen -- python -B \
   tests/west_test_contracts/native_inventory_contract.py
 ```
 The aggregate entrypoint `tests/run-native-inventory-contract.sh` runs that
@@ -1119,9 +1119,11 @@ Do not put a compile cache in front of the guest compiler; the source build is
 the measured workload and receipts cannot detect a cached compile.
 
 Only zero guest verdicts may be reused; announce identity digest and original
-run time. Nonzero verdicts re-execute. A reused pass cannot detect flakes:
-acceptance requires fresh execution on the current identity, with verdict reuse
-disabled. Smaller load-smoke workloads (concurrent guest CLT compile/link,
+run time. Nonzero verdicts re-execute. RED selections and `red-proof` declarations
+always execute, including self-contained proofs: an earlier pass cannot replace
+the current negative oracle. A reused pass cannot detect flakes; acceptance
+requires fresh execution on the current identity, with verdict reuse disabled.
+Smaller load-smoke workloads (concurrent guest CLT compile/link,
 fork/exec storms, descriptor churn) are regression signals, not substitutes
 for full stock acceptance.
 
@@ -1422,6 +1424,29 @@ implementation of helper logic:
 | `west_commands/managed_run.py` | Producer-owned temporary-run journal, scope, closed evidence, recovery and retirement |
 | `west_commands/evidence_retention.py` | Run/job evidence finalization, logical log compaction, bounded pruning and retirement journal |
 | `west_commands/runtime_retention.py` | Explicit-root new-image registry, references/pins, read-only census and bounded image retention |
+
+Focused fixtures isolate and restore every ambient configuration key that can
+change their scenario. The stock-stack provider contract scopes
+`WEST_STOCK_STACK_RESTORE` together with its cache controls, so a caller's
+fresh-build setting cannot disable the fixture's warm-restore case. Explicit
+restore-off cases remain separate behavioral checks.
+The verdict-cache contract likewise scopes its store and workload controls,
+then exercises disabled reuse and reduced workloads explicitly. Read-only
+fixtures must not attribute concurrent changes in shared host state to
+themselves; their oracles must describe their own inputs and observations.
+The real-CMake host installation fixture uses a scoped 1 MiB reserve for its
+tiny images, not the production 30 GiB policy. The retention contract separately
+proves that insufficient reserve refuses publication before creating candidate
+files or registry state.
+Diagnostic CLI fixtures declare finalized scope and capture-to-source mappings;
+no registered capture is distinct from a registered, completely read empty one.
+Guarded workload stdout/stderr may be absent from launcher output. Consumers
+read the runner's announced bundle through the logical payload reader.
+Select per-invocation artifacts by their creation within that invocation, not
+timestamp recency: filesystem timestamp ties do not establish run ownership.
+CMake backend checks must exercise configuration/build outcomes, not freeze
+generated argument lists; interpreter selection must preserve the environment
+needed by the workload bridge.
 
 Update the matching focused contract when changing these interfaces (all
 entrypoints below are under `tests/`):

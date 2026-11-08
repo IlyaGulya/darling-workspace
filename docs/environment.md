@@ -31,10 +31,33 @@ adopted or removed.
 
 ## Host tools and agent activation
 
-`mise.toml` is the canonical host CLI environment. Review it, then run
-`$HOME/.local/bin/mise trust` and `mise install` from the manifest. From the West
-root use `mise -C darling-workspace trust|install`. Do not install another copy
-of a tool merely because the project environment is not active.
+`mise.toml` is the canonical host CLI environment, selecting Python 3.14.8 and
+uv 0.8.17. Review it, then run these commands from the manifest:
+
+```sh
+$HOME/.local/bin/mise trust
+$HOME/.local/bin/mise install
+$HOME/.local/bin/mise run host-setup
+```
+
+From the West root use `mise -C darling-workspace` with the same commands.
+`host-setup` explicitly runs `uv sync --frozen`; it is not an install hook.
+The nonpackaged host project uses one standard `.venv`, activated by mise for
+shell Python, West, dw and lane-tool tasks. `UV_PYTHON` points uv to the
+project-selected mise interpreter rather than a global Python. Direct host
+Python dependency pins, including West 1.5.0, PyYAML 6.0.2 and jsonschema
+4.23.0, are authoritative in `pyproject.toml`; `uv.lock` records their complete
+locked resolution.
+After a dependency change, update the lock deliberately before frozen setup.
+Inspect an existing `.venv` and preserve it with its owner if it belongs to
+unrelated work before syncing; do not overwrite or delete another owner's
+environment. Do not install another copy of a tool merely because the project
+environment is not active.
+
+Linux process supervision requires a kernel with pidfd support and a Python
+build exposing both `os.pidfd_open` and `signal.pidfd_send_signal`. A Python
+version number alone does not establish those build capabilities; a missing
+API is a host prerequisite failure, not permission to weaken cleanup safety.
 
 Use `mise run dw ...` for managed orchestration and `mise run west ...` for West
 commands. From the West root add `-C darling-workspace`. Bare West commands in
@@ -42,13 +65,13 @@ documentation are shorthand for that task. Put `--` after the task name when
 forwarding opaque arguments or a literal `:::`; otherwise mise parses task
 separation. Do not depend on globally selected shims or user-global uv/west.
 
-If tools are absent from PATH, check `$HOME/.local/bin/{mise,west,br}` first.
-Beads needs `br` on PATH even through the West alias; use
-`PATH="$HOME/.local/bin:$PATH" "$HOME/.local/bin/mise" run west dw beads ...`.
-Create isolated Python environments with `mise exec -- uv venv PATH` and
+The project adds `$HOME/.local/bin` to PATH so child commands can discover mise
+and Beads' `br`; install/provide those tools there before use if absent.
+West itself comes from the project `.venv`, not a user-global or pipx install.
+For separate, genuinely isolated tooling use `mise exec -- uv venv PATH` and
 `mise exec -- uv pip install --python PATH/bin/python ...`, not system pip,
-`python3 -m venv` or ensurepip. For an isolated West install use the version
-pinned by `mise.toml` (currently `west==1.5.0`).
+`python3 -m venv` or ensurepip. Such environments do not replace the locked
+host project environment.
 
 Rootless COW lanes use the pinned upstream containerd fuse-overlayfs snapshotter
 and the exact reviewed `fuse-overlayfs` workspace-tool revision in `west.yml`,
@@ -65,8 +88,8 @@ Cargo/Rust 1.88 or newer and network access to locked Cargo dependencies are
 provider build prerequisites. These are host lane dependencies, not ordinary
 product launch dependencies.
 
-After `mise install`, provide the exact reviewed West commit in that checkout,
-then run `mise run lane-provider-build`. For unpublished hard-fork commits a
+After `mise run host-setup`, provide the exact reviewed West commit in that
+checkout, then run `mise run lane-provider-build`. For unpublished hard-fork commits a
 clean machine needs the reviewed source Git bundle/commit from its owner;
 the upstream URL alone cannot fetch an unpublished fix. Import that bundle
 into the declared checkout and select the exact `west.yml` revision. Do not

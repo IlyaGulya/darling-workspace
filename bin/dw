@@ -6,7 +6,7 @@ DW_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 case "${1:-}" in
   dev|test|config)
     cd "$DW_ROOT"
-    exec mise -C "$DW_ROOT" exec -- west "$@"
+    exec mise -C "$DW_ROOT" run west -- "$@"
     ;;
 esac
 if [[ -f "$DW_ROOT/workspace.env" ]]; then

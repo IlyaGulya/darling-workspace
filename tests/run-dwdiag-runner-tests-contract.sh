@@ -48,10 +48,12 @@ manifest() { # dir, then "path offset" per registered log
 	local d=$1
 	shift
 	{
-		printf 'version=1\nstart=%s\nend=%s\nprefix=%s\n' "$START" "$END" "$d/prefix"
-		local entry
+		printf 'version=1\nscope=explicit\nstart=%s\nend=%s\nprefix=%s\n' "$START" "$END" "$d/prefix"
+		local entry captured
 		for entry in "$@"; do
 			printf 'file=%s\n' "$entry"
+			captured=${entry% *}
+			printf 'source=%s\t%s\n' "$captured" "$d/prefix/private/var/tmp/${captured##*/}"
 		done
 	} >"$d/state/evidence-manifest"
 }
@@ -134,8 +136,7 @@ run_case unreadable unavailable zero
 
 # --- fixture 6: instrument lines exist, but only another run's -> NO-EVIDENCE -----------------------------------
 d=$(fixture foreign-only)
-: >"$d/state/reg.log"
-manifest "$d" "$d/state/reg.log 0"
+manifest "$d"
 printf '%s\n' "$INSTRUMENT_LINE" >"$d/prefix/private/var/tmp/other-run.log"
 run_case foreign-only no-evidence zero
 # The stale/other-run log must NOT contribute a single row to this run's slice.

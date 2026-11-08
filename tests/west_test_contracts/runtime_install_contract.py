@@ -16,8 +16,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "west_commands"))
 
-# Only West's command hosting is replaced. Every configure/build/install, file,
-# executable invocation and provenance/integrity check below is real.
+# West command hosting is replaced; tiny host-fixture images use a 1 MiB reserve.
+# Every configure/build/install, file, executable invocation and integrity check is real.
 west = types.ModuleType("west")
 commands = types.ModuleType("west.commands")
 
@@ -46,6 +46,7 @@ from runtime_install import (
     RuntimeInstallationError, build_runtime, install_runtime, resolve_runtime,
 )
 from runtime_retention import registered_runtime, runtime_use
+import runtime_retention as retention
 
 
 CMAKE_PROJECT = r'''cmake_minimum_required(VERSION 3.18)
@@ -142,7 +143,9 @@ def expect_install_refusal(build: Path, runtime: Path, manifest: Path) -> None:
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory(prefix="west-real-install-contract-") as directory:
+    with tempfile.TemporaryDirectory(prefix="west-real-install-contract-") as directory, patch.object(
+        retention, "DEFAULT_FREE_FLOOR", 1 << 20,
+    ):
         root = Path(directory)
         managed_state = root / "managed state"
         managed_state.mkdir()

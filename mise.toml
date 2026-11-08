@@ -1,6 +1,15 @@
 [tools]
+python = "3.14.8"
 uv = "0.8.17"
-"pipx:west" = { version = "1.5.0", depends = ["uv"] }
+
+[env]
+_.path = ["{{env.HOME}}/.local/bin"]
+_.python.venv = { path = ".venv", create = true }
+UV_PYTHON = { value = "{{tools.python.path}}/bin/python3", tools = true }
+
+[tasks.host-setup]
+description = "Sync the locked host Python environment"
+run = "uv sync --frozen"
 
 [tasks.dw]
 description = "Run workspace orchestration"
@@ -11,7 +20,7 @@ quiet = true
 
 [tasks.west]
 description = "Run pinned West commands"
-run = "exec west"
+run = 'exec uv run --project "{{config_root}}" --frozen -- west'
 dir = "{{cwd}}"
 raw_args = true
 raw = true
@@ -19,16 +28,16 @@ quiet = true
 
 [tasks.lane-provider-build]
 description = "Build the exact West-owned lane provider without replacing active binaries"
-run = "uv run --no-project --with PyYAML==6.0.2 -- python3 west_commands/lane_provider.py build"
+run = "uv run --frozen -- python3 west_commands/lane_provider.py build"
 
 [tasks.lane-provider-path]
 description = "Resolve and verify the owned lane provider"
-run = "uv run --no-project --with PyYAML==6.0.2 -- python3 west_commands/lane_provider.py resolve"
+run = "uv run --frozen -- python3 west_commands/lane_provider.py resolve"
 
 [tasks.lane-snapshotter-install]
 description = "Install the pinned upstream lane snapshotter without replacing active tools"
-run = "uv run --no-project --with PyYAML==6.0.2 -- python3 west_commands/lane_snapshotter_tools.py install"
+run = "uv run --frozen -- python3 west_commands/lane_snapshotter_tools.py install"
 
 [tasks.lane-snapshotter-path]
 description = "Resolve and verify the pinned snapshotter, host ctr and reviewed FUSE provider"
-run = "uv run --no-project --with PyYAML==6.0.2 -- python3 west_commands/lane_snapshotter_tools.py resolve"
+run = "uv run --frozen -- python3 west_commands/lane_snapshotter_tools.py resolve"

@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "rootless-namespace-writer-candidate-audit",
   "coverage_tier": "source",
-  "count": 1633,
-  "entries_digest": "b56317805b2275fcf3f705ae8fe23440efc9ceb5deacfc4bdfe6d03bd61bef38",
+  "count": 1638,
+  "entries_digest": "746cdab490374e774c90434a2d66211cb728602117de4cac15c1f1fe8c43fcbc",
   "entries": [
     {
       "repository": "darling",
@@ -4771,7 +4771,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -4790,7 +4790,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -4810,7 +4810,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -4829,7 +4829,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -4848,7 +4848,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -5025,7 +5025,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -5046,7 +5046,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -5250,7 +5250,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -5867,7 +5867,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -8175,20 +8175,38 @@
     },
     {
       "repository": "darling",
-      "path": "src/external/darling-dmg/src/main-hdiutil.cpp",
-      "sha256": "05f6d6c6b0f37c2fd24e29e7ed0d316eb5578162ad5bcd357fd1076b130e9a05",
+      "path": "src/external/darling-dmg/vendor/libfsapfs/libcfile/libcfile_support.c",
+      "sha256": "cbbbdbdaf5270c8b14e8b6c5689f50877dd59d3ebb587352b0e06b27ba86a4de",
       "classification": "caller-selected-library-output",
-      "reason": "src/external/darling-dmg/src/main-hdiutil.cpp exposes library/framework mutation of a caller-selected object; the source contains no registered shared lifecycle endpoint authority.",
+      "reason": "src/external/darling-dmg/vendor/libfsapfs/libcfile/libcfile_support.c: libcfile_file_remove_with_error_code (unlink at line 864) and its wide variant (line 1137) remove the caller-supplied filename, with only encoding conversion in the wide path; they do not select or publish a shared runtime endpoint. darling-sources.cmake includes this helper in the standalone host dmg library and guest hdiutil source closure.",
       "evidence": {
         "runtime_scope": "caller-owned-path",
         "mutation_operators": [
-          "mkdir",
           "remove"
         ],
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/darling-dmg/CMakeLists.txt",
-          "sha256": "8034f15d992609078b14206ba89f0b5b1fb9a0baf9635f6df2e9cd097fa84e37",
+          "sha256": "a98d104af65287d5d6be46494b0ce1e131476a4fe16e72cce128a9a3fbc06445",
+          "relation": "nearest-cmake-ancestor"
+        }
+      }
+    },
+    {
+      "repository": "darling",
+      "path": "src/external/darling-dmg/vendor/libfsapfs/libcpath/libcpath_path.c",
+      "sha256": "3481c625dd4ce8269794340cf706c659f8bfe370e72cb69dbeba42f5b2a5f969",
+      "classification": "caller-selected-library-output",
+      "reason": "src/external/darling-dmg/vendor/libfsapfs/libcpath/libcpath_path.c: libcpath_path_make_directory (mkdir at lines 3676-3681) and libcpath_path_make_directory_wide (lines 7471-7476) create only the supplied directory_name, converting the wide argument when needed; neither chooses a runtime endpoint. darling-sources.cmake includes this helper in the standalone host dmg library and guest hdiutil source closure.",
+      "evidence": {
+        "runtime_scope": "caller-owned-path",
+        "mutation_operators": [
+          "mkdir"
+        ],
+        "build_anchor": {
+          "repository": "darling",
+          "path": "src/external/darling-dmg/CMakeLists.txt",
+          "sha256": "a98d104af65287d5d6be46494b0ce1e131476a4fe16e72cce128a9a3fbc06445",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -8285,7 +8303,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/darlingserver/CMakeLists.txt",
-          "sha256": "0248dc3be2a6b2a0c12e15d7d07223463b7b06fccc605aebf9a2dabbde6f10dc",
+          "sha256": "d9c84953c9bd6af8a32178d798bd1f6c756a8a47dbad582b148b99acf763bcc6",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -8304,7 +8322,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/darlingserver/CMakeLists.txt",
-          "sha256": "0248dc3be2a6b2a0c12e15d7d07223463b7b06fccc605aebf9a2dabbde6f10dc",
+          "sha256": "d9c84953c9bd6af8a32178d798bd1f6c756a8a47dbad582b148b99acf763bcc6",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -8326,7 +8344,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/darlingserver/CMakeLists.txt",
-          "sha256": "0248dc3be2a6b2a0c12e15d7d07223463b7b06fccc605aebf9a2dabbde6f10dc",
+          "sha256": "d9c84953c9bd6af8a32178d798bd1f6c756a8a47dbad582b148b99acf763bcc6",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -8624,7 +8642,7 @@
     {
       "repository": "darling",
       "path": "src/external/dyld/src/dyld2.cpp",
-      "sha256": "e7b951b57c46d72ce8ecf240e54f20b5c66c1d9b97e600737db792916411c700",
+      "sha256": "024e0c622ab0f5db313daef057394f6246e1cbfe4dac0df0d5f58bf8008d8080",
       "classification": "non-filesystem-lexical-hit",
       "reason": "src/external/dyld/src/dyld2.cpp defines and calls its image-loader link() routine; this is Mach-O dependency linking, not filesystem link publication or shared-prefix mutation.",
       "evidence": {
@@ -28519,7 +28537,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28539,7 +28557,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28560,7 +28578,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28580,7 +28598,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28600,7 +28618,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28619,7 +28637,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28638,7 +28656,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28657,7 +28675,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28678,7 +28696,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28697,7 +28715,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28716,7 +28734,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28735,7 +28753,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28754,7 +28772,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28773,7 +28791,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28792,7 +28810,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28811,7 +28829,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28830,7 +28848,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28849,7 +28867,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28876,7 +28894,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28895,7 +28913,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/xnu/darling/src/libsystem_kernel/emulation/CMakeLists.txt",
-          "sha256": "5dffacde34f57c7212f38a72ddb88879bb24341a8916096a3c349b7e425df9c9",
+          "sha256": "89a8004bd04df720185ed27190a587dccbbdb212c875af3bbd3017f40cb1f545",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28914,7 +28932,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/xnu/darling/src/libsystem_kernel/emulation/CMakeLists.txt",
-          "sha256": "5dffacde34f57c7212f38a72ddb88879bb24341a8916096a3c349b7e425df9c9",
+          "sha256": "89a8004bd04df720185ed27190a587dccbbdb212c875af3bbd3017f40cb1f545",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28935,7 +28953,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/external/xnu/darling/src/libsystem_kernel/emulation/CMakeLists.txt",
-          "sha256": "5dffacde34f57c7212f38a72ddb88879bb24341a8916096a3c349b7e425df9c9",
+          "sha256": "89a8004bd04df720185ed27190a587dccbbdb212c875af3bbd3017f40cb1f545",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28977,7 +28995,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -28997,7 +29015,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29017,7 +29035,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29036,7 +29054,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29055,7 +29073,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29074,7 +29092,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29283,7 +29301,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29302,7 +29320,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29322,7 +29340,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29341,7 +29359,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29360,7 +29378,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29380,7 +29398,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29399,7 +29417,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29420,7 +29438,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29446,7 +29464,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29465,7 +29483,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29485,7 +29503,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29508,7 +29526,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29527,7 +29545,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29546,7 +29564,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29569,7 +29587,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29588,7 +29606,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29607,7 +29625,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29626,7 +29644,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29645,7 +29663,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29664,7 +29682,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29684,7 +29702,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29703,7 +29721,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29722,7 +29740,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29743,7 +29761,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29764,7 +29782,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -29784,7 +29802,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/CMakeLists.txt",
-          "sha256": "1295b073f82282eb27e1da093aea0bcaa4f5de4a12cb2ae386bdad03830ddbd5",
+          "sha256": "a7d0bc313d2d098101b5dfb5c6846c23f4430fd4e56be0e155e52542f6f3ba8d",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -31221,6 +31239,28 @@
     },
     {
       "repository": "darling",
+      "path": "src/frameworks/DiskArbitration/tests/image_backend.c",
+      "sha256": "f4a4eeff93ad47150aefd4bd2288765786d621e40ab00e3e01308f9d8b4589c8",
+      "classification": "test-fixture-task-owned",
+      "reason": "src/frameworks/DiskArbitration/tests/image_backend.c is the disk_arbitration_image_guest guest-c-fixture workload: main creates the absent argv[2] mount fixture and sibling symlink at lines 363-374 and removes them at lines 606-607; verifyExec and the --raw-device-child branch create/remove a fixture scratch output at lines 301-326 and 351-360. The workload supplies the regression mount path; these are test-owned artifacts, not production endpoint authority.",
+      "evidence": {
+        "runtime_scope": "task-owned-fixture",
+        "mutation_operators": [
+          "link",
+          "mkdir",
+          "open-create-or-truncate",
+          "remove"
+        ],
+        "build_anchor": {
+          "repository": "darling",
+          "path": "src/frameworks/DiskArbitration/CMakeLists.txt",
+          "sha256": "1f334185cf8764fd5cefbdf8f72c80b5a4e0197aa255d9a58ca4219ae17ee4ec",
+          "relation": "nearest-cmake-ancestor"
+        }
+      }
+    },
+    {
+      "repository": "darling",
       "path": "src/frameworks/StorageKit/src/SKDiskImage.m",
       "sha256": "2a3b4babfb8e6041e0950e30d7ec1ef41d079d5cdc6e7647cea28da29e2657f0",
       "classification": "caller-selected-library-output",
@@ -31338,6 +31378,67 @@
     },
     {
       "repository": "darling",
+      "path": "src/libcryptex/tests/bundle.c",
+      "sha256": "173986898dac16cffb3ed73ada1a8f64a6bb92a96d940aeb41bd2a974fc527b9",
+      "classification": "test-fixture-task-owned",
+      "reason": "src/libcryptex/tests/bundle.c is the cryptex_bundle_guest guest-c-fixture workload: main allocates a unique mkdtemp root at line 262 and Restore child at line 264; put, manifest construction and personalized-output checks create/chmod/write/remove only descendants (lines 24-38, 98-111, 254, 273-280). This exercises bundle selection and descriptor ownership with unverified fixture bytes; it establishes no Cryptex image execution or runtime namespace authority.",
+      "evidence": {
+        "runtime_scope": "task-owned-fixture",
+        "mutation_operators": [
+          "chmod",
+          "mkdir",
+          "open-create-or-truncate",
+          "remove",
+          "write-open"
+        ],
+        "build_anchor": {
+          "repository": "darling",
+          "path": "src/libcryptex/CMakeLists.txt",
+          "sha256": "ce021b74b2804b999166da99b2ccbf6c48fa6be1886b4fddacc40457d503d4cb",
+          "relation": "nearest-cmake-ancestor"
+        }
+      }
+    },
+    {
+      "repository": "darling",
+      "path": "src/private-frameworks/DiskImages2/src/DIHdiutil.m",
+      "sha256": "de3dcc188490f4f4d53017e53dcee4dcb9f70241ac202dba1c3b4f3ef44414b4",
+      "classification": "caller-selected-library-output",
+      "reason": "src/private-frameworks/DiskImages2/src/DIHdiutil.m: DIHdiutilRun creates unique per-invocation stdout/stderr scratch files with mkstemp at lines 81-89, redirects the caller-requested hdiutil command into those files at lines 121-126, and unlinks them on failure/completion (lines 92-193). These guest DiskImages2 framework outputs belong to the calling operation, not a discoverable shared service endpoint; this classification does not confer authority on the spawned producer's separate mount/endpoint mutations.",
+      "evidence": {
+        "runtime_scope": "caller-owned-path",
+        "mutation_operators": [
+          "remove"
+        ],
+        "build_anchor": {
+          "repository": "darling",
+          "path": "src/private-frameworks/DiskImages2/CMakeLists.txt",
+          "sha256": "0dc685ddd2da54f5f00b418420f8a95f8320a07d26c51f1c580e73412a47613d",
+          "relation": "nearest-cmake-ancestor"
+        }
+      }
+    },
+    {
+      "repository": "darling",
+      "path": "src/private-frameworks/DiskImages2/src/DIMount.m",
+      "sha256": "ae8cb585c38301bcc7361dc06c990751bdb4f212b2164a32f9e91ac798ef5429",
+      "classification": "non-filesystem-lexical-hit",
+      "reason": "src/private-frameworks/DiskImages2/src/DIMount.m: the direct mount-call lexical hit is the comment 'mount (through its real hdiutil/FUSE path)' at line 17, not a syscall. DIMountBSDName derives a suggested /Volumes name (lines 173-178) and requests DADiskMount at line 226; DIMountPointIsReal reads the host mount table through SystemRoot (lines 69-105), and the image probe opens O_RDONLY at line 397. The guest framework delegates mutation to the opened-image producer; this record does not classify that producer's authority as safe.",
+      "evidence": {
+        "runtime_scope": "no-filesystem-mutation",
+        "mutation_operators": [
+          "mount"
+        ],
+        "build_anchor": {
+          "repository": "darling",
+          "path": "src/private-frameworks/DiskImages2/CMakeLists.txt",
+          "sha256": "0dc685ddd2da54f5f00b418420f8a95f8320a07d26c51f1c580e73412a47613d",
+          "relation": "nearest-cmake-ancestor"
+        }
+      }
+    },
+    {
+      "repository": "darling",
       "path": "src/startup/mldr/elfcalls/patch_checkin.py",
       "sha256": "b1f859cf988127d73ed16ffe4acce250928fa049328323c0efcec4f6bb205248",
       "classification": "user-invoked-command-output",
@@ -31350,7 +31451,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/startup/mldr/CMakeLists.txt",
-          "sha256": "961facbe3a8bcc52208beb2ecd0bafb5e33623e9bb411855399dd24806ce64a0",
+          "sha256": "cf47829b7833e99806a4d410ffcfd3b68fd29ce4573008bd8c39805e91389e90",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -31369,7 +31470,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/startup/mldr/CMakeLists.txt",
-          "sha256": "961facbe3a8bcc52208beb2ecd0bafb5e33623e9bb411855399dd24806ce64a0",
+          "sha256": "cf47829b7833e99806a4d410ffcfd3b68fd29ce4573008bd8c39805e91389e90",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -31377,7 +31478,7 @@
     {
       "repository": "darling",
       "path": "src/startup/mldr/mldr.c",
-      "sha256": "a7fa0b64ce0ab063124ac4b8e78783966d25c26c67d217de450c8ccaa264a734",
+      "sha256": "f58756965deb97f57e42232efeed96d53edd3f129c1d8ea868175392dcbe0d5b",
       "classification": "caller-selected-library-output",
       "reason": "src/startup/mldr/mldr.c creates diagnostic output only at explicitly selected MLDR_DIAG_LOG and MLDR_PAGE_HINT paths; neither is a fixed shared prefix endpoint.",
       "evidence": {
@@ -31388,7 +31489,7 @@
         "build_anchor": {
           "repository": "darling",
           "path": "src/startup/mldr/CMakeLists.txt",
-          "sha256": "961facbe3a8bcc52208beb2ecd0bafb5e33623e9bb411855399dd24806ce64a0",
+          "sha256": "cf47829b7833e99806a4d410ffcfd3b68fd29ce4573008bd8c39805e91389e90",
           "relation": "nearest-cmake-ancestor"
         }
       }
@@ -31456,7 +31557,7 @@
     {
       "repository": "darling",
       "path": "src/startup/tests/runtime_mode_test.c",
-      "sha256": "7ab3fbef992ec391f6dfe6b7470d35df0722ad5540b9cde504f9b34c2007ec14",
+      "sha256": "2c00e3deb061a6fb23ddb9fc71ecc21e8bc44fd692b8250e38a6ccd6ba6ae631",
       "classification": "test-fixture-task-owned",
       "reason": "src/startup/tests/runtime_mode_test.c is a test/regression fixture whose namespace mutations are confined to fixture-owned temporary paths.",
       "evidence": {
@@ -31578,7 +31679,7 @@
     {
       "repository": "darling-workspace",
       "path": "west_commands/evidence_retention.py",
-      "sha256": "7cbe6bce2424c336d15c952d63084a65d1266b860cc00a57d810cf37b69516a9",
+      "sha256": "417687351a3e3934cd0056a2237f5abb0a692a77c389de417648c07252eb4b44",
       "classification": "workspace-task-owned-tooling",
       "reason": "west_commands/evidence_retention.py copies and compresses closed runtime-evidence payloads, publishes archive metadata and removes generated build or staging trees belonging to the evidence unit; these diagnostic archives are not the installed runtime or guest shared-session namespace.",
       "evidence": {
@@ -31591,7 +31692,7 @@
         "build_anchor": {
           "repository": "darling-workspace",
           "path": "west_commands/evidence_retention.py",
-          "sha256": "7cbe6bce2424c336d15c952d63084a65d1266b860cc00a57d810cf37b69516a9",
+          "sha256": "417687351a3e3934cd0056a2237f5abb0a692a77c389de417648c07252eb4b44",
           "relation": "workspace-runtime-source"
         }
       }
@@ -31679,7 +31780,7 @@
     {
       "repository": "darling-workspace",
       "path": "west_commands/lane_snapshotter.py",
-      "sha256": "885e51c36f5c6674ac33c423b02e0d1db30ae851605b367d4acc77b3086c504f",
+      "sha256": "b59c76658c9b9dd1455f1fbe9186cf011a11fba653cc2db1b69518b31894ae32",
       "classification": "workspace-task-owned-tooling",
       "reason": "west_commands/lane_snapshotter.py owns records, commit recovery and services beneath the selected lane root's snapshot store, normalizes only its upstream recipe's upper-layer root metadata, and removes only that store's socket after its service stops; snapshot graph mutations use the native containerd API rather than shared guest bootstrap paths.",
       "evidence": {
@@ -31692,7 +31793,7 @@
         "build_anchor": {
           "repository": "darling-workspace",
           "path": "west_commands/lane_snapshotter.py",
-          "sha256": "885e51c36f5c6674ac33c423b02e0d1db30ae851605b367d4acc77b3086c504f",
+          "sha256": "b59c76658c9b9dd1455f1fbe9186cf011a11fba653cc2db1b69518b31894ae32",
           "relation": "workspace-runtime-source"
         }
       }

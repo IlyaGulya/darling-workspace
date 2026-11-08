@@ -362,6 +362,9 @@ class SnapshotStore:
             raise SnapshotStoreError(f"refusing to stop provider beneath a mounted view: {target}")
         result = self._run(["systemctl", "--user", "stop", unit])
         if result.returncode:
+            # --collect may unload the exited provider after the first inspection.
+            if self._unit(unit).get("LoadState") == "not-found" and not target.is_mount():
+                return
             raise SnapshotStoreError(f"cannot release {unit}: {result.stderr.strip()}")
 
     def stop_if_empty(self) -> None:

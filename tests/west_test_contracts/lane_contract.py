@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "west_commands"))
@@ -45,6 +46,45 @@ def service_stopped(unit):
     assert properties["MainPID"] == "0", properties
 
 
+def collected_provider_release(store, target):
+    """Collect the real owned unit between inspection and its stop request."""
+    target.mkdir()
+    unit = store.mount_unit(target)
+    run = store._run
+    started = run([
+        "systemd-run", "--user", "--collect", "--unit=" + unit,
+        "--service-type=exec", "--property=RuntimeMaxSec=30s",
+        "--description=Darling lane FUSE view " + str(target),
+        "/usr/bin/sleep", "30",
+    ])
+    assert started.returncode == 0, started.stderr
+    raced_stop = None
+
+    def collect_before_stop(arguments, **kwargs):
+        nonlocal raced_stop
+        if arguments == ["systemctl", "--user", "stop", unit]:
+            stopped = run(arguments, **kwargs)
+            assert stopped.returncode == 0, stopped.stderr
+            deadline = time.monotonic() + 5
+            while store._unit(unit)["LoadState"] != "not-found":
+                assert time.monotonic() < deadline, "owned transient unit was not collected"
+                time.sleep(0.01)
+        result = run(arguments, **kwargs)
+        if arguments == ["systemctl", "--user", "stop", unit]:
+            raced_stop = result
+        return result
+
+    store._run = collect_before_stop
+    try:
+        store.release_mount_service(target)
+    finally:
+        store._run = run
+        run(["systemctl", "--user", "stop", unit])
+    assert raced_stop is not None and raced_stop.returncode != 0, "collection race was not exercised"
+    assert store._unit(unit)["LoadState"] == "not-found"
+    assert not target.is_mount()
+
+
 def contract(root):
     for good in ("laneA", "a", "lane-1.2", "L" * 48):
         assert validate_lane_name(good) == good
@@ -68,6 +108,7 @@ def contract(root):
     (base / "nested").mkdir()
     (base / "nested" / "inherited").write_text("nested base\n")
     store = SnapshotStore(root / "lanes")
+    collected_provider_release(store, root / "collected-provider")
     views = {name: root / name for name in ("parent", "child", "sibling", "grandchild")}
     mounted_identities = {}
 

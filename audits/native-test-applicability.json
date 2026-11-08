@@ -373,12 +373,6 @@
       "policy": "darling_internal_gate",
       "reason": "Complete current verdict requires Darling-specific fault injection, RPC/trace/FD/cache/overlay/launchd/server lifecycle policy. No native equivalent required for this internal gate; public subcases may be extracted separately."
     },
-    "fstatfs_missing_proc_contract": {
-      "name": "fstatfs_missing_proc_contract",
-      "identity_sha256": "d053ec30fa155cceaae56901af0aae009087c0e9558f88019d71d64b9c065493",
-      "policy": "semantic_reference_review",
-      "reason": "Exported fixture stubs fstatfs/fdpath and missing /proc/self/mounts, then requires success, converted fields, f_iosize 512, and empty mount/type names. Missing procfs is Linux-specific, but these are public struct statfs results; an implementation fallback is not proof those output values satisfy Darwin consumers."
-    },
     "select_fdset_conversion": {
       "name": "select_fdset_conversion",
       "identity_sha256": "b73cf2e5e4554b29385b81b5beddf9c51d9e71d7617f01ba5c114e1610464cb5",
@@ -1626,6 +1620,204 @@
       "identity_sha256": "751f40477240a507716ce854d7e9e7d3d8e0de88d0c79ce1cd637ac24524451e",
       "policy": "internal_proof_exemption",
       "reason": "Host-only tool ownership contract: executes the real fixture preparer and proves unknown, foreign-owner, symlink and whole-state-root refusal, plus same-owner reset. It tests workspace filesystem safety, not a public Darwin API or native conformance."
+    },
+    "cfurl_bookmarks_guest": {
+      "name": "cfurl_bookmarks_guest",
+      "identity_sha256": "f2d39d9ae3259d1c16b99ca682164d2b0f1c4adeb2a665335abca1687527b16f",
+      "policy": "semantic_reference_review",
+      "reason": "src/external/corefoundation/tests/bookmarks_guest.m checks non-file bookmark creation/resolution with original URL and non-stale result, truncated/corrupt data errors, and refusal of security-scoped authority for an ordinary URL. These are externally meaningful CoreFoundation semantics, not an internal-format exemption; independently review native support for non-file bookmarks and each error/security assertion. No Darling-only hook is used, and no Apple API execution is established."
+    },
+    "cfurl_mounted_volumes_guest": {
+      "name": "cfurl_mounted_volumes_guest",
+      "identity_sha256": "6a057551bc4dd717b36c1cceeb0b9f3894f2f633280f95d0fa1fcd1a7858e8bb",
+      "policy": "semantic_reference_review",
+      "reason": "src/external/corefoundation/tests/mounted_volumes_guest.m attaches an owned HFS image with hdiutil, enumerates one top-level mounted URL with prefetched directory properties, retains it across iterator release to read the payload, checks file-reference/error behavior, then verifies disappearance after detach. The guest-visible path and fixture provisioning need isolated native setup, not exemption of public CFURLEnumerator semantics. No explicit Darling internal hook occurs; no native execution is established."
+    },
+    "cryptex_bundle_guest": {
+      "name": "cryptex_bundle_guest",
+      "identity_sha256": "f4e9f415be0d1e06e8f336b50dc0aab4d19d8943e877bf90e32e84a3fddeacc8",
+      "policy": "semantic_reference_review",
+      "reason": "src/libcryptex/tests/bundle.c tests directory-FD transfer, chip/variant and wildcard selection, retained object/manifest descriptor ownership and file modes, duplicate/partial identity rejection, Cryptex1 nonce overflow and unchanged failure outputs. Its manifest files and payload are explicitly unverified text: selection and retention do not authenticate or mount them. These externally meaningful libcryptex SPI contracts require independent versioned native reference review; synthetic chip requests are not runtime device identities or authorization evidence. No native execution is established."
+    },
+    "disk_arbitration_image_guest": {
+      "name": "disk_arbitration_image_guest",
+      "identity_sha256": "0dd3f05d897978a07ed93c2a8a27da84cb9d0741d96bf2c0a392332653d30628",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "src/frameworks/DiskArbitration/tests/image_backend.c combines real image payload, DA/IOKit identity, callbacks, approval vetoes, raw-device reads and fork/exec lifetime with Darling namespace verification against /Volumes/SystemRoot/dev/null and backend-specific refusal of writable mounts and force unmounts. Retain those provider/namespace gates on Darling, but independently reference the public DA callbacks, mount/eject, descriptions, device ioctls and descriptor semantics with isolated owned media. Exact event counts, physical/logical block equality and unsupported returns need reference review rather than blanket native exemption. No native execution is established."
+    },
+    "disk_images2_image_guest": {
+      "name": "disk_images2_image_guest",
+      "identity_sha256": "98a4691e2015224b4dd7bbaa5f1f046573291cc23aec13c3fd6a9914afd07660",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "src/private-frameworks/DiskImages2/tests/image_backend.m exercises consumer-declared DiskImages2/DiskManagement Objective-C SPI, DA/IOKit shared media identity and notifications, real payload mount/unmount/eject and managed attach. It also pins backend assumptions: block-node st_size supports last-byte pread, managed force-unmount is refused and DKIOCEJECT retires the mount. Preserve provider gates while establishing versioned native SPI/ABI and public media-lifecycle references; the guest CLT declarations and current managed policy are not native confirmation. No native execution is established."
+    },
+    "file_coordination_roundtrip_guest": {
+      "name": "file_coordination_roundtrip_guest",
+      "identity_sha256": "9ba5ddb7907b6c1087f5ab051a741c099dc85fbbb3f2757ad0963e0a2477dd93",
+      "policy": "semantic_reference_review",
+      "reason": "tests/src/file_coordination_roundtrip_guest.m requires NSFileCoordinator read and write accessors each run exactly once without NSError, actually read original bytes/write replacement bytes and return with replacement observable on disk. This is a public Foundation semantic contract with no explicit Darling-only mechanism; current guest execution routing does not remove the independent native reference obligation. It does not cover presenter contention or interprocess coordination, and no native execution is established."
+    },
+    "foundation_file_io_guest": {
+      "name": "foundation_file_io_guest",
+      "identity_sha256": "365efd213a7fa8ddcb2a3c14fee18f54cf3a3000ece2f2997dde11642d5b9930",
+      "policy": "semantic_reference_review",
+      "reason": "src/external/foundation/test/file-io-guest.m checks NSFileManager directory creation/removal Cocoa errors including underlying POSIX errno/path, stored symlink destinations and collisions, root-relative recursion without symlink descent, and exact NSFileHandle pipe bytes through EOF. Public semantics require independent native review, including error detail and filesystem support for the PATH_MAX+512 symlink target rather than weakening the assertion. The long-target comment describes current runtime capability but uses no internal hook; this is not a Darling-only exemption or native execution evidence."
+    },
+    "image4_sentinel_guest": {
+      "name": "image4_sentinel_guest",
+      "identity_sha256": "ad94351f52f7f65229bf5687ef156f2ece12cabe93bbdbdbbe144684d11217c8",
+      "policy": "unresolved_reference_review",
+      "reason": "src/libimg4/tests/sentinel.c combines img4 firmware sentinel ownership, stage flags and chip selection with Darling-only darling_img4_verify_asset/apfs_seal helpers. Genuine embedded signed tickets and paired assets, attacker-owned CA and byte mutations test pinned trust/digest rejection and unchanged outputs, but asset integrity is explicitly not firmware authorization. Missing runtime identifiers permit ENOENT/ENODEV/ENOTSUP without inventing values. Independent Apple Image4 trust, stage/chip and live-identity policy remains unresolved; retain helper security negatives and do not approve authorization/identity equivalence from this fixture or signed bytes. No native execution is established."
+    },
+    "indexed_collection_filter_guest": {
+      "name": "indexed_collection_filter_guest",
+      "identity_sha256": "3d377802f3f3d75cb160ae05f1c68099802cd6374e064f5b5a7609b0ca0fd1b0",
+      "policy": "semantic_reference_review",
+      "reason": "tests/src/indexed_collection_filter_guest.m checks NSArray predicate-selected indexes and ascending objectsAtIndexes order, out-of-order NSIndexSet insertion, NSSet predicate membership and unchanged source across empty and word-boundary sizes. These are public collection semantics with no Darling-only hook; size choices exercise implementation boundaries without making the oracle implementation-only. Establish independent native reference; no native execution is established."
+    },
+    "membership_autorelease_guest": {
+      "name": "membership_autorelease_guest",
+      "identity_sha256": "86d4aa8f439e718bc34ecebb9a369e66d559bb3210f528e4844f08347e90c5e5",
+      "policy": "semantic_reference_review",
+      "reason": "tests/src/membership_autorelease_guest.m resolves the real current username through mbr_identifier_to_uuid, drains nested autorelease pools, resolves UUID back to current UID/type and requires stable UUID on subsequent lookup. This tests externally meaningful membership and lifetime behavior, not a fabricated UUID identity or private cache format; native directory-service/account setup must be declared. No explicit Darling-only hook or fixed machine identity is asserted and no native execution is established."
+    },
+    "operation_queue_barrier_guest": {
+      "name": "operation_queue_barrier_guest",
+      "identity_sha256": "8d19851249d3c716394341472b46b3712910dd5afa11e71152c94c0e7ff95e4f",
+      "policy": "semantic_reference_review",
+      "reason": "tests/src/operation_queue_barrier_guest.m tests addBarrierBlock ordering after asynchronous isFinished including cancellation, later work and successive barriers, currentQueue, public queue inspection, concurrent underlying executor, suspension/resumption, cancelAllOperations and nil-block exception. Custom operations, mutexes/semaphores and watchdog are consumer-side controls, not Darling hooks. Independently review native API availability and exact cancellation/inspection/start assertions; do not classify the public queue contract as internal or weaken it for shared GREEN. No native execution is established."
+    },
+    "process_activity_guest": {
+      "name": "process_activity_guest",
+      "identity_sha256": "48af91650f9c11cb18c2c7ab0dfc7e409f350adc00eaf84bbb5b349a26f2af76",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "tests/src/process_activity_guest.m mixes public NSProcessInfo activity token nesting, automatic-termination support, exception cleanup and reason validation with private _CFSuddenTerminationEnable/ExitIfTerminationEnabled child-exit probes. It explicitly requires NSActivityLatencyCritical to raise NSInvalidArgumentException, a current unsupported-feature policy rather than established native behavior. Preserve the Darling limitation/termination gate separately and independently reference public activity semantics plus versioned private termination SPI; do not export that unsupported assertion as Apple compatibility. No native execution is established."
+    },
+    "quartzcore_remote_layers_guest": {
+      "name": "quartzcore_remote_layers_guest",
+      "identity_sha256": "56de603fe57712f3c72e8c8ee4c8f60da9f82bd286c1700a811ca23badd31299",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "src/external/cocotron/QuartzCore/tests/remote_layers.m combines CoreGraphics blend/alpha/RGB24 and CALayer rendering/animation pixels with CARemoteLayer client/server capability publishing, bootstrap registration, synchronous acknowledgement, invalid-update rollback, invalidation and process-death retirement. Retain Darling remote transport/capability lifetime and Onyx2D provenance gates while independently referencing public graphics/layer semantics and reviewing availability/ABI of remote-layer SPI. Exact pixel rounding, unsupported image rejection and retirement timing are not native-confirmed by source inspection. No native execution is established."
+    },
+    "storagekit_mount_state_guest": {
+      "name": "storagekit_mount_state_guest",
+      "identity_sha256": "f4276202997bee56cd9b8d5b0a0d8ca081b049a0a23134949522a7f1dd5d415b",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "src/frameworks/StorageKit/tests/smoke.m exercises actual image payload and cmp negative control, StorageKit mount/manager state, busy detach, deallocation, external detach/reattach and mount identity. The hdiutil-backed Darling provider explicitly returns ENOTSUP for attachNoMount and mounts even default-writable requests read-only; cleanup-directory retention and guest/host suffix collision are provider-specific gates. Split those from independent versioned StorageKit SPI and filesystem/reference obligations, including writable state, errors and lifetime; do not treat provider limitations as Apple semantics. No native execution is established."
+    },
+    "uttype_device_model_guest": {
+      "name": "uttype_device_model_guest",
+      "identity_sha256": "1460cae4ab84a4c90cdc540b51c0cd06305d8174b25830669cdf7f214cdf95fb",
+      "policy": "unresolved_reference_review",
+      "reason": "tests/src/uttype_device_model_guest.m pins iPhone3,1/N90AP to com.apple.iphone-4, tag-class spelling, declared/static identity, case folding, tags and transitive hardware conformance via private model lookup and public UTType methods. It rejects unknown hardware identity while retaining PNG/dynamic-file lookup controls. The registered model database and absent-model policy require independent versioned Apple identity/SPI reference; consumer declarations for the old installed SDK and Darling-named negative inputs are not that evidence. No internal hook exempts public UTType semantics, and no native execution is established."
+    },
+    "iosapp-archive": {
+      "name": "iosapp-archive",
+      "identity_sha256": "d3a93a81562f94aa8b088a43a08810e76c7e9baee57e28511d5169a18c06dc2e",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "scripts/xcodebuild-workload-run.sh runs the real shared iosapp Release iphoneos archive with CODE_SIGNING_ALLOWED=NO and delegates to scripts/iosapp-archive-package.py for actual arm64 MH_EXECUTE/iOS LC_BUILD_VERSION, deployment/framework linkage, plist/archive consistency, absence of signing material and deterministic unsigned IPA retention. Preserve Darling prefix lease, real guest Xcode license preparation, boot/harness and zero-process/mount cleanup gates separately from an independent native Xcode archive/toolchain and structural artifact reference with matching SDK/setup. The contract explicitly does not establish signing, development export, installability or device execution; structural identity consistency alone is not native compatibility. No native execution is established."
+    },
+    "clonefile_guest": {
+      "name": "clonefile_guest",
+      "identity_sha256": "8ce24885210b65ea4b5aaf6e5efc5c2307c91664b2182c6e86f2ac423a94494b",
+      "policy": "semantic_reference_review",
+      "reason": "tests/src/clonefile_guest.c checks EEXIST without replacement, EINVAL flags, EBADF source, CLONE_NOFOLLOW/ENOTSUP, preserved source offset, and either ENOTSUP with no destination or an independent inode with exact contents/mode. Review native clonefile/fclonefileat flag and errno semantics on a declared clone-capable or unsupported filesystem; accepting both capability outcomes is not evidence that a successful byte-copy fallback is a clone. Source review only; no native execution is claimed."
+    },
+    "dispatch-workloop-target": {
+      "name": "dispatch-workloop-target",
+      "identity_sha256": "f5c0e20eefeee17bf278a011691d330ea8f977de3b0564f2660c203e1f831ddd",
+      "policy": "semantic_reference_review",
+      "reason": "tests/src/dispatch_workloop_target_guest.c resolves dispatch_workloop_create dynamically, targets a serial queue at the workloop, and asserts 64-item FIFO, queue identity, synchronous reentry from a global queue, and timer/cancel completion. This is externally observable dispatch API/SPI behavior, not an internal transport oracle. Establish a Darwin reference with declared runtime symbol/SDK availability; ten-second completion bounds are not reference evidence. Source review only; no native execution is claimed."
+    },
+    "eunion_mkdir_race_guest": {
+      "name": "eunion_mkdir_race_guest",
+      "identity_sha256": "774f487fe3a2b335757a6cb4ce22cfd5248c854f3079ae962d7cec59b3e2b7ca",
+      "policy": "semantic_reference_review",
+      "reason": "tests/eunion_mkdir_race_guest.c uses ordinary guest mkdir and pthread synchronization: in each of 64 rounds exactly one of 16 concurrent creators succeeds, all others return EEXIST, and the published object is a removable directory. Despite its E-UNION regression name the complete oracle has no overlay-private assertions; retain independent POSIX/Darwin concurrent directory-publication review. Source review only; no native execution is claimed."
+    },
+    "kqueue_fork_guest": {
+      "name": "kqueue_fork_guest",
+      "identity_sha256": "019ccb206138ee5a4ff2e82a7213b16fb7cd22a39513ca7b4c33c50ce3ad7529",
+      "policy": "semantic_reference_review",
+      "reason": "tests/src/kqueue_fork_guest.c requires the child's first fcntl(F_GETFD) on the inherited kqueue number to fail EBADF, unrelated inherited-pipe close to complete, and the parent's original registration to retain exact pipe readiness/data after child exit. Like the existing kqueue-close/EOF native-reference binding this is public descriptor/event behavior; independently review Darwin fork non-inheritance and receipt/data semantics rather than exempting it as userspace-map cleanup. Source review only; no native execution is claimed."
+    },
+    "kqueue_socket_eof_guest": {
+      "name": "kqueue_socket_eof_guest",
+      "identity_sha256": "65e82f93f8771f45fe1dc0c740d31b628072610eaa20a29ebc40664a933d1b65",
+      "policy": "semantic_reference_review",
+      "reason": "tests/src/kqueue_socket_eof_guest.c distinguishes an empty AF_UNIX datagram (readiness with zero data and no EV_EOF) from a stream half-close (EV_EOF with three buffered bytes), then verifies payload, drained readiness and reverse-direction traffic. Establish independent Darwin EVFILT_READ/EV_CLEAR/EV_RECEIPT semantics and bounded readiness behavior; Linux-backed guest success cannot serve as the reference. Source review only; no native execution is claimed."
+    },
+    "mach_port_stdout_guest": {
+      "name": "mach_port_stdout_guest",
+      "identity_sha256": "4e1e39fe1d905bc7aba0c2549e9504ef9a724debec0244c184b38cfadf26e702",
+      "policy": "semantic_reference_review",
+      "reason": "tests/src/mach_port_stdout_guest.c captures stdout while dropping a mach_thread_self send reference with mach_port_mod_refs, writes a directory pathname and requires the captured bytes to open the same device/inode. The complete oracle is public Mach success plus uncontaminated application output, with no private trace parser or fault injection; retain a Darwin reference for the Mach operation and output consumer. Source review only; no native execution is claimed."
+    },
+    "os_crash_message_guest": {
+      "name": "os_crash_message_guest",
+      "identity_sha256": "22af4c35f5589e10fa5fad136b8c3ab7e0072a1ac8fd8c3cfc561926d27d0cd1",
+      "policy": "abi_toolchain_reference_review",
+      "reason": "tests/src/os_crash_message_guest.c resolves _os_crash_msg and writable _os_crash_callback with dlsym; forked children must invoke the callback only for a non-null literal format, preserve the separately composed reason in captured diagnostics and terminate with SIGABRT. These underscored SPI signatures, callback storage and fatal-reporting conventions require exact Darwin libc/SDK/runtime ABI reference review, including null arguments; the fixture's public-API label does not establish that ABI or native diagnostic channel. Source review only; no native execution is claimed."
+    },
+    "plane_mach_port_open_guest": {
+      "name": "plane_mach_port_open_guest",
+      "identity_sha256": "0233dae50ec20c9578b2de0aa955c5015a7badef6412d1d92f326babbc08a24e",
+      "policy": "semantic_reference_review",
+      "reason": "tests/src/plane_mach_port_open_guest.c holds main in mach_msg receive while a worker opens two kevent64 EVFILT_MACHPORT registrations, constructs/types/destroys a receive right, and requires actual message bytes, ext buffer results and consumption before releasing main. Its sole-mailbox commentary explains the Darling regression, but no private mailbox or transport assertion is in the oracle. Review independent Darwin Mach/kqueue delivery and concurrency semantics with the applicable kevent64/MACH_RCV_MSG ABI and time bounds; do not infer native PASS. Source review only; no native execution is claimed."
+    },
+    "posix_spawn_pid_cache_guest": {
+      "name": "posix_spawn_pid_cache_guest",
+      "identity_sha256": "e6acb93d5ae6282c8447e065384f24d06d1ef9b28a46597c5e37931aa2ca40ed",
+      "policy": "semantic_reference_review",
+      "reason": "tests/src/posix_spawn_pid_cache_guest.c registers a version-9 malloc zone with force_lock/force_unlock/reinit_lock observers and requires getpid in child callbacks to differ from the preparing parent and match the successful child. It also requires callbacks during a failed ENOENT spawn and a successful non-main-thread spawn, and checks ordinary fork. PID identity is public, but native posix_spawn need not be assumed to use this callback path: review Darwin malloc-zone ABI and callback applicability before using the whole oracle as a native reference; preserve spawn errno/exit and fork identity obligations. Source review only; no native execution is claimed."
+    },
+    "proc_pidpath_guest": {
+      "name": "proc_pidpath_guest",
+      "identity_sha256": "c86f010e85f0495358d2212d3d06a45f04739133452d822c549c35fc3a983aa5",
+      "policy": "semantic_reference_review",
+      "reason": "tests/src/proc_pidpath_guest.c compares stat device/inode for its own executable and an executed, pipe-synchronized /bin/bash child, and requires a missing INT_MAX target to return zero/ESRCH without killing the caller. This is libproc public target-identity and errno behavior, not darlingserver internal routing. Review native target visibility, return/error contract and the declared bash setup independently. Source review only; no native execution is claimed."
+    },
+    "security_chain_copy_guest": {
+      "name": "security_chain_copy_guest",
+      "identity_sha256": "ccf02e76eb3134cb59f57edf5e0e116aecca05967475c86fdd2ddb7d351ed8ce",
+      "policy": "semantic_reference_review",
+      "reason": "tests/src/security_chain_copy_guest.c uses fixed Apple certificate DER, BasicX509 policy, offline evaluation and a deterministic expired date. SecTrustCopyCertificateChain must return owned leaf snapshots surviving trust/certificate and sibling-snapshot release, while evaluation remains recoverable/fatal trust failure rather than trusted success; null trust must return null. Preserve independent Security reference review for lazy evaluation, ownership and failure semantics with API availability declared; this narrow oracle is neither trust-policy approval nor a claimed native execution. Source review only; no native execution is claimed."
+    },
+    "security_requirement_guest": {
+      "name": "security_requirement_guest",
+      "identity_sha256": "f0d57762ace82cbda39034845b19dd814a1556b7d062a981c1184e1d0c7e2c73",
+      "policy": "semantic_reference_review",
+      "reason": "tests/src/security_requirement_guest.c parses and serializes an Apple-anchor/identifier requirement, requires incomplete \"anchor\" syntax to return errSecCSReqInvalid with no object, and reparses to identical bytecode after the error. This is public Security parser/error-recovery behavior; establish an independent Darwin reference for syntax, status and serialization stability. It does not evaluate an actual code-signing requirement or approve a security-policy bypass. Source review only; no native execution is claimed."
+    },
+    "security_static_validation_guest": {
+      "name": "security_static_validation_guest",
+      "identity_sha256": "42bda413810ca414e18755143c5e0afca7a530b56adaa15cf5cd781d27d00c97",
+      "policy": "unresolved_reference_review",
+      "reason": "tests/src/security_static_validation_guest.c writes a hand-built v0x20001 SHA256 ad-hoc CodeDirectory to com.apple.cs.CodeDirectory on a plain file, requires default SecStaticCodeCheckValidityWithErrors to accept intact bytes, then requires errSecCSSignatureFailed after same-length tampering using a fresh code object. Tamper detection is a meaningful public security obligation, but acceptance of this exact xattr-backed FileDiskRep/SingleDiskRep signature and default policy needs an independent Darwin reference. Keep that security/representation basis unresolved; source-generated signature self-consistency is not native approval or general signature/trust validation evidence. Source review only; no native execution is claimed."
+    },
+    "statfs_namespace_guest": {
+      "name": "statfs_namespace_guest",
+      "identity_sha256": "c8ed94cb04c390a1a33971305458eaa957abb7cf86a0fc587338eaf02597fbcd",
+      "policy": "split_semantic_reference_and_internal_gate",
+      "reason": "src/external/xnu/darling/src/libsystem_kernel/tests/statfs_namespace_guest.c combines statfs/fstatfs/getfsstat nonempty mount metadata plus EBADF/ENOENT public checks with an x86_64 Linux-syscall harness opening DARLING_PREFIX/.union-work/.namespace-lock and requiring cold queries to finish while its exclusive flock is held. Keep the E-UNION lock/progress invariant as a Darling internal gate and establish a separate Darwin semantic reference for mount metadata and errno; the Linux ABI and prefix lock cannot exempt the whole mixed fixture. Source review only; no native execution is claimed."
+    },
+    "supplementary_groups_guest": {
+      "name": "supplementary_groups_guest",
+      "identity_sha256": "eac8e0d5eb6ede20fc3c2ab987f6afab45f249a35f57158aa99b6a6a2165431a",
+      "policy": "semantic_reference_review",
+      "reason": "tests/src/supplementary_groups_guest.c checks getgroups count/list agreement, exact stable returned identities, untouched adjacent/unused buffer memory and EINVAL for negative or undersized capacity. It does not pin host-specific group numbers. Retain POSIX/Darwin public buffer/errno reference review under stable ordinary-user credentials and native NGROUPS_MAX assumptions; darlingserver ownership does not make this internal identity bookkeeping. Source review only; no native execution is claimed."
+    },
+    "xpc_absent_service_async_guest": {
+      "name": "xpc_absent_service_async_guest",
+      "identity_sha256": "c97b7648c84d480f7c444bdac972381f19533b6d2df848ff5b45bd891686123d",
+      "policy": "semantic_reference_review",
+      "reason": "src/external/libxpc/test/async_missing_service_guest.c requires absent-service replies/events before and after activation, two replies with one terminal invalidation on requested queues, deferred replies surviving caller release and a suspended reply queue, and real anonymous-endpoint requests across activation/suspend/resume. Unlike the existing sync-unconnected fixture it uses unique absent names and asserts error identity, but exact invalidation cardinality, preactivation/lifetime semantics and three-second bounds still require an independent Darwin XPC reference. These are public asynchronous lifecycle obligations, not a Darling transport exemption. Source review only; no native execution is claimed."
+    },
+    "xtrace_exec_environment_guest": {
+      "name": "xtrace_exec_environment_guest",
+      "identity_sha256": "d1dca588878682eb7f2a57f076e6dcdcee79b868779f458978c65664d1f9157e",
+      "policy": "darling_internal_gate",
+      "reason": "tests/src/xtrace_exec_environment_guest.c deliberately injects /usr/lib/darling/libxtrace.dylib, unsets its XTRACE/DYLD settings before a second exec and requires the tracer hook to reconstruct exact saved KEY=value entries, including an empty log path, while preserving an unrelated sentinel. The complete oracle is Darling instrumentation persistence, not ordinary execve environment propagation (it specifically expects removed variables to reappear); native Darwin without this tracer is not the reference. This exemption does not establish general execve or dyld compatibility. Source review only; no native execution is claimed."
     }
   }
 }

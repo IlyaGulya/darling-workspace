@@ -1238,7 +1238,8 @@ class DarlingTest(
     
 
     def _metadata_verdict_identity(self, owner, test, invocation):
-        if test.get('validation-group') or test.get('verify-clean-shutdown'):
+        if (test.get('validation-group') or test.get('verify-clean-shutdown')
+                or test.get('red') or test.get('red-proof')):
             return None
         needs_guest = self._metadata_invocation_needs_guest(test, invocation)
         runtime = None

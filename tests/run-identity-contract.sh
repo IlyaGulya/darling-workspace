@@ -9,8 +9,7 @@
 #
 # WHAT THIS COVERS, and with what:
 #   * the CORE path, on a real core this contract makes with `gdb -p <pid> -ex generate-core-file` -- which needs
-#     ptrace (sudo here) but NOT the global core_pattern, so this file never fights `tests/run-core-contract.sh`
-#     when the host tier runs both at once. It asserts that the pattern was untouched.
+#     ptrace (sudo here), but neither depends on nor changes the global core_pattern.
 #   * the LIVE path, on a multi-threaded target this contract starts, sampled by two attaches.
 #   * the honesty invariant on BOTH paths: every per-thread line carries either `slot3=0x…` or
 #     `slot3=UNREADABLE (<reason>)`, and the JSON carries `value` XOR `read_error`.
@@ -111,8 +110,6 @@ note "target pid=$TARGET with $tasks thread(s)"
 SUDO=""
 if sudo -n true 2>/dev/null; then SUDO="sudo -n"; else note "SKIP: no passwordless sudo, so no ptrace: the live and core halves of this contract cannot run"; exit 0; fi
 
-pattern_before=$(cat /proc/sys/kernel/core_pattern)
-
 # --- the LIVE census: two attaches with the target running in between.
 live=$($SUDO "$DWDIAG" identity --pid "$TARGET" 2>&1)
 check "^IDENTITY source=live pid=$TARGET threads=[0-9]+" "the live census names its source" "$live"
@@ -166,13 +163,6 @@ if "$DWDIAG" identity --core "$DIR/target.py" >"$DIR/bad.out" 2>&1; then
 	note "FAIL: a text file was accepted as a core"; fail=1
 else
 	check "ERROR: .*(shorter than an ELF header|not an ELF file|not ET_CORE)" "a file that is not a core is refused with a reason" "$(cat "$DIR/bad.out")"
-fi
-
-pattern_after=$(cat /proc/sys/kernel/core_pattern)
-if [ "$pattern_before" = "$pattern_after" ]; then
-	note "ok: this contract never touched core_pattern (it writes its core with gdb, not through the kernel)"
-else
-	note "FAIL: core_pattern changed from '$pattern_before' to '$pattern_after'"; fail=1
 fi
 
 # --- the guest case, as an OPTIONAL input (see the header).

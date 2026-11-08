@@ -53,6 +53,12 @@ Two more that shape the *process* story:
   controller retaining an old open lease cannot be split from a same-name lane
   recreated later.
 
+FUSE providers run as collected transient user services. After a view is
+unmounted, its exited unit may disappear between inspection and `stop`.
+Release accepts that race only after rechecking both unit absence and the
+unmounted view; a retained service, mount or uninspectable state remains an
+error. Snapshot layers are removed only after provider release.
+
 ## Commands
 
 Run lane commands from the manifest as `mise run west -- <west arguments>`; the

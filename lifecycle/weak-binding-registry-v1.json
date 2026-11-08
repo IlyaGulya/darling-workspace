@@ -103,7 +103,7 @@
     "classified_count": 30,
     "retired_count": 14
   },
-  "entries_digest": "c882ecab2ab5ac887b61dcc3038f84a2fc93c3c97b368d59c5d72a4ff5393c8e",
+  "entries_digest": "28289348dd8db0898963925fd1425cd8e2b441a96e72163de01dd1259aa3f9b3",
   "entries": [
     {
       "name": "CRGetCrashLogMessage",
@@ -635,7 +635,7 @@
       "name": "os_unfair_lock_lock",
       "repository": "darling",
       "path": "src/external/xnu/darling/src/libsystem_kernel/emulation/src/linux_premigration/ext/file_handle.c",
-      "sha256": "60c036036d8a0c27eb5c975b3afdd36d3f169a0927e604415252b187c1413e60",
+      "sha256": "51fb089436260bf3730232bb18cc14b24c0123f555b44fad03092b6e6c2e0062",
       "status": "retired",
       "origin": "darling",
       "kind": "public-api",
@@ -658,7 +658,7 @@
       "name": "os_unfair_lock_unlock",
       "repository": "darling",
       "path": "src/external/xnu/darling/src/libsystem_kernel/emulation/src/linux_premigration/ext/file_handle.c",
-      "sha256": "60c036036d8a0c27eb5c975b3afdd36d3f169a0927e604415252b187c1413e60",
+      "sha256": "51fb089436260bf3730232bb18cc14b24c0123f555b44fad03092b6e6c2e0062",
       "status": "retired",
       "origin": "darling",
       "kind": "public-api",
@@ -681,7 +681,7 @@
       "name": "voucher_mach_msg_adopt",
       "repository": "darling",
       "path": "src/external/xnu/darling/src/libsystem_kernel/emulation/src/other/mach/lkm.c",
-      "sha256": "9afa1a080ff602918d25a48152bf755f2d0fd7828b35e6aee3578c58ed00b24f",
+      "sha256": "06871e79e04a56fd8e8e78be9269bd952614bb9433f60b9bb097b4c2f21eefa4",
       "status": "classified",
       "origin": "darling",
       "kind": "public-api",
@@ -690,14 +690,14 @@
       "fault_mode": "silent",
       "image_role": "defined",
       "strong_side": null,
-      "caller_dependency": "The XNU Mach voucher protocol: the mach_msg send and receive paths adopt a voucher from a message header. This definition returns NULL and the UNIMPLEMENTED_TRAP that would have reported the gap is commented out, so a guest that binds it gets no voucher accounting at all and nothing says so. No strong side exists anywhere in this forest.",
+      "caller_dependency": "The XNU Mach voucher protocol: the mach_msg send and receive paths adopt a voucher from a message header. This definition returns NULL without a diagnostic, so a guest that binds it gets no voucher accounting. The source explicitly documents this degradation under dar-4cgp. Alternate libdispatch and libsyscall providers are disabled in the Darling configuration, so no reachable strong provider is recorded here.",
       "retirement": null
     },
     {
       "name": "voucher_mach_msg_revert",
       "repository": "darling",
       "path": "src/external/xnu/darling/src/libsystem_kernel/emulation/src/other/mach/lkm.c",
-      "sha256": "9afa1a080ff602918d25a48152bf755f2d0fd7828b35e6aee3578c58ed00b24f",
+      "sha256": "06871e79e04a56fd8e8e78be9269bd952614bb9433f60b9bb097b4c2f21eefa4",
       "status": "classified",
       "origin": "darling",
       "kind": "public-api",
@@ -706,14 +706,14 @@
       "fault_mode": "void",
       "image_role": "defined",
       "strong_side": null,
-      "caller_dependency": "The XNU Mach voucher protocol: the caller reverts the voucher after the message is handled. This definition returns nothing at all and the UNIMPLEMENTED_TRAP is commented out, so the revert is a silent no-op. No strong side exists anywhere in this forest.",
+      "caller_dependency": "The XNU Mach voucher protocol: the caller reverts the voucher after the message is handled. This definition has no executable statements, so the revert remains a silent no-op. The source explicitly documents the missing voucher accounting under dar-4cgp. Alternate libdispatch and libsyscall providers are disabled in the Darling configuration, so no reachable strong provider is recorded here.",
       "retirement": null
     },
     {
       "name": "voucher_mach_msg_set",
       "repository": "darling",
       "path": "src/external/xnu/darling/src/libsystem_kernel/emulation/src/other/mach/lkm.c",
-      "sha256": "9afa1a080ff602918d25a48152bf755f2d0fd7828b35e6aee3578c58ed00b24f",
+      "sha256": "06871e79e04a56fd8e8e78be9269bd952614bb9433f60b9bb097b4c2f21eefa4",
       "status": "classified",
       "origin": "darling",
       "kind": "public-api",
@@ -722,14 +722,14 @@
       "fault_mode": "silent",
       "image_role": "defined",
       "strong_side": null,
-      "caller_dependency": "The XNU Mach voucher protocol: the send path asks for the current voucher to attach to a message. This definition returns 0, which reads as \"no voucher to set\", and the UNIMPLEMENTED_TRAP is commented out, so the guest silently sends messages without voucher attribution. No strong side exists anywhere in this forest.",
+      "caller_dependency": "The XNU Mach voucher protocol: the send path asks for the current voucher to attach to a message. This definition returns 0, which reads as \"no voucher to set\", without a diagnostic, so the guest silently sends messages without voucher attribution. The source explicitly documents this degradation under dar-4cgp. Alternate libdispatch and libsyscall providers are disabled in the Darling configuration, so no reachable strong provider is recorded here.",
       "retirement": null
     },
     {
       "name": "os_unfair_lock_lock",
       "repository": "darling",
       "path": "src/external/xnu/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/bsdthread/workq_kernreturn.c",
-      "sha256": "4aea4a3f5426907d236d3ad465b172019506292ff1a80a6d8868f6b7f38659e2",
+      "sha256": "952df2b82488c282448c6465f32790c9d96c3347f4d0ae84b06bca593aa46bc1",
       "status": "retired",
       "origin": "darling",
       "kind": "public-api",
@@ -752,7 +752,7 @@
       "name": "os_unfair_lock_unlock",
       "repository": "darling",
       "path": "src/external/xnu/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/bsdthread/workq_kernreturn.c",
-      "sha256": "4aea4a3f5426907d236d3ad465b172019506292ff1a80a6d8868f6b7f38659e2",
+      "sha256": "952df2b82488c282448c6465f32790c9d96c3347f4d0ae84b06bca593aa46bc1",
       "status": "retired",
       "origin": "darling",
       "kind": "public-api",
@@ -887,7 +887,7 @@
       "name": "kqueue_close",
       "repository": "darling",
       "path": "src/external/xnu/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/close.c",
-      "sha256": "ed595b7ce85096586ac81d9414b84c356d0869ac928137f94cda077cbc424cd6",
+      "sha256": "a2b6f44c11029ba397a36a70ac57032c0009abb16c7179000102d9dc11f4bac6",
       "status": "retired",
       "origin": "darling",
       "kind": "internal-hook",
@@ -908,14 +908,14 @@
         "branch": "fix/private-ulock-return-channel",
         "date": "2026-10-10",
         "removed_declaration": "__attribute__((weak)) __attribute__((visibility(\"default\"))) int kqueue_close(int kq)",
-        "note": "libsystem_kernel: stop defining the kqueue hooks, import them weakly instead. No definition remains in libsystem_kernel.dylib: the callers hold weak imports and test them for NULL, and the linker records libsystem_c as the expected provider (libkqueue, which carries the strong definitions). The loader archives (libsystem_kernel_static32/64.a, the VARIANT_DYLD branch of each source) keep HIDDEN definitions because an undefined weak reference there is a hard link error (measured: \"ld: symbol(s) not found for architecture i386\"); those are private externals and cannot satisfy a guest dynamic binding. Measured on this commit: the guest weak-binding audit passes (kqueue() -> fd, kevent -> 0, close -> 0, dup(0) -> fd, the loud fallback absent), doctor healthy 0 problems / 76 passed, and the T4 toolchain gate PASS."
+        "note": "libsystem_kernel: stop defining the kqueue hooks, import them weakly instead. No definition remains in libsystem_kernel.dylib: the callers hold weak imports and test them for NULL, and the linker records libsystem_c as the expected provider (libkqueue, which carries the strong definitions). The retirement's collective loader-archive audit reported HIDDEN VARIANT_DYLD fallbacks where undefined weak references caused an i386 link failure; those private externals cannot satisfy a guest dynamic binding. Current close.c instead has unconditional weak-import declarations and no VARIANT_DYLD hook definitions. Measured on this commit: the guest weak-binding audit passes (kqueue() -> fd, kevent -> 0, close -> 0, dup(0) -> fd, the loud fallback absent), doctor healthy 0 problems / 76 passed, and the T4 toolchain gate PASS."
       }
     },
     {
       "name": "kqueue_closed_fd",
       "repository": "darling",
       "path": "src/external/xnu/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/close.c",
-      "sha256": "ed595b7ce85096586ac81d9414b84c356d0869ac928137f94cda077cbc424cd6",
+      "sha256": "a2b6f44c11029ba397a36a70ac57032c0009abb16c7179000102d9dc11f4bac6",
       "status": "retired",
       "origin": "darling",
       "kind": "internal-hook",
@@ -936,14 +936,14 @@
         "branch": "fix/private-ulock-return-channel",
         "date": "2026-10-10",
         "removed_declaration": "__attribute__((weak)) __attribute__((visibility(\"default\"))) void kqueue_closed_fd(int fd)",
-        "note": "libsystem_kernel: stop defining the kqueue hooks, import them weakly instead. No definition remains in libsystem_kernel.dylib: the callers hold weak imports and test them for NULL, and the linker records libsystem_c as the expected provider (libkqueue, which carries the strong definitions). The loader archives (libsystem_kernel_static32/64.a, the VARIANT_DYLD branch of each source) keep HIDDEN definitions because an undefined weak reference there is a hard link error (measured: \"ld: symbol(s) not found for architecture i386\"); those are private externals and cannot satisfy a guest dynamic binding. Measured on this commit: the guest weak-binding audit passes (kqueue() -> fd, kevent -> 0, close -> 0, dup(0) -> fd, the loud fallback absent), doctor healthy 0 problems / 76 passed, and the T4 toolchain gate PASS."
+        "note": "libsystem_kernel: stop defining the kqueue hooks, import them weakly instead. No definition remains in libsystem_kernel.dylib: the callers hold weak imports and test them for NULL, and the linker records libsystem_c as the expected provider (libkqueue, which carries the strong definitions). The retirement's collective loader-archive audit reported HIDDEN VARIANT_DYLD fallbacks where undefined weak references caused an i386 link failure; those private externals cannot satisfy a guest dynamic binding. Current close.c instead has unconditional weak-import declarations and no VARIANT_DYLD hook definitions. Measured on this commit: the guest weak-binding audit passes (kqueue() -> fd, kevent -> 0, close -> 0, dup(0) -> fd, the loud fallback absent), doctor healthy 0 problems / 76 passed, and the T4 toolchain gate PASS."
       }
     },
     {
       "name": "kqueue_dup",
       "repository": "darling",
       "path": "src/external/xnu/darling/src/libsystem_kernel/emulation/src/xnu_syscall/bsd/impl/unistd/dup.c",
-      "sha256": "0f848a5d139c5f1403c2f9c6690c92e77a86a09cbfa590b72820009d71eb82d9",
+      "sha256": "5569b9ea72177e13bf17978b3682f0eb550fc5acbb8ac0edecc018f32498571a",
       "status": "retired",
       "origin": "darling",
       "kind": "internal-hook",
@@ -964,7 +964,7 @@
         "branch": "fix/private-ulock-return-channel",
         "date": "2026-10-10",
         "removed_declaration": "__attribute__((weak)) __attribute__((visibility(\"default\"))) void kqueue_dup(int oldfd, int newfd)",
-        "note": "libsystem_kernel: stop defining the kqueue hooks, import them weakly instead. No definition remains in libsystem_kernel.dylib: the callers hold weak imports and test them for NULL, and the linker records libsystem_c as the expected provider (libkqueue, which carries the strong definitions). The loader archives (libsystem_kernel_static32/64.a, the VARIANT_DYLD branch of each source) keep HIDDEN definitions because an undefined weak reference there is a hard link error (measured: \"ld: symbol(s) not found for architecture i386\"); those are private externals and cannot satisfy a guest dynamic binding. Measured on this commit: the guest weak-binding audit passes (kqueue() -> fd, kevent -> 0, close -> 0, dup(0) -> fd, the loud fallback absent), doctor healthy 0 problems / 76 passed, and the T4 toolchain gate PASS."
+        "note": "libsystem_kernel: stop defining the kqueue hooks, import them weakly instead. No definition remains in libsystem_kernel.dylib: the callers hold weak imports and test them for NULL, and the linker records libsystem_c as the expected provider (libkqueue, which carries the strong definitions). The retirement's collective loader-archive audit reported HIDDEN VARIANT_DYLD fallbacks where undefined weak references caused an i386 link failure; those private externals cannot satisfy a guest dynamic binding. Current dup.c instead has unconditional weak-import declarations and no VARIANT_DYLD hook definitions. Measured on this commit: the guest weak-binding audit passes (kqueue() -> fd, kevent -> 0, close -> 0, dup(0) -> fd, the loud fallback absent), doctor healthy 0 problems / 76 passed, and the T4 toolchain gate PASS."
       }
     }
   ]

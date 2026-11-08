@@ -1022,6 +1022,11 @@ def check_loop_guest(work: Path) -> None:
     for label, name, extra in (
         ("a RED arm", "comparison_guest_red", {"red": True}),
         (
+            "a self-contained RED proof",
+            "comparison_guest_self_proof",
+            {"red-proof": {"mode": "self", "why-self": "The fixture owns its bad/fixed oracle."}},
+        ),
+        (
             "a guest Mach-O validation group",
             "comparison_guest_group",
             {"validation-group": "homebrew"},
@@ -1294,7 +1299,12 @@ def armed(arm: str):
 
 def main() -> int:
     arm = os.environ.get(ARM_ENV) or (sys.argv[1] if len(sys.argv) > 1 else None)
-    with tempfile.TemporaryDirectory(prefix="west-verdict-cache-contract-") as raw:
+    with with_environ({
+        "WEST_TEST_VERDICT_CACHE": None,
+        "WEST_TEST_VERDICT_CACHE_DIR": None,
+        "WEST_TEST_VERDICT_CACHE_MAX_BYTES": None,
+        **dict.fromkeys(verdicts.WORKLOAD_VARIABLES),
+    }), tempfile.TemporaryDirectory(prefix="west-verdict-cache-contract-") as raw:
         if arm is not None:
             if arm not in ARMS:
                 raise SystemExit(

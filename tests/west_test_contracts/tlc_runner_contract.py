@@ -35,6 +35,8 @@ class RunnerContract(unittest.TestCase):
         self.jar.write_bytes(b"controlled executor; not a TLC jar")
 
     def invoke(self, rc, text, expected="VIOLATED", *, launch_error=False, jar=None):
+        output_root = self.root / "out"
+        previous_runs = set(output_root.iterdir()) if output_root.exists() else set()
         def execute(command, **kwargs):
             cell = kwargs["cwd"]
             if launch_error:
@@ -46,10 +48,10 @@ class RunnerContract(unittest.TestCase):
             status = runner.main(["--jar", str(jar or self.jar), "--model-dir", str(self.model),
                                   "--module", "Example", "--output-root", str(self.root / "out"),
                                   "--case", f"safe.cfg:{INV}:{expected}"], executor=execute)
-        runs = sorted((self.root / "out").iterdir(), key=lambda p: p.stat().st_mtime_ns)
-        results = json.loads((runs[-1] / "results.json").read_text())
+        run, = set(output_root.iterdir()) - previous_runs
+        results = json.loads((run / "results.json").read_text())
         self.assertEqual(self.config.read_text(), "SPECIFICATION Spec\nINVARIANT OtherInvariant\n")
-        return status, runs[-1], results
+        return status, run, results
 
     def test_completed_outcomes_and_artifacts(self):
         for rc, text, expected in ((0, OK, "OK"), (12, BAD, "VIOLATED")):
@@ -89,11 +91,10 @@ class RunnerContract(unittest.TestCase):
         self.assertTrue((run / "error.txt").is_file())
 
     def test_unexpected_outcome_fails_and_stale_log_not_reused(self):
-        first, old, _ = self.invoke(12, BAD)
-        second, new, results = self.invoke(0, OK)
+        first, _, _ = self.invoke(12, BAD)
+        second, _, results = self.invoke(0, OK)
         self.assertEqual(first, 0)
         self.assertEqual(second, 1)
-        self.assertNotEqual(old, new)
         self.assertEqual(results[0]["verdict"], "OK")
 
 

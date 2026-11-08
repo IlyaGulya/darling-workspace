@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "west_commands"))
+from west_commands.evidence_storage import open_payload
 from west_commands.test import DarlingTest
 
 RUNNER = Path(os.environ.get(
@@ -151,14 +152,18 @@ add_compat_test(NAME guarded_output_contract SOURCE "{root}/failure.c"
             "diag": "guarded",
             "timeout_seconds": 15,
         }
-        started = time.time()
         failed = runner._run_invocation_captured(invocation)
-        output = runner._guest_runtime_red_output(
-            invocation, since=started, captured_output=failed.output
-        )
+        output = failed.output
         assert failed.returncode != 0, output
         assert failed.failure_phase == "run", (failed.failure_phase, output)
-        assert output is not None and "GUARDED_DOMAIN_FAILURE" in output, output
+        bundle = Path(next(
+            line.removeprefix("BUNDLE=") for line in output.splitlines()
+            if line.startswith("BUNDLE=")
+        ))
+        with open_payload(bundle / "stdout.log") as stdout, \
+                open_payload(bundle / "stderr.log") as stderr:
+            output = (stdout.read() + stderr.read()).decode("utf-8", errors="replace")
+        assert "GUARDED_DOMAIN_FAILURE" in output, output
         assert "WEST_TEST_FAILURE_PHASE=run" in output, output
 
         timed_out = subprocess.run([

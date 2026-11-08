@@ -1,10 +1,4 @@
-"""Contract for the CMake-backed fixture backend that moved out of ``test.py``.
-
-``CmakeFixtureMixin`` composes the testkit configure/build argv, runs a bounded
-build without letting a toolchain hang escape the command, and executes the
-source-repo CMake fixtures.  These assertions cover that behaviour, including
-the facade seam those runs must still resolve their process runner through.
-"""
+"""CMake fixture failure handling and source-build execution contracts."""
 
 from __future__ import annotations
 
@@ -52,65 +46,6 @@ def new_test(**attributes) -> DarlingTest:
         setattr(test, name, value)
     return test
 
-
-# --- _configure_and_build -------------------------------------------------
-stages: list[tuple[str, list[str]]] = []
-messages: list[str] = []
-testkit = Path("/workspace/testkit")
-test = new_test(
-    _prefix_env={"DARLING_NOOVERLAYFS": "1"},
-    inf=lambda message: messages.append(message) if message.startswith("configuring") else None,
-    _run_testkit_build_command=lambda stage, args: stages.append((stage, list(args))),
-)
-build = test._configure_and_build(
-    testkit,
-    "/usr/bin/darling-debug-runner",
-    darling_launcher="/installed/bin/darling",
-    prefix="/prefix",
-    bundle_root="/bundles",
-    cmake_defines={"B_DEFINE": "2", "A_DEFINE": "1"},
-)
-assert build == testkit / "build", build
-assert stages == [
-    (
-        "configure",
-        [
-            "cmake",
-            "-S",
-            str(testkit),
-            "-B",
-            str(testkit / "build"),
-            "-G",
-            "Ninja",
-            "-DA_DEFINE=1",
-            "-DB_DEFINE=2",
-            "-DDARLING_TEST_EXECUTOR=/usr/bin/darling-debug-runner",
-            "-DDARLING_TEST_PREFIX=/prefix",
-            "-DDARLING_TEST_BUNDLE_ROOT=/bundles",
-        ],
-    ),
-    ("build", ["ninja", "-C", str(testkit / "build")]),
-], stages
-assert messages == [f"configuring: {testkit}"], messages
-
-stages.clear()
-test = new_test(_run_testkit_build_command=lambda stage, args: stages.append((stage, list(args))))
-configure_only = Path("/tmp/west-configure-only")
-assert test._configure_and_build(testkit, None, build_dir=configure_only, compile_tests=False) == (
-    configure_only
-)
-assert [stage for stage, _args in stages] == ["configure"], stages
-assert stages[0][1] == ["cmake", "-S", str(testkit), "-B", str(configure_only), "-G", "Ninja"]
-
-stages.clear()
-test._source_root = Path("/current-source")
-test._configure_and_build(testkit, None, compile_tests=False)
-assert "-DDARLING_SRC=/current-source" in stages[-1][1], stages
-stages.clear()
-test._configure_and_build(testkit, None, compile_tests=False,
-                          cmake_defines={"DARLING_SRC": "/explicit-current-source"})
-assert "-DDARLING_SRC=/explicit-current-source" in stages[-1][1], stages
-assert "-DDARLING_SRC=/current-source" not in stages[-1][1], stages
 
 # --- _run_testkit_build_command ------------------------------------------
 # The runner must be resolved through the facade namespace, because focused

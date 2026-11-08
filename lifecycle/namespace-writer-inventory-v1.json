@@ -162,7 +162,7 @@
         },
         {
           "cmake": "src/external/iokitd/CMakeLists.txt",
-          "cmake_sha256": "86ef13a54e546ef5a241af3329757da4df4aeae643ae02dc8eecdc17609e8636",
+          "cmake_sha256": "1ee96893e84f9439c6b03d398e606c07b107ac782af50a59a536628ae9f42949",
           "source": "${CMAKE_CURRENT_BINARY_DIR}/iokitmigServer.c",
           "classification": "sha-bound-generated-source",
           "generator": {"path": "cmake/mig.cmake", "sha256": "5fd214e95543ef267a621280e2b0e587e2d7a2d4cc31118db8d111f24bfa07e2"},
@@ -171,7 +171,7 @@
         },
         {
           "cmake": "src/external/iokitd/CMakeLists.txt",
-          "cmake_sha256": "86ef13a54e546ef5a241af3329757da4df4aeae643ae02dc8eecdc17609e8636",
+          "cmake_sha256": "1ee96893e84f9439c6b03d398e606c07b107ac782af50a59a536628ae9f42949",
           "source": "${CMAKE_CURRENT_BINARY_DIR}/powermanagementServer.c",
           "classification": "sha-bound-generated-source",
           "generator": {"path": "cmake/mig.cmake", "sha256": "5fd214e95543ef267a621280e2b0e587e2d7a2d4cc31118db8d111f24bfa07e2"},
@@ -1031,6 +1031,28 @@
       "migration": "Publish the FSEvents listener through a retained runtime endpoint capability."
     },
     {
+      "id": "diskarbitration.approval-endpoints",
+      "owner": {"repository": "darling", "paths": ["src/frameworks/DiskArbitration/DASession.c"], "symbols": ["DAUpdateApprovalEndpointLocked", "DACleanupApprovalEndpoints", "DASessionFinalize"]},
+      "operation": ["create-directory", "create", "socket-bind", "replace", "remove"],
+      "targets": ["/tmp/di<native-euid-hex>", "/tmp/di<native-euid-hex>/a-* required-voter endpoints", "/tmp/di<native-euid-hex>/.a-* unpublished listener sockets"],
+      "syscall_or_helper": ["DAImageDirectory", "mkdir", "mkstemp", "bind", "rename", "unlink"],
+      "lifecycle_phase": "diskarbitration-approval-registration-scheduling-and-session-teardown",
+      "lock": {"required": true, "path": ".lifecycle.lock", "status": "missing", "acquisition": "none; session and cleanup mutexes plus directory ownership checks do not establish the exact product lifecycle capability", "retained_fd": false},
+      "compatibility": "incompatible",
+      "migration": "Bind shared approval endpoint publication and removal to an explicit product writer sublease at the E-UNION boundary, retaining endpoint identity across session teardown; guest libraries must not inherit the outer workspace lease."
+    },
+    {
+      "id": "diskimages.image-provider-namespace",
+      "owner": {"repository": "darling", "paths": ["src/external/darling-dmg/src/main-hdiutil.cpp", "src/external/darling-dmg/src/image-provider.inc", "src/external/darling-dmg/src/device-fs.inc", "src/external/darling-dmg/src/image-worker.inc"], "symbols": ["imageAttach", "imageServe", "imageRemoveControl", "imageDeviceSetup", "imageDeviceReserveMinor", "imageWorkerStart"]},
+      "operation": ["create-directory", "create", "socket-bind", "mount", "unmount", "remove"],
+      "targets": ["/tmp/di<native-euid-hex>/<attachment>/s", "/tmp/di<native-euid-hex>/<attachment>/image", "/private/var/run/darling-image device namespace and minor reservations", "requested image mountpoint"],
+      "syscall_or_helper": ["mkdir", "mkdtemp", "bind", "std::ofstream", "open(O_CREAT|O_EXCL)", "fuse_mount", "fuse_unmount", "unlink", "rmdir", "imageWorkerExchange"],
+      "lifecycle_phase": "image-attachment-device-publication-mount-and-retirement",
+      "lock": {"required": true, "path": ".lifecycle.lock", "status": "missing", "acquisition": "none; checked directory ownership, exclusive minor reservation and producer IPC serialization do not establish the exact product lifecycle capability", "retained_fd": false},
+      "compatibility": "incompatible",
+      "migration": "Bind the attachment control directory, device namespace, minor reservations and delegated mount teardown to explicit controller-issued product writer capabilities; a caller-selected image does not make shared producer endpoints private output."
+    },
+    {
       "id": "network.rtadvd-runtime",
       "owner": {"repository": "darling", "paths": ["src/external/network_cmds/rtadvd.tproj/rtadvd.c"], "symbols": ["main", "sock_open", "rtadvd_dump_file"]},
       "operation": ["create", "replace", "remove", "socket-bind", "metadata-write"],
@@ -1168,7 +1190,7 @@
     {"repository": "darling", "path": "src/external/xnu/tests/lockf_EOF_77264182.c", "sha256": "ecc7262f5bcabb9820a90190d82eebecf438e3941dee3d5c2dd51aeaeaab7633", "reason": "XNU regression fixture with task-owned files"},
     {"repository": "darling", "path": "src/external/xnu/tests/unp_connect_thread_uaf.c", "sha256": "8040dea54c2c4f8375637378a0b0234349df4373a8dd61e082636a7bfb695568", "reason": "XNU regression fixture with a disposable UNIX socket"},
     {"repository": "darling", "path": "src/external/zsh/zsh/Src/hist.c", "sha256": "be9016bfdea79a1c448690f53e31756d83468825f52300a59090fa0641249bc1", "reason": "user-owned shell history lock, not a shared system lifecycle endpoint"},
-    {"repository": "darling-workspace", "path": "west_commands/test.py", "sha256": "0023602da3a93a5fa577edc0dc9d5b5d4080d0015f8b88e6fbe1c86ada8f378f", "reason": "fixture-only host/E-UNION probes; each fixture root is disposable and must not be treated as product routing"},
+    {"repository": "darling-workspace", "path": "west_commands/test.py", "sha256": "e4dc4e6ac74ad435f41f5816365d7726cf7364cb1c0cc380678084b9465fb9f3", "reason": "fixture-only host/E-UNION probes; each fixture root is disposable and must not be treated as product routing"},
     {"repository": "darling-workspace", "path": "west_commands/test_guest_macho.py", "sha256": "e18beed65924ff3c9b590486341ff1c16cdb7acd84d6f88822c8a3e6e05a3dbb", "reason": "guest test staging under private/var/tmp; disposable test fixture"},
     {"repository": "darling-workspace", "path": "west_commands/test_guest_c.py", "sha256": "45e202253ecb48610465a879df5a3a6393425b09af08d17fa14eeb049799f7a2", "reason": "guest C harness creates and removes fixture files; not a product writer"},
     {"repository": "darling", "path": "src/external/darlingserver/tools/dserverdbg.c", "sha256": "b81c23cbd374efb6765f0a9db525879dc1bb3331f3c68cf3c46ed0f3a8bb2f8e", "reason": "diagnostic tool, not a production runtime owner"},

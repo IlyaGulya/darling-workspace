@@ -27,17 +27,25 @@ cd /home/ilyagulya/work/wr-fresh
 # Review darling-workspace/mise.toml before trusting its tools and tasks.
 mise -C darling-workspace trust
 mise -C darling-workspace install
+mise -C darling-workspace run host-setup
 mise -C darling-workspace run west init -l .
 mise -C darling-workspace run west update
 mise -C darling-workspace run west dw restore
 mise -C darling-workspace run west dw beads sync --import-only --rebuild
 ```
 
+`mise.toml` selects Python 3.14.8 and uv 0.8.17; `host-setup` runs
+`uv sync --frozen` into the manifest's standard `.venv`. Direct host Python
+dependency pins, including West, live in `pyproject.toml`; `uv.lock` locks
+their resolution. See [host prerequisites](docs/environment.md#host-tools-and-agent-activation)
+for Linux pidfd requirements and existing-environment ownership.
+
 ## Daily use
 Run commands from the manifest directory with `mise run dw ...` or
 `mise run west ...`. Both tasks select the pinned environment and forward
-arguments; West preserves the caller's directory. From the workspace root use
-`mise -C darling-workspace run dw ...` or `run west ...`.
+arguments. West runs in mise's selected working directory; `-C` changes it.
+From the workspace root use `mise -C darling-workspace run dw ...` or
+`run west ...`.
 Use `--` after the task name for opaque arguments, including a literal `:::`;
 for example, `mise run west -- config KEY VALUE`. Simple options can be passed
 directly: `mise run west --version`.
