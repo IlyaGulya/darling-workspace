@@ -131,6 +131,7 @@ CONTRACTS = (
 # because they must stay uncached. Each entry is
 # (name, workspace-relative path, cacheable).
 EXPLICIT_CONTRACTS = (
+    ("tlc-runner", "tests/west_test_contracts/tlc_runner_contract.py", True),
     # Uncached on purpose: cached host evidence must not bypass a current
     # metadata and applicability review.
     ("native-inventory", "tests/run-native-inventory-contract.sh", False),
