@@ -200,6 +200,21 @@ automatic retirement and is released with
 `west dev lane recover --release-kept --run RUN_DIR`; `--pin` protects completed evidence,
 not the raw prefix.
 
+`west_commands/managed_run_lifecycle.py` is the authoritative declaration of
+persisted phases, record obligations, allowed transitions and recovery decisions.
+The producer's saves, reads and recovery consume it directly; process, lease,
+capture and filesystem effects remain in their existing owners.
+The normal path is `preparing -> creating -> running -> capturing -> retiring
+-> completed`, with `retained` and `blocked` as explicit recovery states.
+`command_started` is tri-state: `False` means not launched, `True` launched,
+and `None` may-have-started/unknown. An absent field retains the historical
+unstarted meaning; explicit `None` never does. Unknown launch cannot produce
+unstarted evidence or authorize lane removal. Recorded incomplete host output
+also blocks removal; command exit is not proof that output writers closed.
+Unreadable, foreign or invalid persisted records are reported as `unknown` and
+preserved, never adopted or rewritten as success. A completed outcome is
+immutable; external evidence pinning does not change its result.
+
 A new run recovers known dead-owned prior runs and applies bounded retention.
 Inspect owners and final states with `west dev lane runs --state-root S --json`;
 finish only unlocked interrupted owners with

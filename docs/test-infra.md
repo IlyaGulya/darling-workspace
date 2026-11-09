@@ -1439,7 +1439,7 @@ implementation of helper logic:
 | `west_commands/test_cmake.py` | Source CMake superproject shims, fallback registration, compiler logs and required options |
 | `west_commands/test_resources.py` | Shared typed runtime setup, with provider ordering/selection contracts |
 | `west_commands/lane_snapshotter.py`, `lane.py` | Upstream snapshot graph/storage and retained-view lifecycle; active/frozen admission, leases, product bind-clone and lane scopes |
-| `west_commands/managed_run.py` | Producer-owned temporary-run journal, scope, closed evidence, recovery and retirement |
+| `west_commands/managed_run.py`, `managed_run_lifecycle.py` | Temporary-run effects and the authoritative phase/record/recovery policy; closed evidence precedes native removal |
 | `west_commands/evidence_retention.py` | Run/job evidence finalization, logical log compaction, bounded pruning and retirement journal |
 | `west_commands/runtime_retention.py` | Explicit-root new-image registry, references/pins, read-only census and bounded image retention |
 

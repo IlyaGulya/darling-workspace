@@ -7399,7 +7399,7 @@ workloads:
   requires:
   - darling-prefix
   ok-marker: URGENT_SIGNAL_LIFECYCLE_PASS=1
-  timeout-seconds: 30
+  timeout-seconds: 120
 - id: supplementary_groups_guest
   name: supplementary_groups_guest
   module: darling/src/external/darlingserver

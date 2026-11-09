@@ -19,7 +19,7 @@ manifest:
     # Product source authority: this committed tree and its exact child gitlinks.
     # Build the normal stock ALL target and complete installation.
     # Workloads, writable guest prefixes and evidence are selected separately.
-    revision: 97e4c70171ae7212f8434235a334f2c1f1df0fdd
+    revision: 37e7da10b04d0375ba98d77abec72b10fc8f8c80
     userdata:
       kind: darling-source
       upstream-repository: darling
@@ -453,7 +453,7 @@ manifest:
     remote: darling-next
     # Rust process supervisor matches Darling's gitlink: kernel-observed bindings
     # and ownership-safe process memory copies, management and courier delivery.
-    revision: 1a35c3130c01e9f4c81d7289a62c38bb597091af
+    revision: e4248ed237c5631b0ea074032963e4c66a9d6e5b
     userdata:
       kind: darling-source
       upstream-repository: darlingserver

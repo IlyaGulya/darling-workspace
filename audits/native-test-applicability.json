@@ -807,7 +807,7 @@
     },
     "urgent_signal_lifecycle_guest": {
       "name": "urgent_signal_lifecycle_guest",
-      "identity_sha256": "6e41945a28a41ca96c4d27649c25ec488e99cabef7018d4ea67fe3ad83d04a34",
+      "identity_sha256": "a958156ddfe906f9e1e91b966dcdd4911537a20b790aa5e0589291bff995ac3e",
       "policy": "darling_internal_gate",
       "reason": "Real installed-runtime consumer contract for five nested signal contexts, pthread cancellation, unaffected socket/read peers and task Mach-exception delivery through Darling's existing self-debugger PT_SIGEXC path. The contract withholds actual exception replies, requires explicit PT_THUPDATE suppression zero/replacement and unchanged software delivery, distinguishes asynchronously raised SIGILL from a real labeled ud2 fault, and requires exact fault-PC validation plus PC-only thread_set_state before hardware resumption without THUPDATE. A no-C-call x86 assembly window observes live integer/XMM preservation and rejects early continuation. Native Darwin requires a legitimate tracer/tracee relationship (PT_ATTACH or PT_TRACE_ME), not this self-debugger setup; this complete oracle remains Darling-specific. This applicability decision is not an execution verdict, native Darwin PASS, or post-reply user-suspension proof. No mocked transport, injected provider, source-text assertion or arbitrary-admission guarantee."
     },

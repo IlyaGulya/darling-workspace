@@ -19,7 +19,11 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "west_commands"))
-from managed_run import _Command, _start_time, interrupt_payload, LaneError, read_run, recover_runs, require_budget, set_run_pin
+from managed_run import (
+    _Command, _finish, _now, _outcome, _save, _start_time, interrupt_payload, LaneError,
+    list_runs, read_run, recover_runs, require_budget, set_run_pin,
+)
+import managed_run_lifecycle as lifecycle
 from evidence_retention import EvidenceError, interrupt_job_owners, mark_job_state, prune_run_evidence
 from evidence_storage import open_payload
 
@@ -46,7 +50,7 @@ st=run.stat()
 record={
  'schema':1,'kind':'managed-lane-run','id':sys.argv[3],'uid':os.geteuid(),
  'root':str(root),'path':str(run),'directory':{'device':st.st_dev,'inode':st.st_ino},
- 'created':m._now(),'phase':'creating',
+ 'created':m._now(),'phase':'preparing',
  'owner':{'pid':os.getpid(),'start_time':m._start_time(os.getpid())},
  'lane':{'path':str(root/'l'/('r'+sys.argv[3][:12])),'root':str(root/'l'),
          'name':'r'+sys.argv[3][:12],'token':sys.argv[3]},
@@ -55,7 +59,8 @@ record={
  'cleanup':{'success':False,'problems':[]},'evidence':{'complete':False},
 }
 with m._run_lock(run,create=True):
- m._save(record)
+ m._save(record,initial=True)
+ m._save(record,phase='creating')
  m.write_json(run/'invocation.json',{'argv':record['argv'],'command_started':False})
  print('LOCKED',flush=True)
  sys.stdin.buffer.read(1)
@@ -194,11 +199,13 @@ root=Path(sys.argv[2]);run=root/'runs'/('run-'+sys.argv[3]);run.mkdir(parents=Tr
 metadata=run.stat()
 record={'schema':1,'kind':'managed-lane-run','id':sys.argv[3],'uid':os.geteuid(),
         'root':str(root),'path':str(run),'directory':{'device':metadata.st_dev,'inode':metadata.st_ino},
-        'phase':'running','owner':{'pid':os.getpid(),'start_time':m._start_time(os.getpid())},
+        'phase':'preparing','owner':{'pid':os.getpid(),'start_time':m._start_time(os.getpid())},
         'lane':{'path':str(root/'l'/'host-payload'),'root':str(root/'l'),
                 'name':'host-payload','token':sys.argv[3]}}
 with m._run_lock(run,create=True):
- m._save(record)
+ m._save(record,initial=True)
+ m._save(record,phase='creating')
+ m._save(record,phase='running',command_started=None)
  environment=dict(os.environ,DW_MANAGED_RUN=record['id'])
  rc=m.run_lane_payload([sys.executable,'-B','-c',sys.argv[4],str(root/'observed-signal')],
                        environment,{'path':str(run)})
@@ -257,10 +264,262 @@ def cancelled_after_output_eof(root):
         command.close(strict=False)
 
 
+def make_run(root, tag):
+    """Create one real run directory with a contract-valid initial record."""
+    root = root / tag
+    (root / "runs").mkdir(parents=True)
+    identifier = uuid.uuid4().hex
+    run = root / "runs" / ("run-" + identifier)
+    run.mkdir()
+    (run / ".lock").touch(mode=0o600)
+    metadata = run.stat()
+    lane_root = root / "lanes"
+    lane = lane_root / ("r" + identifier[:12])
+    record = {
+        "schema": 1, "kind": "managed-lane-run", "id": identifier,
+        "uid": os.geteuid(), "root": str(root), "path": str(run),
+        "directory": {"device": metadata.st_dev, "inode": metadata.st_ino},
+        "created": "2026-01-01T00:00:00Z", "phase": lifecycle.PREPARING,
+        "owner": {"pid": 999999999, "start_time": "1"},
+        "lane": {"path": str(lane), "name": lane.name, "root": str(lane_root), "token": identifier},
+        "runtime_root": None, "argv": ["lifecycle-probe"], "keep": False, "pin": False,
+        "workload_rc": None, "final_rc": None,
+        "cleanup": {"success": False, "problems": []},
+        "evidence": {"complete": False}, "command_started": False,
+    }
+    _save(record, initial=True)
+    return root, run, record
+
+
+def make_completed(root, tag):
+    root, run, record = make_run(root, tag)
+    _save(record, phase=lifecycle.CREATING)
+    _save(record, evidence={"complete": True, "payload": "sealed"}, cleanup={"success": True, "problems": []})
+    _save(record, phase=lifecycle.COMPLETED, completed=_now(), keep=False,
+          cleanup={"success": True, "changed": [], "problems": []}, final_rc=1)
+    return root, run, record
+
+
+def make_retained(root, tag):
+    root, run, record = make_run(root, tag)
+    _save(record, phase=lifecycle.CREATING)
+    _save(record, phase=lifecycle.RETAINED, keep=True,
+          cleanup={"success": False, "retained": True, "problems": []}, final_rc=1)
+    return root, run, record
+
+
+def launch_certainty(root):
+    test_root, run, record = make_run(root, "launch-certainty")
+    fresh = {key: value for key, value in record.items() if key != "updated"}
+    fresh["phase"] = lifecycle.CREATING
+    refuses(lambda: _save(fresh, initial=True))
+    refuses(lambda: _save(record, phase=lifecycle.RUNNING))
+    refuses(lambda: _save(record, command_started=None))
+    refuses(lambda: _save(record, command_started="launched"))
+    _save(record, phase=lifecycle.CREATING)
+    assert lifecycle.launch_state(record) == lifecycle.NOT_STARTED
+    _save(record, phase=lifecycle.RUNNING, command_started=None)
+    assert lifecycle.launch_state(record) == lifecycle.UNKNOWN
+    assert read_run(run)["command_started"] is None
+    refuses(lambda: _save(record, phase=lifecycle.COMPLETED,
+                         evidence={"complete": False}, cleanup={"success": True, "problems": []},
+                         final_rc=1, keep=False))
+
+    _, completed_run, completed = make_completed(root, "launch-terminal")
+    refuses(lambda: _save(completed, phase=lifecycle.RUNNING))
+    assert read_run(completed_run)["phase"] == lifecycle.COMPLETED
+    _, retained_run, retained = make_retained(root, "launch-retained")
+    refuses(lambda: _save(retained, phase=lifecycle.RUNNING))
+    assert read_run(retained_run)["phase"] == lifecycle.RETAINED
+
+
+def unknown_launch_recovery(root):
+    test_root, run, record = make_run(root, "unknown-launch")
+    _save(record, phase=lifecycle.CREATING)
+    _save(record, phase=lifecycle.RUNNING, command_started=None)
+    rows = recover_runs(test_root)
+    assert len(rows) == 1 and rows[0]["action"] == "keep", rows
+    data = read_run(run)
+    assert data["phase"] == lifecycle.BLOCKED
+    assert data["command_started"] is None, "unknown launch must never be downgraded to false"
+    assert data["workload_rc"] is None and data["final_rc"] != 0
+    assert not (run / "payload").exists(), "no evidence may be fabricated for an unknown launch"
+    outcome = json.loads((run / "outcome.json").read_text())
+    assert outcome["command_started"] is None
+    assert outcome["host_streams_complete"] is None
+
+
+def native_removal_obligations(root):
+    test_root, run, record = make_run(root, "removal-obligations")
+    _save(record, phase=lifecycle.CREATING)
+    _save(record, phase=lifecycle.RUNNING, command_started=True)
+    _save(record, workload_rc=0, host_streams_complete=False)
+    refuses(lambda: _finish(record))
+    data = read_run(run)
+    assert data["phase"] == lifecycle.RUNNING
+    assert not (run / "payload").exists()
+    refuses(lambda: _save(record, phase=lifecycle.COMPLETED,
+                         evidence={"complete": True},
+                         cleanup={"success": True, "problems": []},
+                         final_rc=0, keep=False))
+
+
+def retained_recovery(root):
+    test_root, run, record = make_retained(root, "retained-recovery")
+    rows = recover_runs(test_root)
+    assert len(rows) == 1 and rows[0]["action"] == "keep", rows
+    data = read_run(run)
+    assert data["phase"] == lifecycle.RETAINED and data["keep"] is True
+
+
+def blocked_recovery(root):
+    test_root, run, record = make_run(root, "blocked-recovery")
+    _save(record, phase=lifecycle.CREATING)
+    _save(record, phase=lifecycle.BLOCKED, cleanup={"success": False, "problems": ["mechanical"]},
+          final_rc=1)
+    rows = recover_runs(test_root)
+    assert len(rows) == 1 and rows[0]["action"] == "recovered", rows
+    data = read_run(run)
+    assert data["phase"] == lifecycle.COMPLETED
+    assert data["evidence"]["complete"] is True and data["cleanup"]["success"] is True
+    assert data["workload_rc"] is None and data["final_rc"] == 1
+    assert (run / "payload" / "capture.json").is_file()
+
+
+def historical_and_foreign_records(root):
+    test_root, run, record = make_run(root, "historical")
+    legacy = {
+        key: value for key, value in record.items()
+        if key in {"schema", "kind", "id", "uid", "root", "path", "directory", "lane", "phase"}
+    }
+    (run / "run.json").write_text(json.dumps(legacy))
+    loaded = read_run(run)
+    assert lifecycle.launch_state(loaded) == lifecycle.NOT_STARTED
+    _save(loaded, pin=True)
+    assert read_run(run)["pin"] is True
+
+    unknown_root, unknown_run, _ = make_run(root, "foreign")
+    corrupt = read_run(unknown_run)
+    for phase in (lifecycle.REPORT_UNKNOWN, [], {}):
+        corrupt["phase"] = phase
+        (unknown_run / "run.json").write_text(json.dumps(corrupt))
+        before = (unknown_run / "run.json").read_bytes()
+        rows = list_runs(unknown_root)
+        assert len(rows) == 1 and rows[0]["phase"] == lifecycle.REPORT_UNKNOWN
+        assert rows[0]["preserved"] is True
+        assert recover_runs(unknown_root) == []
+        assert (unknown_run / "run.json").read_bytes() == before
+
+    completed_root, completed_run, _ = make_completed(root, "completed-broken")
+    broken = read_run(completed_run)
+    broken["evidence"] = {"complete": False}
+    (completed_run / "run.json").write_text(json.dumps(broken))
+    before = (completed_run / "run.json").read_bytes()
+    rows = list_runs(completed_root)
+    assert len(rows) == 1 and rows[0]["phase"] == lifecycle.REPORT_UNKNOWN
+    assert recover_runs(completed_root) == []
+    assert (completed_run / "run.json").read_bytes() == before
+
+
+def outcome_immutability(root):
+    test_root, run, record = make_run(root, "outcome")
+    _save(record, phase=lifecycle.CREATING)
+    _save(record, phase=lifecycle.RUNNING, command_started=True)
+    _outcome(record, None)
+    before = (run / "outcome.json").read_bytes()
+    record["workload_rc"] = 7
+    _outcome(record, None)
+    assert (run / "outcome.json").read_bytes() == before
+    assert json.loads(before)["command_started"] is True
+
+
+def completed_pin_boundary(root):
+    test_root, run, record = make_completed(root, "completed-pin")
+    refuses(lambda: _save(record, final_rc=7))
+    refuses(lambda: _save(record, error="late failure"))
+    pinned = set_run_pin(test_root, run, True)
+    assert pinned["phase"] == lifecycle.COMPLETED and pinned["pin"] is True
+    assert read_run(run)["final_rc"] == 1
+
+
+RUNNING_OWNER = r'''
+import json,os,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+import managed_run as m
+root=Path(sys.argv[2]);run=root/'runs'/('run-'+sys.argv[3]);run.mkdir(parents=True)
+st=run.stat()
+record={
+ 'schema':1,'kind':'managed-lane-run','id':sys.argv[3],'uid':os.geteuid(),
+ 'root':str(root),'path':str(run),'directory':{'device':st.st_dev,'inode':st.st_ino},
+ 'created':m._now(),'phase':'preparing',
+ 'owner':{'pid':os.getpid(),'start_time':m._start_time(os.getpid())},
+ 'lane':{'path':str(root/'l'/('r'+sys.argv[3][:12])),'root':str(root/'l'),
+         'name':'r'+sys.argv[3][:12],'token':sys.argv[3]},
+ 'runtime_root':None,'argv':['running-owner'],'keep':False,'pin':False,
+ 'command_started':False,'workload_rc':None,'final_rc':None,
+ 'cleanup':{'success':False,'problems':[]},'evidence':{'complete':False},
+}
+with m._run_lock(run,create=True):
+ m._save(record,initial=True)
+ m._save(record,phase='creating')
+ m._save(record,phase='running',command_started=True,workload_rc=0)
+ print('LOCKED',flush=True)
+ sys.stdin.buffer.read(1)
+print('UNLOCKED',flush=True)
+sys.stdin.buffer.read(1)
+os._exit(37)
+'''
+
+
+def live_running_owner(root):
+    identifier = uuid.uuid4().hex
+    run = root / "runs" / ("run-" + identifier)
+    process = subprocess.Popen(
+        [sys.executable, "-B", "-c", RUNNING_OWNER, str(ROOT / "west_commands"), str(root), identifier],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        assert process.stdout.readline().strip() == "LOCKED"
+        rows = recover_runs(root, run=run)
+        assert len(rows) == 1 and rows[0]["action"] == "keep", rows
+        assert read_run(run)["phase"] == lifecycle.RUNNING
+        process.stdin.write("x"); process.stdin.flush()
+        assert process.stdout.readline().strip() == "UNLOCKED"
+        # A free flock alone does not authorize takeover of a live owner.
+        rows = recover_runs(root, run=run)
+        assert len(rows) == 1 and rows[0]["action"] == "keep", rows
+        assert read_run(run)["phase"] == lifecycle.RUNNING
+        process.stdin.write("x"); process.stdin.flush()
+        assert process.wait(timeout=15) == 37, process.stderr.read()
+        # The executed run lost its lane without a retirement marker: preserve.
+        rows = recover_runs(root, run=run)
+        assert len(rows) == 1 and rows[0]["action"] == "keep", rows
+        data = read_run(run)
+        assert data["phase"] == lifecycle.BLOCKED and data["command_started"] is True
+        assert data["final_rc"] == 1 and not (run / "payload").exists()
+    finally:
+        if process.poll() is None:
+            process.stdin.close()
+            process.wait(timeout=15)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream and not stream.closed:
+                stream.close()
+
+
 def contract(root):
     cancelled_after_output_eof(root)
     job_owner_domains(root)
     payload_cancellation(root)
+    launch_certainty(root)
+    unknown_launch_recovery(root)
+    live_running_owner(root)
+    native_removal_obligations(root)
+    retained_recovery(root)
+    blocked_recovery(root)
+    historical_and_foreign_records(root)
+    outcome_immutability(root)
+    completed_pin_boundary(root)
     source = root / "user-source.c"
     source.write_bytes(b"/* authored source is not owned run data */\n")
     root_before = set(root.iterdir())

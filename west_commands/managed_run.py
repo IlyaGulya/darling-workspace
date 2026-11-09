@@ -24,6 +24,7 @@ import uuid
 from typing import Any, Callable, Iterator, Mapping
 
 try:
+    from . import managed_run_lifecycle as lifecycle
     from .evidence_retention import _process_identity, ack_run_retirement, finalize_run_evidence, finalize_unstarted_run_evidence, prune_run_evidence, register_job_owner
     from .lane import (
         LANE_MARKER, RETIRED_MARKER, LaneError, _lane_admission, _lane_namespace,
@@ -34,6 +35,7 @@ try:
     from .test_prefix import cleanup_verified_prefix_processes, prefix_lease
     from .test_store import durable_root, write_json
 except ImportError:
+    import managed_run_lifecycle as lifecycle
     from evidence_retention import _process_identity, ack_run_retirement, finalize_run_evidence, finalize_unstarted_run_evidence, prune_run_evidence, register_job_owner
     from lane import (
         LANE_MARKER, RETIRED_MARKER, LaneError, _lane_admission, _lane_namespace,
@@ -127,6 +129,10 @@ def read_run(run: Path, *, root: Path | None = None) -> dict[str, Any]:
     run = _safe_path(run)
     metadata = run.lstat()
     data = _read_json(run / RUN_RECORD)
+    try:
+        lifecycle.validate_record(data)
+    except lifecycle.LifecycleError as error:
+        raise LaneError(f"managed run record violates the lifecycle contract: {run}: {error}") from error
     expected_root = _safe_path(root if root is not None else Path(data.get("root", "")))
     if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid()
             or run.parent != expected_root / "runs" or not _RUN_NAME.fullmatch(run.name)
@@ -166,9 +172,27 @@ def _run_lock(run: Path, *, create: bool = False) -> Iterator[None]:
         os.close(fd)
 
 
-def _save(data: dict[str, Any], **changes: Any) -> None:
+def _save(data: dict[str, Any], *, initial: bool = False, **changes: Any) -> None:
+    """Persist one record update after checking the declarative contract.
+
+    ``initial`` marks the one creation save; every later save validates the
+    explicit phase edge and the resulting record facts.  A no-phase save (pin,
+    workload result, stream closure) keeps the current phase but still has to
+    satisfy that phase's obligations.
+    """
+    before = None if initial else data.get("phase")
+    candidate = {**data, **changes}
+    after = candidate.get("phase")
+    if initial:
+        lifecycle.validate_transition(None, after)
+    else:
+        lifecycle.validate_update(before, changes)
+        if "phase" in changes:
+            lifecycle.validate_transition(before, after)
+    candidate["updated"] = _now()
+    lifecycle.validate_record(candidate)
     data.update(changes)
-    data["updated"] = _now()
+    data["updated"] = candidate["updated"]
     write_json(Path(data["path"]) / RUN_RECORD, data)
 
 
@@ -180,9 +204,9 @@ def authorize_lane_execution(lane: Path, record: Mapping[str, Any]) -> None:
     run = Path(managed["path"])
     data = read_run(run)
     _matching_lane(data, lane, record)
-    if data.get("phase") == "retained" and data.get("keep"):
+    if data.get("phase") == lifecycle.RETAINED and data.get("keep"):
         return
-    if data.get("phase") != "running" or os.environ.get(RUN_ENV) != data["id"]:
+    if data.get("phase") != lifecycle.RUNNING or os.environ.get(RUN_ENV) != data["id"]:
         raise LaneError("temporary lane belongs to its managed run; use that owner or explicitly keep it")
     try:
         with _run_lock(run):
@@ -246,9 +270,9 @@ def run_lane_payload(argv: list[str], environment: dict[str, str], managed: Mapp
     """Forward cancellation to the actual command, not an opaque launch wrapper."""
     run = Path(managed["path"])
     data = read_run(run)
-    if data.get("phase") == "retained" and data.get("keep"):
-        return subprocess.call(argv, env=environment)
-    if data.get("phase") != "running" or environment.get(RUN_ENV) != data["id"]:
+    if data.get("phase") == lifecycle.RETAINED and data.get("keep"):
+        return subprocess.call(argv, environment)
+    if data.get("phase") != lifecycle.RUNNING or environment.get(RUN_ENV) != data["id"]:
         raise LaneError("managed payload lost its active run owner")
     if _active_payload_owner(data) is not None:
         # Nested commands remain below the already registered foreground owner.
@@ -303,7 +327,7 @@ def list_runs(root: Path) -> list[dict[str, Any]]:
         try:
             rows.append(read_run(run, root=root))
         except (OSError, ValueError, LaneError) as error:
-            rows.append({"path": str(run), "phase": "unknown", "preserved": True, "reason": str(error)})
+            rows.append({"path": str(run), "phase": lifecycle.REPORT_UNKNOWN, "preserved": True, "reason": str(error)})
     return rows
 
 
@@ -496,13 +520,14 @@ def _outcome(data: Mapping[str, Any], command: _Command | None) -> None:
     target = Path(data["path"]) / "outcome.json"
     if target.exists():
         return
+    launch = lifecycle.launch_state(data)
     write_json(target, {
         "run_id": data["id"], "workload_rc": data.get("workload_rc"),
         "cancel_signal": data.get("cancel_signal"), "error": data.get("error"),
         "host_streams_complete": command.complete if command else data.get(
-            "host_streams_complete", True if data.get("command_started", False) is False else None,
+            "host_streams_complete", True if launch == lifecycle.NOT_STARTED else None,
         ),
-        "command_started": data.get("command_started", False),
+        "command_started": lifecycle.recorded_launch(data),
     })
 
 
@@ -520,9 +545,12 @@ def _result_rc(data: Mapping[str, Any], *, cleanup_failed: bool = False) -> int:
 def _finish(data: dict[str, Any], command: _Command | None = None) -> dict[str, Any]:
     run = Path(data["path"])
     lane = Path(data["lane"]["path"])
+    if data.get("host_streams_complete") is False:
+        raise LaneError("host output writers did not close completely; refusing to remove the lane")
     record = read_record(lane) if (lane / LANE_MARKER).exists() else None
     if record is not None:
         _matching_lane(data, lane, record)
+        lifecycle.require_capture_outcome(data)
         def capture(selected: Path, current: Mapping[str, Any]) -> None:
             _matching_lane(data, selected, current)
             if command:
@@ -530,17 +558,23 @@ def _finish(data: dict[str, Any], command: _Command | None = None) -> dict[str, 
                     command.close()
                 finally:
                     _save(data, host_streams_complete=command.complete, workload_rc=command.process.returncode)
+            if data.get("host_streams_complete") is False:
+                raise LaneError(
+                    "host output writers did not close completely; refusing to remove the lane"
+                )
             _outcome(data, command)
-            _save(data, phase="capturing")
+            _save(data, phase=lifecycle.CAPTURING)
             evidence = finalize_run_evidence(selected, run)
-            if not evidence.get("complete"):
-                raise LaneError("required run evidence is incomplete; lane/raw state retained")
+            try:
+                lifecycle.require_complete_evidence(evidence)
+            except lifecycle.LifecycleError as error:
+                raise LaneError(str(error)) from error
             pin_runtime(Path(data["runtime_root"]), "evidence:" + str(run))
             unpin_runtime(Path(data["runtime_root"]), "run:" + str(run))
-            _save(data, phase="retiring", evidence=evidence)
+            _save(data, phase=lifecycle.RETIRING, evidence=evidence)
         result = destroy_lane(lane, before_retire=capture)
         if not result.success:
-            _save(data, phase="blocked", cleanup={"success": False, "problems": result.problems},
+            _save(data, phase=lifecycle.BLOCKED, cleanup={"success": False, "problems": result.problems},
                   final_rc=_result_rc(data, cleanup_failed=True))
             return data
         cleanup = {"success": True, "changed": result.changed, "problems": []}
@@ -561,13 +595,13 @@ def _finish(data: dict[str, Any], command: _Command | None = None) -> dict[str, 
                     raise LaneError("run's retired lane namespace was replaced")
                 if data.get("runtime_root"):
                     unpin_runtime(Path(data["runtime_root"]), "lane:" + str(lane))
-        elif data.get("command_started", False) is not False:
+        elif lifecycle.launch_state(data) != lifecycle.NOT_STARTED:
             raise LaneError("an executed run lost its lane and retirement marker; preserving evidence")
         if not data.get("evidence", {}).get("complete"):
-            if data.get("command_started", False) is not False:
+            if lifecycle.launch_state(data) != lifecycle.NOT_STARTED:
                 raise LaneError("executed run lost its retained payload; no evidence will be invented")
             # A failed create has no guest workload or invented runtime result.
-            _save(data, phase="creating")
+            _save(data, phase=lifecycle.CREATING)
             evidence = finalize_unstarted_run_evidence(run)
             if not evidence.get("complete"):
                 raise LaneError("unstarted run evidence is incomplete")
@@ -575,7 +609,8 @@ def _finish(data: dict[str, Any], command: _Command | None = None) -> dict[str, 
         cleanup = {"success": True, "changed": ["no remaining owned lane data"], "problems": []}
     if data.get("runtime_root"):
         unpin_runtime(Path(data["runtime_root"]), "run:" + str(run))
-    _save(data, phase="completed", completed=_now(), keep=False, cleanup=cleanup, final_rc=_result_rc(data))
+    _save(data, phase=lifecycle.COMPLETED, completed=_now(), keep=False, cleanup=cleanup,
+          final_rc=_result_rc(data))
     return data
 
 
@@ -594,7 +629,7 @@ def _keep(data: dict[str, Any], command: _Command | None) -> dict[str, Any]:
         command.close(strict=False)
         _save(data, host_streams_complete=command.complete, workload_rc=command.process.returncode)
     _outcome(data, command)
-    _save(data, phase="retained" if not problems else "blocked", keep=True,
+    _save(data, phase=lifecycle.RETAINED if not problems else lifecycle.BLOCKED, keep=True,
           cleanup={"success": False, "retained": True, "problems": problems},
           final_rc=_result_rc(data, cleanup_failed=bool(problems)))
     return data
@@ -605,22 +640,27 @@ def recover_runs(root: Path, *, run: Path | None = None, release_kept: bool = Fa
     results = []
     for candidate in rows:
         path = Path(candidate["path"])
-        if candidate.get("phase") in {"completed", "unknown"}:
+        if lifecycle.terminal(candidate.get("phase")) or lifecycle.report_unknown(candidate.get("phase")):
             continue
         try:
             with _run_lock(path):
                 data = read_run(path, root=root)
-                if data.get("keep") and not release_kept:
-                    results.append({"path": str(path), "action": "keep", "reason": "explicitly retained"})
+                plan = lifecycle.recovery_plan(
+                    data, release_kept=release_kept, owner_alive=_owner_alive(data),
+                )
+                if plan.action == lifecycle.SKIP:
                     continue
-                if data.get("phase") not in {"retained", "blocked"} and _owner_alive(data):
-                    results.append({"path": str(path), "action": "keep", "reason": "owner identity is still live"})
+                if plan.action == lifecycle.PRESERVE_UNKNOWN:
+                    results.append({"path": str(path), "action": "keep", "reason": plan.reason})
                     continue
-                if data.get("phase") == "retained":
+                if plan.action == lifecycle.KEEP:
+                    results.append({"path": str(path), "action": "keep", "reason": plan.reason})
+                    continue
+                if plan.action == lifecycle.RETIRE_KEPT:
                     selected = Path(data["lane"]["path"])
                     with _lane_admission(selected, exclusive=True):
-                        _save(data, phase="retiring", keep=False)
-                previous = data["owner"]
+                        _save(data, phase=lifecycle.RETIRING, keep=False)
+                previous = data.get("owner")
                 _save(data, previous_owner=previous,
                       owner={"pid": os.getpid(), "start_time": _start_time(os.getpid())})
                 try:
@@ -629,11 +669,12 @@ def recover_runs(root: Path, *, run: Path | None = None, release_kept: bool = Fa
                     runtime = data.get("runtime_root")
                     with runtime_use(Path(runtime)) if runtime else nullcontext():
                         result = _finish(data)
-                    results.append({"path": str(path), "action": "recovered" if result["phase"] == "completed" else "keep",
+                    results.append({"path": str(path), "action": "recovered" if result["phase"] == lifecycle.COMPLETED else "keep",
                                     "reason": result["phase"], "result": result})
                 except (OSError, RuntimeError, ValueError) as error:
-                    _save(data, phase="blocked", cleanup={"success": False, "problems": [str(error)]},
-                          final_rc=_result_rc(data, cleanup_failed=True))
+                    if lifecycle.transition_allowed(data.get("phase"), lifecycle.BLOCKED):
+                        _save(data, phase=lifecycle.BLOCKED, cleanup={"success": False, "problems": [str(error)]},
+                              final_rc=_result_rc(data, cleanup_failed=True))
                     results.append({"path": str(path), "action": "keep", "reason": str(error)})
         except BlockingIOError:
             results.append({"path": str(path), "action": "keep", "reason": "owner/reader lease is busy"})
@@ -680,7 +721,7 @@ def run_experiment(
     data = {
         "schema": SCHEMA, "kind": KIND, "id": run_id, "uid": os.geteuid(),
         "root": str(root), "path": str(run), "directory": {"device": metadata.st_dev, "inode": metadata.st_ino},
-        "created": _now(), "phase": "preparing",
+        "created": _now(), "phase": lifecycle.INITIAL_PHASE,
         "owner": {"pid": os.getpid(), "start_time": _start_time(os.getpid())},
         "lane": {"path": str(selected_lane), "name": name, "root": str(lane_root), "token": run_id},
         "runtime_root": str(runtime_root) if runtime_root else None, "argv": argv,
@@ -695,7 +736,7 @@ def run_experiment(
     previous_handlers = {}
     command = None
     with _run_lock(run, create=True):
-        _save(data)
+        _save(data, initial=True)
         emit(f"RUN={run}")
         try:
             for signum in (signal.SIGINT, signal.SIGTERM):
@@ -713,7 +754,7 @@ def run_experiment(
                     raise LaneError("selected frozen parent is missing")
                 runtime_root = Path(parent_record["runtime"]["root"])
             with leased_runtime(runtime_root) as runtime:
-                _save(data, runtime_root=str(runtime.root), phase="creating")
+                _save(data, runtime_root=str(runtime.root), phase=lifecycle.CREATING)
                 pin_runtime(runtime.root, "run:" + str(run))
                 write_json(run / "invocation.json", {
                     "run_id": run_id, "argv": argv, "runtime": runtime.summary(),
@@ -737,7 +778,7 @@ def run_experiment(
                     # closed payload. Do not register soon-to-retire raw paths
                     # as independent evidence owned by that job.
                     child_env.pop("WEST_JOB_STATE_DIR", None)
-                    _save(data, phase="running", command_started=None)
+                    _save(data, phase=lifecycle.RUNNING, command_started=None)
                     command = _Command(
                         [*west_command_argv(), "dev", "lane", "exec", "--root", str(lane_root),
                          name, "--", *argv], run, child_env, json_output=json_output,
@@ -760,12 +801,13 @@ def run_experiment(
             try:
                 _finish(data, command)
             except (OSError, RuntimeError, ValueError) as cleanup_error:
-                _save(data, phase="blocked", final_rc=_result_rc(data, cleanup_failed=True),
-                      cleanup={"success": False, "problems": [str(cleanup_error)]})
+                if lifecycle.transition_allowed(data.get("phase"), lifecycle.BLOCKED):
+                    _save(data, phase=lifecycle.BLOCKED, final_rc=_result_rc(data, cleanup_failed=True),
+                          cleanup={"success": False, "problems": [str(cleanup_error)]})
         finally:
             if command:
                 command.close(strict=False)
-            if cancelled:
+            if cancelled and not lifecycle.terminal(data.get("phase")):
                 _save(data, cancel_signal=cancelled, final_rc=128 + cancelled)
             for signum, handler in previous_handlers.items():
                 signal.signal(signum, handler)
