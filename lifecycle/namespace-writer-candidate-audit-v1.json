@@ -3,7 +3,7 @@
   "kind": "rootless-namespace-writer-candidate-audit",
   "coverage_tier": "source",
   "count": 1639,
-  "entries_digest": "a8819cc2a82f2c272c8aafa37d450f035f0503d88f2f6120401c948620c9d2fb",
+  "entries_digest": "619e8c46ab9ebc5c384a6024271dcd735fd84d42ea1b59820663d65b5ab722b0",
   "entries": [
     {
       "repository": "darling",
@@ -31679,7 +31679,7 @@
     {
       "repository": "darling-workspace",
       "path": "west_commands/evidence_retention.py",
-      "sha256": "417687351a3e3934cd0056a2237f5abb0a692a77c389de417648c07252eb4b44",
+      "sha256": "7799a824583e1624eb063d4d5af744f8b40f34150fa0a45d4ec8ecea8386de57",
       "classification": "workspace-task-owned-tooling",
       "reason": "west_commands/evidence_retention.py copies and compresses closed runtime-evidence payloads, publishes archive metadata and removes generated build or staging trees belonging to the evidence unit; these diagnostic archives are not the installed runtime or guest shared-session namespace.",
       "evidence": {
@@ -31692,7 +31692,7 @@
         "build_anchor": {
           "repository": "darling-workspace",
           "path": "west_commands/evidence_retention.py",
-          "sha256": "417687351a3e3934cd0056a2237f5abb0a692a77c389de417648c07252eb4b44",
+          "sha256": "7799a824583e1624eb063d4d5af744f8b40f34150fa0a45d4ec8ecea8386de57",
           "relation": "workspace-runtime-source"
         }
       }
@@ -31821,7 +31821,7 @@
     {
       "repository": "darling-workspace",
       "path": "west_commands/managed_run.py",
-      "sha256": "6fc6939edfee1962b6e47fe1e24577d12cd7d0a9dcef3efed897c5db1147cfff",
+      "sha256": "eceed9f0ba1fd7d9e5bfb957cb7deae00beb6d380c1b41e53bce3a6641a75e84",
       "classification": "workspace-task-owned-tooling",
       "reason": "west_commands/managed_run.py writes run journals, command streams and retained evidence beneath the declared owned state root; lane allocation, scope cleanup and snapshot retirement are delegated to the existing native lifecycle with generation-bound admission, not implemented by rewriting guest identities or deleting arbitrary prefixes.",
       "evidence": {
@@ -31832,7 +31832,7 @@
         "build_anchor": {
           "repository": "darling-workspace",
           "path": "west_commands/managed_run.py",
-          "sha256": "6fc6939edfee1962b6e47fe1e24577d12cd7d0a9dcef3efed897c5db1147cfff",
+          "sha256": "eceed9f0ba1fd7d9e5bfb957cb7deae00beb6d380c1b41e53bce3a6641a75e84",
           "relation": "workspace-runtime-source"
         }
       }
@@ -31879,7 +31879,7 @@
     {
       "repository": "darling-workspace",
       "path": "west_commands/runtime_retention.py",
-      "sha256": "5d94ed69e3c671617387568ae65ca9be0fd22577d39daaa38b11e1fcf934660b",
+      "sha256": "984ad1509a11b92e10dc0c2c654d955d5f4c6b1b1502e496866cfb2396d9ec10",
       "classification": "workspace-task-owned-tooling",
       "reason": "west_commands/runtime_retention.py writes an external registry, persistent use locks and retirement journals beneath explicitly declared DW_STATE_ROOT; deletion is limited to newly registered image generations after receipt, reference, lock and inode validation, with unregistered roots and source/build/Git paths preserved rather than adopted as guest lifecycle resources.",
       "evidence": {
@@ -31891,7 +31891,7 @@
         "build_anchor": {
           "repository": "darling-workspace",
           "path": "west_commands/runtime_retention.py",
-          "sha256": "5d94ed69e3c671617387568ae65ca9be0fd22577d39daaa38b11e1fcf934660b",
+          "sha256": "984ad1509a11b92e10dc0c2c654d955d5f4c6b1b1502e496866cfb2396d9ec10",
           "relation": "workspace-runtime-source"
         }
       }

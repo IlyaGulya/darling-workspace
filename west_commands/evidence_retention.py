@@ -294,6 +294,13 @@ RUN_STORE_DIRNAME = "runs"
 RETIREMENT_DIRNAME = "retired-evidence"
 RETIREMENT_LOCK_NAME = ".lock"
 RETIREMENT_TRASH_PREFIX = ".trash-"
+# Journal phases in their required order: the planned record is published before
+# the run directory is detached, the detached record before its trash is removed,
+# and the completed record before the owner releases references and acknowledges.
+RETIREMENT_PHASES = ("planned", "detached", "completed")
+# ``blocked`` is a reported, non-resumable journal state rather than an ordered
+# step; it still owns its runtime reference and must not be reclassified.
+RETIREMENT_JOURNAL_PHASES = (*RETIREMENT_PHASES, "blocked")
 PAYLOAD_DIRNAME = "payload"
 PAYLOAD_MANIFEST = "SHA256SUMS"
 JOB_MARKER_NAME = ".west-job-owned.json"
@@ -1416,6 +1423,7 @@ def _validate_retirement(value: dict[str, Any], *, root: Path,
     identity = value.get("directory")
     payload = value.get("payload")
     if (value.get("schema") != 1 or value.get("kind") != "managed-run-retirement"
+            or value.get("phase") not in RETIREMENT_JOURNAL_PHASES
             or value.get("root") != str(root) or value.get("uid") != os.geteuid()
             or run_path.parent != root / RUN_STORE_DIRNAME
             or trash.parent != store
@@ -1468,7 +1476,7 @@ def _reconcile_retirement(root: Path, store: Path, journal: Path, *,
         return pending
     if phase == "detached":
         return _remove_detached(journal, value, trash)
-    if phase != "planned":
+    if phase != RETIREMENT_PHASES[0]:
         raise EvidenceError(f"unknown retirement journal phase: {phase!r}")
     lock = None
     if os.path.lexists(run_path):
@@ -1606,6 +1614,108 @@ def ack_run_retirement(root_or_row, row: Any = None) -> bool:
         return True
     finally:
         os.close(descriptor)
+
+
+# ---------------------------------------------------------------------------
+# Cross-module retirement obligations: run evidence and its durable retirement
+# journal reference the runtime image that served the run.  Image retention must
+# not reclaim bytes while any such reference remains, even when the external pin
+# that normally protects the image was lost.  This census is deliberately
+# read-only and independent of the writer locks: it reports what the persisted
+# records currently say and treats every unclassified entry as an unresolved
+# reference instead of assuming it names a different image.
+# ---------------------------------------------------------------------------
+
+def _runtime_reference_key(value: str) -> str:
+    # Resolve existing symlinks so a recorded spelling and the canonical catalog
+    # root compare equal; a missing tail is normalized without inventing bytes.
+    return os.path.normpath(os.path.realpath(value))
+
+
+def _record_runtime_reference(
+    images: dict[str, list[str]], unresolved: list[str], value: Any, reason: str,
+) -> None:
+    if value is None:
+        return
+    if not isinstance(value, str) or not value or not Path(value).is_absolute():
+        unresolved.append(f"{reason}: runtime image reference is not an absolute path")
+        return
+    images.setdefault(_runtime_reference_key(value), []).append(reason)
+
+
+def runtime_image_references(
+    root: Path,
+) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
+    """Read-only census of runtime images still referenced by owned run evidence.
+
+    ``root`` is the declared owner root shared by the run store and the runtime
+    catalog.  Returns ``(references, unresolved)``: ``references`` maps each
+    recorded runtime-root spelling to the reasons (run record or retirement
+    journal) that still reference it; a non-empty ``unresolved`` means some
+    entry could not be classified, so no image beneath this root may be judged
+    unreferenced.  The result is derived from persisted bytes only, so it is
+    valid across a crash and after the producing process is gone.
+    """
+    root = _absolute(root)
+    images: dict[str, list[str]] = {}
+    unresolved: list[str] = []
+    runs = root / RUN_STORE_DIRNAME
+    if os.path.lexists(runs):
+        if runs.is_symlink() or not runs.is_dir() or runs.stat().st_uid != os.geteuid():
+            unresolved.append(f"run store is not an owned real directory: {runs}")
+        else:
+            for entry in sorted(runs.iterdir(), key=lambda item: item.name):
+                if entry.is_symlink() or not entry.is_dir():
+                    unresolved.append(f"run entry is not an owned directory: {entry}")
+                    continue
+                record_path = entry / RUN_RECORD_NAME
+                if record_path.is_symlink() or not record_path.is_file():
+                    unresolved.append(f"run entry has no readable record: {entry}")
+                    continue
+                try:
+                    record = _read_json(record_path, "managed run record")
+                except (EvidenceError, OSError, ValueError) as error:
+                    unresolved.append(f"run record is unreadable: {entry}: {error}")
+                    continue
+                if (not isinstance(record, dict) or record.get("schema") != 1
+                        or record.get("kind") != "managed-lane-run"
+                        or record.get("path") != str(entry)
+                        or "runtime_root" not in record):
+                    unresolved.append(f"run record is not an owned managed run: {entry}")
+                    continue
+                _record_runtime_reference(
+                    images, unresolved, record.get("runtime_root"), f"run evidence {entry}",
+                )
+    store = root / RETIREMENT_DIRNAME
+    if os.path.lexists(store):
+        if store.is_symlink() or not store.is_dir() or store.stat().st_uid != os.geteuid():
+            unresolved.append(f"retirement journal is not an owned real directory: {store}")
+        else:
+            for entry in sorted(store.iterdir(), key=lambda item: item.name):
+                if entry.name == RETIREMENT_LOCK_NAME:
+                    continue
+                if entry.is_symlink() or not entry.is_file() or not entry.name.endswith(".json"):
+                    unresolved.append(f"unclassified retirement entry is preserved: {entry}")
+                    continue
+                try:
+                    value = _read_json(entry, "run retirement journal")
+                except (EvidenceError, OSError, ValueError) as error:
+                    unresolved.append(f"retirement journal is unreadable: {entry}: {error}")
+                    continue
+                if (not isinstance(value, dict) or value.get("schema") != 1
+                        or value.get("kind") != "managed-run-retirement"
+                        or value.get("phase") not in RETIREMENT_JOURNAL_PHASES
+                        or value.get("runtime_pin_key") != "evidence:" + str(value.get("run"))
+                        or "runtime_root" not in value):
+                    unresolved.append(f"retirement journal is not recognized: {entry}")
+                    continue
+                _record_runtime_reference(
+                    images, unresolved, value.get("runtime_root"), f"retirement journal {entry}",
+                )
+    return (
+        {key: tuple(dict.fromkeys(value)) for key, value in images.items()},
+        tuple(dict.fromkeys(unresolved)),
+    )
 
 
 # ---------------------------------------------------------------------------

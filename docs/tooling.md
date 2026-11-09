@@ -687,7 +687,13 @@ eligible: never the whole prefix, SDK, source, Git, build tree or cache.
 Unknown source, worktree or payload entries preserve the run's raw state and
 report the reason instead of being dropped or rewritten. Retirement is
 journaled, and an image pin is released only after the evidence deletion; the
-completed journal remains until acknowledged. `west dev lane pin|unpin` controls an
+completed journal remains until acknowledged. Collection enforces the order
+explicitly: journaled removal, `evidence:`/`run:` reference release, journal
+acknowledgment, then bounded image retention. A release or acknowledgment
+failure is reported and defers image retention, leaving the completed journal as
+the restart record. Image retention also refuses an image still named by a run
+record or unacknowledged journal even without a pin, and an inconclusive
+reference census preserves every candidate. `west dev lane pin|unpin` controls an
 evidence pin; `west dev lane images` is a dry-run image-retention plan, not a
 deletion command.
 

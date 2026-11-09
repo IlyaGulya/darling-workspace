@@ -14,6 +14,13 @@ image references or mounts; bind aliases are resolved through filesystem
 identity.  Any failed or ambiguous inspection preserves the image and reports
 why.  Retirement journals the trash path and detached inode before the rename,
 so an interrupted rename or deletion is retried by a later bounded prune.
+
+The same declared owner root also holds managed run evidence and its durable
+retirement journals.  Both reference the runtime image that served the run, so
+an image is not reclaimable while either record remains -- including after a
+crash between evidence removal and pin release, when the pin alone no longer
+proves the reference.  That census is read-only and fails closed: an
+unclassified run entry or journal preserves every candidate in the root.
 """
 
 from __future__ import annotations
@@ -52,6 +59,26 @@ def _deploy():
             sys.path.insert(0, str(Path(__file__).resolve().parent))
             import deploy_receipt  # type: ignore[no-redef]
     return deploy_receipt
+
+
+def _evidence():
+    """Import the run-evidence reference census lazily.
+
+    Runtime retention and run-evidence retention are separate producers that
+    share one declared owner root.  The census lives with the evidence schema;
+    importing it here keeps the cross-module obligation in one place instead of
+    duplicating the journal/run-record layout.
+    """
+
+    try:
+        from . import evidence_retention
+    except ImportError:
+        try:
+            import evidence_retention  # type: ignore[no-redef]
+        except ImportError:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import evidence_retention  # type: ignore[no-redef]
+    return evidence_retention
 
 
 SCHEMA = 1
@@ -1862,6 +1889,35 @@ def _recover_retirement(
         _release(use_descriptor)
 
 
+def _image_reference_reason(
+    image_root: str,
+    image: Path,
+    references: Mapping[str, Sequence[str]],
+    unresolved: Sequence[str],
+) -> str | None:
+    """The evidence obligation that forbids reclaiming this image, if any.
+
+    Run evidence and unacknowledged retirement journals under the same declared
+    owner root reference the runtime root that served them.  Their external pin
+    normally protects the image, but retention must not depend on the pin alone:
+    a crash between evidence removal and pin release, or a lost pin update,
+    leaves the persisted reference intact and this census still sees it.
+    """
+
+    if unresolved:
+        return "evidence reference census is inconclusive: " + "; ".join(sorted(unresolved)[:3])
+    reasons: list[str] = []
+    for spelling in (image_root, str(image)):
+        # Real paths keep a symlinked evidence spelling and the canonical
+        # catalog root comparable without weakening the missing-path case.
+        reasons.extend(
+            references.get(os.path.normpath(os.path.realpath(os.fspath(spelling))), ())
+        )
+    if not reasons:
+        return None
+    return "referenced by retained evidence: " + "; ".join(list(dict.fromkeys(reasons))[:3])
+
+
 def prune_runtimes(
     root: str | Path,
     *,
@@ -1876,6 +1932,9 @@ def prune_runtimes(
     ``path``, ``action``, ``reason`` and ``bytes``.  Only fully receipted,
     unlocked, unreferenced images beyond the newest ``keep_last`` and outside
     all pins are removed; every uncertainty is reported and preserved.
+    Retained run evidence and unacknowledged retirement journals under the same
+    root keep their referenced image regardless of pin state, and an
+    inconclusive reference census preserves every candidate.
     """
 
     if type(keep_last) is not int or keep_last < 0:
@@ -1895,6 +1954,10 @@ def prune_runtimes(
     if not records:
         return rows
     ranks, unranked = _ranked_published(records)
+    try:
+        evidence_references, unresolved = _evidence().runtime_image_references(state_root)
+    except Exception as error:  # any failure preserves image bytes: no reference is disproved
+        evidence_references, unresolved = {}, (f"evidence reference census failed: {error}",)
 
     def report(row: dict[str, Any]) -> None:
         rows.append(row)
@@ -1919,6 +1982,10 @@ def prune_runtimes(
             continue
         if image == state_root or _overlaps(image, _registry(state_root)):
             report(_row(label, "keep", "registration overlaps the declared owner metadata"))
+            continue
+        reference = _image_reference_reason(image_root, image, evidence_references, unresolved)
+        if reference is not None:
+            report(_row(label, "keep", reference, runtime_root=str(image)))
             continue
         state = snapshot.get("state")
         if state == STATE_RETIRING:

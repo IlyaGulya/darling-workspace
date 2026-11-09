@@ -223,7 +223,15 @@ ones. A `--evidence-keep-last` or `--evidence-max-gib` override changes the
 invoking owner's policy only. Evidence retirement is journaled and survives detach,
 deletion or unpin interruption; runtime evidence pins are released only after
 the actual evidence deletion, and the completed journal remains until it is
-acknowledged.
+acknowledged. Collection applies that order explicitly: evidence removal, then
+release of the `evidence:`/`run:` runtime references, then journal
+acknowledgment, and only then bounded image retention. A reference-release or
+acknowledgment failure reports the failure and defers image retention instead of
+continuing; the completed journal and its runtime reference stay persisted, so
+the next collection resumes from them. Image retention additionally refuses any
+image referenced by a retained run record or an unacknowledged journal even when
+its pin is missing, and an unclassifiable run or journal entry preserves every
+candidate in that owner root rather than assuming it names nothing.
 
 Deliberately persistent or long-lived lanes use
 `west dev lane create NAME --base PREFIX --runtime-root R` and
@@ -253,7 +261,11 @@ by `runtime_install` or `darling-build`. Old, unregistered or outside roots are
 never adopted or removed, and source, Git, private inputs and active build
 forests are not candidates. After a successful new publish, scoped retention
 runs and keeps the newest two images plus all pins, lane/run/evidence references,
-and live readers, mappings, mounts and leases. Deletion requires a complete
+and live readers, mappings, mounts and leases. Retained managed-run evidence and
+unacknowledged retirement journals in the same owner root keep their recorded
+`runtime_root` regardless of pin state: the reference census is read-only, runs
+before any retirement or recovery step, and an unclassifiable run, journal or
+retirement-trash entry preserves every candidate. Deletion requires a complete
 schema-2 normal-install receipt, matching root generation, no references, both
 external locks and a complete census. Cross-namespace bind aliases are resolved;
 the privileged census helper is read-only; any failure preserves. Failed,

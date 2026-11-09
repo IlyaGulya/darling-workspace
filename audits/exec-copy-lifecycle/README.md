@@ -34,18 +34,20 @@ and the existing exec-preparation caller in `src/call.cpp`.
   a replacement task only for a non-fork main-thread recheckin, not merely because
   an epoll event arrived. Dead/native-retired Process instances reject checkin.
   Failed exec does not itself retire memory or replace the task.
-* The retirement boundary is the first server-observed successful EOF or main
-  replacement checkin, not the actual host kernel exec instant. Old RPCs retain
-  their retired task; this is not proof against arbitrary native writes between
-  kernel exec and server observation, nor a global protected memory supervisor.
-* `ExecReplacement` is the production ownership handshake across every unlocked
-  thread-clear/create/publish/predecessor-release interval. Exactly one checkin
-  owns replacement. Death immediately retires authority, but defers physical
-  task/thread/semaphore teardown until that owner finishes. A dying owner
-  publishes only a memory-retired coherent context so `current_thread` points
-  to the new thread before releasing its predecessor, then drains pending death
-  instead of announcing NOTE_EXEC. Repeated death claims physical teardown once.
-  No Process lock is held across duct-tape operations that can suspend.
+* Server task retirement starts at the first server-observed successful EOF or
+  main replacement checkin. Separately, the production Rust supervisor rotates
+  its copy binding at the kernel EXEC event; an old binding cannot address the
+  replacement image even before server checkin. Neither mechanism authenticates
+  executable contents or excludes every native/shared-memory writer.
+* `ExecReplacement` checks each thread-clear, allocation, publication and
+  predecessor-release phase across unlocked intervals. A separate resource
+  state records live authority, revocation, exclusive physical teardown and
+  completed release. Death revokes immediately; an active replacement owner
+  first publishes a retired coherent context, repoints `current_thread`, releases
+  its predecessor, then drains deferred death instead of announcing NOTE_EXEC.
+  Repeated death cannot claim teardown twice. No Process lock spans dtape work
+  that can suspend. The resource interaction model is documented separately in
+  [exec-replacement-model](../exec-replacement-model/README.md).
 
 ### Existing generation sources are not interchangeable
 
@@ -61,10 +63,11 @@ connection's incarnations. It is peer-supplied, not the server's successful exec
 counter, audit pidversion, or a trusted executed-code identity. Neither existing
 source supplies copy-service security bootstrap or protected authority.
 
-## Required copy-service contract — NOT implemented product security
+## Required protected-copy contract — NOT implemented product security
 
-The only current copy service is a disposable diagnostic prototype. The following
-rules describe the required product boundary, not a deployed feature or fallback:
+The production Rust supervisor supplies kernel image-bound copying, not the
+protected, attested authority described below. Earlier diagnostic prototypes and
+this abstract model are not substitutes for that required product boundary:
 
 1. Birth is unbound and rejects copies. Binding must be performed by a protected,
    authoritative supervisor to a process identity, successful-image generation,
@@ -83,11 +86,12 @@ rules describe the required product boundary, not a deployed feature or fallback
    identity, not permission to replay. A write must revalidate current authority
    at its irreversible memory-write boundary, serialized against revoke/exec/death.
 
-**Main-goal blocker:** trusted supervisor/TCB protection, authoritative image
-attestation and copy-service birth/bind/revoke/fork/exec bootstrap do not exist.
-This contract/model cannot provide them, protect all native memory/FD mutation
-paths, or establish full Cryptex/executed-code authorization. Blocked-syscall
-preservation with a real service and hostile native mutations remain unproved.
+**Main-goal blocker:** supervisor/TCB isolation, authoritative executable-closure
+attestation and protected birth/bind/revoke/fork/exec authorization remain absent.
+The limited production image binding does not protect all native memory/FD
+mutation paths or establish full Cryptex/executed-code authorization. Native
+tests exercise blocked-syscall preservation, but do not prove protection against
+hostile shared-domain or asynchronous mutation.
 
 ## Executable finite interaction model
 
@@ -139,19 +143,18 @@ against the actual helper. `checkinBeforeMonitor`, `monitorBeforeCheckin`,
 separation, overlap rejection and terminal death; `nativeCheckinBeforeMonitor`
 exercises native EOF. `oldImageBeforeCompletion` checks pending pipe polling.
 `replacementDeathOwnership` directly exercises the production ownership helper:
-death before begin, duplicate/concurrent begin rejection, death/repeated death
-inside the replacement interval, owner finish followed by one teardown claim,
-successive live replacements and death after publication. Creation, publication
-and predecessor release all deliberately retain the same active owner; helper
-tests do not execute duct-tape resource allocation/destruction. Those handwritten
-effects still need runtime integration evidence and are not in the TLA+ model.
+exclusive admission, death at each resource phase, premature-transition rejection,
+successive live replacements, missing-main ownership return and exactly-once
+teardown. These helper tests do not execute duct-tape allocation/destruction.
+The separate replacement model exposes outstanding resource effects and death
+interleavings; actual suspension and `current_thread` publication still require
+runtime integration evidence.
 No helper scenario asserts that the abstract copy service exists. No direct
 production-helper counterpart exists for modeled copy timeout/write authorization;
 that absence remains a product blocker, not model coverage.
 
-Parent should build the existing `dserver_exec_completion_tests` target and run
+Build the existing `dserver_exec_completion_tests` target and run
 `ctest --test-dir BUILD -R '^dserver_exec_completion$' --output-on-failure`,
 then run the model matrix above. Guest main-thread/pthread/fork/failed-exec/successful-
-exec and delayed monitor integration needs a newly built normal installation;
-helper/model results are host/model evidence only. This slice ran no builds,
-tests, formatters, TLC or guest launches.
+exec and delayed monitor integration require a newly built normal installation;
+helper/model results remain host/model evidence only.

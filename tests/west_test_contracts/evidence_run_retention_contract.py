@@ -19,10 +19,11 @@ sys.path.insert(0, str(ROOT / "west_commands"))
 from evidence_retention import (  # noqa: E402
     ack_run_retirement, finalize_job_state, finalize_run_evidence,
     finalize_unstarted_run_evidence, mark_job_state, prune_job_states,
-    prune_run_evidence,
+    prune_run_evidence, runtime_image_references,
 )
 from evidence_storage import EvidenceError, open_payload  # noqa: E402
 from evidence_verify import verify_archive  # noqa: E402
+from managed_run import RetentionPolicy, collect_retired  # noqa: E402
 
 
 def write_json(path: Path, value) -> None:
@@ -503,6 +504,85 @@ class ManagedRunEvidence(unittest.TestCase):
         self.assertTrue(run.is_dir())
         self.assertTrue(any(row["action"] == "retained"
                             and "not resumable" in row["reason"] for row in rows))
+
+    def test_runtime_image_references_follow_run_and_journal_lifetimes(self):
+        image = self.root / "images" / "runtime-a"
+        run = self.make_run("run-reference", "2026-01-01T00:00:01Z", size=64,
+                            runtime_root=str(image))
+        references, unresolved = runtime_image_references(self.root)
+        self.assertEqual(unresolved, ())
+        self.assertEqual(set(references), {os.path.realpath(image)})
+
+        # An unacknowledged completed journal keeps referencing its image after
+        # the run directory is gone; acknowledging it drops that reference.
+        second = self.root / "images" / "runtime-b"
+        journaled = self.make_run("run-journal-reference", "2026-01-01T00:00:02Z",
+                                  size=64, runtime_root=str(second))
+        store = self.root / "retired-evidence"
+        journal = store / (journaled.name + ".json")
+        write_json(journal, self.journal_value(journaled, phase="completed"))
+        shutil.rmtree(journaled)
+        references, unresolved = runtime_image_references(self.root)
+        self.assertEqual(unresolved, ())
+        self.assertEqual(set(references), {os.path.realpath(image), os.path.realpath(second)})
+        self.assertTrue(ack_run_retirement(self.root, journal))
+        references, unresolved = runtime_image_references(self.root)
+        self.assertEqual(unresolved, ())
+        self.assertNotIn(os.path.realpath(second), references)
+
+
+    def test_collect_retired_releases_and_acknowledges_before_image_retention(self):
+        old = self.make_run("run-order-old", "2026-01-01T00:00:01Z", size=64,
+                            runtime_root=str(self.root / "images" / "runtime-old"))
+        newest = self.make_run("run-order-new", "2026-01-01T00:00:02Z", size=64,
+                               runtime_root=str(self.root / "images" / "runtime-new"))
+        image = Path(json.loads((old / "run.json").read_text())["runtime_root"])
+        catalog = self.root / "runtime-images" / "catalog"
+        catalog.mkdir(parents=True)
+        # The image's registration is unreadable, so its reference release must
+        # fail closed: the journal may not be acknowledged and image retention
+        # must not run in the same collection.
+        record_file = catalog / (hashlib.sha256(os.fsencode(str(image))).hexdigest() + ".json")
+        record_file.write_text("{not a registration\n")
+        policy = RetentionPolicy(evidence_keep_last=1, evidence_max_bytes=2**20)
+        rows = collect_retired(self.root, policy)
+        journal = self.root / "retired-evidence" / (old.name + ".json")
+        self.assertFalse(old.exists())
+        self.assertTrue(journal.is_file())
+        self.assertEqual(json.loads(journal.read_text())["phase"], "completed")
+        self.assertTrue(any(row.get("kind") == "runtime-reference"
+                            and row["action"] == "failed" and row["path"] == str(old)
+                            for row in rows), rows)
+        deferred = [row for row in rows if row["action"] == "deferred"]
+        self.assertEqual(len(deferred), 1, rows)
+        self.assertEqual(deferred[0]["kind"], "runtime-images")
+        self.assertFalse(any(row.get("kind") == "runtime-images"
+                             and row["action"] != "deferred" for row in rows))
+        self.assertTrue(newest.is_dir())
+
+        # A repaired registration lets the next collection release the same
+        # references idempotently, acknowledge the journal and then run the
+        # bounded image policy.
+        write_json(record_file, {
+            "schema": 1, "kind": "darling-runtime-image", "root": str(image),
+            "state": "installing", "device": None, "inode": None, "pins": {},
+            "published_sequence": None,
+        })
+        rows = collect_retired(self.root, policy)
+        self.assertFalse(journal.exists())
+        self.assertFalse(any(row.get("action") in {"failed", "deferred"}
+                             and row.get("kind") == "runtime-images" for row in rows), rows)
+        self.assertFalse(any(row.get("kind") == "runtime-reference" for row in rows), rows)
+        image_rows = [row for row in rows if row["path"] == str(image)]
+        self.assertEqual(len(image_rows), 1, rows)
+        self.assertEqual(image_rows[0]["action"], "keep")
+
+        # Repeating the collection is idempotent: the acknowledged journal is
+        # not reported again and its image no longer gains an obligation.
+        final = collect_retired(self.root, policy)
+        self.assertFalse(any(row.get("path") == str(old) and row["action"] == "deleted"
+                             for row in final))
+        self.assertTrue(ack_run_retirement(self.root, journal))
 
 
 class JobEvidence(unittest.TestCase):

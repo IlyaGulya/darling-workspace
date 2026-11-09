@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -649,6 +650,138 @@ def main() -> int:
         mismatched = row_for(rows, foreign_victim)
         assert mismatched["action"] == "keep", mismatched
         assert (impostor / "keep").is_file() and foreign_victim.is_dir()
+
+        # Run evidence and unacknowledged retirement journals under the same
+        # owner root reference the image that served them. Even with no
+        # registered pin, image retention refuses those bytes; removing the
+        # persisted reference releases the image to the normal policy.
+        reference_state = temporary / "reference-state"
+        reference_state.mkdir()
+
+        def run_reference(state_root: Path, name: str, runtime_root: Path) -> Path:
+            run = state_root / "runs" / name
+            run.mkdir(parents=True, exist_ok=True)
+            (run / "run.json").write_text(
+                json.dumps({
+                    "schema": 1, "kind": "managed-lane-run", "path": str(run),
+                    "root": str(state_root), "runtime_root": str(runtime_root),
+                }, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            return run
+
+        referenced = publish(temporary, reference_state, "referenced")
+        publish(temporary, reference_state, "reference-new-one")
+        publish(temporary, reference_state, "reference-new-two")
+        evidence_run = run_reference(reference_state, "run-referenced", referenced)
+        with quiet_census(temporary, reference_state):
+            rows = retention.prune_runtimes(reference_state)
+        referenced_row = row_for(rows, referenced)
+        assert referenced_row["action"] == "keep", referenced_row
+        assert referenced.is_dir()
+        shutil.rmtree(evidence_run)
+
+        journal_store = reference_state / "retired-evidence"
+        journal_store.mkdir(mode=0o700, exist_ok=True)
+        journal_target = reference_state / "runs" / "run-journal"
+        journal = journal_store / "run-journal.json"
+        journal.write_text(
+            json.dumps({
+                "schema": 1, "kind": "managed-run-retirement", "phase": "completed",
+                "root": str(reference_state), "uid": os.geteuid(),
+                "run": str(journal_target),
+                "runtime_pin_key": "evidence:" + str(journal_target),
+                "runtime_root": str(referenced),
+                "trash": str(journal_store / ".trash-run-journal-1"), "bytes": 1,
+            }, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        with quiet_census(temporary, reference_state):
+            rows = retention.prune_runtimes(reference_state)
+        journal_row = row_for(rows, referenced)
+        assert journal_row["action"] == "keep", journal_row
+        assert referenced.is_dir()
+        # A partial journal cannot prove that its former image reference was
+        # absent. Missing runtime_root differs from an explicit null value.
+        partial_journal = json.loads(journal.read_text(encoding="utf-8"))
+        partial_journal.pop("runtime_root")
+        journal.write_text(json.dumps(partial_journal), encoding="utf-8")
+        with quiet_census(temporary, reference_state):
+            rows = retention.prune_runtimes(reference_state)
+        assert row_for(rows, referenced)["action"] == "keep", rows
+        assert referenced.is_dir()
+        journal.unlink()
+        with quiet_census(temporary, reference_state):
+            rows = retention.prune_runtimes(reference_state)
+        assert row_for(rows, referenced)["action"] == "delete", rows
+        assert not referenced.exists()
+
+        # An unclassified run entry cannot disprove references, so it preserves
+        # every candidate instead of silently ignoring its runtime root.
+        unknown_state = temporary / "unknown-reference-state"
+        unknown_state.mkdir()
+        unknown_victim = publish(temporary, unknown_state, "unknown-victim")
+        publish(temporary, unknown_state, "unknown-new-one")
+        publish(temporary, unknown_state, "unknown-new-two")
+        (unknown_state / "runs" / "foreign").mkdir(parents=True)
+        (unknown_state / "runs" / "foreign" / "note").write_text("foreign\n", encoding="utf-8")
+        with quiet_census(temporary, unknown_state):
+            rows = retention.prune_runtimes(unknown_state)
+        unknown_row = row_for(rows, unknown_victim)
+        assert unknown_row["action"] == "keep", unknown_row
+        assert unknown_victim.is_dir()
+        partial_run = unknown_state / "runs" / "foreign"
+        (partial_run / "run.json").write_text(json.dumps({
+            "schema": 1, "kind": "managed-lane-run", "path": str(partial_run),
+        }), encoding="utf-8")
+        with quiet_census(temporary, unknown_state):
+            rows = retention.prune_runtimes(unknown_state)
+        assert row_for(rows, unknown_victim)["action"] == "keep", rows
+        assert unknown_victim.is_dir()
+        shutil.rmtree(unknown_state / "runs")
+        with quiet_census(temporary, unknown_state):
+            rows = retention.prune_runtimes(unknown_state)
+        assert row_for(rows, unknown_victim)["action"] == "delete", rows
+
+        # An interrupted retirement is not resumed over a live evidence
+        # reference; removing that reference lets recovery finish instead of
+        # deleting the image beneath the retained evidence.
+        guarded_state = temporary / "guarded-retirement-state"
+        guarded_state.mkdir()
+        guarded_victim = publish(temporary, guarded_state, "guarded-victim")
+        publish(temporary, guarded_state, "guarded-new-one")
+        publish(temporary, guarded_state, "guarded-new-two")
+        record_path = Path(retention.registered_runtime(guarded_victim)["record"])
+        guarded_record = json.loads(record_path.read_text(encoding="utf-8"))
+        guarded_trash = guarded_state / "runtime-images" / "trash" / (
+            f"image-{retention._record_id(guarded_victim)}-guarded"
+        )
+        guarded_trash.parent.mkdir(parents=True, exist_ok=True)
+        guarded_metadata = guarded_victim.lstat()
+        guarded_record.update(
+            state="retiring",
+            previous_state="published",
+            trash=str(guarded_trash),
+            trash_device=guarded_metadata.st_dev,
+            trash_inode=guarded_metadata.st_ino,
+            trash_size=1234,
+        )
+        retention._write_json(record_path, guarded_record)
+        evidence_run = run_reference(guarded_state, "run-guarded", guarded_victim)
+        with quiet_census(temporary, guarded_state):
+            rows = retention.prune_runtimes(guarded_state)
+        guarded_row = row_for(rows, guarded_victim)
+        assert guarded_row["action"] == "keep", guarded_row
+        assert "referenced by retained evidence" in guarded_row["reason"], guarded_row
+        assert guarded_victim.is_dir()
+        current = retention.registered_runtime(guarded_victim)
+        assert current is not None and current["state"] == "retiring", current
+        shutil.rmtree(evidence_run)
+        with quiet_census(temporary, guarded_state):
+            rows = retention.prune_runtimes(guarded_state)
+        assert row_for(rows, guarded_victim)["action"] == "delete", rows
+        assert not guarded_victim.exists()
+        assert retention.registered_runtime(guarded_victim) is None
 
         # A successful NEW managed publication applies the scoped bounded prune
         # while its own fresh image stays protected.

@@ -307,31 +307,82 @@ def list_runs(root: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _release_run_references(row: Mapping[str, Any]) -> list[str]:
+    """Release the external runtime references of one removed run, idempotently.
+
+    The evidence pin and the run pin are separate keys; both are attempted even
+    when one fails so the next collection can finish the remaining release.
+    """
+    runtime_root = row.get("runtime_root")
+    if not runtime_root:
+        return []
+    problems: list[str] = []
+    for key in (row.get("runtime_pin_key"), "run:" + str(row.get("path"))):
+        if not key:
+            continue
+        try:
+            unpin_runtime(Path(str(runtime_root)), str(key))
+        except (OSError, RuntimeError, ValueError) as error:
+            problems.append(f"{key}: {error}")
+    return problems
+
+
 def collect_retired(root: Path, policy: RetentionPolicy, *, protect=()) -> list[dict[str, Any]]:
+    """Apply the cross-module retirement protocol in its required order.
+
+    For every removed run: evidence detach/removal (journaled by
+    :func:`prune_run_evidence`), then release of its runtime references, then
+    acknowledgment of the completed journal.  Image retention runs only when
+    every removal in this invocation finished release and acknowledgment; a
+    crash anywhere before that leaves the completed journal and its runtime
+    reference in place, and the next collection resumes from that persisted
+    state.  The image pruner independently refuses images that any persisted run
+    record or retirement journal still references, so a lost pin or a concurrent
+    pruner cannot turn this ordering into a dangling evidence reference.
+    """
+    rows: list[dict[str, Any]] = []
+    outstanding: list[str] = []
     try:
-        rows = prune_run_evidence(
+        evidence_rows = prune_run_evidence(
             root, keep_last=policy.evidence_keep_last, max_bytes=policy.evidence_max_bytes,
             protect=protect,
         )
     except (OSError, RuntimeError, ValueError) as error:
-        rows = [{"action": "failed", "kind": "run-evidence", "path": str(root), "reason": str(error)}]
-    problems = []
-    for row in rows:
-        if row.get("action") == "deleted":
-            try:
-                if row.get("runtime_root"):
-                    unpin_runtime(Path(row["runtime_root"]), row["runtime_pin_key"])
-                    unpin_runtime(Path(row["runtime_root"]), "run:" + row["path"])
-                if not ack_run_retirement(row):
-                    raise LaneError("run-evidence retirement acknowledgement was refused")
-            except (OSError, RuntimeError, ValueError) as error:
-                problems.append({"action": "failed", "kind": "runtime-reference",
-                                 "path": row["path"], "reason": str(error)})
-    rows.extend(problems)
+        evidence_rows = [{"action": "failed", "kind": "run-evidence", "path": str(root),
+                          "reason": str(error)}]
+    rows.extend(evidence_rows)
+    for row in evidence_rows:
+        if row.get("action") != "deleted":
+            continue
+        problems = _release_run_references(row)
+        if problems:
+            outstanding.append(f"{row.get('path')}: reference release failed")
+            rows.append({"action": "failed", "kind": "runtime-reference",
+                         "path": row.get("path"), "reason": "; ".join(problems)})
+            continue
+        try:
+            acknowledged = ack_run_retirement(row)
+        except (OSError, RuntimeError, ValueError) as error:
+            acknowledged = False
+            reason = f"retirement acknowledgment failed: {error}"
+        else:
+            reason = "retirement journal is not completed; acknowledgment refused"
+        if not acknowledged:
+            outstanding.append(f"{row.get('path')}: {reason}")
+            rows.append({"action": "failed", "kind": "runtime-reference",
+                         "path": row.get("path"), "reason": reason})
+    if outstanding:
+        rows.append({
+            "action": "deferred", "kind": "runtime-images", "path": str(root), "bytes": 0,
+            "reason": "image retention waits for evidence retirement: "
+                      + "; ".join(outstanding[:4]),
+        })
+        return rows
     try:
         rows.extend(prune_runtimes(root, keep_last=policy.runtime_keep_last))
     except (OSError, RuntimeError, ValueError) as error:
-        rows.append({"action": "failed", "kind": "runtime-images", "path": str(root), "reason": str(error)})
+        rows.append({"action": "failed", "kind": "runtime-images", "path": str(root),
+                     "reason": str(error)})
     return rows
 
 
